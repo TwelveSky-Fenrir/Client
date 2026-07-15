@@ -22,3 +22,6 @@ Win32/
 *.log
 *.tlog
 *.lastbuildstate
+
+# Assets du jeu (ne pas versionner)
+TwelveSky2/GameData/
