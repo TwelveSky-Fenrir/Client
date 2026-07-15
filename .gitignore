@@ -1,0 +1,24 @@
+# Sorties de build Visual Studio / MSBuild
+build/
+[Bb]in/
+[Oo]bj/
+Debug/
+Release/
+x64/
+x86/
+Win32/
+
+# Fichiers utilisateur / cache VS
+.vs/
+*.user
+*.suo
+*.aps
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.obj
+*.exe
+*.log
+*.tlog
+*.lastbuildstate

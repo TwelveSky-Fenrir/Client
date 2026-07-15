@@ -1,0 +1,803 @@
+// Scene/SceneManager.cpp — machine de scènes : Intro -> ServerSelect/Login/CharSelect (LoginScene)
+// -> EnterWorld -> InGame (GameHud). Dispatch fidèle à cSceneMgr_Update/_Render.
+#include "UI/LoginScene.h"      // tire Net/NetSystem.h (winsock2) en premier
+#include "UI/GameHud.h"
+#include "UI/GameWindows.h"
+#include "Gfx/Renderer.h"
+#include "Gfx/Camera.h"
+#include "Net/NetSystem.h"
+#include "Scene/SceneManager.h"
+#include "Scene/WorldRenderer.h"
+#include "Gfx/WorldGeometryRenderer.h" // géométrie statique .WO (distinct de WorldRenderer=entités)
+#include "World/WorldIntegration.h"    // world::WorldAssets (charge réellement Z%03d.WO)
+#include "World/WorldMap.h"            // world::WorldMap::LoadZoneResource (dispatch .WO)
+#include "Gfx/SpriteBatch.h"    // gfx::g_GameTimeSec
+#include "Game/GameState.h"     // game::g_World (zoneId)
+#include "Game/ClientRuntime.h" // game::Str (messages d'erreur EnterWorld)
+#include "Game/MapWarp.h"       // game::kSelfActionStateOffset (porte de gating InGame étape 12)
+#include "Net/SendPackets.h"    // Net_SendPacket_Op13 (keepalive) / Net_SendOp64 (poll requête clan/faction)
+#include "Net/CharSelectPackets.h" // net::BuildEnterWorldTail72 (bloc tail72 confirmé)
+// 4 systèmes d'appoint du tick InGame (mission de câblage 2026-07-14, cf. rapports des
+// agents dédiés) : anim/collision, cycle de vie d'entité, caméra/warp/potion/guilde,
+// combo/pickup/quête. Câblés ci-dessous dans case Scene::InGame (RunMainTick).
+#include "Game/AnimationTick.h"
+#include "Game/EntityLifecycleTick.h"
+#include "Game/CameraWarpTick.h"
+#include "Game/ComboPickupTick.h"
+#include "Game/NpcInteraction.h" // NpcInteractionSystem::AutoInteractForPet (déjà porté, réutilisé)
+// 3 systèmes supplémentaires câblés dans ce même bloc (mission de câblage 2026-07-14,
+// suite des 4 ci-dessus) : effets au sol/auras/objets de zone, gate auto-cible/combat,
+// pont caméra 3e personne.
+#include "Game/GroundAuraWorldObjectTick.h"
+#include "Game/AutoTargetCombatGate.h"
+#include "Gfx/CameraThirdPersonBridge.h"
+#include "Core/Log.h"
+#include <windows.h>
+#include <cstring>
+
+// TODO journalisé UNE SEULE FOIS par point d'intégration (évite le flood de logs pour les
+// hooks appelés à 30 Hz depuis InGameTickFlow_Update — cf. case Scene::InGame ci-dessous).
+#define TS2_INGAME_TODO_ONCE(...) do { \
+        static bool s_ts2IngameTodoWarned = false; \
+        if (!s_ts2IngameTodoWarned) { s_ts2IngameTodoWarned = true; TS2_LOG(__VA_ARGS__); } \
+    } while (0)
+
+namespace ts2 {
+
+SceneManager::SceneManager() = default;
+SceneManager::~SceneManager() { Shutdown(); }
+
+static const char* SceneName(Scene s) {
+    switch (s) {
+    case Scene::Intro:        return "Intro";
+    case Scene::ServerSelect: return "ServerSelect";
+    case Scene::Login:        return "Login";
+    case Scene::CharSelect:   return "CharSelect";
+    case Scene::EnterWorld:   return "EnterWorld";
+    case Scene::InGame:       return "InGame";
+    default:                  return "None";
+    }
+}
+
+void SceneManager::Init(gfx::Renderer& renderer, net::NetSystem& net, void* notifyHwnd,
+                        int screenW, int screenH, const std::string& gameDataDir,
+                        int serverModeFlag) {
+    renderer_    = &renderer;
+    net_         = &net;
+    notifyHwnd_  = notifyHwnd;
+    screenW_     = screenW;
+    screenH_     = screenH;
+    gameDataDir_ = gameDataDir;
+    scene_    = Scene::None;
+    subState_ = 0;
+    frameCount_ = 0;
+
+    // Scènes shell de connexion (ServerSelect/Login/CharSelect).
+    login_ = std::make_unique<ui::LoginScene>();
+    if (!login_->Init(renderer.Device(), &net, static_cast<HWND>(notifyHwnd), screenW, screenH, serverModeFlag))
+        TS2_WARN("LoginScene::Init a echoue (rendu login indisponible).");
+
+    // HUD en jeu : construit à la volée en entrant en scène InGame.
+    hud_ = std::make_unique<ui::GameHud>();
+    hudReady_ = false;
+
+    // Fenêtres de jeu (Entrepôt/Guilde/Quête/Compétences/Options/Social/AutoPlay/
+    // Marchand/Groupe/Échange/Personnage) : même cycle de vie que le HUD.
+    windows_ = std::make_unique<ui::GameWindows>();
+    windowsReady_ = false;
+
+    // Rendu 3D des entités (players/monsters) : même cycle de vie que le HUD.
+    world_ = std::make_unique<WorldRenderer>();
+    worldReady_ = false;
+
+    // Géométrie de monde statique (.WO, cf. Gfx/WorldGeometryRenderer.h) : le rendu GPU
+    // (worldGeom_->Init/Build) reste construit paresseusement à l'entrée en InGame (cf.
+    // Change()), car il a besoin d'un device D3D "chaud" et de zoneId. En revanche
+    // worldAssets_/worldMap_ (données de zone CPU, PAS le rendu) sont désormais construits
+    // ICI, PAS à l'entrée InGame comme avant ce câblage : Scene::EnterWorld en a besoin
+    // AVANT InGame pour son sous-état LoadZoneResources (cf. Update(), case EnterWorld,
+    // host.LoadZoneResource) — voir Docs/TS2_ENTERWORLD_WIRING_TODO.md pour l'audit complet.
+    worldGeom_ = std::make_unique<gfx::WorldGeometryRenderer>();
+    worldGeomReady_ = false;
+
+    if (!gameDataDir_.empty()) {
+        worldAssets_ = std::make_unique<world::WorldAssets>(gameDataDir_);
+        worldMap_    = std::make_unique<world::WorldMap>(worldAssets_->MakeHooks());
+        worldMap_->SetDevice(renderer.Device());
+    } else {
+        TS2_WARN("SceneManager: gameDataDir vide - WorldMap indisponible "
+                 "(EnterWorld/InGame degrades : chargement de zone impossible).");
+    }
+
+    TS2_LOG("SceneManager initialise (%dx%d).", screenW, screenH);
+}
+
+void SceneManager::Shutdown() {
+    if (login_)   { login_->Shutdown();   login_.reset(); }
+    if (windows_) { windows_->Shutdown(); windows_.reset(); }
+    if (hud_)     { hud_->Shutdown();     hud_.reset(); }
+    if (world_)   { world_->Shutdown();   world_.reset(); }
+    if (worldGeom_) { worldGeom_->Shutdown(); worldGeom_.reset(); }
+    worldMap_.reset();
+    worldAssets_.reset();
+    renderer_ = nullptr;
+    net_ = nullptr;
+}
+
+void SceneManager::StartIntro() { Change(Scene::Intro); }
+
+void SceneManager::Change(Scene s) {
+    TS2_LOG("Scene : %s -> %s", SceneName(scene_), SceneName(s));
+    scene_ = s;
+    subState_ = 0;
+    frameCount_ = 0;
+
+    // Entrée en jeu : initialise le HUD et les fenêtres de jeu une seule fois (device stable).
+    if (s == Scene::InGame && hud_ && !hudReady_ && renderer_) {
+        hudReady_ = hud_->Init(*renderer_, screenW_, screenH_);
+        if (!hudReady_) TS2_WARN("GameHud::Init a echoue (HUD indisponible).");
+    }
+    if (s == Scene::InGame && windows_ && !windowsReady_ && renderer_) {
+        windowsReady_ = windows_->Init(*renderer_, notifyHwnd_, screenW_, screenH_);
+        if (!windowsReady_) TS2_WARN("GameWindows::Init a echoue (fenetres indisponibles).");
+    }
+    if (s == Scene::InGame && world_ && !worldReady_ && renderer_) {
+        worldReady_ = world_->Init(*renderer_, screenW_, screenH_);
+        if (!worldReady_) TS2_WARN("WorldRenderer::Init a echoue (rendu monde indisponible).");
+    }
+    // Géométrie de monde statique (.WO) : chargement UNE SEULE FOIS à l'entrée en InGame,
+    // pour le zoneId courant (game::g_World.zoneId). Pas de rechargement au changement de
+    // zone en cours de partie (TODO futur : accrocher World_LoadZoneResource(ObjectsWO) au
+    // flux de warp/MapWarp, cf. Game/MapWarp.h — hors périmètre de ce câblage initial, comme
+    // host.LoadZoneResource déjà en TODO dans le case EnterWorld ci-dessous).
+    if (s == Scene::InGame && worldGeom_ && !worldGeomReady_ && renderer_) {
+        worldGeomReady_ = worldGeom_->Init(*renderer_);
+        if (!worldGeomReady_) {
+            TS2_WARN("WorldGeometryRenderer::Init a echoue (geometrie statique indisponible).");
+        } else if (!worldMap_ || !worldAssets_) {
+            // worldMap_/worldAssets_ sont désormais construits UNE FOIS dans Init() (cf.
+            // Docs/TS2_ENTERWORLD_WIRING_TODO.md §2), pas ici, pour être déjà disponibles
+            // pendant Scene::EnterWorld. nullptr ici => gameDataDir_ était vide à Init()
+            // (déjà averti à ce moment-là).
+            TS2_WARN("SceneManager: WorldMap indisponible (gameDataDir vide a Init) - "
+                     "chargement .WO impossible.");
+        } else {
+            const int zoneId = game::g_World.zoneId;
+            // Redondant avec le chargement idx=3 (ResourceKind::ObjectsWO) déjà effectué
+            // pendant Scene::EnterWorld (LoadZoneResources, cf. host.LoadZoneResource dans
+            // Update()) - WorldMap::LoadZoneResource est idempotent (recharge le même
+            // fichier). Gardé ici par sécurité pour les chemins qui forcent
+            // Change(Scene::InGame) directement SANS passer par EnterWorld
+            // (Scene/SceneAudit.cpp, Tools/UiWindowSelfTest.cpp).
+            const unsigned char ok = worldMap_->LoadZoneResource(zoneId, world::ResourceKind::ObjectsWO);
+            if (ok) {
+                worldGeom_->Build(*worldAssets_);
+                TS2_LOG("SceneManager: geometrie .WO zone %d chargee (%zu parts GPU, %zu ignorees A>1).",
+                        zoneId, worldGeom_->UploadedPartCount(), worldGeom_->SkippedMultiAnchorCount());
+            } else {
+                TS2_WARN("SceneManager: World_LoadZoneResource(ObjectsWO, zone=%d) a echoue "
+                         "(zoneId->fileId inconnu ou fichier Z%%03d.WO absent).", zoneId);
+            }
+        }
+    }
+}
+
+void SceneManager::ConsumePending() {
+    if (!login_) return;
+    const Scene p = login_->PendingScene();
+    if (p != Scene::None) {
+        login_->ClearPending();
+        Change(p);
+    }
+}
+
+void SceneManager::Update(double dt, gfx::Camera& camera) {
+    ++frameCount_;
+    switch (scene_) {
+    case Scene::Intro:
+        // Automate fidèle Scene_IntroUpdate 0x517FE0 (Game/IntroFlow.h) : 90 + 33×3 + 90
+        // = 279 frames (9,3 s @ 30 FPS), PAS 90 frames comme l'ancien placeholder.
+        if (game::UpdateIntro(introState_, 0.0f)) Change(Scene::ServerSelect);
+        break;
+    case Scene::ServerSelect:
+    case Scene::Login:
+    case Scene::CharSelect:
+        if (login_) { login_->Update(scene_); ConsumePending(); }
+        break;
+    case Scene::EnterWorld: {
+        // Bascule PRIORITAIRE et RÉELLE InGame : armée par EntityManager::OnEnterWorld
+        // (Game/EntityManager.cpp, réception op 0x0c) via game::g_World.
+        // sceneEnterWorldPending, fidèle à dword_1676180=6 écrit DIRECTEMENT par
+        // Pkt_EnterWorld dans le binaire (cf. GameState.h et
+        // Docs/TS2_ENTERWORLD_WIRING_TODO.md). Testé EN PREMIER, avant
+        // EnterWorldFlow_Update ci-dessous (qui ne gère plus qu'un timeout de secours).
+        if (game::g_World.sceneEnterWorldPending) {
+            game::g_World.sceneEnterWorldPending = false;
+            Change(Scene::InGame);
+            break;
+        }
+        // Automate fidèle Scene_EnterWorldUpdate 0x52BFF0 (Game/EnterWorldFlow.h) :
+        // attente(30) -> 20 ressources de zone espacées de 10 frames (~200 frames,
+        // ~6,7s) -> attente(30) -> envoi requête -> attente ACK serveur (jusqu'à
+        // 5000 frames). La bascule InGame réelle est déclenchée par la RÉCEPTION du
+        // paquet serveur EnterWorld (op 0x0c, cf. ci-dessus) — ce flux ne sert plus
+        // que de PROGRESSION VISUELLE (chargement des ressources de zone) + timeout
+        // de secours si le serveur ne répond jamais.
+        game::EnterWorldFlowHost host;
+        host.ResetUiAndAudio = [] {
+            // UI_ResetAllDialogs 0x5AC3F0 — réel, câblé sur le même UIManager que le
+            // reste du shell. Sûr même si windows_ n'est pas encore construit (InGame
+            // pas encore atteint) : la liste de dialogues enregistrés est alors vide
+            // (UIManager::ResetAll() itère dialogs_, vector par défaut vide).
+            // Snd_ReleaseBuffers 0x6A80D0 (audio) reste TODO : SceneManager ne détient
+            // aucune instance Audio/AudioSystem.h à ce jour (hors périmètre de ce câblage).
+            ui::UIManager::Instance().ResetAll();
+        };
+        host.LoadZoneResource = [this](int zoneId, int idx) {
+            // World_LoadZoneResource 0x4DCB60 : idx EST directement world::ResourceKind
+            // (cf. EnterWorldFlow.h, audit idx∈[1,12] réel, 0/[13,19] no-op fidèles —
+            // le switch `default` d'origine ne fait rien pour ces valeurs).
+            // worldMap_ est désormais construit UNE FOIS dans Init() (cf. plus haut),
+            // PAS paresseusement à l'entrée InGame comme avant ce câblage, précisément
+            // pour être déjà disponible ici (EnterWorld précède InGame dans le flux).
+            if (!worldMap_) return; // gameDataDir_ vide à Init() — dégradation déjà journalisée
+            if (idx < 1 || idx > 12) return; // no-op fidèle (switch `default` d'origine)
+            const auto kind = static_cast<world::ResourceKind>(idx);
+            const unsigned char ok = worldMap_->LoadZoneResource(zoneId, kind);
+            if (!ok) {
+                TS2_WARN("EnterWorld: World_LoadZoneResource(kind=%d, zone=%d) a echoue.", idx, zoneId);
+            }
+        };
+        host.SendEnterWorldRequest = [this] {
+            // Net_SendPacket_Op12 0x4B43C0 (opcode 12, 222 o) : bloc1 128 o (compte),
+            // bloc2 13 o (nom du personnage), bloc3 72 o = record de spawn/téléport
+            // confirmé (Net/CharSelectPackets.h::BuildEnterWorldTail72).
+            uint8_t name13[13] = {};
+            {
+                const std::string& nm = game::g_World.self.localPlayerName;
+                const size_t n = nm.size() < sizeof(name13) ? nm.size() : sizeof(name13);
+                std::memcpy(name13, nm.data(), n);
+            }
+            uint8_t tail72[72] = {};
+            net::BuildEnterWorldTail72(game::g_World.self.spawnX,
+                                       game::g_World.self.spawnY,
+                                       game::g_World.self.spawnZ,
+                                       game::g_World.self.spawnRotationDeg,
+                                       tail72);
+            net::Net_SendPacket_Op12(net_->Client(), net::g_AccountName, name13, tail72);
+            // NetSend() interne est fire-and-forget (void, cf. tous les autres builders
+            // Net_Send* de ce fichier) : "true" est une fidélité partielle assumée, comme
+            // host.SendKeepAlive plus bas dans le case Scene::InGame.
+            return true;
+        };
+        host.ShowErrorNotice = [](int strId) {
+            TS2_WARN("EnterWorld: echec (%s).", game::Str(strId).c_str());
+        };
+        const int zoneId = game::g_World.zoneId;
+        if (!game::EnterWorldFlow_Update(enterWorldState_, host, zoneId)) {
+            // État Failed atteint (timeout ACK ou échec d'émission) : repli sur
+            // InGame quand même plutôt que de bloquer indéfiniment l'écran (le
+            // paquet EnterWorld réseau, s'il arrive malgré tout, continuera de
+            // peupler g_World normalement, et le test sceneEnterWorldPending en tête
+            // de ce case reste de toute façon la voie normale de sortie).
+            TS2_WARN("EnterWorld: flux en echec -> bascule InGame de secours.");
+            Change(Scene::InGame);
+        }
+        break;
+    }
+    case Scene::InGame: {
+        // cSceneMgr_Update 0x517BF0 (case 6) : Scene_InGameUpdate() PUIS
+        // AutoPlay_Update(g_AutoPlayBot) — dans cet ORDRE, à chaque frame InGame
+        // (confirmé décompilation directe). Scene_InGameUpdate = InGameTickFlow_Update
+        // (Game/InGameTickFlow.h, câblé ci-dessous) ; AutoPlay reste juste après, inchangé.
+        //
+        // Hooks câblés sur du code EXISTANT (réels, pas des TODO) :
+        //   SendKeepAlive/SendPendingTargetPoll -> Net_SendPacket_Op13/Net_SendOp64 (Net/SendPackets.h)
+        //   AppendKeepAliveFailedMessage    -> game::g_Client.msg.System(Str(70))
+        //   ShowSpawnTimeoutNotice          -> game::g_Client.prompt.Open(2, Str(71)) (UI_NoticeDlg_Open)
+        //   GetSelfActionState              -> g_World.players[0].body @kSelfActionStateOffset (Game/MapWarp.h)
+        //   IsGm                            -> net::g_GmAuthLevel != 0 (Net/NetClient.h)
+        //   IsExchangeWindowOpen            -> windows_->PlayerTrade().IsOpen() (Dialog::IsOpen)
+        //   CanAutoInteractNpc/IsInventoryDirty/IsMorphInProgress
+        //                                    -> windows_->AutoPlaySys().externalState.*
+        // Hooks câblés sur les 4 systèmes Game/AnimationTick.h, Game/EntityLifecycleTick.h,
+        // Game/CameraWarpTick.h, Game/ComboPickupTick.h (mission de câblage 2026-07-14, cf.
+        // commentaires locaux à chaque hook ci-dessous pour le détail et les écarts/TODO
+        // documentés) : TickWarpSuppressionTimeout, AutoUsePotion, UpdateLocalPlayerAnim,
+        // UpdateEntityAnimFrame, DespawnStalePlayer, UpdateMonster/RespawnMonsterAfterKnockback,
+        // TickNpcEffect/CleanupStaleNpcEffect, AutoInteractNpcForPet, UpdateQuestMarkerTimer,
+        // FindComboFollowupTarget/BeginComboMorph, TickNearbyPickupSlots, RotateTipText.
+        // Hooks câblés sur les 3 systèmes supplémentaires Game/GroundAuraWorldObjectTick.h,
+        // Game/AutoTargetCombatGate.h, Gfx/CameraThirdPersonBridge.h (2e vague de câblage,
+        // même date) : TickGroundItemEffect, GetFxAuraCount/IsFxAuraActive/
+        // UpdateHomingProjectile, GetWorldObjectCount/IsWorldObjectActive/TickWorldObject,
+        // ValidateAutoTarget, IsCombatAllowedOnMap ; InitCamera/UpdateCameraCollision
+        // passent désormais par gfx::TickThirdPersonCamera (appelée juste après
+        // InGameTickFlow_Update ci-dessous, hors host — cf. son commentaire local) grâce à
+        // Update(dt, camera) qui reçoit enfin une gfx::Camera MUTABLE (SceneManager.h/
+        // App.cpp étendus par cette même mission).
+        // Reste TODO (aucune donnée/instance disponible dans ClientSource pour la nourrir) :
+        // UpdateMapObjectAnim (aucun objet de collision de map animé modélisé).
+        game::InGameTickFlowHost host;
+
+        // --- Setup (case 0), one-shot ---------------------------------------------------
+        host.ResetUiAndScratch = [] {
+            TS2_LOG("InGame/Setup: reset tooltip/scratch/focus non branche "
+                     "(TODO EA sub_53F630+sub_4C1110(0)+UI_FocusEditBox 0x50F4A0).");
+        };
+
+        // --- WaitFirstSpawn (case 1), timeout 5000 frames --------------------------------
+        host.ShowSpawnTimeoutNotice = [] {
+            // UI_NoticeDlg_Open(2, StrTable005_Get(g_LangId,71), "") 0x5C0280 — réel via
+            // ClientRuntime::PromptState (même modèle que les autres prompts modaux).
+            game::g_Client.prompt.Open(2, game::Str(71));
+        };
+
+        // --- InitCamera (case 3), one-shot -------------------------------------------------
+        // Cam_SetLookAt/Camera_SetEyeTarget désormais câblés RÉELLEMENT via
+        // gfx::TickThirdPersonCamera (Gfx/CameraThirdPersonBridge.h), appelée UNE FOIS par
+        // frame juste après InGameTickFlow_Update ci-dessous (hors host : elle gère elle-même
+        // le cadrage one-shot ET le suivi/collision chaque frame à partir du même flag
+        // `justEnteredInGame`, cf. plus bas) — ce hook reste no-op pour éviter un double appel.
+        host.InitCamera = [](float, float, float) {};
+
+        // --- MainTick étape 1 : keepalive /300 frames + poll requête clan/faction ---------
+        host.SendKeepAlive = [this]() -> bool {
+            // Net_SendPacket_Op13(client, g_LocalElement) 0x4B4570. NetSend() intérieur est
+            // best-effort (fire-and-forget) : les builders Net_Send* ne remontent PAS le
+            // succès d'émission (void), donc "true" ici est une fidélité partielle assumée
+            // (TODO : faire remonter le bool NetSend jusqu'ici si un jour nécessaire).
+            net::Net_SendPacket_Op13(net_->Client(), static_cast<int8_t>(net::g_LocalElement));
+            return true;
+        };
+        host.AppendKeepAliveFailedMessage = [] {
+            game::g_Client.msg.System(game::Str(70)); // StrTable005 id 70
+        };
+        host.HasPendingTargetRequest = [] {
+            const auto readReqName = [](uint32_t addr) {
+                const auto& blob = game::g_Client.Blob(addr, 13);
+                size_t len = 0;
+                while (len < blob.size() && blob[len] != 0) ++len;
+                return std::string(reinterpret_cast<const char*>(blob.data()), len);
+            };
+            return game::HasPendingTargetRequest(readReqName(0x167468A), readReqName(0x1674697));
+        };
+        host.SendPendingTargetPoll = [this] {
+            net::Net_SendOp64(net_->Client()); // 0x4B9B20 — poll de requête clan/faction.
+        };
+
+        // --- MainTick étape 2 : timeout 10 s du flag "warp supprimé" ----------------------
+        // Warp_TickSuppressionTimeout (Game/CameraWarpTick.h). Le hook reçoit directement
+        // g_GameTimeSec depuis RunMainTick, puis synchronise ce latch avec
+        // AutoPlayExternalState::warpSuppressed (MÊME global dword_1675B00, cf. tête de
+        // Game/CameraWarpTick.h) : le site d'ARMEMENT réel (dword_1675B00=1) reste ailleurs
+        // dans AutoPlaySystem (hors périmètre de ce câblage) — capturé ici au vol dès qu'il
+        // est détecté, pour que l'auto-clear à 10 s (0x52C91F) reste fidèle.
+        static game::WarpSuppressionState s_warpSuppression;
+        host.TickWarpSuppressionTimeout = [this](float /*dt*/) {
+            const float gameTimeSec = game::g_World.gameTimeSec;
+            if (windowsReady_ && windows_) {
+                auto& ext = windows_->AutoPlaySys().externalState;
+                if (ext.warpSuppressed && !s_warpSuppression.suppressed) {
+                    game::Warp_SetSuppressed(s_warpSuppression, gameTimeSec);
+                }
+                game::Warp_TickSuppressionTimeout(s_warpSuppression, gameTimeSec);
+                ext.warpSuppressed = s_warpSuppression.suppressed; // repropage l'auto-clear
+            } else {
+                game::Warp_TickSuppressionTimeout(s_warpSuppression, gameTimeSec);
+            }
+        };
+
+        // --- MainTick étapes 3-5 : anim/collision inconditionnelles chaque frame ----------
+        // Game_AutoUsePotion (Game/CameraWarpTick.h). Câblage RÉEL des jauges/seuils/état
+        // d'action (déjà modélisés dans GameState.h) ; la ceinture auto-play (3x14) et les
+        // réglages de seuil UI n'existent encore nulle part dans ClientSource -> hooks
+        // laissés nuls (dégradation propre : IsAutoPotionSystemEnabled==false par défaut,
+        // donc la fonction ne consomme jamais de potion tant qu'un futur InventorySystem/
+        // réglage AutoPlay ne les branche pas — cf. AutoPotionHost dans le header pour
+        // chaque EA d'origine manquante).
+        host.AutoUsePotion = [this](float /*dt*/) {
+            game::AutoPotionHost potionHost;
+            potionHost.GetHpGauge = [] { return static_cast<float>(game::g_World.self.hp); };
+            potionHost.GetMpGauge = [] { return static_cast<float>(game::g_World.self.mp); };
+            // ÉCART DOCUMENTÉ (cf. Game/CameraWarpTick.h::AutoPotionHost) : le binaire compare
+            // bien HP/MP aux agrégats Char_CalcAttackRatingMin/Max, PAS à une capacité max
+            // HP/MP — reproduit tel quel par fidélité.
+            potionHost.GetHpThresholdMetric = [] { return static_cast<float>(game::g_World.self.atkRatingMin); };
+            potionHost.GetMpThresholdMetric = [] { return static_cast<float>(game::g_World.self.atkRatingMax); };
+            potionHost.GetSelfActionState = [] {
+                if (game::g_World.players.empty()) return 0;
+                const game::PlayerEntity& self0 = game::g_World.players[0];
+                int32_t raw = 0;
+                if (self0.body.size() >= game::kSelfActionStateOffset + sizeof(raw)) {
+                    std::memcpy(&raw, self0.body.data() + game::kSelfActionStateOffset, sizeof(raw));
+                }
+                return static_cast<int>(raw);
+            };
+            if (windowsReady_ && windows_) {
+                potionHost.IsMorphInProgress = [this] { return windows_->AutoPlaySys().externalState.morphInProgress; };
+            }
+            game::Game_AutoUsePotion(potionHost);
+        };
+        // MapColl_UpdateObjectAnim (Game/AnimationTick.h) : le "this" d'origine (objet de
+        // collision de zone animé, MapCollisionObjectAnimState) n'a AUCUNE instance dans
+        // ClientSource à ce jour — ni World/WorldMap.h ni Gfx/WorldGeometryRenderer.h
+        // n'exposent de tableau de sous-objets/particules par objet de map. Câblage réel
+        // impossible sans étendre ce système (hors périmètre de ce câblage) : TODO conservé.
+        host.UpdateMapObjectAnim = [](float) {
+            TS2_INGAME_TODO_ONCE("InGame: MapColl_UpdateObjectAnim non branche - aucune instance "
+                                   "de MapCollisionObjectAnimState nulle part dans ClientSource "
+                                   "(World/WorldMap.h n'expose pas d'objets de collision animes) "
+                                   "(TODO EA 0x694A00).");
+        };
+        // Player_UpdateLocalAnim (Game/AnimationTick.h) : opère sur game::g_World (self),
+        // reconstruit les ~80 timers de morph aux adresses d'origine via g_Client.Var/VarF.
+        // LoadCurrentZoneModel câblé sur world::WorldMap::LoadCurrentZoneModel (déjà écrit,
+        // instance possédée par SceneManager) ; IsPointOnGround/musique d'ambiance laissés
+        // nuls (terrain/audio hors périmètre de ce câblage).
+        host.UpdateLocalPlayerAnim = [this](float dt) {
+            game::LocalAnimTickHost localHost;
+            localHost.LoadCurrentZoneModel = [this](int reason) {
+                if (worldMap_) worldMap_->LoadCurrentZoneModel(reason);
+            };
+            game::Player_UpdateLocalAnim(game::g_World, dt, nullptr, localHost);
+        };
+        // Char_UpdateAnimationFrame (Game/AnimationTick.h) : appelé pour l'entité 0 (soi,
+        // étape 5) ET pour chaque joueur distant (étape 6, cf. Game/InGameTickFlow.cpp) via
+        // le MÊME hook. isSelf/isLocalSimulation = (idx==0). GetPendingStopRequest/
+        // ClearPendingStopRequest câblés sur g_PendingStopRequest (0xE0000072, MÊME variable
+        // que Net/GameHandlers_Misc.cpp::kPendingStopReq) ; SendAutoPlayStopAck câblé sur
+        // Net_SendOp95(pos_self, 2) (déjà déclaré, Net/SendPackets.h). Contact/interruption
+        // de cast délégués à ActionFsm (déjà écrit) ; le switch terminal 55-handlers
+        // (asset-driven, 0x5727BF) reste hors périmètre (stateHandler nul -> FSM gelée sur
+        // son état courant au-delà de contact/interrupt/FX/rotation). Si un coup/compétence
+        // instantané est validé pour SOI (contactFiredThisTick), le résultat est sérialisé et
+        // envoyé via Net_SendPacket_Op18 (76o), complétant fidèlement Combat_QueueMeleeAttack/
+        // Combat_QueueSkillAction (Game/CombatSystem.h, déjà écrit — réutilisé, pas dupliqué).
+        host.UpdateEntityAnimFrame = [this](int idx, float dt) {
+            if (idx < 0 || static_cast<size_t>(idx) >= game::g_World.players.size()) return;
+            game::PlayerEntity& p = game::g_World.players[static_cast<size_t>(idx)];
+            if (!p.active) return;
+            const bool isSelf = (idx == 0);
+
+            game::CombatActorState actor;
+            actor.selfId = p.id;
+            actor.x = p.x; actor.y = p.y; actor.z = p.z;
+            actor.facing = p.anim.state; // entity+244, même offset que CharAnimState::state
+
+            game::CharAnimTickHost animHost;
+            animHost.GetPendingStopRequest = [] { return game::g_Client.Var(0xE0000072u) != 0; };
+            animHost.ClearPendingStopRequest = [] { game::g_Client.Var(0xE0000072u) = 0; };
+            animHost.SendAutoPlayStopAck = [this] {
+                const game::PlayerEntity& self = game::g_World.Self();
+                float pos[3] = { self.x, self.y, self.z };
+                net::Net_SendOp95(net_->Client(), pos, 2);
+            };
+
+            game::CharAnimTickResult result;
+            game::Char_UpdateAnimationFrame(p.anim, actor, game::g_World, nullptr,
+                                             isSelf, isSelf,
+                                             false /* pendingCastInterrupt: TODO g_AutoHuntFuelA/B non traces */,
+                                             dt, nullptr, nullptr, animHost, result);
+
+            if (isSelf && result.contactFiredThisTick) {
+                uint8_t payload[76] = {};
+                result.lastAction.Serialize(payload);
+                net::Net_SendPacket_Op18(net_->Client(), payload);
+            }
+        };
+        // Camera_UpdateCollision (Game/AnimationTick.h) : câblée RÉELLEMENT via
+        // gfx::TickThirdPersonCamera, MÊME appel unique que host.InitCamera ci-dessus (cf. son
+        // commentaire) — ce hook reste no-op pour éviter un double appel de
+        // Camera_UpdateCollision sur la même frame.
+        host.UpdateCameraCollision = [] {};
+
+        // --- MainTick étape 6 : joueurs distants, péremption 7,5 s ------------------------
+        // sub_55D720 (Game/EntityLifecycleTick.h) : désactive le slot périmé.
+        host.DespawnStalePlayer = [](int idx, float) {
+            game::DespawnStalePlayer(game::g_World, idx);
+        };
+
+        // --- MainTick étape 7 : tableau 88 o (GroundItem au sens GameState.h) -------------
+        // Fx_MeleeSwingTick 0x5803A0 (Game/GroundAuraWorldObjectTick.h). GetWeaponEffectFrameCount
+        // (Model_GetWeaponEffectFrameCount 0x4E5A40) laissé nul : aucune table de modèles/assets
+        // d'effet d'arme câblée côté ClientSource à ce jour -> dégradation propre documentée
+        // (le timer de frame avance mais ne boucle/complète jamais, cf. commentaire du header).
+        host.TickGroundItemEffect = [](int index, float dt) {
+            static const game::GroundAuraWorldObjectTickHost s_groundFxHost{}; // GetWeaponEffectFrameCount nul
+            game::TickGroundItemEffect(game::g_World, index, dt, s_groundFxHost);
+        };
+
+        // --- MainTick étape 8 : monstres, péremption 7,5 s --------------------------------
+        // Char_Update / sub_580550 (Game/EntityLifecycleTick.h). EntityLifecycleTickHost
+        // partagé avec l'étape 9 ci-dessous ; sous-hooks hors périmètre (tables de fenêtre de
+        // coup, envoi réseau melee/projectile, dispatch FSM, hauteur de sol, son d'impact —
+        // cf. tête de Game/EntityLifecycleTick.h) laissés nuls : dégradation propre (le
+        // monstre tick sans jamais frapper/tomber tant qu'un futur système combat/FX ne les
+        // branche pas).
+        static game::EntityLifecycleTickHost s_lifecycleHost;
+        host.UpdateMonster = [](int idx, float dt) {
+            game::UpdateMonster(game::g_World, idx, dt, s_lifecycleHost);
+        };
+        host.RespawnMonsterAfterKnockback = [](int idx) {
+            game::RespawnMonsterAfterKnockback(game::g_World, idx);
+        };
+
+        // --- MainTick étape 9 : tableau 152 o (NpcEntity au sens GameState.h) ------------
+        // Fx_GibUpdate / sub_583390 (Game/EntityLifecycleTick.h), même host que ci-dessus.
+        host.TickNpcEffect = [](int idx, float dt) {
+            game::TickNpcEffect(game::g_World, idx, dt, s_lifecycleHost);
+        };
+        host.CleanupStaleNpcEffect = [](int idx) {
+            game::CleanupStaleNpcEntity(game::g_World, idx);
+        };
+
+        // --- MainTick étape 10 : auras/homing (PAS dans GameState.h) ----------------------
+        // g_FxAuraCount/dword_17D06F4 (Game/GroundAuraWorldObjectTick.h) : pool SoA de
+        // projectiles d'attaque non modélisé côté ClientSource (cf. commentaire du header) ;
+        // GetFxAuraCount lit le vrai slot via g_Client.Var (0 aujourd'hui, personne ne le
+        // peuple encore) -> IsFxAuraActive/UpdateHomingProjectile jamais atteints en pratique,
+        // dégradation propre et sûre (pas un stub figé, câblage réel malgré tout).
+        host.GetFxAuraCount = [] { return game::GetFxAuraCount(); };
+        host.IsFxAuraActive = [](int index) { return game::IsFxAuraActive(index); };
+        host.UpdateHomingProjectile = [](int index, float dt) { game::UpdateHomingProjectile(index, dt); };
+
+        // --- MainTick étape 11 : objets de monde (PAS dans GameState.h) -------------------
+        // dword_1687230/dword_180EEF4 (Game/GroundAuraWorldObjectTick.h) : câblés sur
+        // game::g_World.zoneObjects (déjà dimensionné à 500 par GameData_InitPools). TickWorldObject
+        // (sub_584170) est un stub __stdcall VIDE confirmé par décompilation -> ne fait rien,
+        // reproduit fidèlement (pas une supposition).
+        host.GetWorldObjectCount = [] { return game::GetWorldObjectCount(game::g_World); };
+        host.IsWorldObjectActive = [](int index) { return game::IsWorldObjectActive(game::g_World, index); };
+        host.TickWorldObject = [](float dt) { game::TickWorldObject(dt); };
+
+        // --- MainTick étape 12, porte de gating -------------------------------------------
+        host.GetSelfActionState = [] {
+            // g_SelfActionState[0] == g_World.players[0].body @+220 (== entity+244, cf.
+            // Game/MapWarp.h::kSelfActionStateOffset, dérivation vérifiée depuis g_LocalPlayerSheet).
+            if (game::g_World.players.empty()) return 0;
+            const game::PlayerEntity& self0 = game::g_World.players[0];
+            int32_t raw = 0;
+            if (self0.body.size() >= game::kSelfActionStateOffset + sizeof(raw)) {
+                std::memcpy(&raw, self0.body.data() + game::kSelfActionStateOffset, sizeof(raw));
+            }
+            return static_cast<int>(raw);
+        };
+        if (windowsReady_ && windows_) {
+            host.IsExchangeWindowOpen = [this] { return windows_->PlayerTrade().IsOpen(); };
+            // sub_53B9E0 : AutoPlayExternalState::sceneTransitionBlocking stocke déjà la
+            // valeur BRUTE de sub_53B9E0 (cf. Game/AutoPlaySystem.h) — ce hook veut "true
+            // quand sub_53B9E0 renvoie vrai", donc AUCUNE inversion ici (cf. avertissement
+            // explicite dans Game/InGameTickFlow.h).
+            host.CanAutoInteractNpc = [this] { return windows_->AutoPlaySys().externalState.sceneTransitionBlocking; };
+            host.IsInventoryDirty   = [this] { return windows_->AutoPlaySys().externalState.invDirtyEnable; };
+            host.IsMorphInProgress  = [this] { return windows_->AutoPlaySys().externalState.morphInProgress; };
+        } else {
+            host.IsExchangeWindowOpen = [] { return false; };
+            host.CanAutoInteractNpc   = [] { return false; };
+            host.IsInventoryDirty     = [] { return false; };
+            host.IsMorphInProgress    = [] { return false; };
+        }
+        // Npc_AutoInteractForPet 0x53B5F0 : DÉJÀ porté par NpcInteractionSystem::
+        // AutoInteractForPet() (Game/NpcInteraction.h, réutilisé tel quel, cf. rapport de
+        // mission combo_pickup_quest). `selectedItemId` (g_SelectedInvItemId 0x1673258) n'est
+        // tracé nulle part dans ClientSource à ce jour -> 0 fixe (garde interne
+        // `if (selectedItemId < 1) return;` -> no-op fidèle et sûr, TODO le vrai câblage
+        // le jour où la sélection d'item d'inventaire existe côté UI).
+        static game::NpcInteractionSystem s_npcInteract;
+        host.AutoInteractNpcForPet = [this] {
+            if (windowsReady_ && windows_) {
+                s_npcInteract.morphInProgress = windows_->AutoPlaySys().externalState.morphInProgress;
+            }
+            s_npcInteract.AutoInteractForPet(0 /* TODO g_SelectedInvItemId non trace */,
+                                              game::g_World.gameTimeSec);
+        };
+
+        // --- MainTick étape 12a ------------------------------------------------------------
+        // ValidateAutoTarget (Game/AutoTargetCombatGate.h) : câblé sur game::g_World, oracle de
+        // portée par défaut (rangedLookup nul -> AutoTarget_DefaultRangeLookup) : mode 7 =
+        // g_World.zoneObjects ; mode 4 = g_World.groundItems (même tableau que
+        // g_NpcRenderArray/dword_1764D14, cf. commentaire du header AutoTargetCombatGate.h) —
+        // les deux modes résolvent désormais une vraie position, plus de repli systématique.
+        host.ValidateAutoTarget = [] { game::ValidateAutoTarget(game::g_World); };
+
+        // --- MainTick étape 12b ------------------------------------------------------------
+        // Quest_UpdateMarkerTimer (Game/ComboPickupTick.h), réutilise game::g_QuestProgress
+        // (déjà porté, Game/QuestSystem.h). isArenaZone (Map_IsArenaZone 0x54B690) non
+        // modélisé -> false fixe (TODO) ; fenêtre entrepôt/son de marqueur laissés nuls (UI/
+        // audio hors périmètre de ce câblage).
+        static game::QuestMarkerState s_questMarker;
+        host.UpdateQuestMarkerTimer = [] {
+            game::Quest_UpdateMarkerTimer(s_questMarker, game::g_QuestProgress,
+                                           game::g_World.gameTimeSec,
+                                           false /* isArenaZone: TODO Map_IsArenaZone non modelise */,
+                                           nullptr, nullptr);
+        };
+
+        // --- MainTick étape 12c -------------------------------------------------------------
+        // Combo_FindNearbyFollowup (Game/ComboPickupTick.h) : la table GINFO2 (candidats de
+        // suivi + Combo_CheckTransition) n'est modélisée nulle part dans ClientSource ->
+        // candidates/transitionCheck nuls (résultat -1 fidèle, garde EA 0x501286). motionId
+        // (g_SelfMorphNpcId) n'est pas non plus tracé dans GameState.h -> 0 fixe (TODO),
+        // renvoie -1 immédiatement (hors bornes [1,350]).
+        host.FindComboFollowupTarget = [] {
+            const game::PlayerEntity& self = game::g_World.Self();
+            const int motionId = 0; // TODO : g_SelfMorphNpcId non trace dans GameState.h
+            return game::Combo_FindNearbyFollowup(motionId, self.x, self.y, self.z, nullptr, nullptr);
+        };
+        // host.IsMorphInProgress est DÉJÀ câblé réellement plus haut (porte de gating étape 12,
+        // même champ réutilisé ici par le binaire pour la gate combo étape 12c) — pas de
+        // réaffectation ici.
+        // BeginComboMorph (Game/ComboPickupTick.h) : port fidèle complet (phase=4, reset des
+        // 72 o, rotation aléatoire via net::DefaultRng(), Net_SendPacket_Op20). currentMotionId
+        // (clé GInfo2_FindVec3ByKey) partage le même TODO que motionId ci-dessus -> 0 fixe,
+        // originLookup GINFO2 nul (position d'origine résolue à {0,0,0}, fidèle). Ne
+        // s'exécutera jamais tant que FindComboFollowupTarget renverra -1 ci-dessus.
+        static game::ComboMorphState s_comboMorph;
+        host.BeginComboMorph = [this](int followupTargetId) {
+            const int currentMotionId = 0; // TODO : g_SelfMorphNpcId non trace
+            game::BeginComboMorph(s_comboMorph, followupTargetId, currentMotionId,
+                                   net_->Client(), nullptr);
+            if (windowsReady_ && windows_) {
+                windows_->AutoPlaySys().externalState.morphInProgress = s_comboMorph.inProgress;
+            }
+        };
+
+        // --- MainTick étape 12d -------------------------------------------------------------
+        // Combat_IsElementAllowedOnMap (Game/AutoTargetCombatGate.h::IsCombatAllowedOnMapForSelf,
+        // wrapper direct, déjà porté par Game/ComboPickupTick.h) : câblé sur world.self.element
+        // (g_LocalElement) + g_SelfMorphNpcId (g_Client.VarGet). ElementPairTable
+        // (g_LocalPlayerSheet+455..458) reste non modélisée dans ClientSource -> repli {} (4x -1,
+        // "aucune paire enregistrée", PAS un raccourci "toujours faux" : le résultat dépend
+        // toujours réellement de selfMorphNpcId, cf. commentaire du header).
+        host.IsCombatAllowedOnMap = [] { return game::IsCombatAllowedOnMapForSelf(game::g_World); };
+        host.IsGm = [] { return net::g_GmAuthLevel != 0; };
+        // TickNearbyPickupSlots (Game/ComboPickupTick.h) : les 5 emplacements flt_1676130 sont
+        // déjà alimentés par le handler du paquet 0x82 (Net/GameHandlers_Misc.cpp) via
+        // g_Client.VarF — ce câblage réutilise le MÊME stockage (aucune duplication). Ne
+        // s'exécute que si IsCombatAllowedOnMap ci-dessus renvoie un jour true (fidèle).
+        host.TickNearbyPickupSlots = [this] {
+            const game::PlayerEntity& self = game::g_World.Self();
+            game::TickNearbyPickupSlots(self.x, self.y, self.z, net_->Client());
+        };
+
+        // --- MainTick étape 12e -------------------------------------------------------------
+        // Tips_RotateUpdate (Game/ComboPickupTick.h) : réutilise game::g_Strings.notices
+        // (TipsTable déjà porté, Game/StringTables.h) — le timer/index (600 s) y est déjà
+        // tenu fidèlement ; ce câblage n'ajoute que l'appel manquant à l'append chat.
+        host.RotateTipText = [] {
+            game::Tips_RotateUpdate(game::g_Strings.notices, game::g_World.gameTimeSec);
+        };
+
+        // Détection "entrée en InGame" pour gfx::TickThirdPersonCamera ci-dessous : capturée
+        // AVANT InGameTickFlow_Update, car l'état de la machine (inGameTickState_) transite
+        // DURANT cet appel (InitCamera -> MainTick, one-shot, cf. Game/InGameTickFlow.cpp) —
+        // c'est exactement la même frame où le binaire d'origine exécute son case 3
+        // (Cam_SetLookAt/Camera_SetEyeTarget, EA 0x52C6EF).
+        const bool justEnteredInGame = (inGameTickState_.state == game::InGameTickState::InitCamera);
+
+        game::InGameTickFlow_Update(inGameTickState_, host, static_cast<float>(dt));
+
+        // InGame_InitCamera (one-shot, si justEnteredInGame) + Camera_UpdateCollision (chaque
+        // frame) : câblage RÉEL via gfx::TickThirdPersonCamera (Gfx/CameraThirdPersonBridge.h),
+        // APRÈS la mise à jour de la position du joueur local pour cette frame (host.
+        // UpdateEntityAnimFrame(0,...) déjà exécuté par InGameTickFlow_Update ci-dessus) —
+        // remplace host.InitCamera/host.UpdateCameraCollision (laissés no-op plus haut).
+        gfx::TickThirdPersonCamera(camera, game::g_World, static_cast<float>(dt), justEnteredInGame);
+
+        // AutoPlay_Update(g_AutoPlayBot) — TOUJOURS après Scene_InGameUpdate, cf. commentaire
+        // en tête de bloc et Game/InGameTickFlow.h (note d'intégration en bas de fichier).
+        if (windowsReady_ && windows_) windows_->UpdateAutoPlay(static_cast<float>(dt));
+        break;
+    }
+    default: break;
+    }
+}
+
+void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camera) {
+    switch (scene_) {
+    case Scene::Intro:
+        // Scene_IntroRender 0x518880 (UI/IntroRender.h) : logos défilés depuis les VRAIS
+        // fichiers 001_00799..831.IMG (atlas UI), centrés sur leur taille réelle. Délégué à
+        // LoginScene qui réutilise ses ressources GPU déjà créées (cf. LoginScene::RenderIntro) —
+        // introState_ reste intégralement piloté ici (Update, cas Scene::Intro).
+        if (login_) login_->RenderIntro(introState_);
+        break;
+    case Scene::ServerSelect:
+    case Scene::Login:
+    case Scene::CharSelect:
+        if (login_) login_->Render(scene_);
+        break;
+    case Scene::EnterWorld:
+        // Scene_EnterWorldRender 0x52C260 (UI/EnterWorldRender.h) : écran de transition
+        // CharSelect->InGame (fond de zone 008_%05d.IMG + barre de progression). Délégué à
+        // LoginScene (mêmes ressources GPU que Scene::Intro ci-dessus). Sans ce case, la
+        // scène EnterWorld tombait dans `default:` -> écran noir pendant tout le chargement.
+        // enterWorldState_ reste piloté par SceneManager::Update() (case Scene::EnterWorld) ;
+        // zoneId = game::g_World.zoneId (même valeur qu'EnterWorldFlow_Update).
+        if (login_) login_->RenderEnterWorld(enterWorldState_, game::g_World.zoneId);
+        break;
+    case Scene::InGame:
+        // ORDRE CORRIGÉ : la couche SilverLining minimale est appelée à deux moments,
+        // comme le binaire d'origine :
+        //   1) avant le décor/terrain (Env_UpdateFrame -> cAtmosphere_RenderFrame),
+        //   2) après les entités (Env_StepTimeOfDay -> Atmosphere_DrawFrame).
+        // Ici on l'applique autour du rendu monde: ciel -> décor .WO -> entités -> ciel
+        // de fin -> HUD -> fenêtres.
+        if (worldGeomReady_ && worldGeom_) worldGeom_->RenderSky(screenW_, screenH_);
+        if (worldGeomReady_ && worldGeom_) worldGeom_->Render(camera, screenW_, screenH_);
+        if (worldReady_ && world_) world_->Render(camera);
+        if (worldGeomReady_ && worldGeom_) worldGeom_->RenderSky(screenW_, screenH_);
+        if (hudReady_ && hud_) hud_->Render();
+        if (windowsReady_ && windows_) windows_->Render();
+        break;
+    default:
+        // None : écran effacé par Renderer::BeginFrame.
+        break;
+    }
+}
+
+void SceneManager::OnLButtonDown(int x, int y) {
+    switch (scene_) {
+    case Scene::ServerSelect:
+    case Scene::Login:
+    case Scene::CharSelect:
+        if (login_) { login_->OnMouseDown(scene_, x, y); ConsumePending(); }
+        break;
+    case Scene::InGame:
+        // Les fenêtres (dialogues) interceptent le clic en premier (règle « premier
+        // consommateur gagne » de UIManager) ; sinon il tombe vers le HUD.
+        if (windowsReady_ && ui::UIManager::Instance().RouteMouseDown(x, y)) break;
+        if (hudReady_ && hud_) hud_->OnMouseDown(x, y);
+        break;
+    default: break;
+    }
+}
+
+void SceneManager::OnLButtonUp(int x, int y) {
+    switch (scene_) {
+    case Scene::ServerSelect:
+    case Scene::Login:
+    case Scene::CharSelect:
+        if (login_) { login_->OnMouseUp(scene_, x, y); ConsumePending(); }
+        break;
+    case Scene::InGame:
+        if (windowsReady_) ui::UIManager::Instance().RouteMouseUp(x, y);
+        break;
+    default: break;
+    }
+}
+
+void SceneManager::OnChar(char c) {
+    if (scene_ == Scene::Login && login_) { login_->OnChar(c); ConsumePending(); }
+}
+
+void SceneManager::OnKeyDown(int vk) {
+    if ((scene_ == Scene::Login || scene_ == Scene::CharSelect) && login_) {
+        login_->OnKeyDown(vk);
+        ConsumePending();
+    } else if (scene_ == Scene::InGame && windowsReady_ && windows_) {
+        // Un dialogue OUVERT (Échap/Entrée...) intercepte avant les raccourcis
+        // globaux d'ouverture (I/C/K/G/O/...), comme UI_RouteKeyInput d'origine.
+        if (ui::UIManager::Instance().RouteKey(vk)) return;
+        windows_->HandleHotkey(vk);
+    }
+}
+
+void SceneManager::OnDeviceLost() {
+    if (login_)    login_->OnDeviceLost();
+    if (hud_)      hud_->OnDeviceLost();
+    if (windows_)  windows_->OnDeviceLost();
+    if (world_)    world_->OnDeviceLost();
+    if (worldGeom_) worldGeom_->OnDeviceLost();
+}
+
+void SceneManager::OnDeviceReset() {
+    if (login_)    login_->OnDeviceReset();
+    if (hud_)      hud_->OnDeviceReset();
+    if (windows_)  windows_->OnDeviceReset();
+    if (world_)    world_->OnDeviceReset();
+    if (worldGeom_) worldGeom_->OnDeviceReset();
+}
+
+} // namespace ts2

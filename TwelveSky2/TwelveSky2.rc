@@ -1,0 +1,36 @@
+// TwelveSky2.rc — ressources Win32 du client reecrit.
+//
+// Contient les 9 curseurs (RT_GROUP_CURSOR) charges par mPOINTER
+// (CursorSet_LoadResources 0x4C0FA0, cf. src/Game/MiscManagers.h) via
+// LoadCursorA(hInstance, MAKEINTRESOURCE(id)). Ids et ordre IDENTIQUES au
+// binaire d'origine (verifie par decompilation Hex-Rays) :
+//   102 (0x66), 103 (0x67), 104 (0x68), 105 (0x69), 106 (0x6A),
+//   107 (0x6B), 108 (0x6C), 117 (0x75), 119 (0x77).
+//
+// Fichiers .cur extraits depuis l'image memoire deballee de TwelveSky2.exe
+// (RE/TS2_full_image.bin, TwelveSky2.exe sur disque etant encore protege
+// WinLicense et n'exposant pas ces ressources dans sa table PE statique) —
+// voir RE/extract_cursors.py pour la methode complete et les reserves sur
+// la correspondance id<->image (hypothese documentee dans ce script,
+// confirmee visuellement : formes coherentes fleche/bouche/epee/poing/
+// interdit typiques d'un jeu MMORPG).
+//
+// NE PAS renumeroter ces ids : ils sont lus par valeur numerique brute par
+// le code (CursorSet::LoadResources, cf. .cpp), pas par nom symbolique.
+
+// Icone de la fenetre principale (RT_GROUP_ICON id 101 = 0x65), chargee par
+// App::RegisterWindowClass via LoadIconA(hInst_, MAKEINTRESOURCEA(101)) — fidele
+// a WinMain 0x4611f6 (LoadIconA(hInstance, MAKEINTRESOURCE(0x65))). Extraite de la
+// section .rsrc du TwelveSky2.exe sur disque (RT_ICON/RT_GROUP_ICON y sont intacts,
+// contrairement aux curseurs) — cf. RE/extract_icon.py (32x32, 8bpp).
+101 ICON "resources/icon_101.ico"
+
+102 CURSOR "resources/cursors/cursor_102.cur"
+103 CURSOR "resources/cursors/cursor_103.cur"
+104 CURSOR "resources/cursors/cursor_104.cur"
+105 CURSOR "resources/cursors/cursor_105.cur"
+106 CURSOR "resources/cursors/cursor_106.cur"
+107 CURSOR "resources/cursors/cursor_107.cur"
+108 CURSOR "resources/cursors/cursor_108.cur"
+117 CURSOR "resources/cursors/cursor_117.cur"
+119 CURSOR "resources/cursors/cursor_119.cur"

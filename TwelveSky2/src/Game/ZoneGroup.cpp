@@ -1,0 +1,177 @@
+// Game/ZoneGroup.cpp — implémentation de la table zoneId -> groupe (voir ZoneGroup.h).
+//
+// Traduction fidèle du switch décompilé de World_ZoneIdToGroup EA 0x4DC260 (~1.4 Ko, 130
+// case labels + default). Chaque case est reproduite telle quelle ; aucune valeur n'a été
+// réordonnée ni fusionnée au-delà de ce que le compilateur d'origine avait déjà fusionné
+// (cases partageant un même bloc, ex. 122/295/296 -> 5).
+#include "Game/ZoneGroup.h"
+
+namespace ts2::game {
+
+int32_t ZoneIdToGroup(int32_t zoneId) {
+    switch (zoneId) {
+    case 1: return 1;
+    case 2: return 1;
+    case 3: return 1;
+    case 4: return 1;
+    case 6: return 2;
+    case 7: return 2;
+    case 8: return 2;
+    case 9: return 2;
+    case 11: return 3;
+    case 12: return 3;
+    case 13: return 3;
+    case 14: return 3;
+    case 37: return 1;
+    case 38: return 2;
+    case 43: return 2;
+    case 44: return 2;
+    case 45: return 2;
+    case 49: return 5;
+    case 50: return 2;
+    case 51: return 5;
+    case 52: return 2;
+    case 53: return 5;
+    case 54: return 4;
+    case 55: return 3;
+    case 56: return 2;
+    case 57: return 2;
+    case 58: return 2;
+    case 74: return 3;
+    case 75: return 1;
+    case 84: return 1;
+    case 85: return 2;
+    case 86: return 2;
+    case 87: return 2;
+    case 89: return 2;
+    case 90: return 1;
+    case 99: return 2;
+    case 100: return 2;
+    case 101: return 1;
+    case 102: return 1;
+    case 103: return 1;
+    case 120: return 5;
+    case 121: return 5;
+    case 122: return 5;
+    case 295: return 5;
+    case 296: return 5;
+    case 125: return 5;
+    case 126: return 5;
+    case 127: return 5;
+    case 128: return 5;
+    case 129: return 5;
+    case 130: return 5;
+    case 131: return 5;
+    case 132: return 5;
+    case 133: return 5;
+    case 134: return 5;
+    case 135: return 5;
+    case 136: return 5;
+    case 137: return 5;
+    case 138: return 3;
+    case 139: return 3;
+    case 140: return 6;
+    case 141: return 1;
+    case 142: return 2;
+    case 143: return 3;
+    case 146: return 5;
+    case 147: return 5;
+    case 148: return 5;
+    case 149: return 5;
+    case 150: return 5;
+    case 151: return 5;
+    case 152: return 5;
+    case 153: return 5;
+    case 154: return 5;
+    case 155: return 5;
+    case 156: return 5;
+    case 157: return 5;
+    case 158: return 5;
+    case 159: return 5;
+    case 160: return 5;
+    case 161: return 5;
+    case 162: return 5;
+    case 163: return 5;
+    case 164: return 5;
+    case 165: return 3;
+    case 166: return 3;
+    case 167: return 1;
+    case 170: return 2;
+    case 171: return 5;
+    case 172: return 5;
+    case 173: return 5;
+    case 174: return 5;
+    case 195: return 2;
+    case 196: return 2;
+    case 197: return 2;
+    case 198: return 2;
+    case 199: return 2;
+    case 200: return 7;
+    case 297: return 7;
+    case 298: return 7;
+    case 299: return 7;
+    case 201: return 7;
+    case 210: return 5;
+    case 211: return 5;
+    case 212: return 5;
+    case 213: return 5;
+    case 214: return 5;
+    case 215: return 5;
+    case 216: return 5;
+    case 217: return 5;
+    case 218: return 5;
+    case 219: return 5;
+    case 220: return 5;
+    case 221: return 5;
+    case 234: return 8;
+    case 275: return 3;
+    case 276: return 3;
+    case 277: return 3;
+    case 278: return 3;
+    case 279: return 3;
+    case 280: return 3;
+    case 281: return 3;
+    case 282: return 3;
+    case 283: return 3;
+    case 284: return 3;
+    case 285: return 3;
+    case 286: return 3;
+    case 287: return 3;
+    case 288: return 3;
+    case 289: return 3;
+    case 290: return 3;
+    case 291: return 1;
+    case 300: return 1;
+    case 301: return 1;
+    case 313: return 1;
+    case 314: return 1;
+    case 315: return 1;
+    case 316: return 1;
+    case 317: return 1;
+    case 318: return 1;
+    case 331: return 1;
+    case 332: return 1;
+    case 333: return 1;
+    case 334: return 1;
+    case 335: return 1;
+    case 336: return 1;
+    case 302: return 1;
+    case 303: return 1;
+    case 304: return 1;
+    case 305: return 1;
+    case 306: return 1;
+    case 307: return 1;
+    case 308: return 1;
+    case 319: return 9;
+    case 320: return 9;
+    case 321: return 9;
+    case 322: return 9;
+    case 323: return 9;
+    case 340: return 1;
+    case 341: return 1;
+    case 342: return 1;
+    default: return -1;
+    }
+}
+
+} // namespace ts2::game
