@@ -40,8 +40,15 @@ struct SObjectTexture {
 
 // Un "subset" de rendu d'un mesh (FVF skinné). Les tampons sont conservés
 // tels quels (octets) : ils sont uploadés directement dans des VB/IB D3D9.
+// Mesh_ReadFromMemory 0x40C380 (strides CONFIRMED byte-exact 4910/4910).
+// ex-VeryOldClient: SKIN2_FOR_GXD (mêmes strides VB76/IB6/skin32/idxCopy1 6/idxCopy2 6).
 struct SObjectSubset {
-    static constexpr size_t kVertexStride = 76; // VB : 76 o/sommet (FVF skinné)
+    // VB 76 o/sommet — ex-VeryOldClient: SKINVERTEX2_FOR_GXD (PLAUSIBLE, GAP G2/typage FVF) :
+    //   pos12 (mV3) + blendWeight16 (mW4) + boneIndex4 u8 (mB[4]) + normal/tangent/binormal 36
+    //   (3× mN) + uv8 (mT2). pos/poids/os prouvés IDA ; ordre N/T/B non résolu en statique.
+    static constexpr size_t kVertexStride = 76; // VB : 76 o/sommet (FVF skinné) — Model_DrawSkinnedSubset 0x40CA40
+    // skin 32 o/sommet — ex-VeryOldClient: SKINSHADOWVERTEX2_FOR_GXD (PLAUSIBLE, GAP G3/skinning
+    //   runtime) : pos12 + weight[4]16 + boneIndex[4] u8 4 ; Model_BuildShadowVolume 0x40DC70.
     static constexpr size_t kSkinStride   = 32; // 32 o/sommet (poids/os)
     static constexpr size_t kFaceStride   = 6;  // IB : 6 o/face (3× u16)
 
@@ -50,11 +57,13 @@ struct SObjectSubset {
     std::vector<uint8_t> vertexBuffer; // 76 * vertexCount
     std::vector<uint8_t> indexBuffer;  // 6 * faceCount
     std::vector<uint8_t> skin;         // 32 * vertexCount
-    std::vector<uint8_t> indexCopy1;   // 6 * faceCount (copie #1)
-    std::vector<uint8_t> indexCopy2;   // 6 * faceCount (copie #2)
+    std::vector<uint8_t> indexCopy1;   // 6 * faceCount (copie #1 : topologie)
+    std::vector<uint8_t> indexCopy2;   // 6 * faceCount (copie #2 : adjacence, Model_BuildShadowVolume 0x40DC70)
 };
 
 // Un mesh du modèle SOBJECT (Mesh_ReadFromMemory 0x40C380).
+// ex-VeryOldClient: SKIN_FOR_GXD / SKIN3::Load — noms seuls ; layout VeryOld DIFFÉRENT
+// (SKINEFFECT 120 + SKINSIZE 40). IDA gagne : en-tête fixe opaque de 372 o (CONFIRMED).
 struct SObjectMesh {
     static constexpr size_t kHeaderSize = 372; // 0x44 + 0x130 entre field0 et subsetCount
 
@@ -80,6 +89,10 @@ struct SObjectRawMesh {
     std::vector<uint8_t> decompressed; // rawSize octets (géométrie du mesh)
 };
 
+// Model_LoadFile 0x40E700 -> Model_ReadSubHeader 0x40E8E0 -> Model_LoadFromPak 0x40EA30.
+// ex-VeryOldClient: SOBJECT3_FOR_GXD.cpp (noms de struct seuls). CONFLICT crypto (IDA gagne) :
+// le GXCW du build VeryOld est ABSENT de la cible — l'en-tête `01 01 00 00` est lu EN CLAIR
+// puis un unique flux zlib (4910/4910 inflate plain OK). Aucun GXCW/XXTEA à porter (cf. Rosetta §4.B).
 class SObject {
 public:
     enum class Format {
@@ -144,6 +157,8 @@ private:
 
 // Bloc texture d'un part (Tex_LoadCompressedFromHandle 0x6A9CF0).
 // Contrairement au SOBJECT, l'image est décompressée ici.
+// ex-VeryOldClient: TEXTURE_FOR_GXD / CTEXTURE (CONFIRMED) — trailer 8 o = 2 u32
+// processMode/alphaMode ; rawSize == imgSize+8 vérifié.
 struct MTexture {
     bool     present    = false; // imgSize==0 => absente
     uint32_t imgSize    = 0;     // taille image DDS/TGA
@@ -155,10 +170,12 @@ struct MTexture {
     char     magic[4]   = {0,0,0,0}; // 4 premiers octets de l'image (FourCC / "DDS ")
 };
 
-// Géométrie décompressée d'un part (cf. MeshPart_Load / parse_geometry).
+// Géométrie décompressée d'un part (cf. MeshPart_Load 0x6AD160 / parse_geometry).
 struct MGeometry {
     static constexpr size_t kHeaderSize   = 0x78; // 120 o, copié dans part+132
     static constexpr size_t kMatrixStride = 64;   // matrice 4×4 (16 float)
+    // ex-VeryOldClient: MESHVERTEX_FOR_GXD (CONFIRMED) — 32 o = mV3 pos + mN3 normale + mT2 uv.
+    // Sommet MOBJECT statique, DISTINCT du SkinVertex 32 o SOBJECT (pos+poids+os).
     static constexpr size_t kVertexStride = 32;   // FVF XYZ | NORMAL | TEX1
     static constexpr size_t kFaceStride   = 6;    // 3× u16
 
@@ -186,6 +203,9 @@ struct MeshPart {
     std::vector<MTexture> mats;
 };
 
+// Model_LoadFromFile 0x6A3490 -> MeshPart_Load 0x6AD160 ; GXD_DecompressEntity 0x6A1A30.
+// ex-VeryOldClient: MOBJECT_FOR_GXD.cpp (CONFLICT crypto, IDA gagne) — VeryOld chiffre `{mMeshNum}`
+// en XXTEA ; la cible lit `nPart` EN CLAIR puis zlib par entité. Aucun magic `TEA1`.
 class MObject {
 public:
     // Charge et décode un .MOBJECT. Renvoie false en cas d'échec.

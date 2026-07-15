@@ -26,6 +26,7 @@ enum class MotionEnvelope {
 // Sur disque : quaternion de rotation (x,y,z,w) puis translation (x,y,z).
 // À l'exécution le client la transforme en matrice 4x4 (Motion_QuatToMatrix 0x6BB684
 // pour la rotation, puis m41/m42/m43 = translation).
+// ex-VeryOldClient: MOTION_MATRIX (CONFIRMED) — D3DXQUATERNION mRotate + D3DXVECTOR3 mTrans (28 o).
 struct MotionKeyframe {
     float qx = 0.f, qy = 0.f, qz = 0.f, qw = 0.f; // quaternion de rotation
     float tx = 0.f, ty = 0.f, tz = 0.f;           // translation
@@ -50,7 +51,8 @@ public:
     // keyframes d'une frame sont contiguës (palette d'os par frame).
     const std::vector<MotionKeyframe>& Keyframes() const { return keyframes_; }
 
-    // Accès indexé : index = frame * BoneCount() + bone.
+    // Accès indexé : index = frame * BoneCount() + bone (bloc frame-major).
+    // ex-VeryOldClient: MOTION_FOR_GXD.cpp mKeyMatrix[frame*bone] (CONFIRMED, indexation identique).
     // Lève AssetError (ByteReader.h) si (frame,bone) est hors limites.
     const MotionKeyframe& At(uint32_t frame, uint32_t bone) const;
 

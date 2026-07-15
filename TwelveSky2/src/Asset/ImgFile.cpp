@@ -27,7 +27,8 @@ bool ImgFile::Load(const std::string& path) {
     }
 
     try {
-        // Enveloppe [rawSize:u32][packedSize:u32][flux zlib].
+        // Enveloppe [rawSize:u32][packedSize:u32][flux zlib]. Asset_DecompressImg 0x53F5E0.
+        // ex-VeryOldClient: IMAGE_FOR_GXD (ZlibScope.h) — framing identique (CONFIRMED).
         payload_ = Zlib::Instance().DecodeEnvelope(data.data(), data.size(), /*headerExtra*/ 0);
     } catch (const std::exception& ex) {
         TS2_ERR("IMG : decompression echouee (%s) : %s", ex.what(), path.c_str());
@@ -35,6 +36,10 @@ bool ImgFile::Load(const std::string& path) {
     }
 
     // Classification du payload : texture DXT ? ou table de données ?
+    // cTexture_LoadFromImgFile 0x457A20 (UI 2D) / Tex_LoadCompressedDDS 0x6A2E80 (minimaps).
+    // ex-VeryOldClient: IMAGE_FOR_GXD — l'en-tête D3DXIMAGE_INFO VeryOld a un layout DIFFÉRENT ;
+    // IDA gagne (7 dwords GXD + FourCC). Détection par scan FourCC seule = CONFIRMED ; la
+    // MATÉRIALISATION pixels DXT/DDS reste un GAP (G5), câblée hors de cette couche.
     const uint8_t* p = payload_.data();
     const size_t n = payload_.size();
     const size_t head = n < 64 ? n : 64;
@@ -44,6 +49,11 @@ bool ImgFile::Load(const std::string& path) {
         }
     }
     // Table : chaîne ASCII imprimable à l'offset 4 (après le compteur XOR).
+    // GAP G1 (hors périmètre Asset/, relève de FRONT 9/GameData) : le décodage `count ^ MAGIC`
+    // + records à stride fixe n'est PAS appliqué ici. Cluster *_LoadImg 0x4C2680..0x4C8DA0,
+    // MAGIC propre par table (LevelTable 0x4C2680=0xE31, ITEM_INFO 0x4C3930=0x1CB3,
+    // SkillGrowth 0x4C4BC0=0xC7E, MONSTER 0x4C62A0=0x1583, 0x4C6BD0=0x1022, SOCKET 0x4C7390=0xFDB).
+    // Simple garde d'intégrité u32 (NI GXCW NI XTEA). Non couvert par VeryOldClient.
     if (n >= 8) {
         std::string name;
         for (size_t i = 4; i < n && i < 34; ++i) {

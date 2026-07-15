@@ -1,5 +1,7 @@
 // Asset/Texture.h — lecteur des textures diverses de TwelveSky2.
 // Traduction fidèle de RE/asset_parsers/textures.py (validé 203/205).
+// ex-VeryOldClient: TEXTURE_FOR_GXD (LoadFromTGA/LoadFromDDS) — noms/logique de lecture ; côté
+// cible = zlib seul, aucune substitution GXCW (LoadGXCW/Load2 = artefact VeryOld, CONFLICT §4.B).
 //
 // Trois familles chargées par le client (loaders IDA entre []) :
 //   (TGA)    .tga brut, en-tête TGA 18 o standard. Le client n'accepte au

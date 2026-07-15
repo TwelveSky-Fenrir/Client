@@ -29,6 +29,7 @@ std::vector<uint8_t> ReadBlob(ByteReader& r, uint64_t n) {
 
 // read_gxd_block : [rawSize u32][packedSize u32][zlib] -> octets décompressés.
 // Fait avancer r de 8 + packedSize octets. InflateTo valide len == rawSize.
+// GXD_DecompressEntity 0x6A1A30. ex-VeryOldClient: ZlibScope.h (framing partagé, CONFIRMED).
 std::vector<uint8_t> ReadGxdBlock(ByteReader& r, uint32_t& rawOut, uint32_t& packedOut) {
     const uint32_t rawSize = r.U32();
     const uint32_t packed  = r.U32();
@@ -43,6 +44,9 @@ std::vector<uint8_t> ReadGxdBlock(ByteReader& r, uint32_t& rawOut, uint32_t& pac
 
 // read_texture_block : [imageSize u32] ; si 0 -> absente (present=false).
 // Sinon [rawSize u32][packedSize u32][zlib] -> image(imageSize)+trailer(8o).
+// Tex_LoadCompressedFromHandle 0x6A9CF0. ex-VeryOldClient: TEXTURE_FOR_GXD (trailer 8 o) —
+// CONFIRMED : texture monde = zlib pur ; le LoadGXCW VeryOld (chemin SOBJECT3) ne s'applique
+// PAS au monde (IDA gagne, aucune substitution GXCW).
 TextureBlock ReadTextureBlock(ByteReader& r) {
     TextureBlock tb;
     const uint32_t imageSize = r.U32();
@@ -81,6 +85,8 @@ TextureBlock ReadTextureBlock(ByteReader& r) {
 }
 
 // read_anim_track : [present u32] ; si !=0 -> bloc GXD (8o en-tête + 28o*frames*tracks).
+// Anim_LoadQuatTrackFromHandle 0x6AAE20. ex-VeryOldClient: MOTION_MATRIX (record 28 o =
+// keyframe quaternion+translation, réutilisé, CONFIRMED).
 AnimTrack ReadAnimTrack(ByteReader& r) {
     AnimTrack at;
     const uint32_t present = r.U32();

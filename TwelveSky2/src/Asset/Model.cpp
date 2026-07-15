@@ -31,6 +31,7 @@ static std::vector<uint8_t> ReadEntity(ByteReader& r, uint32_t& raw, uint32_t& p
 
 // Bloc texture d'un mesh (Tex_ReadFromMemory 0x417D20). Le flux zlib n'est
 // PAS décompressé ici (fidèle au walker) : on conserve les octets bruts.
+// ex-VeryOldClient: TEXTURE_FOR_GXD.Load (2 u32 finaux = processMode/alphaMode).
 static void WalkTexture(ByteReader& b, SObjectTexture& t) {
     t.ddsSize = b.U32();          // a2[1] : 0 => absente
     if (t.ddsSize == 0) {
@@ -45,6 +46,8 @@ static void WalkTexture(ByteReader& b, SObjectTexture& t) {
 }
 
 // Lecteur d'un mesh (Mesh_ReadFromMemory 0x40C380).
+// ex-VeryOldClient: SKIN2_FOR_GXD (strides subset 76/6/32/6/6) ; en-tête VeryOld
+// SKIN_FOR_GXD/SKIN3 a un layout DIFFÉRENT — IDA gagne (en-tête opaque 372 o).
 static void WalkMesh(ByteReader& b, SObjectMesh& m, uint32_t index) {
     m.index  = index;
     m.field0 = b.U32();           // a1[0] : type/flag
@@ -91,6 +94,9 @@ static void WalkMesh(ByteReader& b, SObjectMesh& m, uint32_t index) {
         WalkTexture(b, m.extra[k]);
 }
 
+// Format A (Model_ReadSubHeader 0x40E8E0 -> Model_LoadFromPak 0x40EA30).
+// ex-VeryOldClient: SOBJECT3_FOR_GXD.cpp — CONFLICT crypto (IDA gagne) : en-tête `01 01 00 00`
+// lu EN CLAIR puis UN flux zlib ; le GXCW/XXTEA du build VeryOld est ABSENT (cf. Rosetta §4.B).
 bool SObject::parseFormatA(const std::vector<uint8_t>& data, const std::string& path) {
     format_ = Format::SObjectA;
     ByteReader r(data);
@@ -185,6 +191,7 @@ bool SObject::Load(const std::string& path) {
 // =====================================================================
 
 // Décode un bloc texture compressé (Tex_LoadCompressedFromHandle 0x6A9CF0).
+// ex-VeryOldClient: TEXTURE_FOR_GXD/CTEXTURE (trailer 8 o = processMode/alphaMode).
 static MTexture ReadMTexture(ByteReader& r) {
     MTexture t;
     t.imgSize = r.U32();
@@ -209,7 +216,8 @@ static MTexture ReadMTexture(ByteReader& r) {
     return t;
 }
 
-// Décode le blob géométrie décompressé d'un part (parse_geometry).
+// Décode le blob géométrie décompressé d'un part (MeshPart_Load 0x6AD160 / parse_geometry).
+// ex-VeryOldClient: MESHVERTEX_FOR_GXD (sommet 32 o = mV3 pos + mN3 normale + mT2 uv).
 static void ParseGeometry(const std::vector<uint8_t>& blob, MGeometry& g) {
     const size_t off0 = MGeometry::kHeaderSize;   // 0x78
     const size_t off1 = off0 + 16;                // 0x88 (après M,V,X,I)

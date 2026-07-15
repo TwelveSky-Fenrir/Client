@@ -271,6 +271,8 @@ bool AudioSystem::Init(HWND hwnd, DWORD coopLevel) {
     // Branche le décodeur Ogg Vorbis par défaut (miroir du décodage interne de
     // Snd_LoadOggToBuffers 0x6A8120) si aucun callback n'a été posé avant Init.
     // La garde `!HasLoadCallback()` préserve un callback de test installé en amont.
+    // ex-VeryOldClient: SOUNDDATA_FOR_GXD::LoadFromOGG décode inline (pas de callback) ; le
+    //   découpage en PcmLoadCallback est un choix ClientSource. PLAUSIBLE — buffer dsound identiquement alimenté.
     if (!HasLoadCallback())
         SetLoadCallback(&OggVorbisLoadCallback);
 

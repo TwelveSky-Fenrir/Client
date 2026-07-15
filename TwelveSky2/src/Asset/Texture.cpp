@@ -19,6 +19,8 @@ inline bool Pow2(uint32_t v) { return v > 0 && (v & (v - 1)) == 0; }
 inline uint8_t Scale5(uint32_t v) { return uint8_t((v << 3) | (v >> 2)); } // 5 bits -> 8 bits
 
 // Nombre d'octets d'un bloc DXT (DXT1=8, DXT2..5=16). 0 => non-DXT.
+// Tex_LoadFromFile 0x6A9910 (Format ∈ {DXT1/DXT3/DXT5}). ex-VeryOldClient: TEXTURE_FOR_GXD
+// (Load2/LoadGXCW « exige DXT ») — calcul mip + FourCC byte-exact (CONFIRMED).
 size_t DxtBlockBytes(uint32_t fourccVal) {
     switch (fourccVal) {
         case kFourCC_DXT1: return 8;   // "DXT1"
@@ -125,7 +127,9 @@ bool Texture::LoadDDS(const std::string& path) {
 }
 
 // ---------------------------------------------------------------------------
-// DDS (.SHADOW et DDS bruts) — cf. parse_dds()
+// DDS (.SHADOW et DDS bruts) — cf. parse_dds() ; Tex_LoadFromFile 0x6A9910 (rejette non-DXT).
+// ex-VeryOldClient: TEXTURE_FOR_GXD::LoadFromDDS (CONFIRMED) — heuristique alpha DXT1 VeryOld
+// (alphaMode = data[65] >= data[64] ? 1 : 2) recoupe la question ouverte IDA (u16 @128/130).
 // ---------------------------------------------------------------------------
 bool Texture::LoadFromDdsMemory(const uint8_t* b, size_t n) {
     Clear();
@@ -183,6 +187,11 @@ bool Texture::LoadFromDdsMemory(const uint8_t* b, size_t n) {
 
 // ---------------------------------------------------------------------------
 // TGA — cf. parse_tga() + décodage effectif des pixels en RGBA8 top-down.
+// Tex_LoadTgaConvert 0x417180 / Tex_LoadDDS 0x6A2680.
+// ex-VeryOldClient: TEXTURE_FOR_GXD::LoadFromTGA (CONFIRMED pour le format on-disk).
+// GAP G6 (PLAUSIBLE, faible) : la cible re-encode TGA 24/32 en DXT1/DXT3 via
+// D3DXCreateTextureFromFileInMemoryEx (+ DDS temp « HONGCHANGWOO ») ; ici on matérialise
+// RGBA8 (visuellement équivalent, bit-exactitude DXT non reproduite).
 // ---------------------------------------------------------------------------
 bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
     Clear();

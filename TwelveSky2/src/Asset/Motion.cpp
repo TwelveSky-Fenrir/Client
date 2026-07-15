@@ -17,6 +17,8 @@ constexpr size_t kKeyframeSize = 28; // 7 floats sur disque
 //   [count_A:u32][count_B:u32][ count_A*count_B keyframes de 28 o ]
 // Lève AssetError si le corps est incohérent (miroir de body_ok du parseur validé)
 // ou si le buffer est tronqué (via ByteReader).
+// Chiffrement MOTION = AUCUN (CONFIRMED, 4527/4527 inflate plain OK).
+// ex-VeryOldClient: MOTION2_FOR_GXD.cpp — « PAS de XXTEA. Zlib seul ».
 void ParseBody(const std::vector<uint8_t>& dec,
                uint32_t& frameCount, uint32_t& boneCount,
                std::vector<MotionKeyframe>& out) {
@@ -73,6 +75,7 @@ bool Motion::Load(const std::string& path) {
 
             if (version_ == 3) {
                 // MOTION3 : sous-en-tête (type=1, ver<=1, 2 o réservés) puis enveloppe zlib.
+                // Motion_ReadSubHeader 0x40B130. ex-VeryOldClient: MOTION2_FOR_GXD.cpp::LoadCompressedChunk.
                 envelope_ = MotionEnvelope::Motion3;
                 const uint8_t subType = data[7];
                 const uint8_t subVer  = data[8];
@@ -85,6 +88,7 @@ bool Motion::Load(const std::string& path) {
             } else if (version_ == 2) {
                 // MOTION2 : PAS de zlib. Le bloc [count_A][count_B][keyframes] commence
                 // à l'offset 7 (en-tête logique 15 o = offset 7 + les deux u32 de comptage).
+                // Motion_ReadFrames 0x40B1A0. ex-VeryOldClient: MOTION2_FOR_GXD.cpp::LoadUncompressedChunk.
                 envelope_ = MotionEnvelope::Motion2;
                 dec.assign(data.begin() + 7, data.end());
             } else {
@@ -92,6 +96,7 @@ bool Motion::Load(const std::string& path) {
             }
         } else {
             // ---- Enveloppe RAW sans magic : [rawSize:u32][packedSize:u32][flux zlib] ----
+            // Anim_ReadMotionStream 0x43CDB0. ex-VeryOldClient: ZlibScope.h (framing partagé).
             envelope_ = MotionEnvelope::Raw;
             version_  = 3;
             if (data[8] != 0x78) // en-tête zlib attendu (78 xx) à l'offset 8

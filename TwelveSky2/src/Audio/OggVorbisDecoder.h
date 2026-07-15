@@ -14,6 +14,14 @@
 //
 // Le PCM produit (entrelacé 16-bit stéréo 44100) alimente ensuite AudioSystem via le
 // callback PcmLoadCallback. Namespace ts2::audio.
+//
+// === Indicateur VeryOldClient (build différent/altéré — NOMS/idiomes seulement) ===
+//   ex-VeryOldClient: SOUNDDATA_FOR_GXD::LoadFromOGG (Core/GXD/SOUNDDATA_FOR_GXD.cpp) décode
+//   l'OGG inline (ov_open/ov_info/ov_pcm_total/ov_read/ov_clear) dans la MÊME méthode que
+//   l'upload buffer. ClientSource scinde décode/upload en deux unités (choix structurel, PLAUSIBLE).
+//   Différence d'IO assumée : VeryOld ouvre un FILE* (fopen "rb" + _setmode _O_BINARY(0x8000) + ov_open) ;
+//   ClientSource lit en mémoire (ov_open_callbacks). Détail d'IO non transposé, PCM identique.
+//   Statuts détaillés : Docs/TS2_AUDIO_ROSETTA.md §B.
 #pragma once
 #include <cstdint>
 #include <string>

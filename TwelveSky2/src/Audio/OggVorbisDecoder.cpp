@@ -75,6 +75,9 @@ long MemTell(void* datasource) {
 
 // ===========================================================================
 // DecodeOggVorbisToPcm16 — réplique du décodage de Snd_LoadOggToBuffers 0x6A8120.
+// ex-VeryOldClient: SOUNDDATA_FOR_GXD::LoadFromOGG — étapes de décodage récupérées :
+//   fopen("rb")+_setmode(_O_BINARY)+ov_open -> ov_info (garde 2ch/44100) -> tFileSize=4*ov_pcm_total(-1)
+//   -> boucle ov_read(scratch,4096,0,2,1) accumulée par memcpy -> ov_clear. CONFIRMED (cf. §B).
 // ===========================================================================
 bool DecodeOggVorbisToPcm16(const uint8_t* data, size_t size,
                             std::vector<uint8_t>& out, OggDecodeInfo* info) {
@@ -91,6 +94,8 @@ bool DecodeOggVorbisToPcm16(const uint8_t* data, size_t size,
     cb.tell_func  = &MemTell;
 
     // OggVF_Open 0x6BFB60 (ov_open) -> ov_open_callbacks sur mémoire.
+    // ex-VeryOldClient: LoadFromOGG — `fp=fopen(tFileName,"rb"); _setmode(_fileno(fp),0x8000); ov_open(fp,&vorbis,0,0)`
+    //   (ov_open prend possession du FILE*). PLAUSIBLE — divergence d'IO (FILE* vs mémoire), sémantique de décode identique.
     OggVorbis_File vf;
     int rc = ov_open_callbacks(&stream, &vf, nullptr, 0, cb);
     if (rc < 0) {
@@ -100,6 +105,7 @@ bool DecodeOggVorbisToPcm16(const uint8_t* data, size_t size,
 
     // Garde de format stricte : le binaire exige vi->channels == 2 ET vi->rate == 44100,
     // sinon `goto LABEL_44` -> échec (Snd_LoadOggToBuffers 0x6A8120).
+    // ex-VeryOldClient: LoadFromOGG `if (!info || info->channels != 2 || info->rate != 44100) GORET();`. CONFIRMED (garde bit-exacte).
     vorbis_info* vi = ov_info(&vf, -1);
     if (!vi || vi->channels != 2 || vi->rate != 44100) {
         if (vi)
@@ -111,6 +117,8 @@ bool DecodeOggVorbisToPcm16(const uint8_t* data, size_t size,
 
     // Pré-dimensionnement : ov_pcm_total(-1) frames * 4 octets (2 canaux x 2 o).
     // Le binaire échoue si le total vaut 0 (`if (!(4*v14)) goto LABEL_44`).
+    // ex-VeryOldClient: LoadFromOGG `tFileSize = 4 * ov_pcm_total(&vorbis, -1); tFileData = mem::alloc(tFileSize);`
+    //   (4 = nBlockAlign) ; NULL/total nul -> GORET. CONFIRMED (même calcul, même échec sur total nul).
     ogg_int64_t frames = ov_pcm_total(&vf, -1);
     if (frames <= 0) {
         TS2_WARN("OGG : ov_pcm_total nul ou invalide (%lld)",
@@ -127,11 +135,18 @@ bool DecodeOggVorbisToPcm16(const uint8_t* data, size_t size,
 
     // Boucle OggVF_Read 0x6BEAF0 (ov_read) : buffer 4096, bigendianp=0, word=2, sgned=1.
     //   n == 0 -> EOF (succès) ; n < 0 -> échec (le binaire abandonne sur négatif).
+    // ex-VeryOldClient: LoadFromOGG scratch = `mGXD->mSoundOutBufferForPCM[4096]` (tampon de
+    //   décode PARTAGÉ du singleton GXD). PLAUSIBLE — ici tampon local pile (réentrant/thread-safe),
+    //   équivalent fonctionnel sans effet observable.
     char scratch[4096];
     int  bitstream = 0;
     for (;;) {
+        // ex-VeryOldClient: `Size = ov_read(&vorbis, mGXD->mSoundOutBufferForPCM, 4096, 0, 2, 1, &bitstream)`. CONFIRMED (params identiques à l'octet près).
         long n = ov_read(&vf, scratch, static_cast<int>(sizeof(scratch)),
                          0 /*bigendianp*/, 2 /*word=16-bit*/, 1 /*sgned*/, &bitstream);
+        // ex-VeryOldClient: `(Size & 0x80000000) != 0` -> ov_read_error break ; `!Size` -> break EOF ;
+        //   sinon `memcpy(&tFileData[i], scratch, Size); i += Size`. CONFIRMED (négatif = échec, zéro = succès).
+        //   (VeryOld a une garde overflow `Size + i > tFileSize` -> échec ; non prouvée en IDA, non transposée : ici `vector` croissable.)
         if (n == 0) break;   // EOF
         if (n < 0) {         // erreur de flux -> échec fidèle
             TS2_WARN("OGG : ov_read erreur (%ld)", n);
@@ -144,6 +159,7 @@ bool DecodeOggVorbisToPcm16(const uint8_t* data, size_t size,
     }
 
     // OggVF_Clear 0x6BD4C0 (ov_clear).
+    // ex-VeryOldClient: `ov_clear(&vorbis)` (ferme aussi le FILE* possédé) puis `mem::release(&tFileData)`. CONFIRMED.
     ov_clear(&vf);
     return !out.empty();
 }
@@ -157,6 +173,8 @@ bool DecodeOggVorbisToPcm16(const std::vector<uint8_t>& data,
 // OggVorbisLoadCallback — signature ts2::audio::PcmLoadCallback.
 // ===========================================================================
 bool OggVorbisLoadCallback(const std::string& path, std::vector<uint8_t>& out) {
+    // ex-VeryOldClient: équivalent de la partie IO de SOUNDDATA_FOR_GXD::LoadFromOGG (VeryOld fopen le
+    //   FILE* dans LoadFromOGG même) ; ici séparé en lecture Asset + décode. PLAUSIBLE (découpage ClientSource).
     // Réutilise le lecteur Asset : lit le fichier brut + vérifie la signature « OggS ».
     std::vector<uint8_t> raw;
     if (!ts2::asset::ReadOggFile(path, raw)) {
