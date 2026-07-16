@@ -86,10 +86,26 @@ HCURSOR CursorSet::AnimateTick() const {
 
 // CursorSet::SetActiveSlot — fidèle à Util_SetClampedU8Field 0x4C1110 appliqué à
 // dword_8E714C (le champ `state`) : *this = a2 si a2 <= 8, sinon aucun effet.
+// Décompilation d'origine (vérifiée vague W10) :
+//   unsigned int *__thiscall Util_SetClampedU8Field(unsigned int *this, unsigned int a2)
+//   { if (a2 <= 8) { *this = a2; return this; } return result; }  // result non initialisé
+// Le clamp est DÉJÀ complet ici : ne PAS en ajouter un second.
 bool CursorSet::SetActiveSlot(uint32_t idx) {
     if (idx > 8) return false;
     state = static_cast<int32_t>(idx);
     return true;
+}
+
+// Cursors() — instance unique, miroir du global dword_8E714C 0x8E714C (voir le
+// commentaire de déclaration dans MiscManagers.h pour la preuve « cible unique »
+// par comptage : 157 sites Util_SetClampedU8Field + 4 sites de cycle de vie
+// (WinMain @0x461636, App_Init @0x461F8B, App_Shutdown @0x462587,
+// CrtInit_CursorSetThunk @0x7A51F3) = 161 = xrefs_to(0x8E714C)).
+// Statique locale : construite au 1er accès, détruite à la fin du process —
+// équivalent fonctionnel du .bss du binaire d'origine.
+CursorSet& Cursors() {
+    static CursorSet s_cursors;
+    return s_cursors;
 }
 
 // ===========================================================================

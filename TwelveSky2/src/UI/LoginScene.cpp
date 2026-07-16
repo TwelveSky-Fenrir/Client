@@ -140,6 +140,7 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     restoreBtn_.SetLabel("Restaurer"); // texte placeholder ; sprite réel slots 3086/3087/3088 (0x51E354)
     createConfirmBtn_.SetLabel("Confirmer"); createCancelBtn_.SetLabel("Annuler");
     deleteYesBtn_.SetLabel("Oui"); deleteNoBtn_.SetLabel("Non");
+    exitConfirmYesBtn_.SetLabel("Oui"); exitConfirmNoBtn_.SetLabel("Non"); // confirmation de sortie (ServerSelect)
     jobMinusBtn_.SetLabel("-");    jobPlusBtn_.SetLabel("+");
     factionMinusBtn_.SetLabel("-"); factionPlusBtn_.SetLabel("+");
     faceMinusBtn_.SetLabel("-");   facePlusBtn_.SetLabel("+");
@@ -200,12 +201,26 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     });
     deleteNoBtn_.SetOnClick([this] { deleteConfirmOpen_ = false; });
 
+    // Confirmation de SORTIE du jeu (ServerSelect, bouton d'action). Fidèle à
+    // UI_MsgBox_OnLButtonUp case 1 (action_id=1, EA 0x5C0BEC-0x5C0BFB) : "Oui" journalise
+    // "[ABNORMAL_END] ( 4 )" (Log_WriteLine aAbnormalEnd4 0x7BA830, EA 0x5C0BF6) puis pose
+    // g_QuitFlag=1 (EA 0x5C0BFB) — modélisé par PostQuitMessage(0), idiome projet de
+    // g_QuitFlag=1 (App.cpp:313 `if (quit_) break;` sur WM_QUIT ; cf. VK_ESCAPE / CharSelect).
+    // "Non" referme sans quitter (UI_ConfirmPrompt_Close : aucun case dans le switch).
+    exitConfirmYesBtn_.SetOnClick([this] {
+        exitConfirmOpen_ = false;
+        TS2_LOG("[ABNORMAL_END] ( 4 )");
+        PostQuitMessage(0);
+    });
+    exitConfirmNoBtn_.SetOnClick([this] { exitConfirmOpen_ = false; });
+
     // Textures réelles des boutons "Confirm"/"Cancel" (Docs/TS2_LOGIN_BUTTON_ASSETS.md §4) :
     // OK/Quitter du Login et Oui/Non de la confirmation de suppression — même paire de
     // sprites génériques réutilisée (doc §5). Repli sur le rect coloré déjà en place
     // (ApplyConfirmCancelSkin) si les fichiers sont réellement absents/illisibles.
     ApplyConfirmCancelSkin(okBtn_, exitBtn_);
     ApplyConfirmCancelSkin(deleteYesBtn_, deleteNoBtn_);
+    ApplyConfirmCancelSkin(exitConfirmYesBtn_, exitConfirmNoBtn_);
 
     // CharSelect écran Liste : chaque bouton de la colonne principale a ses PROPRES sprites
     // idle/hover/pressé dédiés dans l'atlas 001 (Docs/TS2_CHARSELECT_RE.md §4/§7, slots
@@ -487,9 +502,10 @@ void LoginScene::OnMouseUp(ts2::Scene scene, int x, int y) {
         return;
     }
     switch (scene) {
-    case ts2::Scene::Login:      LoginOnMouseUp(x, y);      break; // OK se valide au « up »
-    case ts2::Scene::CharSelect: CharSelectOnMouseUp(x, y); break; // boutons down-arme/up-valide
-    default: break; // ServerSelect agit au « down »
+    case ts2::Scene::ServerSelect: ServerSelectOnMouseUp(x, y); break; // Scene_ServerSelectOnMouseUp 0x519AC0 : confirme la sortie
+    case ts2::Scene::Login:        LoginOnMouseUp(x, y);        break; // OK se valide au « up »
+    case ts2::Scene::CharSelect:   CharSelectOnMouseUp(x, y);   break; // boutons down-arme/up-valide
+    default: break;
     }
 }
 
@@ -738,6 +754,11 @@ void LoginScene::ServerSelectRender() {
         serverSelectRender_.Render(ctx, state, mp.x, mp.y, singleServerMode);
         font_.EndBatch();
     }
+
+    // Overlay de confirmation de sortie (UI_MsgBox dword_1822438, ouvert par
+    // ServerSelectOnMouseUp) — dessiné PAR-DESSUS l'écran ServerSelect, comme
+    // DeleteConfirmRender pour CharSelect.
+    if (exitConfirmOpen_) ExitConfirmRender();
 }
 
 // Scene_ServerSelectOnMouseDown 0x519780 : la boucle de hit-test serveur réelle est
@@ -752,18 +773,52 @@ void LoginScene::ServerSelectRender() {
 // serveur plein ou dont le statut n'est pas encore arrivé. OnServerClicked persiste aussi
 // le choix (host.SaveLastServer -> Cfg_SaveLastServer) et écrit selectedServer (this[15374]).
 void LoginScene::ServerSelectOnMouseDown(int x, int y) {
-    std::lock_guard<std::mutex> lk(serverMutex_); // OnServerClicked lit les populations écrites par le worker
-    const int hi = static_cast<int>(serverState_.servers.size()) - 1;
-    const int lo = serverState_.selectedGroupBtnLo > 0 ? serverState_.selectedGroupBtnLo : 0;
-    for (int i = lo; i <= hi && i <= serverState_.selectedGroupBtnHi; ++i) {
-        if (RectContains(ServerRowRect(i), x, y)) {
-            if (game::OnServerClicked(serverState_, serverHost_, i)) {
-                loginSub_ = LoginSub::Init;      // ré-init de l'écran login
-                pending_  = ts2::Scene::Login;   // scene_id = 3 (le binaire écrit g_SceneMgr[0]=3 ici)
+    // Overlay de confirmation de sortie prioritaire (UI_MsgBox modal) : route le clic vers
+    // ses boutons Oui/Non, comme deleteConfirmOpen_ pour CharSelect.
+    if (exitConfirmOpen_) {
+        exitConfirmYesBtn_.OnMouseDown(x, y);
+        exitConfirmNoBtn_.OnMouseDown(x, y);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(serverMutex_); // OnServerClicked lit les populations écrites par le worker
+        const int hi = static_cast<int>(serverState_.servers.size()) - 1;
+        const int lo = serverState_.selectedGroupBtnLo > 0 ? serverState_.selectedGroupBtnLo : 0;
+        for (int i = lo; i <= hi && i <= serverState_.selectedGroupBtnHi; ++i) {
+            if (RectContains(ServerRowRect(i), x, y)) {
+                if (game::OnServerClicked(serverState_, serverHost_, i)) {
+                    loginSub_ = LoginSub::Init;      // ré-init de l'écran login
+                    pending_  = ts2::Scene::Login;   // scene_id = 3 (le binaire écrit g_SceneMgr[0]=3 ici)
+                }
+                return; // clic consommé (accepté ou refusé pour cause de population)
             }
-            return; // clic consommé (accepté ou refusé pour cause de population)
         }
     }
+    // Aucun serveur touché : armer le latch du bouton d'action/sortie (slot 4, ancre 891,701).
+    // Scene_ServerSelectOnMouseDown 0x519A79-0x519AAF : UI_ProjectSpriteToScreen(slot 4,891,701)
+    // puis Sprite2D_HitTest(unk_8E8DA0) -> this[3]=1 si le curseur est sur le sprite.
+    UiContext ctx;
+    ctx.screenW = screenW_;
+    ctx.screenH = screenH_;
+    serverSelectRender_.OnActionButtonMouseDown(x, y, ctx);
+}
+
+// Scene_ServerSelectOnMouseUp 0x519AC0 : au relâchement, si le bouton d'action était armé
+// (this[3]) ET que le curseur est toujours dessus, ouvre la confirmation de sortie
+// (UI_MsgBox_Open dword_1822438, action_id=1, corps = StrTable005_Get(g_LangId,1) EA
+// 0x519B31, appel EA 0x519B3E). Sinon rien. Quand l'overlay est déjà ouvert, route le clic
+// vers ses boutons Oui/Non.
+void LoginScene::ServerSelectOnMouseUp(int x, int y) {
+    if (exitConfirmOpen_) {
+        exitConfirmYesBtn_.OnMouseUp(x, y);   // "Oui" -> PostQuitMessage(0) (g_QuitFlag=1)
+        exitConfirmNoBtn_.OnMouseUp(x, y);    // "Non" -> exitConfirmOpen_ = false
+        return;
+    }
+    UiContext ctx;
+    ctx.screenW = screenW_;
+    ctx.screenH = screenH_;
+    if (serverSelectRender_.OnActionButtonMouseUp(x, y, ctx))
+        exitConfirmOpen_ = true; // clic confirmé sur le bouton -> ouvre la MsgBox de sortie
 }
 
 // ===========================================================================
@@ -1521,6 +1576,45 @@ void LoginScene::DeleteConfirmRender() {
             font_.DrawTextAt(deleteYesBtn_.Label().c_str(), deleteYesBtn_.X() + 20, deleteYesBtn_.Y() + 5, kColText);
         if (!deleteNoBtn_.HasAnySkin())
             font_.DrawTextAt(deleteNoBtn_.Label().c_str(), deleteNoBtn_.X() + 20, deleteNoBtn_.Y() + 5, kColText);
+        font_.EndBatch();
+    }
+}
+
+// Confirmation Oui/Non de SORTIE du jeu (ServerSelect, bouton d'action slot 4), overlay
+// au-dessus de l'écran ServerSelect. Mirroir de UI_MsgBox_Open(dword_1822438, 1,
+// StrTable005_Get(g_LangId,1), &String) ouvert par Scene_ServerSelectOnMouseUp 0x519B3E —
+// même dialogue partagé que la confirmation de suppression (le binaire réutilise
+// dword_1822438). "Oui" -> g_QuitFlag=1 (UI_MsgBox_OnLButtonUp case 1) ; "Non" referme.
+void LoginScene::ExitConfirmRender() {
+    const int bw = 300, bh = 110;
+    const int bx = screenW_ / 2 - bw / 2, by = screenH_ / 2 - bh / 2;
+    exitConfirmYesBtn_.SetBounds(bx + 40,      by + bh - 40, 64, 24);
+    exitConfirmNoBtn_.SetBounds(bx + bw - 104, by + bh - 40, 64, 24);
+    const POINT mp = CursorClient();
+    exitConfirmYesBtn_.OnMouseMove(mp.x, mp.y);
+    exitConfirmNoBtn_.OnMouseMove(mp.x, mp.y);
+
+    if (sprites_.Ready()) {
+        sprites_.Begin();
+        FillRect(0, 0, screenW_, screenH_, 0x88000000);       // voile modal
+        FillRect(bx - 2, by - 2, bw + 4, bh + 4, kColPanelEdge);
+        FillRect(bx, by, bw, bh, kColPanel);
+        // Oui/Non : sprites réels "Confirm"/"Cancel" réutilisés (cf. ApplyConfirmCancelSkin) —
+        // même paire générique que Login/CharSelect (le binaire réutilise dword_1822438).
+        exitConfirmYesBtn_.DrawSkin(sprites_);
+        exitConfirmNoBtn_.DrawSkin(sprites_);
+        sprites_.End();
+    }
+    if (font_.Ready()) {
+        font_.BeginBatch();
+        // Corps = StrTable005_Get(g_LangId, 1) (Scene_ServerSelectOnMouseUp EA 0x519B31,
+        // game::Str = StrTable005_Get fidèle) : texte localisé de confirmation de sortie.
+        const std::string body = game::Str(1);
+        font_.DrawTextAt(body.c_str(), bx + 24, by + 30, kColText);
+        if (!exitConfirmYesBtn_.HasAnySkin())
+            font_.DrawTextAt(exitConfirmYesBtn_.Label().c_str(), exitConfirmYesBtn_.X() + 20, exitConfirmYesBtn_.Y() + 5, kColText);
+        if (!exitConfirmNoBtn_.HasAnySkin())
+            font_.DrawTextAt(exitConfirmNoBtn_.Label().c_str(), exitConfirmNoBtn_.X() + 20, exitConfirmNoBtn_.Y() + 5, kColText);
         font_.EndBatch();
     }
 }

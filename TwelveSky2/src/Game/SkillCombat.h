@@ -31,6 +31,17 @@
 // Globals d'origine non modélisés dans GameState.h/SkillSystem.h et introduits ici
 // (structures locales, ne modifient AUCUN fichier existant) :
 //   g_SelfMorphNpcId   0x1675A98 (id d'action/posture/« morph » courant du joueur local)
+//     ⚠ NOM IDA TROMPEUR (établi vague W10, non corrigé ici pour ne pas rippler) : ce
+//     global est en réalité l'ID DE ZONE/CARTE COURANT, pas un morph. Trois preuves
+//     indépendantes : (a) World_LoadCurrentZoneModel 0x4DD6E0 le lit pour choisir le
+//     fichier Z%03d.WM à charger — cf. World/WorldMap.h:159 `SetCurrentZoneId(...)
+//     // g_SelfMorphNpcId 0x1675a98` et Scene/SceneManager.cpp:374 qui lui passe le
+//     zoneId ; (b) Combat_CanTargetOnMap 0x558740 @0x558759 fait
+//     `Map_GetPvpMode(g_MotionFrameRangeTable, g_SelfMorphNpcId)` puis branche sur
+//     291/138/139/165/166/324/342/270-274/54 = des CARTES (291 a d'ailleurs ses deux
+//     variantes Z291_1.WM/Z291_2.WM, cf. WorldMap::flagZ291Variant) ; (c) le préfixe
+//     `Map_` de la fonction qui le consomme. NE PAS propager le mot « morph » dans du
+//     code neuf : World/TerrainPicker.cpp lit `g_World.zoneId` pour cette valeur.
 //   dword_16747BC      (compteur de palier de renaissance : 0 normal, 4..6 renaissance
 //                        simple, >=7 renaissance élevée)
 //   g_MotionFrameRangeTable 0x14A9350 (table SoA 350 entrées, réutilisée par
@@ -61,6 +72,10 @@
 #include "Game/SkillSystem.h"
 #include "Game/StatFormulas.h"
 #include "Game/ClientRuntime.h"
+// world::CollisionSlot (ITerrainPicker::PickRayScreen, cf. G-PICK-03 ci-dessous). AUCUN
+// cycle : World/WorldMap.h est un module LEAF (n'inclut que <array>/<cstdint>/<string>/
+// <vector> + des déclarations anticipées d'asset), il n'inclut aucun header Game/.
+#include "World/WorldMap.h"
 
 namespace ts2::game {
 
@@ -233,16 +248,38 @@ struct SelectedCastSlot {
 // PÉRIMÈTRE gameplay pur) :
 //   IsPointBlocked  <- World_IsPointBlocked 0x540DA0 (+ MapColl_GetGroundHeight 0x697130)
 //   PickRayScreen   <- Terrain_PickRayScreen 0x699A80
-// TODO PRÉCIS : câbler ces deux méthodes côté moteur de rendu (Scene/Terrain).
+// IMPLÉMENTEUR RÉEL : ts2::world::TerrainPicker (World/TerrainPicker.h) — branché sur
+// WorldAssets (mailles .WM/.WJ réellement décodées). Avant la vague W10, cette interface
+// n'avait AUCUN implémenteur (G-PICK-06).
+//
+// ⚠ DEUX CORRECTIONS DE FIDÉLITÉ (vague W10, re-prouvées au désassemblage) :
+//
+// 1) `slot` (G-PICK-03) — le binaire N'INTERROGE PAS toujours la même maille de collision.
+//    Terrain_PickRayScreen est une méthode __thiscall dont le `this` EST la MapColl visée :
+//      Skill_CanCastAtCursor @0x540F83 : `mov ecx, offset dword_14A88E4` -> .WM  (Main)
+//                            @0x540FC4 : `mov ecx, offset dword_14A898C` -> .WJ  (WJ)
+//                            @0x54105F : `mov ecx, offset dword_14A88E4` -> .WM  (Main)
+//    Identité des deux mailles PROUVÉE par arithmétique d'offsets : 0x14A898C - 0x14A88E4
+//    = 0xA8, et World/WorldMap.h:90-94 fixe Main = base+0xA8 / WJ = base+0x150 (écart 0xA8
+//    lui aussi) -> base g_GameWorld = 0x14A883C, donc dword_14A88E4 == Main (.WM) et
+//    dword_14A898C == WJ (.WJ). Corroboré par xrefs_to : 24 refs sur 0x14A88E4 (maille
+//    principale de tout le jeu) contre 3 sur 0x14A898C.
+//
+// 2) `twoSide` (ex-`wantEntityHit`, MISNOMER corrigé) — le 6e argument de
+//    Terrain_PickRayScreen 0x699A80 n'a rien d'un « veut toucher une entité » : il est
+//    transmis TEL QUEL et UNIQUEMENT à MapColl_RaycastNearest 0x6960C0 @0x699BA9 comme
+//    dernier paramètre, dont World/WorldMap.h:319-321 établit le rôle = `twoSide`
+//    (accepter les faces orientées des DEUX côtés). Le renommer ici supprime un faux sens
+//    qui aurait égaré tout futur implémenteur.
 // ---------------------------------------------------------------------------
 struct ITerrainPicker {
     virtual ~ITerrainPicker() = default;
     virtual bool IsPointBlocked(const float pos[3]) = 0;
-    // wantEntityHit==false -> mode « picking libre » (dernier arg 0 côté binaire) ;
-    // wantEntityHit==true  -> mode « picking verrouillé sur cible » (dernier arg 1).
+    // `slot`    : maille de collision interrogée (Main = .WM, WJ = .WJ) — cf. §1 ci-dessus.
+    // `twoSide` : 6e arg d'origine de Terrain_PickRayScreen (0 ou 1) — cf. §2 ci-dessus.
     // outPos reçoit le point 3D touché. Retourne false si rien n'est touché.
-    virtual bool PickRayScreen(int screenX, int screenY, bool wantEntityHit,
-                                float outPos[3]) = 0;
+    virtual bool PickRayScreen(int screenX, int screenY, world::CollisionSlot slot,
+                                bool twoSide, float outPos[3]) = 0;
 };
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@
 #include "Game/GameDatabase.h"        // GetMonsterInfo / MonsterInfo (resolution 1-based)
 #include "Game/StaticNpcLoader.h"
 #include "Game/EntityLifecycleTick.h" // ResetMonsterTickExt/ResetNpcTickExt (cf. TODO ci-dessous)
+#include "Game/PlayerCmdController.h" // g_PlayerCmd : Player_ResetCombatState 0x50F6A0 (@0x4648f2)
 #include "Game/ClientRuntime.h"       // g_Client : miroirs self (dword_1675884/1675B00) + longue traine Var/VarF
 #include "Net/SendPackets.h"          // Net_SendVaultReq_207/Op23 + GlobalNetClient (Pkt_EnterWorld @0x4643d1..)
 
@@ -58,8 +59,10 @@ inline void     WrI32(uint8_t* b, size_t o, int32_t  v) { std::memcpy(b + o, &v,
 inline void     WrF32(uint8_t* b, size_t o, float    v) { std::memcpy(b + o, &v, 4); }
 
 // ---- offsets JOUEUR (relatifs au body de 600 o).
-constexpr size_t kPMoveState   = 216;  // bloc move-state (72 o)
-constexpr size_t kPMoveStateLen = 72;
+// NB : kPMoveState / kPMoveStateLen ont DEMENAGE dans Game/EntityManager.h (ils sont
+// desormais partages avec Game/PlayerCmdController.*, qui lit/ecrit le meme bloc =
+// g_SelfMoveStateBlock 0x1687324). Ne pas les redeclarer ici : le nom du header serait
+// masque et les deux definitions deviendraient ambigues.
 constexpr size_t kPActionState = 220;  // move-state+4 — ex-VeryOldClient: aType (ACTION_INFO ; aType/aSort permutable, Rosetta §7)
 constexpr size_t kPAnimFrame   = 224;  // move-state+8 — ex-VeryOldClient: aFrame
 constexpr size_t kPPosX        = 228;  // move-state+12 -> flt_1687330 — ex-VeryOldClient: aLocation[0] (Y/Z suivent)
@@ -393,11 +396,20 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
         // et met g_SceneSubState=3 ; effets de scene hors perimetre entite.
         if (IsSelf(e)) {
             // Player_ResetCombatState 0x50F6A0 (@0x4648f2, self uniquement) : reset du bloc
-            // combat/action de g_PlayerCmdController. Ce bloc n'est PAS modelise dans les
-            // fichiers editables (GameState.h read-only). Ses effets VISIBLES sont deja couverts
+            // combat/action de g_PlayerCmdController. Ses effets VISIBLES restent couverts
             // ailleurs (play BGM gate g_BgmEnabled 0x50F76E -> SceneManager::LoadZoneBgm ;
-            // Net_SendOp64 poll 0x50F746 -> host.SendPendingTargetPoll InGameTickFlow). Le reset
-            // interne n'a aucun consommateur ClientSource. TODO ancre : Player_ResetCombatState 0x50F6A0.
+            // Net_SendOp64 poll 0x50F746 -> host.SendPendingTargetPoll InGameTickFlow).
+            //
+            // Le latch « commande en vol » (+51600 = dword_1675B00) A DESORMAIS un
+            // consommateur : la couche d'intention Game/PlayerCmdController.* le pose en
+            // emettant l'op 0x0F. L'ancien commentaire « le reset interne n'a aucun
+            // consommateur ClientSource » est donc PERIME. Ce reset-ci couvre l'ENTREE
+            // DANS LE MONDE (gate `var_2B0 == 0` @0x4648df, branche nouveau slot) ;
+            // l'acquittement PAR PAQUET du jeu courant, lui, est le `mode 3 + self` plus
+            // bas dans cette meme fonction (@0x464BF0, ligne ~492) — les deux ecrivent le
+            // MEME slot (g_Client.Var(0x1675B00)), conformement au binaire qui n'a qu'un
+            // stockage. xrefs_to(0x50F6A0) = 1 SEUL appelant, exactement ici (@0x4648f2).
+            g_PlayerCmd.ResetCombatState();
             // EQUIVALENT de l'appel cGameData_LoadZoneNpcInfo(g_LocalPlayerSheet) @0x4648fc
             // (garde `if (!i)` de Pkt_SpawnCharacter 0x4646C0) : repeuple les PNJ de decor
             // statiques de la zone courante. Cf. Game/StaticNpcLoader.h pour le detail ; le
@@ -479,6 +491,12 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
         // self, spawn local : dword_1675B00=0 @0x464bf0 (latch consomme par ~20 sites —
         // Scene_InGameUpdate/UI_GameHud_ProcNet/Player_CastSkill…). Meme motif que
         // Net/GameHandlers_Entity.cpp:48 (opcode 0x15).
+        //
+        // C'EST L'ACQUITTEMENT PAR PAQUET DE L'OP 0x0F (chemin nominal) : dword_1675B00
+        // == g_PlayerCmdController+51600 (0x1669170+0xC990) == le latch pose par les
+        // builders d'intention de Game/PlayerCmdController.* — c.-a-d. le MEME slot que
+        // g_PlayerCmd.Busy(), pas un miroir. Cette ecriture etait jusqu'ici SANS LECTEUR ;
+        // elle est ce qui debloque le joueur apres chaque attaque/competence.
         g_Client.Var(0x1675B00) = 0;
     }
     // mode==2 : aucun effet sur le slot existant (fidele au handler d'origine).

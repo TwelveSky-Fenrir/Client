@@ -175,8 +175,24 @@ void ChatWindow::SyncFromMessageLog(const game::MessageLog& log) {
                 }
                 break;
             case game::MsgKind::Floating:
+                // HUD_ShowFloatingMessage 0x5AEEC0 : arme le slot `floatType` (0..12 ;
+                // garde signee @0x5AEECD/@0x5AEED3 rejouee par Show, donc une valeur hors
+                // bornes est ignoree silencieusement comme dans l'original @0x5AEED5).
+                // Les producteurs vivants emettent 0,1,2,3,5,10 (Net/WorldEntityDispatch.cpp,
+                // Net/GameVarDispatch.cpp, Net/GameHandlers_*.cpp).
+                //
+                // TODO [ancre 0x5AEF7A] : le `subType` (arg_4) est passe a 0. Il ne sert
+                // QU'A choisir le son (sous-switch @0x5AEFF5..) — sans effet sur le rendu —
+                // et game::MessageLine ne le transporte pas : MessageLog::Floating
+                // (Game/ClientRuntime.cpp L36) jette deja son parametre `flag` via
+                // `int /*flag*/`. A recabler quand le son sera porte.
+                // TODO [ancre 0x5AEF26] : `text2` (2e ligne, lue par le seul type 12
+                // @0x5AFCFF) est absent de game::MessageLine. Sans effet observable : aucun
+                // producteur de type 12 cote ClientSource.
+                notices_.Show(l.floatType, 0, l.text);
+                break;
             default:
-                break; // bannieres HUD flottantes : hors perimetre fenetre de chat
+                break;
         }
     }
 
@@ -444,6 +460,14 @@ bool ChatWindow::OnChar(char c) {
 //   tabsY   = screenH-40  (§13b, 5 onglets de canal)
 //   inputY  = screenH-20  (saisie)
 void ChatWindow::Render(gfx::SpriteBatch& sprites, gfx::Font& font) {
+    // Notices flottantes du HUD (HUD_RenderFloatingMessages 0x5AF4C0) AVANT tout le
+    // reste : ordre fidele a UI_RenderAllDialogs 0x5AE2D0, qui appelle
+    // HUD_RenderFloatingMessages @0x5AE5A7 (this = dword_1821D58) PUIS
+    // UI_SysMsgList_Render 0x5AEC80 @0x5AE5B9 (this = dword_1822350, = la liste systeme
+    // dessinee plus bas). Composant autonome : gere ses propres passes sprite/police,
+    // d'ou l'appel hors des lots ouverts ci-dessous.
+    notices_.Render(sprites, font, now_, screenW_, screenH_);
+
     const int total   = static_cast<int>(chat_.size());
     const int visible = expanded_ ? kVisibleLines : kCollapsedLines;
     const int maxScroll = std::max(0, total - visible);

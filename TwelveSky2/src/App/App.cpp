@@ -16,6 +16,8 @@
 #include "Audio/AudioSystem.h"    // DirectSound8 (init device, volume maître)
 #include "Gfx/GxdRenderer.h"      // g_GxdRenderer : partage le device D3D9 de g_GfxRenderer
 #include "Net/Rng.h"              // net::DefaultRng() — semé ici, cf. App_Init 0x461C20 EA 0x461C3E
+#include "Net/ClientState.h"      // net::g_MorphInProgress = g_MorphInProgress 0x1675A88 (garde @0x50B857)
+#include "Game/MapWarp.h"         // game::kSelfActionStateOffset -> g_SelfActionState[0] 0x1687328 (@0x50AE17)
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -377,6 +379,24 @@ bool App::Init() {
             return false;
         }
     }
+    // GX-DEV-01 — Gfx_HandleDeviceLostReset 0x69DD40 : observateurs de perte/restauration du
+    // device D3D9. Dans le binaire, g_GfxRenderer 0x7FFE18 POSSÈDE directement l'ID3DXEffect
+    // (+620), l'ID3DXFont (+612) et l'ID3DXSprite (+608) et appelle lui-même leurs OnLostDevice
+    // (@0x69DE3E) puis, après le Reset (@0x69DE55), leurs OnResetDevice (@0x69DE9B). Ici ces
+    // objets D3DX appartiennent aux couches hautes (SceneManager -> LoginScene/GameHud/
+    // GameWindows/WorldRenderer -> Font/SpriteBatch), d'où l'indirection par observateur.
+    // Point d'attache prescrit par Gfx/Renderer.h:42-52. SANS cet enregistrement, onLost_/
+    // onReset_ restent nullptr et TOUTE la chaîne SceneManager::OnDeviceLost/OnDeviceReset
+    // (SceneManager.cpp:1356/1364) est du CODE MORT : après une perte de device (Alt+Tab en
+    // plein écran, changement de résolution) les ID3DXSprite/ID3DXFont ne sont jamais notifiés
+    // et la restauration est impossible. HandleDeviceLost() est appelée inconditionnellement en
+    // tête de chaque frame par Renderer::BeginFrame (Renderer.cpp:238), miroir des 8 xrefs de
+    // Gfx_HandleDeviceLostReset en tête des Scene_*Render.
+    renderer_.SetDeviceCallbacks(
+        [](void* u) { static_cast<SceneManager*>(u)->OnDeviceLost();  },   // 0x69DE3E (avant Reset)
+        [](void* u) { static_cast<SceneManager*>(u)->OnDeviceReset(); },   // 0x69DE9B (après Reset)
+        &scene_);
+
     // Audio DirectSound8 (Gfx_ZeroInitRenderer 0x69B980, appelé depuis Gfx_InitDevice).
     // Non bloquant : sur échec, le jeu tourne muet (comme l'original, flag dispo=0).
     if (audio::Audio().Init(hwnd_))
@@ -527,9 +547,123 @@ bool App::Init() {
     g_playerInput.SetSceneKeyDownHook([this](int dik){
         scene_.OnKeyDown(dik);   // cSceneMgr_OnKeyDown 0x517F80 (LABEL_240 0x50DDE4)
     });
-    // Prédicats laissés par défaut (renvoient false) tant que g_UIEditBoxMgr 0x1668FC0 /
-    // g_SelfCharInvBlock 0x1673170 / g_MorphInProgress 0x1675A88 ne sont pas modélisés
-    // côté UI/Game. TODO [ancre 0x1668FC0/0x1673170/0x1675A88] : brancher ces prédicats.
+    // INPUT-09 — g_MorphInProgress 0x1675A88 : les 6 chemins de mouvement de
+    // Camera_UpdateFromInput testent `if (g_MorphInProgress == 1) return;` (@0x50B857,
+    // @0x50B8D0, @0x50B9B2, @0x50BA6E, @0x50BB23, @0x50BB63) — comparaison LITTÉRALE à 1,
+    // reproduite telle quelle. net::g_MorphInProgress (Net/ClientState.h:18) est le miroir
+    // vivant de ce global : remis à 0 par les 12 cas de fin de morph de
+    // Net/GameHandlers_Misc.cpp:259-270 et déjà lu par InventoryWindow/SkillTreeWindow/
+    // CharacterStatsWindow. Sans ce prédicat, morphInProgress_ était un std::function vide
+    // -> le WASD restait émis PENDANT un morph, contrairement à l'original.
+    g_playerInput.SetMorphInProgressPredicate([]{
+        return net::g_MorphInProgress == 1;   // 0x1675A88, cf. 0x50B857
+    });
+    // Prédicats NON câblés, faute de preuve ou de modèle (règle : ne pas deviner) :
+    //  - textInputActive_ (g_UIEditBoxMgr 0x1668FC0, garde @0x50B7FA) : exige un
+    //    SceneManager::IsTextInputFocused() reflétant « un EDIT in-game a le focus » (au
+    //    minimum GuildWindow.nameEdit_). Gater sur ChatWindow.Focused() seul serait un no-op
+    //    (le clavier chat n'est pas routé en InGame). TODO [ancre 0x1668FC0] — front Scene.
+    //  - selfBlocked_ (g_SelfCharInvBlock 0x1673170) : SÉMANTIQUE NON LEVÉE. Camera_
+    //    UpdateFromInput @0x50B810 exige g_SelfCharInvBlock[0]==0 pour le bloc WASD, alors que
+    //    Game_OnHotkey @0x537347 exige l'INVERSE (`cmp ds:g_SelfCharInvBlock, 0 / jnz`) pour
+    //    les hotkeys : les deux modes sont mutuellement exclusifs, ce qui suggère un drapeau
+    //    de validité/mode plutôt qu'un « blocage ». Câbler sans lever la polarité inverserait
+    //    silencieusement le comportement. TODO [ancre 0x1673170] : confronter les writers.
+
+    // --- Câblage des hooks souris (App_WndProc 0x461930) ----------------------------------
+    // Dans le binaire, le WndProc appelle DIRECTEMENT Camera_ResetView (@0x461AF0),
+    // Camera_MouseWheelZoom (@0x461B3F) et Input_OnRButtonDown/Up (@0x461A8F/@0x461AC3).
+    // Côté ClientSource, InputSystem expose ces points d'appel sous forme de hooks
+    // (Input/InputSystem.h:211-217) alimentés par input_.ProcessMessage depuis HandleMessage ;
+    // le SetCapture/ReleaseCapture du WndProc (@0x461A68/@0x461A9B) est déjà fait par
+    // InputSystem::OnRButtonDown/Up. Sans les assignations ci-dessous, onMDown_/onWheel_/
+    // onRDown_/onRUp_ restaient nullptr : bouton du milieu, molette et clic DROIT inertes.
+
+    // WM_MBUTTONDOWN 0x207 -> Camera_ResetView 0x50AED0 (@0x461AF0). Le nom IDA est TROMPEUR :
+    // la fonction ne « reset » pas la caméra, elle MIROITE l'œil à 180° autour de la cible.
+    input_.SetMButtonDownCallback([this](int, int) {
+        // Garde 1 @0x50AEE9 : g_SceneMgr == 6 && g_SceneSubState == 4.
+        if (scene_.Current() != Scene::InGame || g_SceneSubState != 4)
+            return;
+        // Garde 2 @0x50AF09 : `g_SelfCharInvBlock[0] || !this[2] || g_CamMode == 1`. Ce n'est
+        // PAS un bail-out : le miroir a lieu QUAND cette condition est VRAIE. g_SelfCharInvBlock
+        // 0x1673170 (polarité non levée, cf. ci-dessus) et g_CamMode 0x1668F6C (== g_CameraCtrl+12)
+        // ne sont pas modélisés ici ; mouseLook (g_CameraCtrl+8) l'est. Avec les valeurs par
+        // défaut du binaire (blocked=0, camMode=0, mouseLook=0 — Input_ResetMouseState 0x50E000),
+        // la condition se réduit à `!mouseLook`, ce qui est fidèle À CET ÉTAT.
+        // TODO [ancre 0x50AF09] : ajouter g_SelfCharInvBlock/g_CamMode une fois modélisés.
+        if (g_playerInput.State().mouseLook != 0)
+            return;
+        // Miroir @0x50AF3D/@0x50AF5B : œil' = (2*cible.x - œil.x, œil.y INCHANGÉ,
+        // 2*cible.z - œil.z), cible inchangée (v7/v8/v9). Nier les composantes horizontales de
+        // (œil - cible) en préservant la verticale équivaut EXACTEMENT, dans le modèle sphérique
+        // de gfx::Camera (Eye() = cible + d*(cos p*sin y, sin p, cos p*cos y)), à yaw += PI avec
+        // pitch ET distance inchangés. Suivi de Cam_SetLookAt @0x50AF8D + Camera_SetEyeTarget
+        // @0x50AFC1, que la reconstruction de l'œil par Camera::Eye() couvre.
+        camera_.SetYaw(camera_.Yaw() + D3DX_PI);
+    });
+
+    // WM_MOUSEWHEEL 0x20A -> Camera_MouseWheelZoom 0x50B460 (@0x461B3F, arg = SHIWORD(wParam)).
+    input_.SetMouseWheelCallback([this](int delta) {
+        // Vide l'accumulateur mouse_.wheel d'InputSystem (un seul WM_MOUSEWHEEL par callback :
+        // la valeur consommée == `delta`). Sans lecteur, il croîtrait indéfiniment. On garde
+        // `delta` car c'est l'argument EXACT passé par le WndProc @0x461B3F.
+        input_.ConsumeWheel();
+        // Garde @0x50B479 : g_SceneMgr == 6 && g_SceneSubState == 4 — AUCUNE autre garde
+        // (ni blocked, ni mouse-look), contrairement aux autres chemins caméra.
+        if (scene_.Current() != Scene::InGame || g_SceneSubState != 4)
+            return;
+        // @0x50B490 : v8 = (double)a2 * this[19], où this+76 = 0.1 (Camera_Init @0x50AC4F).
+        // a2 est le delta BRUT de WM_MOUSEWHEEL (±120 par cran), PAS un nombre de crans :
+        // 120 * 0.1 = 12 unités de distance par cran. Puis Cam_ClampDistance(g_GfxRenderer, v8)
+        // @0x50B49F, dont l'effet net (relu à 0x69CE00 : si |œil-cible| > a2, alors
+        // œil -= normalize(œil-cible) * a2) est exactement `distance -= a2` == Camera::Zoom(a2).
+        // Le snap aux bornes 25/150 (this[21]/this[22], @0x50B641/@0x50B7C5) est couvert par le
+        // ClampDistanceInternal de Camera::Zoom.
+        // ⚠ On N'UTILISE PAS gfx::Camera::ZoomByWheel : elle divise d'abord par 120
+        //   (Camera.cpp:98) puis multiplie par 0.1 -> 0.1 unité/cran, soit 120x TROP LENT vs
+        //   @0x50B490. Défaut du front Gfx, signalé ; contourné ici sans y toucher.
+        camera_.Zoom(static_cast<float>(delta) * gfx::Camera::kWheelZoomStep);
+    });
+
+    // WM_RBUTTONDOWN 0x204 / WM_RBUTTONUP 0x205 -> Input_OnRButtonDown 0x50ADB0 /
+    // Input_OnRButtonUp 0x50AE40 (@0x461A8F / @0x461AC3).
+    // ÉTAT : la garde d'état (RButtonGateOpen, miroir @0x50AE17/@0x50AEA7) est reproduite et
+    // s'exécute, mais le DISPATCH TERMINAL est BLOQUÉ hors de ce front — ni
+    // ts2::ui::UIManager::RouteRButtonDown/Up (UIManager.h:206-209 n'expose que RouteMouseDown/
+    // RouteMouseUp/RouteKey, sans paramètre de bouton) ni ts2::SceneManager::OnRButtonDown/Up
+    // (SceneManager.h:90-93 n'expose que OnLButtonDown/OnLButtonUp/OnChar/OnKeyDown) n'existent.
+    // Les écrire ici ne compilerait pas et sort du périmètre de ce front (fichiers non possédés).
+    // Les hooks SONT néanmoins assignés (ils s'exécutent à chaque clic droit) et la garde est
+    // exacte : il ne reste qu'UNE ligne à substituer dans chacun des deux corps ci-dessous dès
+    // que le front Scene aura ajouté ses méthodes (cf. rapport de front, wiringTodo).
+    input_.SetRButtonDownCallback([this](int x, int y) {
+        // 0x50AE17 : hors garde, le clic droit est INTÉGRALEMENT avalé (ni UI ni scène).
+        if (!RButtonGateOpen())
+            return;
+        (void)x; (void)y;
+        // Chaîne d'origine : `if (!UI_RouteRButtonDown(a1,a2)) cSceneMgr_OnRButtonDown(...)`
+        // (@0x50AE2F) — premier consommateur gagne. Le corps scène est un no-op FIDÈLE
+        // (cSceneMgr_OnRButtonDown 0x517EA0 n'appelle, en scène 6, que les vides 0x537310/
+        // 0x537320) : toute la valeur comportementale est dans le routeur UI 0x5AD5D0.
+        // TODO [ancre 0x50AE2F] : le front Scene doit exposer `void SceneManager::OnRButtonDown
+        // (int x, int y)` (à côté de OnLButtonDown, SceneManager.h:90) qui, en interne, tente
+        // d'abord UIManager::RouteRButtonDown (miroir UI_RouteRButtonDown 0x5AD5D0, chaîne
+        // « premier consommateur gagne ») puis retombe sur le no-op fidèle 0x517EA0. La
+        // décomposition UI-puis-scène appartient à SceneManager, qui SEUL possède le UIManager
+        // (App n'y a aucun accès : SceneManager.h n'expose ni UI() ni Chat()).
+        // Une fois la méthode ajoutée, remplacer les deux (void) ci-dessus par :
+        //     scene_.OnRButtonDown(x, y);
+    });
+    input_.SetRButtonUpCallback([this](int x, int y) {
+        if (!RButtonGateOpen())   // 0x50AEA7 : garde IDENTIQUE à celle du RButtonDown
+            return;
+        (void)x; (void)y;
+        // TODO [ancre 0x50AEBF] : symétrique du RButtonDown ci-dessus — le front Scene doit
+        // exposer `void SceneManager::OnRButtonUp(int x, int y)` (UI_RouteRButtonUp 0x5ADA90
+        // puis no-op fidèle cSceneMgr_OnRButtonUp 0x517F10). Remplacer alors les (void) par :
+        //     scene_.OnRButtonUp(x, y);
+    });
 
     // mEDITBOX (0x4623b0) : UI_CreateEditBoxes 0x50E460 — crée 21 EDIT Win32 natifs
     // sous-classés. DÉVIATION ASSUMÉE (documentée dès Docs/TS2_CLIENT_SHELL.md) :
@@ -802,8 +936,19 @@ bool App::CreateGameWindow() {
         AdjustWindowRect(&r, style, FALSE);
         const int ww = r.right - r.left;
         const int wh = r.bottom - r.top;
-        x = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2;
-        y = (GetSystemMetrics(SM_CYSCREEN) - wh) / 2;
+        // CFG-02 — ORDRE des divisions entières, fidèle au désassemblage de WinMain 0x4609C0.
+        // L'original fait DEUX divisions tronquées SÉPARÉES, pas une seule sur la différence.
+        // Y (@0x4613e9) : GetSystemMetrics(SM_CYSCREEN=1) puis `cdq/sub eax,edx/sar ecx,1`
+        //   (= SM_CY/2), puis rc.bottom-rc.top puis `cdq/sub eax,edx/sar eax,1` (= wh/2), puis
+        //   `sub ecx,eax` -> Y = SM_CY/2 - wh/2.
+        // X (@0x46140c) : idem avec SM_CXSCREEN=0 et rc.right-rc.left -> X = SM_CX/2 - ww/2.
+        // (`cdq/sub eax,edx/sar 1` = idiome de division signée par 2 arrondie vers zéro,
+        //  strictement équivalent au `/ 2` du C sur int.)
+        // Non équivalent à (SM - ww)/2 en arithmétique entière quand la dimension AJUSTÉE est
+        // impaire — or ww/wh le sont typiquement (AdjustWindowRect ajoute caption + bordures) :
+        // ex. SM=1080, wh=793 -> binaire 540-396=144 ; ancien C++ (1080-793)/2=143 (écart 1 px).
+        x = GetSystemMetrics(SM_CXSCREEN) / 2 - ww / 2;   // 0x46140c
+        y = GetSystemMetrics(SM_CYSCREEN) / 2 - wh / 2;   // 0x4613e9
         w = ww; h = wh;
     } else {
         // Fidele (audit INIT 2026-07-14) : original cree la fenetre plein ecran a la
@@ -854,32 +999,192 @@ LRESULT App::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     switch (msg) {
-    case WM_ACTIVATEAPP:
+    case WM_ACTIVATEAPP:            // 0x1C : g_WindowActive = wParam (0x4619D0)
         windowActive_ = (wParam != FALSE);
         return 0;
-    case WM_LBUTTONDOWN:
+
+    case WM_MOUSEMOVE: {            // 0x200 -> Camera_MouseDragRotate 0x50AFD0 (@0x461B22)
+        // INPUT-01. L'original met à jour this+52/+56 (dernière position souris) sur TOUS ses
+        // chemins de sortie (@0x50AFF1, @0x50B00E, @0x50B05E, @0x50B2DA, @0x50B2F1) : le delta
+        // est donc TOUJOURS consommé, y compris quand il n'orbite pas. On vide donc
+        // l'accumulateur INCONDITIONNELLEMENT — sinon un drag faisant suite à un déplacement
+        // libre rejouerait tout le trajet accumulé d'un coup (saut d'orbite).
+        int dx = 0, dy = 0;
+        input_.GetMouseDelta(dx, dy);          // <- this+52/+56 (0x50AFF1/0x50B00E/0x50B2F1)
+        // Gardes de l'original, dans l'ordre :
+        //  1. @0x50AFE9 : g_SceneMgr != 6 || g_SceneSubState != 4 -> pas d'orbite.
+        //  2. @0x50B006 : `if (a4 != 2)` où a4 = wParam -> ÉGALITÉ STRICTE à MK_RBUTTON (=2) :
+        //     le bouton droit SEUL orbite ; Maj+clic droit (MK_SHIFT|MK_RBUTTON = 6) ou
+        //     gauche+droit (MK_LBUTTON|MK_RBUTTON = 3) n'orbitent PAS. `==` et non `&`.
+        //  3. @0x50B056 : `(!g_SelfCharInvBlock[0] && !*(this+8) && g_SelfMorphNpcId == 194)
+        //                || (!g_SelfCharInvBlock[0] &&  *(this+8) && g_CamMode != 1)` -> pas
+        //     d'orbite (this+8 = mouseLook de g_CameraCtrl 0x1668F60, cf.
+        //     PlayerInputController.h:24). NON MODÉLISÉE ici : g_SelfMorphNpcId 0x1675A98
+        //     et g_CamMode 0x1668F6C
+        //     sont hors de ce front. Avec les valeurs par défaut du binaire (blocked=0,
+        //     mouseLook=0, morphNpcId != 194) les DEUX clauses sont FAUSSES -> l'orbite passe,
+        //     ce qui est exactement le comportement de l'original dans le même état.
+        //     TODO [ancre 0x50B056] : câbler la 3e garde quand g_SelfMorphNpcId/g_CamMode
+        //     seront modélisés (front Gfx/Game).
+        if (scene_.Current() == Scene::InGame && g_SceneSubState == 4 && wParam == MK_RBUTTON) {
+            // v13 = (mx - *(this+52)) * *(this+60)(=0.2) -> Cam_OrbitYaw   @0x50B0BA/@0x50B0C9
+            // v12 = (my - *(this+56)) * *(this+64)(=0.3) -> Cam_OrbitPitch @0x50B0E3/@0x50B0F2
+            // (offsets en OCTETS ; sensibilités posées par Camera_Init @0x50AC1F/@0x50AC2B ;
+            //  Camera::OrbitByMouse applique littéralement ces deux constantes, Camera.cpp:74-79.)
+            camera_.OrbitByMouse(dx, dy);
+            // NON TRANSPOSÉ (front Gfx) : le clamp d'élévation *(this+68) = 30.0 /
+            // *(this+72) = 80.0 (@0x50B26A / @0x50B1BA) qui ANNULE l'orbite hors bornes en
+            // réappliquant Cam_SetLookAt sur l'œil mémorisé, et la renormalisation de distance
+            // à *(this+80) (@0x50B3C7). TODO [ancre 0x50B26A] : porter ces bornes dans gfx::Camera.
+        }
+        return 0;                              // 0x461B29
+    }
+
+    case WM_LBUTTONDOWN:            // 0x201 : SetCapture + Input_OnLButtonDown 0x50AC90
         scene_.OnLButtonDown(static_cast<short>(LOWORD(lParam)),
                              static_cast<short>(HIWORD(lParam)));
         return 0;
-    case WM_LBUTTONUP:
+    case WM_LBUTTONUP:              // 0x202 : ReleaseCapture + Input_OnLButtonUp 0x50AD20
         scene_.OnLButtonUp(static_cast<short>(LOWORD(lParam)),
                            static_cast<short>(HIWORD(lParam)));
         return 0;
-    case kWM_Socket: // 0x401 : notification socket asynchrone (WSAAsyncSelect)
+
+    // 0x204/0x205/0x207/0x20A : le travail est fait par les hooks InputSystem posés dans
+    // App::Init (déjà déclenchés par input_.ProcessMessage dans le switch ci-dessus, comme le
+    // WndProc d'origine appelle Input_OnRButtonDown/Camera_ResetView/Camera_MouseWheelZoom).
+    // Ces cases n'existent que pour rendre 0 comme l'original (@0x461A94/@0x461AC8/@0x461AF5/
+    // @0x461B44) au lieu de tomber dans DefWindowProc.
+    case WM_RBUTTONDOWN:            // 0x204 -> Input_OnRButtonDown 0x50ADB0 (@0x461A8F)
+    case WM_RBUTTONUP:              // 0x205 -> Input_OnRButtonUp   0x50AE40 (@0x461AC3)
+    case WM_MBUTTONDOWN:            // 0x207 -> Camera_ResetView    0x50AED0 (@0x461AF0)
+    case WM_MOUSEWHEEL:             // 0x20A -> Camera_MouseWheelZoom 0x50B460 (@0x461B3F)
+        return 0;
+
+    case kWM_Socket: // 0x401 : notification socket asynchrone (WSAAsyncSelect) -> 0x4619E9
         net_.OnSocketMessage(wParam, lParam);
         return 0;
-    case WM_CHAR: // saisie texte (login/chat) -> champ focalisé
+
+    case WM_CHAR:
+        // ABSENT du binaire (App_WndProc n'a NI WM_CHAR NI WM_KEYDOWN générique) — DÉVIATION
+        // COMPENSATOIRE ASSUMÉE et nécessaire : le client d'origine confie la saisie texte aux
+        // 21 EDIT Win32 natifs sous-classés de mEDITBOX (UI_CreateEditBoxes 0x50E460), qui
+        // consomment WM_CHAR eux-mêmes ; ClientSource les remplace par des ts2::ui::EditBox
+        // autonomes (cf. mEDITBOX ci-dessus), qui doivent donc être alimentés ici. Conservé.
         scene_.OnChar(static_cast<char>(wParam));
         return 0;
+
     case WM_KEYDOWN:
-        if (wParam == VK_ESCAPE) { PostQuitMessage(0); }
-        else scene_.OnKeyDown(static_cast<int>(wParam));
+        // GAP-APPLIFE-01 / INPUT-08 — la branche `if (wParam == VK_ESCAPE) PostQuitMessage(0);`
+        // a été SUPPRIMÉE : elle était une invention. Le case 256 du binaire (@0x46197E) ne
+        // traite QU'UNE touche — `if (a3 == 13) { UI_Chat_FocusInput(); return 0; }` @0x461B55
+        // — et tout le reste part à DefWindowProc, pour lequel VK_ESCAPE est un NO-OP TOTAL.
+        // Le client d'origine ne quitte JAMAIS au clavier : ses deux seules sorties sont
+        // g_QuitFlag 0x815590 (boutons Quitter de l'UI, lu par WinMain @0x46162B ; miroir
+        // quit_) et WM_DESTROY -> PostQuitMessage (@0x461BC3). Échap doit donc atteindre le
+        // routeur de dialogues (fermeture du dialogue focalisé), pas fermer le jeu.
+        //
+        // INPUT-04 / GAP-APPLIFE-04 — NON APPLIQUÉ ICI, DÉLIBÉRÉMENT (chantier inter-front
+        // ATOMIQUE, cf. rapport). Le constat est exact : ce chemin injecte des VK alors que le
+        // hook DirectInput d'App::Init (SetSceneKeyDownHook ci-dessus) injecte des DIK dans le
+        // MÊME SceneManager::OnKeyDown, et le clavier in-game du binaire est 100% DIK
+        // (Game_OnHotkey 0x537330 relit le tampon DirectInput et compare des scancodes bruts,
+        // ex. `cmp g_UiCmdQueueRecords[eax], 15h` @0x5373A0 = DIK_Y). Collisions réelles :
+        // DIK_EQUALS=0x0D lu comme VK_RETURN, DIK_7=0x08 comme VK_BACK, DIK_Y=0x15 comme
+        // VK_CAPITAL.
+        // MAIS restreindre ce case aux seules scènes Login/CharSelect (le correctif proposé)
+        // ne peut PAS être fait par ce front SEUL : tous les consommateurs clavier in-game sont
+        // indexés en VK (UIManager::RouteKey <- Dialog::OnKey : `vk == VK_ESCAPE` dans
+        // GuildWindow.cpp:631/648, OptionsWindow.cpp:265, SkillTreeWindow.cpp:453,
+        // VendorShopWindow.cpp:335, NpcDialogWindow.cpp:320, PlayerTradeWindow.cpp:349... ;
+        // GameWindows::HandleHotkey compare 'I'/'C'/'O'). Couper la source VK avant que le
+        // front UI n'ait converti ces tables en DIK laisserait ces consommateurs SANS AUCUNE
+        // alimentation : Échap ne fermerait plus aucun dialogue et les hotkeys mourraient —
+        // une RÉGRESSION nette, et l'inverse exact de ce qu'exige GAP-APPLIFE-01 ci-dessus
+        // (« Échap doit atteindre le routeur de dialogues »). Les deux moitiés du correctif
+        // doivent donc atterrir ENSEMBLE (App + Scene + UI). Le feed VK est conservé tel quel
+        // en attendant. TODO [ancre 0x537330] : migration DIK atomique, cf. rapport de front.
+        scene_.OnKeyDown(static_cast<int>(wParam));
+        // TODO [ancre 0x461B5E] : Entrée (VK_RETURN=13) -> UI_Chat_FocusInput 0x68B200, seul
+        // traitement clavier du WndProc d'origine. Non câblable depuis ce front : SceneManager
+        // n'expose aucun accès au ChatWindow (ni UI() ni Chat()), et ChatWindow n'est de toute
+        // façon pas enregistré dans UIManager en InGame (Focus() n'a aucun appelant) — cf.
+        // rapport de front, chantier du front Scene/UI.
         return 0;
-    case WM_DESTROY:
+
+    case WM_SYSCOMMAND: {
+        // INPUT-07 / GAP-APPLIFE-03 — filtre @0x461B70-0x461BB9, absent jusqu'ici (tout tombait
+        // dans DefWindowProc). `if (dword_1669180 != 2) return 0;` @0x461B70 : hors mode 2,
+        // TOUTE commande système est avalée. dword_1669180 est PROUVÉ == GameConfig::windowMode
+        // (data_refs 0x1669180 : écrit @0x460CE2 dans le parse cmdline de WinMain, puis comparé
+        // `cmp ds:dword_1669180, 2` en trois points — @0x461314 choix du style de fenêtre,
+        // @0x461B69 ici, @0x461D17 App_Init) ; `== 2` == fenêtré == cfg_.Windowed()
+        // (GameConfig.h:16). En PLEIN ÉCRAN, donc, tout est bloqué.
+        if (!cfg_.Windowed())
+            return 0;                          // 0x461BB9
+        const WPARAM sc = wParam & 0xFFF0;     // 0x461B7B
+        // Seules 4 commandes sont relayées à DefWindowProc : SC_MOVE 0xF010 / SC_MINIMIZE
+        // 0xF020 / SC_MAXIMIZE 0xF030 (@0x461BA0) et SC_RESTORE 0xF120 (@0x461BAB).
+        if (sc == SC_MOVE || sc == SC_MINIMIZE || sc == SC_MAXIMIZE || sc == SC_RESTORE)
+            return DefWindowProcA(hwnd, msg, wParam, lParam);
+        // Tout le reste -> 0 (@0x461BB3) : bloque notamment SC_CLOSE (0xF060), SC_SIZE
+        // (0xF000), SC_KEYMENU (0xF100, Alt/Alt+Espace = gel de la boucle), SC_SCREENSAVE
+        // (0xF140) et SC_MONITORPOWER (0xF170) — l'économiseur d'écran et la mise en veille du
+        // moniteur ne peuvent donc pas se déclencher en pleine partie.
+        return 0;
+    }
+
+    case WM_CLOSE:
+        // 0x10 -> `xor eax,eax` / `return 0` @0x461BBD-0x461BBF, SANS appeler DefWindowProc :
+        // la fenêtre n'est JAMAIS détruite par la croix ni par Alt+F4. Sans ce case, le message
+        // tombait dans DefWindowProc, qui le traduit en DestroyWindow -> WM_DESTROY ->
+        // PostQuitMessage : le client se fermait là où l'original refuse. Le seul chemin de
+        // destruction légitime reste App::Shutdown (DestroyWindow explicite).
+        return 0;
+
+    case WM_DESTROY:                // 0x02 : seul émetteur de PostQuitMessage (@0x461BC3)
         PostQuitMessage(0);
         return 0;
+
     default:
-        return DefWindowProcA(hwnd, msg, wParam, lParam);
+        return DefWindowProcA(hwnd, msg, wParam, lParam);   // 0x461BDD
+    }
+}
+
+// -----------------------------------------------------------------------------
+// RButtonGateOpen — garde d'état commune à Input_OnRButtonDown 0x50ADB0 (@0x50AE17) et
+// Input_OnRButtonUp 0x50AE40 (@0x50AEA7). Les deux fonctions portent une condition
+// STRICTEMENT identique (vérifiée par décompilation des deux) :
+//
+//   if ( (g_SceneMgr != 6 || g_SceneSubState != 4 || g_SelfActionState[0] ∉ {11,12,33,34,35,36,37})
+//        && !UI_RouteRButton*(x, y) )
+//       cSceneMgr_OnRButton*(&g_SceneMgr, x, y);
+//
+// Autrement dit : quand on est en jeu (scène 6), en sous-état MainTick (4) ET que l'état
+// d'action du joueur self appartient à cet ensemble de 7 valeurs, le clic droit est
+// INTÉGRALEMENT avalé — il n'atteint ni l'UI ni la scène. Cette fonction renvoie donc
+// l'inverse de cette condition d'avalement.
+// -----------------------------------------------------------------------------
+bool App::RButtonGateOpen() const {
+    // 0x50AE17 : g_SceneMgr != 6 || g_SceneSubState != 4 -> porte ouverte d'office.
+    if (scene_.Current() != Scene::InGame || g_SceneSubState != 4)
+        return true;
+
+    // g_SelfActionState[0] 0x1687328 == g_World.players[0].body @ kSelfActionStateOffset
+    // (Game/MapWarp.h) — même dérivation que SceneManager.cpp:1081-1091 (host.GetSelfActionState).
+    int32_t actionState = 0;
+    if (!game::g_World.players.empty()) {
+        const game::PlayerEntity& self0 = game::g_World.players[0];
+        if (self0.body.size() >= game::kSelfActionStateOffset + sizeof(actionState))
+            std::memcpy(&actionState, self0.body.data() + game::kSelfActionStateOffset,
+                        sizeof(actionState));
+    }
+
+    // Les 7 valeurs littérales du test (@0x50AE17) : 11, 12, 33, 34, 35, 36, 37.
+    switch (actionState) {
+    case 11: case 12: case 33: case 34: case 35: case 36: case 37:
+        return false;   // clic droit intégralement avalé
+    default:
+        return true;
     }
 }
 

@@ -42,6 +42,7 @@
 #include "UI/CharacterStatsWindow.h"
 #include "UI/EnchantWindow.h"
 #include "UI/InventoryWindow.h"
+#include "UI/ClanContextMenu.h"
 
 #include "Game/AutoPlaySystem.h"
 #include "Game/SkillSystem.h"
@@ -108,6 +109,19 @@ class GameWindows {
 public:
     GameWindows();
 
+    // Instance courante (posée par Init, effacée par Shutdown ; nullptr hors scène InGame).
+    // Miroir de UIManager::Instance() — le binaire manipule des singletons globaux
+    // (g_MemberSelectWnd 0x184BE38, g_ClanWin dword_1822938, …), donc l'accès global est
+    // FIDÈLE, pas une commodité.
+    //
+    // RAISON D'ÊTRE : les handlers réseau du binaire appellent DIRECTEMENT les fenêtres
+    // (p. ex. Net_OnPartyMemberNameSet 0x4909A0 -> UI_MemberSelectWnd_Open @0x4909F8, sans
+    // aucune garde). Côté C++, Net/ n'incluait jusqu'ici AUCUN UI/ : ce point d'accès est
+    // la PREMIÈRE arête Net -> UI du dépôt, introduite pour câbler cette ancre précise
+    // (cf. Net/GameHandlers_PartyGuild.cpp, handler 0x3e). Sans elle, les émissions
+    // Op57/Op58 de PartyWindow restent du code mort (cf. UI/PartyWindow.h:71-83).
+    static GameWindows* Instance();
+
     // Crée sprite/police dédiés + initialise UIManager (device du renderer) et
     // enregistre toutes les fenêtres. `notifyHwnd` = fenêtre pour ScreenToClient.
     bool Init(gfx::Renderer& renderer, void* notifyHwnd, int screenW, int screenH);
@@ -154,8 +168,29 @@ public:
     // aucun appelant ne déclenche encore Open(npc, questCtx, questProgress, interaction)
     // dans ce portage — accessible ici pour le futur branchement clic-PNJ.
     NpcDialogWindow&         NpcDialog()    { return npcDialog_; }
+    // Menu contextuel joueur (UI_ClanWin dword_1822938, gap SGP-1). Enregistré dans
+    // UIManager ci-dessous => rendu ET routé dès qu'un appelant invoque OpenForPlayer().
+    // Les 2 ouvreurs du binaire dépendent du picking d'entité (G-PICK-05, absent) :
+    // cf. bandeau « CÂBLAGE » de UI/ClanContextMenu.h.
+    ClanContextMenu&         ClanMenu()     { return clanMenu_; }
 
 private:
+    // --- Pont PromptState -> MsgBoxDialog (gaps SCN-01 + SCN-02) ---
+    // Appelé en tête de Render(). game::g_Client.prompt avait 12 ÉCRIVAINS et ZÉRO LECTEUR :
+    // la notice modale in-game n'était jamais affichée (SCN-01), et comme la boîte oui/non
+    // n'était jamais dessinée ni cliquable, Op45/49/55/61/67/74 n'étaient émis QUE par la
+    // branche de refus automatique des handlers (valeur 2) — le joueur pouvait refuser une
+    // invitation de groupe/guilde, jamais l'accepter (SCN-02). Ce pont est le LECTEUR manquant.
+    void SyncPrompt();
+
+    // Appelée par le callback de la boîte au moment où l'utilisateur tranche (OK/Annuler),
+    // pour désarmer l'état miroir DANS le même tour. Sans elle, un nouveau prompt du MÊME
+    // type arrivant avant le Render suivant serait avalé (le front montant ne se déclenche
+    // que sur `!promptShown_ || promptType_ != type`).
+    void OnPromptDismissed() { promptShown_ = false; promptType_ = 0; }
+
+    bool promptShown_ = false; // une boîte est-elle ouverte pour le prompt courant ?
+    int  promptType_  = 0;     // dword_1822450 (type du prompt reflété)
     gfx::SpriteBatch sprite_;
     gfx::Font        font_;
     bool             inited_ = false;
@@ -193,6 +228,7 @@ private:
     InventoryWindow                 inventory_;
     InventoryDialogAdapter            inventoryAdapter_{inventory_};
     NpcDialogWindow                     npcDialog_;
+    ClanContextMenu                      clanMenu_;   // UI_ClanWin dword_1822938 (SGP-1)
 };
 
 } // namespace ts2::ui

@@ -209,6 +209,25 @@ public:
     int  ConsumeWheel();
 
     // Hooks optionnels (défaut : aucun) — câblés à Input_On*/Camera_* par le shell.
+    //
+    // ÉTAT DU CÂBLAGE (vérifié par grep exhaustif, vague W9) : 4 des 6 setters sont
+    // assignés par App::Init — SetMButtonDownCallback (App.cpp:584 -> Camera_ResetView
+    // 0x50AED0), SetMouseWheelCallback (App.cpp:607 -> Camera_MouseWheelZoom 0x50B460),
+    // SetRButtonDownCallback (App.cpp:640 -> Input_OnRButtonDown 0x50ADB0) et
+    // SetRButtonUpCallback (App.cpp:658 -> Input_OnRButtonUp 0x50AE40). Les hooks du clic
+    // DROIT s'exécutent donc réellement à chaque clic ; leur chaîne terminale est
+    // ui::UIManager::RouteRButtonDown/Up (UI/UIManager.h), miroir de UI_RouteRButtonDown
+    // 0x5AD5D0 / UI_RouteRButtonUp 0x5ADA90.
+    //
+    // ⚠ SetLButtonDownCallback / SetLButtonUpCallback n'ont, EUX, AUCUN appelant :
+    // onLDown_/onLUp_ restent perpétuellement nuls. Ce n'est PAS un défaut — le clic
+    // GAUCHE emprunte une autre route, équivalente et déjà câblée : App::HandleMessage
+    // le pousse directement à scene_.OnLButtonDown/Up (App.cpp:1043-1050), sans passer
+    // par ces hooks. Les setters sont conservés (symétrie de l'API + fidélité au
+    // App_WndProc d'origine, qui appelle bien Input_OnLButtonDown 0x50AC90 @0x461A22 sur
+    // WM_LBUTTONDOWN, après SetCapture(hWndParent) @0x4619FB) mais restent inertes tant
+    // qu'App ne bascule pas le clic gauche sur le même schéma que le clic droit. Ne pas
+    // les supprimer sans re-câbler App.
     void SetLButtonDownCallback(MouseButtonCb cb) { onLDown_ = std::move(cb); }
     void SetLButtonUpCallback(MouseButtonCb cb)   { onLUp_   = std::move(cb); }
     void SetRButtonDownCallback(MouseButtonCb cb) { onRDown_ = std::move(cb); }

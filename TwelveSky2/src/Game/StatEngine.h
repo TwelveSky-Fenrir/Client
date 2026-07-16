@@ -19,15 +19,27 @@ namespace ts2::game {
 // à l'identique (bases d'attributs, croissance, gemmes/sockets, conversion classe d'arme, base
 // LEVEL_INFO, Σ champs ITEM_INFO × facteurs de set par canal, dégâts de base d'arme, %HP/%MP de
 // cultivation, bonus élémentaires). Les termes qui dépendent de globals runtime ABSENTS de
-// SelfState (buffs %, objet spécial / grade, forme transformée, escorte, talisman, maîtrise
-// d'élément, familier/pet, combo, loadout de skills, g_CoreAttr) OU de tables non extraites
-// (Item_GetEnchantStatDelta 0x553D50, Item_GetScaledStat 0x545980, familles d'ids
+// SelfState (buffs %, objet spécial / grade, forme transformée, escorte, familier/pet, combo,
+// loadout de skills) OU de tables non extraites (Item_GetScaledStat 0x545980, familles d'ids
 // EquipSet_Match* de Equip_GetSetBonusId 0x548CE0) sont neutralisés (0 / false) et signalés en
-// commentaire « [hook] » là où ils apparaissent. NB (audit 2026-07-14) : SkillTree_SumBonuses
-// 0x54B700 et Item_SumGemStatBonus 0x4C3CC0 sont, malgré ce paragraphe, RÉELLEMENT câblés dans
-// Game/StatFormulas.cpp (leurs arguments runtime — g_EquipAux via l'échappatoire g_Client.Var(),
-// socket d'item — se sont avérés disponibles) ; ce paragraphe générique n'a pas été retenu à
-// jour, voir le bandeau de tête de StatFormulas.h/.cpp pour l'état précis site par site.
+// commentaire « [hook] » là où ils apparaissent.
+//
+// ⚠ CE PARAGRAPHE A ÉTÉ RÉGULIÈREMENT PÉRIMÉ PAR LES AUDITS — ne pas s'y fier comme source de
+// vérité ; le bandeau de StatFormulas.h/.cpp et les commentaires site par site font foi.
+// Corrections successives :
+//   - audit 2026-07-14 : SkillTree_SumBonuses 0x54B700 et Item_SumGemStatBonus 0x4C3CC0 sont
+//     RÉELLEMENT câblés (g_EquipAux dispo via l'échappatoire g_Client.Var(), socket d'item).
+//   - vague W9 (2026-07-16) : retirés de la liste ci-dessus car eux aussi CÂBLÉS depuis :
+//       * Item_GetEnchantStatDelta 0x553D50 — la table N'A JAMAIS ÉTÉ « non extraite » : elle
+//         est implémentée dans Game/ItemSystem.cpp:323 et renvoie du non-nul. Les 9 boucles
+//         d'enchant des Char_Calc* sont rétablies (helpers enchantLoopA/enchantLoopRatingMin).
+//       * talisman (g_TalismanSlot 0x1674760, dword_1675664/167568C) — écrits par
+//         Net/GameHandlers_Misc.cpp:668/692/693.
+//       * maîtrise d'élément (g_ElementMastery 0x1675680) et g_CoreAttr 0x167477C — ce dernier
+//         écrit par Net/GameHandlers_Misc.cpp:459/467, désormais lu dans CalcEvasion.
+//     Les multiplicateurs de gemmes GemStat_AccuracyPct/EvasionPct/AtkRatingMinFlat
+//     (0x54CA20/0x54CAD0/0x54CA50) et les 4 tables de dégâts d'arme (0x4C99F0/0x4C9E10/
+//     0x4CA230/0x4CA350) sont également câblés depuis cette vague.
 class StatEngine {
 public:
     // Recalcule TOUTES les stats dérivées de s en place (utilise g_World.db).

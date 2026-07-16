@@ -30,6 +30,13 @@ private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(HWND, UINT, WPARAM, LPARAM); // App_WndProc 0x461930
 
+    // Garde d'état du clic DROIT, commune à Input_OnRButtonDown 0x50ADB0 (test @0x50AE17)
+    // et Input_OnRButtonUp 0x50AE40 (test @0x50AEA7) — les deux portent EXACTEMENT la même
+    // condition. Renvoie false quand le clic droit doit être INTÉGRALEMENT avalé (ni UI ni
+    // scène), c'est-à-dire quand g_SceneMgr==6 ET g_SceneSubState==4 ET g_SelfActionState[0]
+    // (0x1687328) appartient à {11,12,33,34,35,36,37}.
+    bool RButtonGateOpen() const;
+
     double NowSeconds() const;       // horloge haute résolution (QueryPerformanceCounter)
 
     HINSTANCE     hInst_ = nullptr;

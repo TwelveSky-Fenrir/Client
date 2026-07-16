@@ -35,12 +35,26 @@
 #include "Game/GroundAuraWorldObjectTick.h"
 #include "Game/AutoTargetCombatGate.h"
 #include "Gfx/CameraThirdPersonBridge.h"
+#include "Net/NetClient.h"       // net::GlobalNetClient / NetCloseSocket (SCN-01 : action OK de notice)
 #include "Core/Log.h"
 #include <windows.h>
 #include <cstring>
 #include <cstdio>   // std::snprintf (chemin BGM "Z%03d.BGM")
 #include <cstdint>
 #include <vector>   // std::vector (candidats de combo GINFO-003, cf. ComboCandidateLookup)
+
+// hWndParent 0x815184 — fenêtre destinataire du WSAAsyncSelect(WM_USER+1) posé par
+// Net_ConnectGameServer 0x462A70. Défini par Net/GameHandlers_Misc.cpp:158, qui laisse le
+// TODO explicite « App doit poser ts2::net::g_GameSocketNotifyWnd à l'init, via une
+// déclaration extern » (GameHandlers_Misc.cpp:153-157) — SANS assignation, le handler du
+// paquet 0x18 (Pkt_GameServerConnectResult 0x469CF0, reconnexion/relais EN COURS DE JEU)
+// dégrade en échec WSAAsyncSelect (Str107) et la reconnexion échoue TOUJOURS.
+// Aucun header ne le déclare à ce jour -> déclaration extern locale (le linker résout sur
+// la définition de ts2::net). Assigné dans SceneManager::Init : notifyHwnd_ EST hWndParent
+// (App_Init @0x461C51 `mov ds:hWndParent, ecx` avec ecx = le HWND créé par WinMain 0x4609C0 ;
+// côté C++, App::Init passe ce même hwnd_ à SceneManager::Init), et SceneManager::Init est
+// appelée DEPUIS App::Init — donc au même instant que l'assignation d'origine. // 0x815184
+namespace ts2::net { extern HWND g_GameSocketNotifyWnd; }
 
 // TODO journalisé UNE SEULE FOIS par point d'intégration (évite le flood de logs pour les
 // hooks appelés à 30 Hz depuis InGameTickFlow_Update — cf. case Scene::InGame ci-dessous).
@@ -199,7 +213,89 @@ bool BuildMonsterProjectileParams(int idx, game::FxProjectileSpawnParams& p) {
     return true;
 }
 
+// ===========================================================================
+// SCN-01 — Action du bouton OK du dialogue de notice (UI_NoticeDlg_OnLButtonUp 0x5C03F0,
+// switch (*(this+4)) @0x5C04C9).
+//
+// ⚠ LE GAP TEL QUE LIBELLÉ DANS LE DOSSIER EST PÉRIMÉ — NE PAS Y APPLIQUER SON CORRECTIF.
+// Le dossier prescrit d'écrire un `NoticeDialog : public ui::Dialog` (rendu 0x5C0630 +
+// hit-test 0x5C03F0) au motif que game::g_Client.prompt aurait « 12 écrivains, 0 lecteur ».
+// C'était vrai à l'extraction ; ça ne l'est PLUS : UI/GameWindows.cpp:186 `SyncPrompt()`
+// (front UI, MÊME vague) reflète désormais game::g_Client.prompt dans le MsgBoxDialog
+// partagé, et il est RÉELLEMENT atteint (GameWindows::Render:237 -> appelé par
+// SceneManager::Render `windows_->Render()`). Enregistrer ICI un second dialogue sur le
+// MÊME état produirait :
+//   (1) un DOUBLE rendu (MsgBox + NoticeDialog dessinant tous deux le prompt) ;
+//   (2) du code MORT en entrée — UIManager::Init (UIManager.cpp:243) enregistre msgBox_ en
+//       index 0, or Register (UIManager.cpp:258) ne fait qu'un push_back : le MsgBox routerait
+//       toujours le clic en premier et le consommerait, notre OnClick ne serait jamais atteint.
+// UI/GameWindows.cpp:211-216 laisse d'ailleurs explicitement CE trou-ci à ce front :
+//   « TODO [ancre 0x5C04DF] : pour le type 2 (UI_NoticeDlg), l'OK d'origine exécute
+//     Net_CloseSocket(&g_NetClient) + g_SceneMgr=2 + g_SceneSubState=0 [...] C'est le
+//     périmètre des gaps SCN-03/04 : Scene/SceneManager.* n'est PAS détenu par ce front ».
+// On comble donc EXACTEMENT ce trou (l'ACTION, pas le rendu), sans collision.
+//
+// ⚠ CORRECTION DU DOSSIER (re-prouvée en IDA cette mission) : PromptState FUSIONNE deux
+// registres DISTINCTS du binaire. UI_NoticeDlg_OnLButtonUp ne traite que type ∈ [1,9] ; les
+// Open(8/9/10/14/19/20) des handlers party/guilde/social appartiennent à un AUTRE dialogue
+// (Oui/Non), déjà traité par GameWindows::SyncPrompt (IsNetConfirmType -> Net_SendOp45/49/
+// 67/74/55/61). Le switch ci-dessous ne couvre donc QUE les types 1..9 exclus de cette
+// liste — sans quoi le type 8 (invitation de groupe) déclencherait À LA FOIS Op45 (bon) et
+// Net_SendOp73 (faux, case 8 de la table NOTICE). Les deux tables se CHEVAUCHENT en valeur
+// numérique mais pas en sémantique : c'est le piège central de ce gap.
+// ===========================================================================
+
+// Retour à la sélection de serveur demandé par `case 2` (@0x5C04E4 `g_SceneMgr = 2`).
+// Armé par Notice_DispatchOkAction, consommé par SceneManager::Update (case InGame), sur le
+// MÊME motif que game::g_World.sceneEnterWorldPending / sceneReloadPending : on ne change pas
+// de scène au milieu du routage d'un clic (l'UI en cours d'itération serait détruite).
+// Statique de fichier plutôt que champ de game::GameWorld : le bouton OK en est le SEUL
+// écrivain -> aucune dépendance inter-fronts à créer. // 0x5C04E4
+bool g_noticeReturnToServerSelectPending = false;
+// Fin anormale demandée par `case 3` (@0x5C051B `g_QuitFlag = 1`). Même mécanique.
+bool g_noticeAbnormalEndPending = false;
+
 } // namespace
+
+// SCN-01 — cf. le bandeau ci-dessus. Reproduit `switch (*(this+4))` @0x5C04C9 de
+// UI_NoticeDlg_OnLButtonUp 0x5C03F0, appelé APRÈS UI_NoticeDlg_Close (@0x5C04A5).
+// Le client réseau est résolu via net::GlobalNetClient() (= &g_NetClient 0x8156A0, le
+// binaire tape lui aussi le global), MÊME idiome que UI/GameWindows.cpp:152 SendPromptReply.
+void Notice_DispatchOkAction(int type) {
+    // Types réseau Oui/Non (8/9/10/14/19/20) : NE PAS traiter ici — ils appartiennent au
+    // registre MsgBox et sont déjà émis par GameWindows::SyncPrompt (Op45/49/67/74/55/61).
+    // Cf. l'avertissement « les deux tables se chevauchent » du bandeau.
+    if (type == 8 || type == 9 || type == 10 || type == 14 || type == 19 || type == 20) return;
+
+    net::NetClient* nc = net::GlobalNetClient(); // &g_NetClient 0x8156A0
+    switch (type) {                              // @0x5C04C9
+    case 1:
+        break;                                   // `result = 1;` @0x5C04D0 — aucune action
+    case 2:
+        // Net_CloseSocket(&g_NetClient) @0x5C04DF PUIS g_SceneMgr=2 @0x5C04E4 /
+        // g_SceneSubState=0 @0x5C04EE / dword_1676188=0 @0x5C04F8. ORDRE DU BINAIRE respecté :
+        // la socket est fermée AVANT le changement de scène.
+        if (nc) net::NetCloseSocket(*nc);                    // 0x463000 @0x5C04DF
+        g_noticeReturnToServerSelectPending = true;          // g_SceneMgr = 2 @0x5C04E4
+        break;
+    case 3:
+        // Log_WriteLine("[ABNORMAL_END] ( 3 )") @0x5C0516 puis g_QuitFlag = 1 @0x5C051B.
+        TS2_LOG("[ABNORMAL_END] ( 3 )");                     // 0x53F2D0 @0x5C0516
+        g_noticeAbnormalEndPending = true;                   // g_QuitFlag 0x815590 @0x5C051B
+        break;
+    // Les 6 envois de la table NOTICE. Le `this` d'origine est &g_AutoPlayMgr 0x846C08 : ces
+    // builders ne lisent aucun champ de cet objet dans le port C++ (signature
+    // `void Net_SendOpNN(NetClient&)`, Net/SendPackets.h) -> l'argument disparaît, comme
+    // pour tous les autres appels de ce fichier.
+    case 4: if (nc) net::Net_SendOp44(*nc); break;           // 0x4B7DC0 @0x5C0531
+    case 5: if (nc) net::Net_SendOp48(*nc); break;           // 0x4B83A0 @0x5C0542
+    case 6: if (nc) net::Net_SendOp54(*nc); break;           // 0x4B8C60 @0x5C0553
+    case 7: if (nc) net::Net_SendOp66(*nc); break;           // 0x4B9E10 @0x5C0564
+    case 8: if (nc) net::Net_SendOp73(*nc); break;           // 0x4BA860 @0x5C0575 (inatteignable : filtré ci-dessus)
+    case 9: if (nc) net::Net_SendOp60(*nc); break;           // 0x4B9550 @0x5C0586
+    default: break;                                          // `result = 1;` @0x5C0592
+    }
+}
 
 SceneManager::SceneManager() = default;
 SceneManager::~SceneManager() { Shutdown(); }
@@ -225,6 +321,12 @@ void SceneManager::Init(gfx::Renderer& renderer, net::NetSystem& net, void* noti
     screenW_     = screenW;
     screenH_     = screenH;
     gameDataDir_ = gameDataDir;
+    // hWndParent 0x815184 (App_Init @0x461C51) — cf. le bandeau de déclaration en tête de
+    // fichier. Seul écrivain de ts2::net::g_GameSocketNotifyWnd, que le handler du paquet
+    // 0x18 (Net/GameHandlers_Misc.cpp:216, reconnexion/relais serveur EN JEU) lit pour son
+    // WSAAsyncSelect : nul, il dégradait en échec (Str107) et la reconnexion échouait
+    // TOUJOURS. `notifyHwnd` EST le HWND créé par WinMain 0x4609C0, relayé par App::Init.
+    ts2::net::g_GameSocketNotifyWnd = static_cast<HWND>(notifyHwnd); // 0x815184
     scene_    = Scene::None;
     subState_ = 0;
     frameCount_ = 0;
@@ -342,6 +444,16 @@ void SceneManager::Change(Scene s) {
         hudReady_ = hud_->Init(*renderer_, screenW_, screenH_);
         if (!hudReady_) TS2_WARN("GameHud::Init a echoue (HUD indisponible).");
     }
+    // GAP-APPLIFE-02 — câble le client réseau sur la fenêtre de chat. SANS ce Bind,
+    // ChatWindow::SendOnChannel sort immédiatement sur `if (!net_) return;`
+    // (UI/ChatWindow.cpp:267) : la saisie s'afficherait en écho local mais AUCUN message ne
+    // partirait jamais au serveur. Bind n'avait aucun appelant (grep) — UI/GameHud.h:159-161
+    // le réclamait nommément (« requiert que SceneManager possède/expose un net::NetClient& »).
+    // Les 7 builders concernés sont ceux de UI_Chat_SubmitInput 0x68B330 (Net_SendOp39/38/
+    // 68/77/81/40/80 selon le canal). Ré-appliqué à chaque entrée InGame : le pointeur reste
+    // valide (net_ est un membre de App), et une reconnexion réutilise le même NetClient.
+    if (s == Scene::InGame && hud_ && hudReady_ && net_)
+        hud_->Chat().Bind(&net_->Client());                              // 0x68B330
     if (s == Scene::InGame && windows_ && !windowsReady_ && renderer_) {
         windowsReady_ = windows_->Init(*renderer_, notifyHwnd_, screenW_, screenH_);
         if (!windowsReady_) TS2_WARN("GameWindows::Init a echoue (fenetres indisponibles).");
@@ -508,6 +620,28 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
     if (scene_ == Scene::InGame && game::g_World.sceneReloadPending) {
         Change(Scene::EnterWorld);
     }
+    // SCN-01 — consommation des deux actions différées du bouton OK de la notice
+    // (Notice_DispatchOkAction ci-dessus). Le binaire écrit g_SceneMgr/g_QuitFlag DIRECTEMENT
+    // depuis UI_NoticeDlg_OnLButtonUp ; ici on diffère d'une frame pour ne pas changer de
+    // scène pendant le routage du clic (UIManager itère son registre de dialogues à ce
+    // moment-là). MÊME motif que sceneReloadPending ci-dessus / sceneEnterWorldPending.
+    // La socket a DÉJÀ été fermée par Notice_DispatchOkAction, dans l'ordre du binaire
+    // (Net_CloseSocket @0x5C04DF AVANT g_SceneMgr=2 @0x5C04E4).
+    if (g_noticeReturnToServerSelectPending) {
+        g_noticeReturnToServerSelectPending = false;
+        Change(Scene::ServerSelect);   // g_SceneMgr = 2 @0x5C04E4 (+ g_SceneSubState=0 @0x5C04EE,
+                                       // posé par Change) — dword_1676188=0 @0x5C04F8 = frameCount_
+    }
+    if (g_noticeAbnormalEndPending) {
+        g_noticeAbnormalEndPending = false;
+        // g_QuitFlag 0x815590 = 1 @0x5C051B. ClientSource ne réifie pas ce global : la sortie
+        // passe par la boucle de messages (App/App.cpp WM_CLOSE/WM_DESTROY ->
+        // PostQuitMessage @0x461BC3), qui est l'AUTRE sortie du binaire. Écart assumé et
+        // documenté : même effet observable (arrêt du client), chemin différent.
+        // TODO [ancre 0x815590] : réifier g_QuitFlag (miroir App::quit_) et le poser ICI.
+        TS2_WARN("SceneManager: fin anormale demandee par la notice (type 3) -> PostQuitMessage.");
+        ::PostQuitMessage(0);
+    }
     switch (scene_) {
     case Scene::Intro:
         // Automate fidèle Scene_IntroUpdate 0x517FE0 (Game/IntroFlow.h) : 90 + 33×3 + 90
@@ -515,6 +649,38 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         if (game::UpdateIntro(introState_, 0.0f)) Change(Scene::ServerSelect);
         break;
     case Scene::ServerSelect:
+        // UIFW-09 — Scene_ServerSelectUpdate 0x518B30 : le 2e des DEUX seuls sites de
+        // UI_ResetAllDialogs 0x5AC3F0 (xrefs_to -> EXACTEMENT 2 : @0x518B79 ici et @0x52C038
+        // côté EnterWorld, déjà câblé plus bas). Il n'était pas câblé : les dialogues restés
+        // ouverts en quittant le jeu (ou après un échec de login) survivaient à l'arrivée sur
+        // la sélection de serveur.
+        // Structure d'origine, re-prouvée au désassemblage cette mission :
+        //   518B3C `mov ecx,[eax+4]`          -> sous-état (champ +4 de cSceneMgr)
+        //   518B42 sous-état==0 -> bloc Init ; ==1 -> boucle d'attente ; sinon sortie
+        //   518B5D `[this+8] += 1`            -> compteur de frames (champ +8)
+        //   518B69 `cmp [edx+8], 1Eh` / jnb   -> 30 frames avant d'exécuter le bloc
+        //   518B79 call UI_ResetAllDialogs    <- LE SITE
+        //   5191F0 `mov [ecx+4], 1` / 5191FA `mov [edx+8], 0` -> sous-état=1, compteur=0
+        // subState_/frameCount_ SONT les miroirs de ces champs +4/+8 (SceneManager.h) ; ils
+        // étaient jusqu'ici des FANTÔMES (écrits, jamais lus — grep) : ce bloc leur donne
+        // enfin leur rôle d'origine pour la scène 2. frameCount_ est DÉJÀ incrémenté en tête
+        // d'Update() (`++frameCount_`), miroir de @0x518B5D -> ne pas ré-incrémenter ici.
+        // Sûr même registre vide (ResetAll itère dialogs_, cf. le commentaire du site EnterWorld).
+        // Le RESTE du bloc d'origine est déjà couvert ailleurs et n'est PAS redupliqué ici :
+        // Z000.BGM (@0x518BF7) + liste de serveurs + thread de statut -> UI/LoginScene.cpp:597-604
+        // et LoginScene::ServerSelectUpdate ; UI_FocusEditBox(0) (@0x518BA5) -> LoginScene.
+        // Restent non branchés, faute d'équivalent réifié (mêmes arbitrages que le bloc
+        // EnterWorld plus bas) : WSndMgr_Free (@0x518B83), Gfx_ApplyOverlayBlendMode
+        // (@0x518B8D), Util_SetClampedU8Field(mPOINTER,0) (@0x518B99), scratch 150 dw (@0x518BAA).
+        // TODO [ancres 0x518B83 / 0x518B8D / 0x518B99 / 0x518BAA].
+        if (subState_ == 0 && frameCount_ >= 30) {                       // @0x518B42 / @0x518B69 (1Eh)
+            ui::UIManager::Instance().ResetAll();                        // 0x5AC3F0 @0x518B79
+            subState_       = 1;                                         // `mov [ecx+4], 1` @0x5191F0
+            frameCount_     = 0;                                         // `mov [edx+8], 0` @0x5191FA
+            g_SceneSubState = 1;   // miroir du champ +4 // 0x1676184
+        }
+        if (login_) { login_->Update(scene_); ConsumePending(); }
+        break;
     case Scene::Login:
     case Scene::CharSelect:
         if (login_) { login_->Update(scene_); ConsumePending(); }
@@ -1042,6 +1208,42 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             if (BuildMonsterProjectileParams(idx, p)) game::Fx_SpawnAttackProjectileAlt(p); // 0x582A10 (état 7)
         };
 
+        // W9 — MapColl_GetGroundHeight 0x697130 : hauteur de sol sous (x,z). Consommé par
+        // UpdateMonster (@0x58223E) et TickNpcEffect (@0x582263) via
+        // Game/EntityLifecycleTick.cpp:141-145 pour reposer l'entité au sol après une chute /
+        // un recul (knockback). Hook laissé NUL jusqu'ici -> AUCUN monstre ne retrouvait
+        // jamais le sol après un knockback (chute infinie / altitude figée).
+        // Le fournisseur EXISTE et est prêt : world::WorldAssets::GetGroundHeight
+        // (World/WorldIntegration.h:133, portage byte-fidèle de 0x697130 sur la couche .WM),
+        // dont le header prescrit NOMMÉMENT ce câblage (WorldIntegration.h:126-131 : « prêts à
+        // câbler aux hooks consommateurs hors périmètre (host.GetGroundHeight
+        // Game/EntityLifecycleTick.h:199) »). Signatures identiques :
+        //   hook      : bool(float x, float z, float probeY,        float& outGroundY)
+        //   fournisseur: bool(float x, float z, float probeCeilingY, float& outGroundY) const
+        // worldAssets_ est un membre de SceneManager (déjà passé à gfx::TickThirdPersonCamera).
+        // Build-safe : GetGroundHeight renvoie false si la couche .WM n'est pas chargée —
+        // exactement la dégradation attendue par l'appelant (`if (!GetGroundHeight(...))`).
+        // Capture `this` : s_lifecycleHost est STATIQUE mais SceneManager vit toute la session
+        // (membre de App) et ce bloc est ré-exécuté à chaque frame InGame -> le lambda est
+        // réassigné avec un `this` toujours valide.
+        if (worldAssets_) {
+            s_lifecycleHost.GetGroundHeight = [this](float x, float z, float probeY,
+                                                     float& outGroundY) {
+                return worldAssets_->GetGroundHeight(x, z, probeY, outGroundY); // 0x697130
+            };
+        }
+        // Sous-hooks ENCORE nuls de s_lifecycleHost, faute de code appelable dans ClientSource
+        // (vérifié par grep exhaustif cette mission — seules des MENTIONS en commentaire
+        // existent) : Anim_IsFrameInHitListA/B 0x559F80/0x55A000 (fenêtre de coup),
+        // Combat_SendMeleeHit1/2 0x5823E0/0x582480 (envoi melee), GetAuraSwapDuration,
+        // IsAttackTargetBypassActive. Non câblables sans les porter d'abord (domaine
+        // Game/SkillCombat, hors de ce front). TODO [ancres 0x559F80 / 0x55A000 / 0x5823E0 /
+        // 0x582480].
+        // Snd3D_PlayPositional 0x4DA450 (@0x5822B1, son du 1er atterrissage) : Audio/Sound3D.h:95
+        // ::PlayPositional existe, mais l'objet son / slot .ISN visé par cette EA n'est identifié
+        // NULLE PART -> pas de devinette (règle : aucun son plutôt qu'un son faux).
+        // TODO [ancre 0x4DA450 / 0x5822B1] : identifier le slot .ISN d'atterrissage.
+
         host.UpdateMonster = [](int idx, float dt) {
             game::UpdateMonster(game::g_World, idx, dt, s_lifecycleHost);
         };
@@ -1246,6 +1448,25 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         if (worldGeomReady_ && worldGeom_)
             worldGeom_->TickWorldAnim(static_cast<float>(dt));
 
+        // W9 — Npc_RenderSlotTick 0x5803A0 : anim des PNJ de DÉCOR (mZONENPCINFO). Appelée
+        // 1x/frame et par slot actif depuis Scene_InGameUpdate 0x52C600 @0x52CA4C (xref
+        // UNIQUE, confirmée IDA cette mission). Boucle d'origine @0x52CA19 : `i < g_NpcCount
+        // (0x1687220)`, stride 88 (`imul edx, 58h` @0x52CA27), garde `slot+4 != 0` (actif,
+        // @0x52CA2A) sur g_NpcRenderArray 0x1764D14 — game::ZoneNpc_TickAnim
+        // (Game/AnimationTick.cpp:859) porte fidèlement cette boucle ENTIÈRE (garde + dispatch
+        // mode 0/1), d'où l'appel unique ici plutôt qu'une boucle recopiée.
+        // Ce hook n'avait AUCUN appelant -> frameAcc restait 0 et TOUS les PNJ de décor étaient
+        // figés sur le repli horloge globale : Scene/WorldRenderer.cpp:809
+        // (`ent.hasAnimCursor = game::ZoneNpc_AnimTickIsWired()`) le détecte et ne consomme le
+        // curseur par-entité qu'une fois ce tick réellement atteint. Site prescrit nommément
+        // par Game/AnimationTick.h:456-460.
+        // ORDRE : le binaire exécute MapColl_UpdateObjectAnim @0x52C94B AVANT Npc_RenderSlotTick
+        // @0x52CA4C -> cet appel reste APRÈS TickWorldAnim ci-dessus.
+        // oracle = ts2::WorldMotionFrameCountOracle() (Scene/WorldRenderer.h, seul détenteur du
+        // MotionCache -> Model_GetMotionFrameCount 0x4E5A70), MÊME instance que le dispatch de
+        // motion des monstres plus haut. // 0x52CA4C / 0x5803A0
+        game::ZoneNpc_TickAnim(static_cast<float>(dt), &WorldMotionFrameCountOracle());
+
         // InGame_InitCamera (one-shot, si justEnteredInGame) + Camera_UpdateCollision (chaque
         // frame) : câblage RÉEL via gfx::TickThirdPersonCamera (Gfx/CameraThirdPersonBridge.h),
         // APRÈS la mise à jour de la position du joueur local pour cette frame (host.
@@ -1306,6 +1527,26 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
     }
 }
 
+// UIFW-08 — porte d'état d'action des entrées souris, cf. SceneManager.h.
+bool SceneManager::InputSwallowedByActionState() const {
+    if (scene_ != Scene::InGame || g_SceneSubState != 4) return false;   // `g_SceneMgr != 6 ||
+                                                                         //  g_SceneSubState != 4` @0x50ACF7
+    // g_SelfActionState[0] 0x1687328 == g_World.players[0].body @+220 (== entity+244, cf.
+    // game::kSelfActionStateOffset, Game/MapWarp.h:83). MÊME lecture que host.GetSelfActionState
+    // (étape 12 du tick InGame ci-dessus) — factorisée ici plutôt que dupliquée.
+    if (game::g_World.players.empty()) return false;
+    const game::PlayerEntity& self0 = game::g_World.players[0];
+    int32_t raw = 0;
+    if (self0.body.size() >= game::kSelfActionStateOffset + sizeof(raw))
+        std::memcpy(&raw, self0.body.data() + game::kSelfActionStateOffset, sizeof(raw));
+    switch (raw) {   // `!= 11 && != 12 && != 33 && != 34 && != 35 && != 36 && != 37` @0x50ACF7
+    case 11: case 12: case 33: case 34: case 35: case 36: case 37:
+        return true;   // clic TOTALEMENT avalé : ni UI_RouteLButton*, ni cSceneMgr_OnLButton*
+    default:
+        return false;
+    }
+}
+
 void SceneManager::OnLButtonDown(int x, int y) {
     switch (scene_) {
     case Scene::ServerSelect:
@@ -1314,6 +1555,10 @@ void SceneManager::OnLButtonDown(int x, int y) {
         if (login_) { login_->OnMouseDown(scene_, x, y); ConsumePending(); }
         break;
     case Scene::InGame:
+        // UIFW-08 — Input_OnLButtonDown 0x50AC90 @0x50ACF7 : dans certains états d'action de
+        // soi (11/12/33..37), le clic n'atteint NI l'UI NI le monde. Testé AVANT le routage UI,
+        // comme le binaire (la garde englobe l'appel à UI_RouteLButtonDown @0x50AD0F).
+        if (InputSwallowedByActionState()) break;                        // 0x50ACF7
         // Les fenêtres (dialogues) interceptent le clic en premier (règle « premier
         // consommateur gagne » de UIManager) ; sinon il tombe vers le HUD.
         if (windowsReady_ && ui::UIManager::Instance().RouteMouseDown(x, y)) break;
@@ -1331,14 +1576,59 @@ void SceneManager::OnLButtonUp(int x, int y) {
         if (login_) { login_->OnMouseUp(scene_, x, y); ConsumePending(); }
         break;
     case Scene::InGame:
+        // UIFW-08 — MÊME garde, entrée Input_OnLButtonUp 0x50AD20 @0x50AD87 (motif identique
+        // à @0x50ACF7, vérifié au désassemblage : les 4 entrées souris la portent).
+        if (InputSwallowedByActionState()) break;                        // 0x50AD87
         if (windowsReady_) ui::UIManager::Instance().RouteMouseUp(x, y);
         break;
     default: break;
     }
 }
 
+// GAP-APPLIFE-02 — UI_Chat_FocusInput 0x68B200 (xref UNIQUE : App_WndProc @0x461B5E).
+bool SceneManager::FocusChatInput() {
+    // Garde d'entrée `if (g_SceneMgr == 6 && g_SceneSubState == 4)` @0x68B217 : hors de cet
+    // état, l'original ne prend AUCUN focus (le chat ne s'ouvre pas pendant le chargement
+    // de zone ni dans le shell login).
+    if (scene_ != Scene::InGame || g_SceneSubState != 4) return false;   // @0x68B217
+    if (!hudReady_ || !hud_) return false;
+    // Le binaire choisit ici entre deux EDIT : `if (dword_18225C0 || dword_1822724)` @0x68B239
+    // -> UI_FocusEditBox(id 16 = index 15, boîte « dire ») ; sinon id 5 = index 4 = chat
+    // principal (@0x68B22B / @0x68B250 ; l'id passé vaut index+1 — g_hEditChatMain 0x1668FD4
+    // est à (0x1668FD4-0x1668FC4)/4 = index 4 du tableau g_hEditLoginId 0x1668FC4).
+    // ClientSource n'a QU'UNE boîte de saisie in-game (ui::ChatWindow) : les deux branches
+    // convergent donc sur le même widget. Les deux discriminants ne sont tracés nulle part.
+    // TODO [ancre 0x68B239 / dword_18225C0 / dword_1822724] : distinguer la boîte « dire »
+    // du chat principal le jour où elle sera modélisée.
+    hud_->Chat().Focus();                                                // 0x50F4A0 (id 5)
+    return true;
+}
+
+// GAP-APPLIFE-02 — arbitrage clavier de la saisie texte, cf. SceneManager.h.
+bool SceneManager::RouteTextInputKey(int vk) {
+    if (scene_ != Scene::InGame || !hudReady_ || !hud_) return false;
+    // (1) Un champ de saisie FOCALISÉ mange la touche : c'est UI_EditBoxWndProc 0x50E070 qui
+    // la reçoit dans le binaire (l'EDIT natif a le focus Win32), pas la fenêtre principale.
+    // ChatWindow::OnKey couvre le même jeu de touches que la sous-classe d'origine :
+    // Entrée -> submit (UI_Chat_SubmitInput 0x68B330 @0x50E1D6), Échap -> annule, Retour
+    // arrière/flèches/Tab (@0x50E070 case 4).
+    if (hud_->Chat().Focused()) return hud_->Chat().OnKey(vk);           // 0x50E070
+    // (2) Aucun EDIT focalisé -> la fenêtre principale reçoit WM_KEYDOWN, dont le SEUL
+    // traitement clavier est `if (a3 == 13) UI_Chat_FocusInput();` (App_WndProc @0x461B55/
+    // @0x461B5E). VK_RETURN == 13 == kVK_RETURN (UI/ChatWindow).
+    if (vk == VK_RETURN) return FocusChatInput();                        // 0x461B5E -> 0x68B200
+    return false;
+}
+
 void SceneManager::OnChar(char c) {
     if (scene_ == Scene::Login && login_) { login_->OnChar(c); ConsumePending(); }
+    // GAP-APPLIFE-02 — saisie de chat in-game. ChatWindow::OnChar filtre lui-même
+    // (`if (!focused_) return false;` UI/ChatWindow.cpp:429), donc l'appel est inoffensif
+    // hors saisie. Source : App/App.cpp WM_CHAR -> scene_.OnChar (inconditionnel, toutes
+    // scènes). Le binaire n'a NI WM_CHAR NI EDIT custom : il confie la saisie aux 21 EDIT
+    // Win32 natifs de mEDITBOX (UI_CreateEditBoxes 0x50E460) qui consomment WM_CHAR
+    // eux-mêmes — déviation compensatoire déjà assumée et documentée par App/App.cpp:1067.
+    else if (scene_ == Scene::InGame && hudReady_ && hud_) hud_->Chat().OnChar(c);
 }
 
 void SceneManager::OnKeyDown(int vk) {
@@ -1346,6 +1636,13 @@ void SceneManager::OnKeyDown(int vk) {
         login_->OnKeyDown(vk);
         ConsumePending();
     } else if (scene_ == Scene::InGame && windowsReady_ && windows_) {
+        // NB : en scène InGame, App/App.cpp:1094 restreint DÉLIBÉRÉMENT ce point d'entrée au
+        // chemin DirectInput (`if (scene_.Current() != Scene::InGame)` sur le WM_KEYDOWN) :
+        // `vk` porte donc ici un SCANCODE DIK, pas un virtual-key. C'est fidèle — le clavier
+        // in-game du binaire est 100 % DIK (Game_OnHotkey 0x537330 relit le tampon
+        // DirectInput). La saisie de chat, elle, passe par RouteTextInputKey (VK, chemin
+        // Win32) — cf. cSceneMgr_OnKeyDown 0x517F80, qui est __thiscall SANS paramètre de
+        // touche et se contente de `switch(*this)` -> case 6 -> Game_OnHotkey.
         // Un dialogue OUVERT (Échap/Entrée...) intercepte avant les raccourcis
         // globaux d'ouverture (I/C/K/G/O/...), comme UI_RouteKeyInput d'origine.
         if (ui::UIManager::Instance().RouteKey(vk)) return;

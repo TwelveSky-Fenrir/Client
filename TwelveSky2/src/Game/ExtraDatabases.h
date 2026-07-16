@@ -167,9 +167,14 @@ inline ExtraDatabases g_ExtraDb;
 
 // Charge les 2 tables .IMG dans g_ExtraDb. `gameDataDir` = racine "GameData" (les fichiers
 // sont sous <gameDataDir>\G03_GDATA\D01_GIMAGE2D\005\). Renvoie true si LES DEUX tables sont
-// chargees et validees (garde de compteur OK pour chaque enregistrement, comme l'original qui
-// echoue au premier ValidateRecord invalide).
-bool LoadExtraDatabases(const std::string& gameDataDir);
+// chargees et validees (garde de compteur OK + boucle *_ValidateRecord OK sur chaque
+// enregistrement, comme l'original qui echoue au premier ValidateRecord invalide).
+//
+// `useTR` = etat du flag g_UseTRVariant 0x1669190 (champ 1 de la cmdline, ecrit @0x460C48).
+// A 1, les DEUX tables basculent sur ...\005\TR\ : leurs chargeurs testent le flag
+// (`cmp ds:g_UseTRVariant, 1` @0x4C6BD9 pour 005_00005, @0x4C8099 pour 005_00006).
+// Defaut `false` = comportement EU historique (les appelants de test n'ont rien a changer).
+bool LoadExtraDatabases(const std::string& gameDataDir, bool useTR = false);
 
 // Accesseur type NpcDefRecord. `npcId` 1-based (1..500) ; nullptr hors bornes OU slot vide (id==0).
 const NpcDefRecord* GetNpcDefRecord(uint32_t npcId);

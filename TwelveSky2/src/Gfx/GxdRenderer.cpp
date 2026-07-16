@@ -1,6 +1,7 @@
 // Gfx/GxdRenderer.cpp — implémentation du singleton renderer GXD.
 // Reconstruit fidèlement les états D3D9 posés par le renderer d'origine (0x18C4EF8).
 #include "Gfx/GxdRenderer.h"
+#include "Gfx/ShaderSet.h" // slots PS12/PS14 du npk pour RenderPostBlur — lecture seule (W9)
 #include <cmath>
 
 #pragma comment(lib, "d3d9.lib")
@@ -15,6 +16,10 @@ GxdRenderer& GxdRenderer::Instance() {
 }
 
 void GxdRenderer::Shutdown() {
+    // Libère les 4 cibles de rendu du bloom (D3DPOOL_DEFAULT) : sans ça, Shutdown fuirait
+    // 4 objets COM. Même ordre que GXD_OnDeviceLost (+548, +540, +552, +544).
+    ReleaseBlurTargets();
+
     m_d3d = nullptr;
     m_device = nullptr;
     m_width = 0;
@@ -24,8 +29,11 @@ void GxdRenderer::Shutdown() {
     m_farZ = 0.0f;
     m_currentShaderId = 0;
     m_useLinearFilter = false;
-    m_depthBiasCapable = false;
-    m_twoSidedStencil = false;
+    // m_depthBiasCapable / m_twoSidedStencil : PAS de remise à false (gap G3, W9).
+    // GXD_FreeGlobalState 0x401530 (décompilée intégralement) ne touche NI +28 NI +32 ; ces
+    // champs sont figés à 1 par GXD_InitGlobalState @0x4013B2/@0x4013B8 et seulement
+    // VERROUILLÉS (jamais effacés) par GXD_DeviceReinit @0x402928/@0x402939.
+    // Cf. le pavé de GxdRenderer.h au-dessus de leur déclaration.
 }
 
 // ---------------------------------------------------------------------------
@@ -124,11 +132,24 @@ bool GxdRenderer::DeviceReinit(IDirect3D9* d3d, IDirect3DDevice9* device,
     if (m_caps.VertexShaderVersion < 0xFFFE0200u) { if (outError) *outError = 3; return false; }
     if (m_caps.PixelShaderVersion  < 0xFFFF0200u) { if (outError) *outError = 4; return false; }
 
-    // GXD_DeviceReinit 0x4023F0 @0x402928 : this+28 = (RasterCaps & 0x4000000) != 0.
-    // ex-VeryOldClient: mCheckDepthBias. 0x4000000 = D3DPRASTERCAPS_DEPTHBIAS (PAS ANISOTROPY 0x20000).
-    m_depthBiasCapable = (m_caps.RasterCaps & D3DPRASTERCAPS_DEPTHBIAS) != 0; // (+28)
-    m_twoSidedStencil = (m_caps.StencilCaps & D3DSTENCILCAPS_TWOSIDED)   != 0; // (+32)
+    // GXD_DeviceReinit 0x4023F0 @0x402928/@0x402939 — VERROUILLAGE À 1, PAS AFFECTATION
+    // (gap G3, corrigé Passe 4 / W9). Désassemblage relu, edi = 1 :
+    //     test dword ptr [esi+0C8h], 4000000h    ; caps+36  = RasterCaps
+    //     jz   short loc_40292D                  ; @0x402928  <- AUCUN else
+    //     mov  [esi+1Ch], edi                    ; @0x40292A  this+28 = 1
+    //     test dword ptr [esi+12Ch], 100h        ; caps+136 = StencilCaps
+    //     jz   short loc_40293C                  ; @0x402937  <- AUCUN else
+    //     mov  [esi+20h], edi                    ; @0x402939  this+32 = 1
+    // Combiné à l'init à 1 de GXD_InitGlobalState (@0x4013B2/@0x4013B8), ces champs valent
+    // TOUJOURS 1 quelles que soient les caps GPU. L'ancien code (`= (caps & bit) != 0`)
+    // produisait `false` là où le binaire garantit 1 sur un GPU dépourvu de la cap.
+    // Cf. le pavé de GxdRenderer.h (double identité +28 = g_ShadowsEnabled / +32 = g_ShadowMethod).
+    if ((m_caps.RasterCaps  & D3DPRASTERCAPS_DEPTHBIAS) != 0) m_depthBiasCapable = true; // (+28)
+    if ((m_caps.StencilCaps & D3DSTENCILCAPS_TWOSIDED)  != 0) m_twoSidedStencil  = true; // (+32)
     m_maxAnisotropy   = m_caps.MaxAnisotropy;
+
+    // (+527548) = 0 @0x402451 : un device fraîchement (re)branché n'est plus « perdu ».
+    m_deviceLost = false;
 
     BuildMatrices();
     BuildDefaultMaterialAndLight();
@@ -138,16 +159,25 @@ bool GxdRenderer::DeviceReinit(IDirect3D9* d3d, IDirect3DDevice9* device,
 // ---------------------------------------------------------------------------
 // GXD_BeginScene 0x404640
 //
-// TODO [ancre 0x404640] : NON CÂBLÉE — aucun appelant côté ClientSource. Le chemin
-// runtime réel est App.cpp (boucle de frame) -> Renderer::BeginFrame() -> SceneManager::
-// Render(), qui reproduit déjà Gfx_BeginFrame 0x6A2280 (Object A : Clear + BeginScene) et
-// appelle GXD_ConfigSamplerStates 0x403B50 à la bonne position. Câbler SetupFrame() en
-// l'état produirait un DOUBLON de Clear/BeginScene avec Renderer::BeginFrame (et un
-// BeginScene imbriqué => D3DERR_INVALIDCALL). Dans le binaire les deux coexistent bien,
-// mais GXD_BeginScene n'est PAS sur le chemin des Scene_*Render (ses 6 sites d'appel de
-// ConfigSamplerStates sont dans les scènes ; le 7e, 0x4047C7, est ici) : GXD_BeginScene
-// sert aux passes de rendu d'Object B. Gap distinct, hors du périmètre de ce front —
-// la répartition Object A / Object B des débuts de frame doit être tranchée globalement.
+// SANS APPELANT — ET C'EST FIDÈLE, PAS UN GAP (statué Passe 4 / W9, gap G4 réfuté).
+//
+// `xrefs_to(0x404640)` = 0 : GXD_BeginScene est MORTE DANS LE BINAIRE AUSSI. Une SetupFrame()
+// sans appelant est donc la transposition EXACTE, et non une lacune de câblage à combler.
+// Le chemin runtime réel est App.cpp (boucle de frame) -> Renderer::BeginFrame() ->
+// SceneManager::Render(), qui reproduit Gfx_BeginFrame 0x6A2280 (Object A : Clear +
+// BeginScene) et appelle GXD_ConfigSamplerStates 0x403B50 à la bonne position — exactement
+// comme les 6 sites d'appel des Scene_*Render (le 7e, 0x4047C7, est ici, dans cette fonction
+// morte). Câbler SetupFrame() produirait en prime un DOUBLON de Clear/BeginScene avec
+// Renderer::BeginFrame (BeginScene imbriqué => D3DERR_INVALIDCALL).
+//
+// NE PAS « corriger » le recalcul de vue ci-dessous : le gap G4 réclamait sa suppression au
+// motif que « l'original ne refait pas de LookAt par frame ». C'est FAUX — GXD_BeginScene le
+// fait, ligne pour ligne : v7 = *(a1+724) - *(a1+712) @0x404692 ; Vec3_Normalize(a1+736)
+// @0x4046C0 ; up = (0,1,0) ; j_D3DXMatrixLookAtLH(a1+748, a1+712, a1+724, &up) @0x4046E3.
+// Ce que le gap avait vu (les qmemcpy Object A -> Object B des Scene_*Render, @0x5188DC/ED/F5)
+// est un chemin DIFFÉRENT et PARALLÈLE, qui écrit des champs DISJOINTS (+748/+988/+736..744
+// et non +712/+724) : les deux coexistent. Il est modélisé par SetViewMatrix/SetWorldMatrix/
+// SetViewDir (cf. GxdRenderer.h), qui s'ajoutent à SetCamera sans le remplacer.
 // ---------------------------------------------------------------------------
 bool GxdRenderer::SetupFrame() {
     if (!m_device) return false;
@@ -299,6 +329,300 @@ bool GxdRenderer::WorldToScreen(const D3DXVECTOR3& world, int& sx, int& sy) cons
     sx = ix;
     sy = iy;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Camera_SetEyeTarget 0x403420 — pousse oeil (+712) / cible (+724) SOUS CONDITIONS.
+// Décompilation relue intégralement ; (a2,a3,a4) = oeil, (a5,a6,a7) = cible :
+//     if ( a5 == a2 && a6 == a3 && a7 == a4 ) return 0;          /*0x403465*/
+//     v17 = a2-a5 ; v18 = a3-a6 ; v19 = a4-a7 ;                  /*0x403483..0x403491*/
+//     v14 = fabs(v18) / Crt_sqrtf(v17*v17 + v18*v18 + v19*v19) ; /*0x4034a7..0x4034d6*/
+//     Math_AsinFpu(v14) ; v15 = v14 * 57.2957763671875 ;         /*0x4034de..0x4034f1*/
+//     if ( fabs(v15) > 89.989998 ) return 0;                     /*0x40350e*/
+//     *(this+178..183) = a2..a7 ; return 1;                      /*0x403522..0x403574*/
+// (this+178 = octet 712 = m_eye ; this+181 = octet 724 = m_at.)
+// Le rejet est un REFUS SEC : les champs gardent leur valeur précédente.
+// ---------------------------------------------------------------------------
+bool GxdRenderer::SetCamera(const D3DXVECTOR3& eye, const D3DXVECTOR3& at) {
+    // 1) Oeil confondu avec la cible -> direction de vue indéfinie. (@0x403465)
+    if (at.x == eye.x && at.y == eye.y && at.z == eye.z) return false;
+
+    const float dx = eye.x - at.x;
+    const float dy = eye.y - at.y;
+    const float dz = eye.z - at.z;
+
+    // 2) Élévation trop proche du pôle -> LookAtLH dégénère (up figé (0,1,0)). (@0x40350E)
+    //    Littéraux EXACTS du binaire : 57.2957763671875 (0x42652EE1) et 89.989998.
+    const float len = sqrtf(dx * dx + dy * dy + dz * dz);
+    const float elevDeg = asinf(fabsf(dy) / len) * 57.2957763671875f;
+    if (fabsf(elevDeg) > 89.989998f) return false;
+
+    m_eye = eye; // (+712)
+    m_at  = at;  // (+724)
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Cibles de rendu du bloom — partie « création paresseuse » de GXD_RenderPostBlur
+// 0x4053E0 (@0x40547A..0x405563).
+//
+// Fidélité des détails qui comptent :
+//   - division ENTIÈRE SIGNÉE w/2 et h/2 (`cdq/sub/sar 1` @0x405464-0x40546A) : sur une
+//     largeur impaire l'original perd le pixel de reste, on fait pareil.
+//   - j_D3DXCreateTexture(dev, halfW, halfH, MipLevels=1, Usage=1 D3DUSAGE_RENDERTARGET,
+//     Format=22 D3DFMT_X8R8G8B8, Pool=0 D3DPOOL_DEFAULT, &tex)  @0x40548F / @0x4054F8
+//   - GetSurfaceLevel(0, &surf) = vtbl+72                        @0x4054AC / @0x405536
+//     (`lea edx, [esi+228h]` @0x405526 : 0x228 = 552 = surfB ; 0x224 = 548 = surfA)
+//   - chaque test est INDÉPENDANT (`if (!texA) {...}` puis `if (texB) goto ...`) : les deux
+//     paires sont créées séparément, pas en bloc.
+// ---------------------------------------------------------------------------
+bool GxdRenderer::EnsureBlurTargets() {
+    if (!m_device) return false;
+
+    const int halfW = m_width  / 2; // (+48)/2, division entière signée
+    const int halfH = m_height / 2; // (+52)/2
+    if (halfW <= 0 || halfH <= 0) return false;
+
+    // --- Paire A (texA @+540 -> surfA @+548) ---
+    if (!m_blurTexA) {
+        if (FAILED(D3DXCreateTexture(m_device, static_cast<UINT>(halfW), static_cast<UINT>(halfH),
+                                     1, D3DUSAGE_RENDERTARGET, D3DFMT_X8R8G8B8,
+                                     D3DPOOL_DEFAULT, &m_blurTexA))) {
+            m_blurTexA = nullptr;
+            return false; // `return result` @0x405496 : rien n'a encore été pris
+        }
+        if (FAILED(m_blurTexA->GetSurfaceLevel(0, &m_blurSurfA))) {
+            // @0x4054BA : Release(texA) + texA = 0, puis retour.
+            m_blurSurfA = nullptr;
+            m_blurTexA->Release();
+            m_blurTexA = nullptr;
+            return false;
+        }
+    }
+
+    // --- Paire B (texB @+544 -> surfB @+552) ---
+    if (!m_blurTexB) {
+        if (FAILED(D3DXCreateTexture(m_device, static_cast<UINT>(halfW), static_cast<UINT>(halfH),
+                                     1, D3DUSAGE_RENDERTARGET, D3DFMT_X8R8G8B8,
+                                     D3DPOOL_DEFAULT, &m_blurTexB))) {
+            // @0x405506 : Release(surfA) + surfA = 0, Release(texA) + texA = 0.
+            m_blurTexB = nullptr;
+            ReleaseBlurTargets();
+            return false;
+        }
+        if (FAILED(m_blurTexB->GetSurfaceLevel(0, &m_blurSurfB))) {
+            // @0x405544 : Release(surfA), surfA=0 ; Release(texA), texA=0 ; Release(texB), texB=0.
+            m_blurSurfB = nullptr;
+            ReleaseBlurTargets();
+            return false;
+        }
+    }
+    return true;
+}
+
+// GXD_OnDeviceLost 0x4042E0 @0x4042E3..0x404347 : ordre de libération EXACT
+// +548 (surfA), +540 (texA), +552 (surfB), +544 (texB), chacun remis à 0 après Release().
+void GxdRenderer::ReleaseBlurTargets() {
+    if (m_blurSurfA) { m_blurSurfA->Release(); m_blurSurfA = nullptr; } // (+548) @0x4042FD
+    if (m_blurTexA)  { m_blurTexA->Release();  m_blurTexA  = nullptr; } // (+540) @0x404315
+    if (m_blurSurfB) { m_blurSurfB->Release(); m_blurSurfB = nullptr; } // (+552) @0x40432D
+    if (m_blurTexB)  { m_blurTexB->Release();  m_blurTexB  = nullptr; } // (+544) @0x404345
+}
+
+// ---------------------------------------------------------------------------
+// GXD_OnDeviceLost 0x4042E0
+//
+// L'original libère 24 objets D3DPOOL_DEFAULT : les 4 RT du bloom (+540/+544/+548/+552),
+// la déclaration de vertex skinné (+526880) et 10 paires de slots shader
+// (+526888..+527536), puis `if (*(this+6352) == 1) World_Shutdown(this+6348)` @0x40454C.
+// Côté ClientSource, GxdRenderer ne possède QUE les 4 RT (cf. le pavé de RestoreAfterReset
+// dans GxdRenderer.h pour la répartition des trois autres familles).
+// ---------------------------------------------------------------------------
+void GxdRenderer::OnDeviceLost() {
+    m_deviceLost = true; // (+527548) = 1 @0x4042EC — posé AVANT toute libération
+    ReleaseBlurTargets();
+}
+
+// ---------------------------------------------------------------------------
+// GXD_RestoreAfterReset 0x404570
+//   if ( *(this+527548) == 1 ) {           /*0x40457a*/
+//       ... World_ReloadMap / CreateVertexDeclaration / 12 shaders ...
+//       if ( un échec ) return 0;          /*0x4045b8*/
+//       *(this+527548) = 0;                /*0x404629*/
+//   }
+//   return 1;                              /*0x4045b7*/
+// -> renvoie true SANS RIEN FAIRE si le drapeau n'était pas posé (cas nominal).
+// Les 4 RT n'ont pas à être recréées ici : RenderPostBlur les recrée paresseusement
+// (`if (!*(a1+540))` @0x40547A), exactement comme l'original.
+// ---------------------------------------------------------------------------
+bool GxdRenderer::RestoreAfterReset() {
+    if (!m_deviceLost) return true; // `return 1` @0x4045B7
+    if (!m_device) return false;    // pas de device : rien à restaurer, drapeau conservé
+    m_deviceLost = false;           // (+527548) = 0 @0x404629 (succès total)
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// GXD_RenderPostBlur 0x4053E0 — bloom en 3 temps (décompilation + désassemblage relus).
+//
+// CÂBLAGE — ⚠ POINT D'APPEL HORS DE CE FRONT, À POSER PAR L'ORCHESTRATEUR.
+//   Site d'origine : UNIQUE et INCONDITIONNEL, en ligne droite (aucun saut entre les deux
+//   bornes) dans Scene_InGameRender :
+//       @0x52FB49  call Env_StepTimeOfDay
+//       @0x52FB53  mov ecx, offset g_GxdRenderer ; call GXD_RenderPostBlur
+//       @0x52FB89  call Gfx_Begin2D
+//   Miroir C++ attendu : Scene/WorldRenderer.cpp (ou Scene/InGameScene), APRÈS tout le rendu
+//   3D et AVANT le passage en 2D, sans aucune condition :
+//       ts2::gfx::GxdRenderer::Instance().RenderPostBlur(shaderSet_);
+//   Tant que ce n'est pas posé, cette fonction reste du code mort.
+//
+// La garde d'origine `cmp [ecx+18h], 1` @0x4053ED n'est PAS reproduite comme une option :
+// son unique writer (@0x4013AC, `= 1`) la rend toujours vraie -> pas de paramètre d'activation.
+// La branche `else` (Release des 4 RT quand la garde est fausse) est donc morte : elle est
+// tout de même réalisée, ailleurs et pour une vraie raison, par OnDeviceLost().
+//
+// Quad : 4 sommets (x, y, z, rhw, u, v), stride 24, D3DFVF_XYZRHW|D3DFVF_TEX1 = 260,
+// dessiné en TRIANGLESTRIP (2 primitives) :
+//     v0 = (0, H, 0, 1, 0, 1)   v1 = (0, 0, 0, 1, 0, 0)
+//     v2 = (W, H, 0, 1, 1, 1)   v3 = (W, 0, 0, 1, 1, 0)
+// avec (W,H) = (halfW, halfH) pour les passes 6/7 (@0x4055F0..0x405675) et la PLEINE
+// résolution pour le composite (@0x405912..0x405995).
+// ---------------------------------------------------------------------------
+namespace {
+
+// Un sommet du quad plein écran : 24 octets, FVF 260.
+struct PostBlurVertex {
+    float x, y, z, rhw;
+    float u, v;
+};
+static_assert(sizeof(PostBlurVertex) == 24, "Le quad de GXD_RenderPostBlur a un stride de 24");
+
+// Remplit le quad TRIANGLESTRIP dans l'ordre EXACT du binaire.
+void BuildPostBlurQuad(PostBlurVertex q[4], float w, float h) {
+    q[0] = { 0.0f, h,    0.0f, 1.0f, 0.0f, 1.0f };
+    q[1] = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+    q[2] = { w,    h,    0.0f, 1.0f, 1.0f, 1.0f };
+    q[3] = { w,    0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
+}
+
+} // namespace
+
+void GxdRenderer::RenderPostBlur(const ShaderSet& shaders) {
+    if (!m_device) return;
+
+    const GxdShader& sh12 = shaders.Get(GxdShaderId::PS12_PostBlur); // flou horizontal
+    const GxdShader& sh14 = shaders.Get(GxdShaderId::PS14_PostBlur); // flou vertical
+    if (!sh12.Valid() || !sh14.Valid()) return; // shaders non chargés : rien à faire
+
+    // Registres de sampler + handles résolus à la compilation (l'original les a figés dans
+    // this+527424 / this+527464 (PS12) et this+527488 / this+527528 (PS14)).
+    const int  samp12 = sh12.Sampler("mTexture0");
+    const int  samp14 = sh14.Sampler("mTexture0");
+    const D3DXHANDLE h12 = sh12.Handle("mTexture0PostSize");
+    const D3DXHANDLE h14 = sh14.Handle("mTexture0PostSize");
+    if (samp12 < 0 || samp14 < 0 || !h12 || !h14) return;
+
+    if (!EnsureBlurTargets()) return;
+
+    IDirect3DDevice9* dev = m_device;
+    const int halfW = m_width  / 2;
+    const int halfH = m_height / 2;
+
+    // --- Récupère le back-buffer (vtbl+72 @0x405580) ---
+    IDirect3DSurface9* bb = nullptr;
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
+
+    // --- Downsample back-buffer -> surfA (StretchRect vtbl+136, Filter=2 LINEAR @0x4055AD) ---
+    if (FAILED(dev->StretchRect(bb, nullptr, m_blurSurfA, nullptr, D3DTEXF_LINEAR))) {
+        bb->Release(); // @0x4055B9 : l'original sort par le Release de la surface
+        return;
+    }
+
+    // --- États communs aux 3 passes (@0x4055D5 / @0x4055EC ; ebp = 0 confirmé au disasm) ---
+    dev->SetRenderState(D3DRS_ZENABLE,  FALSE); // état 7   = 0
+    dev->SetRenderState(D3DRS_LIGHTING, FALSE); // état 137 = 0
+
+    PostBlurVertex quad[4];
+    BuildPostBlurQuad(quad, static_cast<float>(halfW), static_cast<float>(halfH));
+
+    // =====================================================================================
+    // PASSE 6 — flou horizontal : texA -> surfB (PS12)
+    // L'original ferme la scène, bascule la cible, puis rouvre : EndScene/SetRenderTarget/
+    // BeginScene (@0x405681 / @0x40569A / @0x4056AB).
+    // =====================================================================================
+    dev->EndScene();
+    dev->SetRenderTarget(0, m_blurSurfB);
+    dev->BeginScene();
+
+    m_currentShaderId = 6;                                        // (+526884) = 6 @0x4056B3
+    dev->SetVertexShader(nullptr);                                // @0x4056C7
+    dev->SetPixelShader(sh12.ps);                                 // @0x4056DF (+527408)
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);                     // 260 @0x4056F4
+    dev->SetTexture(static_cast<DWORD>(samp12), m_blurTexA);      // @0x40570F
+    dev->SetSamplerState(static_cast<DWORD>(samp12), D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP); // @0x40572B
+    dev->SetSamplerState(static_cast<DWORD>(samp12), D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP); // @0x405747
+    // ID3DXConstantTable::SetFloat = vtbl+68 @0x40576B — SetFloat, PAS SetFloatArray.
+    // Valeur = (float)halfW (COERCE_FLOAT(LODWORD(v23)), v23 converti @0x40563D).
+    sh12.ct->SetFloat(dev, h12, static_cast<float>(halfW));
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(PostBlurVertex)); // @0x405787
+    dev->SetSamplerState(static_cast<DWORD>(samp12), D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP); // @0x4057A3
+    dev->SetSamplerState(static_cast<DWORD>(samp12), D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP); // @0x4057BF
+
+    // =====================================================================================
+    // PASSE 7 — flou vertical : texB -> surfA (PS14)  (@0x4057D0 / @0x4057E9 / @0x4057FA)
+    // =====================================================================================
+    dev->EndScene();
+    dev->SetRenderTarget(0, m_blurSurfA);
+    dev->BeginScene();
+
+    m_currentShaderId = 7;                                        // (+526884) = 7 @0x405802
+    dev->SetVertexShader(nullptr);                                // @0x405816
+    dev->SetPixelShader(sh14.ps);                                 // @0x40582E (+527472)
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);                     // 260 @0x405843
+    dev->SetTexture(static_cast<DWORD>(samp14), m_blurTexB);      // @0x40585E
+    dev->SetSamplerState(static_cast<DWORD>(samp14), D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP); // @0x40587A
+    dev->SetSamplerState(static_cast<DWORD>(samp14), D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP); // @0x405896
+    // Valeur = (float)halfH (COERCE_FLOAT(LODWORD(v22))) @0x4058BA.
+    sh14.ct->SetFloat(dev, h14, static_cast<float>(halfH));
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(PostBlurVertex)); // @0x4058D6
+    dev->SetSamplerState(static_cast<DWORD>(samp14), D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP); // @0x4058F2
+    dev->SetSamplerState(static_cast<DWORD>(samp14), D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP); // @0x40590E
+
+    // =====================================================================================
+    // COMPOSITE — texA (flouté) additionné au back-buffer, en PLEINE résolution.
+    // Quad reconstruit avec W = (+48) et H = (+52)  (@0x405912..0x405995).
+    // =====================================================================================
+    BuildPostBlurQuad(quad, static_cast<float>(m_width), static_cast<float>(m_height));
+
+    dev->EndScene();                 // @0x4059A1
+    dev->SetRenderTarget(0, bb);     // @0x4059B8
+    bb->Release();                   // @0x4059C4 — relâché AVANT le BeginScene, comme l'original
+    bb = nullptr;
+    dev->BeginScene();               // @0x4059D5
+
+    m_currentShaderId = 0;                                        // (+526884) = 0 @0x4059DE
+    dev->SetVertexShader(nullptr);                                // @0x4059ED
+    dev->SetPixelShader(nullptr);                                 // @0x4059FF — retour fixed-function
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);                     // 260 @0x405A14
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);            // état 27 = 1 @0x405A29
+    dev->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCCOLOR);      // état 19 = 3 @0x405A3E
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);           // état 20 = 2 @0x405A53
+    dev->SetTexture(0, m_blurTexA);                               // étage 0 @0x405A68
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP); // @0x405A7E
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP); // @0x405A94
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(PostBlurVertex)); // @0x405AB0
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);  // @0x405AC6
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);  // @0x405ADC
+
+    // --- Restauration des états (ordre EXACT du binaire) ---
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ZERO);          // état 20 = 1 @0x405AF1
+    dev->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_ONE);           // état 19 = 2 @0x405B06
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);           // état 27 = 0 @0x405B1A
+    dev->SetRenderState(D3DRS_LIGHTING, TRUE);                    // état 137 = 1 @0x405B32
+    dev->SetRenderState(D3DRS_ZENABLE,  TRUE);                    // état 7 = 1 @0x405B47
+    // NB : la restauration rend SRCBLEND=ONE / DESTBLEND=ZERO — ce ne sont PAS les états
+    // initiaux d'Object A (SRCALPHA/INVSRCALPHA, Gfx_InitDevice @0x69C526/@0x69C535).
+    // C'est bien ce que fait l'original ; on ne « corrige » pas.
 }
 
 // ---------------------------------------------------------------------------

@@ -248,10 +248,18 @@ static_assert(sizeof(MonsterInfo) == 944, "MonsterInfo doit faire 944 o");
 
 // Charge les 5 tables .IMG dans g_World.db. `gameDataDir` = racine "GameData"
 // (les fichiers sont sous <gameDataDir>\G03_GDATA\D01_GIMAGE2D\005\).
-// Renvoie true si TOUTES les tables sont chargees et validees (garde de compteur OK).
-// NB : variante TR (dossier 005\TR\, active si g_UseTRVariant==1 dans l'original)
-// non geree ici — on charge les tables EU par defaut.
-bool LoadGameDatabases(const std::string& gameDataDir);
+// Renvoie true si TOUTES les tables sont chargees et validees (garde de compteur OK ET
+// boucle *_ValidateRecord OK sur chaque enregistrement, comme les chargeurs d'origine qui
+// renvoient 0 des le premier enregistrement invalide — cf. @0x4C64F5..0x4C6527).
+//
+// `useTR` = etat du flag g_UseTRVariant 0x1669190 (champ 1 de la cmdline, ecrit @0x460C48).
+// A 1, SEULES les tables ITEM (005_00002), SKILL (005_00003) et MONSTER (005_00004) basculent
+// sur le sous-dossier localise ...\005\TR\ : ce sont les seules dont le chargeur teste le flag
+// (`cmp ds:g_UseTRVariant, 1` @0x4C3939 / @0x4C4BC9 / @0x4C62A9). LEVEL (005_00001) et SOCKET
+// (005_00010) n'ont AUCUNE branche TR dans le binaire et restent EU meme en mode TR, bien que
+// 005\TR\005_00001.IMG existe sur disque — c'est voulu (fidelite).
+// Defaut `false` = comportement EU historique (les appelants de test n'ont rien a changer).
+bool LoadGameDatabases(const std::string& gameDataDir, bool useTR = false);
 
 // Accesseur type LEVEL_INFO. `level` 1-based (1..145) ; nullptr hors bornes.
 // (le client indexe record[level-1].)

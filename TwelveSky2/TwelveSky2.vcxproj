@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -252,6 +252,12 @@
     <ClCompile Include="src\UI\Win32EditBox.cpp" />
     <ClCompile Include="src\World\WorldIntegration.cpp" />
     <ClCompile Include="src\World\WorldMap.cpp" />
+    <ClCompile Include="src\Game\PlayerCmdController.cpp" />
+    <ClCompile Include="src\World\TerrainPicker.cpp" />
+    <ClCompile Include="src\UI\ClanContextMenu.cpp" />
+    <ClCompile Include="src\UI\ShareBoxWindow.cpp" />
+    <ClCompile Include="src\UI\StoragePwWindow.cpp" />
+    <ClCompile Include="src\UI\FloatingNotices.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h" />
@@ -392,6 +398,12 @@
     <ClInclude Include="src\UI\Win32EditBox.h" />
     <ClInclude Include="src\World\WorldIntegration.h" />
     <ClInclude Include="src\World\WorldMap.h" />
+    <ClInclude Include="src\Game\PlayerCmdController.h" />
+    <ClInclude Include="src\World\TerrainPicker.h" />
+    <ClInclude Include="src\UI\ClanContextMenu.h" />
+    <ClInclude Include="src\UI\ShareBoxWindow.h" />
+    <ClInclude Include="src\UI\StoragePwWindow.h" />
+    <ClInclude Include="src\UI\FloatingNotices.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

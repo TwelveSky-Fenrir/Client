@@ -45,6 +45,42 @@ inline constexpr char kPasswordMaskChar = '*'; // 0x2A / 42
 // Période de clignotement du caret (secondes) : 0.5 s allumé / 0.5 s éteint.
 inline constexpr float kCaretBlinkPeriodSec = 1.0f;
 
+// ---------------------------------------------------------------------------
+// Limites de saisie des 21 boîtes EDIT natives — UI_CreateEditBoxes 0x50E460.
+// Relevées une à une dans les opérandes de `SendMessageA(h, 0xC5 /*EM_LIMITTEXT*/,
+// <limite>, 0)` du switch @0x50EDDD (jumptable jpt_50EDDD), chaque cas enchaînant
+// sur `SetWindowLongA(h, -4 /*GWL_WNDPROC*/, UI_EditBoxWndProc)` :
+//   case 0  @0x50EDE4=0x7F   case 1  @0x50EE31=0x7F   case 2  @0x50EE7E=0x0C
+//   case 3  @0x50EECB=0x0C   case 4  @0x50EF18=0x3C   case 5  @0x50EF65=0x0C
+//   case 6  @0x50EFB2=0x0C   case 7  @0x50EFFF=0x3C   case 8  @0x50F04C=0x32
+//   case 9  @0x50F099=0x32   case 10 @0x50F0E6=0x32   case 11 @0x50F133=0x32
+//   case 12 @0x50F180=0x04   case 13 @0x50F1CD=0x18   case 14 @0x50F21A=0x20
+//   case 15 @0x50F267=0x3C   case 16 @0x50F2B4=0x0C   case 17 @0x50F301=0x0C
+//   case 18 @0x50F34E=0x30   case 19 @0x50F395=0x18
+// Index HWND 0-based (index manager = index HWND + 1, cf. UI_FocusEditBox 0x50F4A0).
+//
+// La jumptable n'a QUE 20 cibles : il n'existe AUCUN `case 20`. La 21e boîte tombe
+// donc sur `default: LABEL_2` (def_50EDDD @0x50F3DA -> 0x50ED00) : ni EM_LIMITTEXT,
+// ni SetWindowLongA — elle n'est PAS sous-classée sur UI_EditBoxWndProc et garde
+// donc Tab/Entrée/flèches/collage NATIFS (à l'inverse des 20 autres, cf. le filtre
+// [0x23..0x28] reproduit dans EditBox::OnKey). D'où le 0 sentinelle en [20].
+//
+// TODO [ancre 0x50EDDD] — CÂBLAGE HORS DE CE FICHIER (gap UIFW-05). Les seuls
+// appelants de SetMaxLength sont LoginScene.cpp:108 (0x7F = kEditLimit[0] ✓),
+// LoginScene.cpp:109 (0x7F = kEditLimit[1] ✓) et LoginScene.cpp:147 (12 = 0x0C =
+// kEditLimit[5] ✓) — valeurs déjà correctes, mais écrites en dur : à faire passer
+// par kEditLimit[] pour n'avoir qu'une source de vérité. Une seule DIVERGENCE de
+// valeur subsiste, hors périmètre de ce front : GuildWindow.cpp:46
+// `nameEdit_.SetMaxLength(kNameStride-1)` = 12, alors que la boîte 7 — celle de
+// Guild_AddMemberFromInput 0x66BCD0, cf. UI_EditBoxWndProc case 7 @0x50E24B — vaut
+// 0x3C = 60 (@0x50EFFF). Correctif : `SetMaxLength(kEditLimit[7])`, en conservant la
+// troncature à kNameStride-1 au MOMENT DE L'ENVOI réseau et non à la frappe.
+inline constexpr size_t kEditLimit[21] = {
+    0x7F, 0x7F, 0x0C, 0x0C, 0x3C, 0x0C, 0x0C, 0x3C, 0x32, 0x32, 0x32,
+    0x32, 0x04, 0x18, 0x20, 0x3C, 0x0C, 0x0C, 0x30, 0x18,
+    0 // [20] : aucun case dans la jumptable -> ni limite, ni sous-classement
+};
+
 // Alignement horizontal du texte d'un Label.
 enum class Align { Left, Center, Right };
 
@@ -237,10 +273,22 @@ private:
 
 // ---------------------------------------------------------------------------
 // EditBox — champ de saisie autonome (pas d'EDIT Win32). Gère : insertion de
-// caractères, curseur déplaçable, backspace/suppr, home/fin, masque mot de
-// passe ('*'), caret clignotant, soumission (Entrée) et champ suivant (Tab).
+// caractères, backspace, masque mot de passe ('*'), caret clignotant, soumission
+// (Entrée) et champ suivant (Tab).
 // Fidèle à UI_EditBoxWndProc 0x50E070 (Tab/Entrée) et Scene_LoginRender 0x51B020
 // (masque '*', caret après le texte quand focus).
+//
+// PAS de navigation de caret, à dessein (gap UIFW-04) : UI_EditBoxWndProc avale
+// WM_KEYDOWN pour tout wParam dans [0x23..0x28] (@0x50E394-0x50E3A7) sans jamais
+// atteindre CallWindowProcA @0x50E3C0 — VK_END/HOME/LEFT/UP/RIGHT/DOWN ne bougent
+// donc JAMAIS le caret dans le binaire. Invariant qui en découle et sur lequel
+// s'appuie l'implémentation : `caret_ == text_.size()` en permanence (SetText l.133
+// et OnChar l.170-171 le maintiennent, plus rien ne le déplace) — la saisie est
+// append-only, VK_DELETE est un no-op de fait, et VK_BACK supprime le dernier
+// caractère. Deux autres filtres de la même branche (non modélisés ici, faute
+// d'EDIT natif) : WM_CONTEXTMENU 0x7B -> `return 1` @0x50E34C (pas de menu
+// contextuel) et WM_PASTE 0x302 -> `return 1` si g_GmAuthLevel (0x1669294) < 1 et
+// index != 14 @0x50E369-0x50E378 (collage réservé au GM, sauf la boîte 14).
 class EditBox : public Widget {
 public:
     void SetBackground(const WidgetSprite& bg) { bg_ = bg; }
@@ -249,7 +297,8 @@ public:
     const std::string& Text() const { return text_; }
     void Clear();
 
-    // Longueur max (fidèle : EM_LIMITTEXT — 0x7F login/pw, 0xC montants, 0x3C chat).
+    // Longueur max (fidèle : EM_LIMITTEXT @0x50EDDD). Passer kEditLimit[<index de
+    // la boîte d'origine>] plutôt qu'un littéral — cf. le pavé de kEditLimit.
     void SetMaxLength(size_t n) { maxLen_ = n; }
     size_t MaxLength() const    { return maxLen_; }
 

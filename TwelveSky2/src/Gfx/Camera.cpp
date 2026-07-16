@@ -70,12 +70,57 @@ void Camera::Orbit(float dYawRad, float dPitchRad)
 //   yawDeg   = (mx - lastMx) * 0.2   (this+60)
 //   pitchDeg = (my - lastMy) * 0.3   (this+64)
 // puis Cam_OrbitYaw(yawDeg) / Cam_OrbitPitch(pitchDeg) (degrés -> radians en interne).
+//
+// BORNES 30deg/80deg DU DRAG (gap INPUT-10, comblé Passe 4 / W9) — REVERT, PAS CLAMP.
+// Séquence d'origine relue :
+//   1. sauvegarde oeil (0x800130/34/38) + cible (0x80013C/40/44)   @0x50B075..0x50B0A2
+//   2. Cam_OrbitYaw puis Cam_OrbitPitch
+//   3. v22 = Math_Dist3D(&oeil, &cible)                            @0x50B10B
+//      si v22 > 0 : v32 = asin(fabs(eye.y - target.y) / v22) * 57.2957763671875  @0x50B12A..0x50B16D
+//      sinon       v32 = 0                                         @0x50B174
+//   4. si (target.y >= eye.y && 30.0 < |v32|) @0x50B26A  OU  (target.y < eye.y && 80.0 < |v32|)
+//      @0x50B1BA  ->  Cam_SetLookAt(sauvegarde) @0x50B29B / @0x50B1EB
+//                     + Camera_SetEyeTarget @0x50B2CF  ET SORTIE.
+//
+// ⚠ POINT DE FIDÉLITÉ : l'original restaure l'OEIL COMPLET, donc le YAW est annulé lui
+//   aussi — pas seulement le pitch. On restaure bien les deux (le drag est intégralement
+//   rejeté, il n'est pas « rogné » sur le seul axe fautif).
+//
+// Le clamp symétrique 89.9deg de Orbit()/ClampPitch (Cam_OrbitPitch 0x69CF90) reste appliqué
+// EN AMONT par Orbit() : c'est un garde-fou moteur distinct, les deux se cumulent comme dans
+// le binaire (Camera_MouseDragRotate appelle Cam_OrbitPitch, qui clampe déjà, PUIS teste).
+//
+// HORS PÉRIMÈTRE (contrôleur, cf. Gfx/CameraThirdPersonBridge non possédé) : les gardes de
+// scène de 0x50AFD0 (`g_SceneMgr == 6 && g_SceneSubState == 4`, bouton `a4 == 2`) décident
+// SI le drag a lieu ; elles ne changent pas ce que fait le drag.
 // -----------------------------------------------------------------------------
 void Camera::OrbitByMouse(int dxPixels, int dyPixels)
 {
+    // 1) Sauvegarde de l'état AVANT orbite (équivalent de l'oeil/cible sauvegardés).
+    const float savedYaw   = m_yaw;
+    const float savedPitch = m_pitch;
+
+    // 2) Application de l'orbite (yaw libre, pitch clampé à 89.9deg par ClampPitch).
     const float yawDeg   = static_cast<float>(dxPixels) * kMouseYawSensDeg;
     const float pitchDeg = static_cast<float>(dyPixels) * kMousePitchSensDeg;
     Orbit(yawDeg * kDegToRad, pitchDeg * kDegToRad);
+
+    // 3) Élévation résultante en degrés. Notre pitch EST l'angle que l'original recalcule
+    //    par asin(|eye.y - target.y| / dist) : avec eye = target + dist*(cp*sy, sp, cp*cy),
+    //    on a |eye.y - target.y| / dist = |sin(pitch)|, donc asin(...) = |pitch|.
+    //    On utilise donc directement |pitch| plutôt que de refaire le trajet trigonométrique.
+    const float elevDeg = std::fabs(m_pitch) * kRadToDeg;
+
+    // 4) Test des deux bornes asymétriques puis REVERT (yaw ET pitch) + sortie.
+    //    pitch <= 0 <=> target.y >= eye.y (caméra sous la cible) -> borne 30deg  @0x50B26A
+    //    pitch >  0 <=> target.y <  eye.y (caméra au-dessus)     -> borne 80deg  @0x50B1BA
+    const float limitDeg = (m_pitch <= 0.0f) ? kDragPitchLimitBelowDeg
+                                             : kDragPitchLimitAboveDeg;
+    if (limitDeg < elevDeg) {
+        m_yaw   = savedYaw;   // @0x50B29B / @0x50B1EB : restauration puis sortie sèche
+        m_pitch = savedPitch;
+        return;
+    }
 }
 
 // -----------------------------------------------------------------------------

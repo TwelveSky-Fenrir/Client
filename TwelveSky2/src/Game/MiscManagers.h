@@ -83,18 +83,47 @@ struct CursorSet {
     // this+1 .. this+9 : les 9 curseurs, dans l'ORDRE EXACT du binaire.
     // Ressources IDs = MAKEINTRESOURCE(id) sur le module .exe lui-même
     // (RT_GROUP_CURSOR intégrées dans la section .rsrc — PAS de fichier
-    // .cur/.ani sur disque). Rôle applicatif de chaque slot NON déterminé
-    // avec certitude (>100 sites d'appel dans tout le rendu UI/HUD/scènes ;
-    // hors périmètre de ce manager d'INIT) — slots nommés génériquement.
-    HCURSOR slot66 = nullptr; // id 0x66 (102) — this+1
-    HCURSOR slot67 = nullptr; // id 0x67 (103) — this+2
-    HCURSOR slot68 = nullptr; // id 0x68 (104) — this+3
-    HCURSOR slot69 = nullptr; // id 0x69 (105) — this+4
-    HCURSOR slot6A = nullptr; // id 0x6A (106) — this+5
-    HCURSOR slot6B = nullptr; // id 0x6B (107) — this+6
-    HCURSOR slot6C = nullptr; // id 0x6C (108) — this+7
-    HCURSOR slot75 = nullptr; // id 0x75 (117) — this+8
-    HCURSOR slot77 = nullptr; // id 0x77 (119) — this+9
+    // .cur/.ani sur disque).
+    //
+    // RÔLE DE CHAQUE SLOT — établi (vague W10) par le switch 8 cas de
+    // Scene_InGameRender 0x52D0B0 (`cmp var_53C, 7 / ja def_530FC7` @0x530FB4,
+    // saut @0x530FC7) dont chaque cas pose une frame de curseur selon la
+    // catégorie renvoyée par World_PickEntityAtCursor 0x538AB0 :
+    //
+    //   slot 0     (0x66) défaut — reset d'entrée de scène (Scene_EnterWorldUpdate
+    //                    @0x52C044, Scene_InGameUpdate @0x52C637 : `push 0`) ET
+    //                    tout hit-test UI réussi (cDrawWin_Draw : Sprite2D_HitTest
+    //                    != 0 -> `push 0` @0x6299D8).
+    //   slots 1,2  (0x67,0x68) paire clignotante 2 Hz « interaction » : cas 1
+    //                    (joueur, +Char_DrawNameplate @0x531052), cas 4 (PNJ
+    //                    g_NpcRenderArray stride 88, +Fx_MeleeSwingDrawMarker
+    //                    @0x531148), cas 7 (objet de zone, +Obj_DrawNameLabel
+    //                    @0x531206).  base = +1 (@0x531022 / @0x53111B / @0x5311E2)
+    //   slots 3,4  (0x69,0x6A) paire clignotante 2 Hz « hostile » : cas 2 et 3
+    //                    (joueurs, +Char_DrawNameplate @0x5310A5 / @0x5310F8),
+    //                    cas 5 (monstre dword_1766F74 stride 280,
+    //                    +Char_DrawOverheadName @0x531199).
+    //                    base = +3 (@0x531075 / @0x5310C8 / @0x53116B)
+    //   slots 5,6  (0x6B,0x6C) paire clignotante 2 Hz : cas 6 (objet au sol ;
+    //                    aucun draw associé).  base = +5 (@0x5311B9)
+    //   slot 7     (0x75) compétence LANÇABLE — cas 0 :
+    //                    Skill_CanCastAtCursor(unk_1685740,…) != 0 -> `push 7`
+    //                    @0x530FEA
+    //   slot 8     (0x77) compétence NON lançable — cas 0, branche zéro ->
+    //                    `push 8` @0x530FFA
+    //
+    // NB : le RÔLE ci-dessus est prouvé par le contexte d'appel ; l'APPARENCE
+    // (épée/main/sablier…) ne l'est PAS — les RT_GROUP_CURSOR n'ont pas été
+    // inspectés. On ne nomme donc PAS les slots d'après un dessin supposé.
+    HCURSOR slot66 = nullptr; // id 0x66 (102) — this+1 — défaut / hover UI
+    HCURSOR slot67 = nullptr; // id 0x67 (103) — this+2 — interaction (phase A)
+    HCURSOR slot68 = nullptr; // id 0x68 (104) — this+3 — interaction (phase B)
+    HCURSOR slot69 = nullptr; // id 0x69 (105) — this+4 — hostile (phase A)
+    HCURSOR slot6A = nullptr; // id 0x6A (106) — this+5 — hostile (phase B)
+    HCURSOR slot6B = nullptr; // id 0x6B (107) — this+6 — objet au sol (phase A)
+    HCURSOR slot6C = nullptr; // id 0x6C (108) — this+7 — objet au sol (phase B)
+    HCURSOR slot75 = nullptr; // id 0x75 (117) — this+8 — compétence lançable
+    HCURSOR slot77 = nullptr; // id 0x77 (119) — this+9 — compétence bloquée
 
     // CursorSet_LoadResources 0x4C0FA0 : LoadCursorA(hInstance, id) pour les
     // 9 ressources ci-dessus, DANS CET ORDRE. Renvoie faux si un seul appel
@@ -131,10 +160,14 @@ struct CursorSet {
     // Décompilation d'origine (this = &unk_8E714C, tableau de 10 dwords) :
     //   return SetCursor(*(this + *this + 1));   // this[ state + 1 ]
     // SetActiveSlot() ci-dessous est l'équivalent client de
-    // Util_SetClampedU8Field(&unk_8E714C, idx) : NON câblée à un site d'appel
-    // UI pour l'instant (les ~157 sites d'origine sont dans du code UI/scènes
-    // pas encore porté) — fournie pour que de futurs portages UI puissent
-    // piloter le curseur actif sans dupliquer la logique de clamp.
+    // Util_SetClampedU8Field(&unk_8E714C, idx) 0x4C1110.
+    //
+    // CIBLE UNIQUE — prouvé par COMPTAGE (vague W10), pas par échantillon :
+    // xrefs_to(0x8E714C) = 161 refs data = les 157 sites Util_SetClampedU8Field
+    // + exactement 4 autres (WinMain @0x461636 AnimateTick, App_Init @0x461F8B
+    // LoadResources, App_Shutdown @0x462587 DestroyAll, CrtInit_CursorSetThunk
+    // @0x7A51F3). 157 + 4 = 161 => CHAQUE site du setter vise bien ce global,
+    // sans exception.
     // ===========================================================================
     HCURSOR AnimateTick() const;
 
@@ -143,6 +176,58 @@ struct CursorSet {
     // touche pas *this quand a2 > 8). Retourne vrai si la valeur a été acceptée.
     bool SetActiveSlot(uint32_t idx);
 };
+
+// ===========================================================================
+// Slots de curseur nommés — constantes prouvées (cf. tableau de rôles ci-dessus).
+// À passer à CursorSet::SetActiveSlot(). Les trois bases « paire clignotante »
+// s'emploient via CursorBlinkSlot() (2 Hz).
+// ===========================================================================
+constexpr uint32_t kCursorDefault      = 0; // @0x52C044 / @0x52C637 / @0x6299D8
+constexpr uint32_t kCursorInteractBase = 1; // @0x531022 / @0x53111B / @0x5311E2
+constexpr uint32_t kCursorHostileBase  = 3; // @0x531075 / @0x5310C8 / @0x53116B
+constexpr uint32_t kCursorPickupBase   = 5; // @0x5311B9
+constexpr uint32_t kCursorCastOk       = 7; // @0x530FEA (Skill_CanCastAtCursor != 0)
+constexpr uint32_t kCursorCastBlocked  = 8; // @0x530FF8
+
+// ===========================================================================
+// Clignotement 2 Hz des paires {1,2} / {3,4} / {5,6} — transcription EXACTE du
+// motif répété aux 7 cas de Scene_InGameRender 0x52D0B0 (ancre : cas 1
+// @0x531009..0x531022) :
+//     fld ds:g_GameTimeSec        // temps de jeu
+//     fadd st, st                 // x + x  (PAS une multiplication par 2.0)
+//     call Crt_ftol               // troncature vers zéro -> int
+//     and  eax, 80000001h         //  ┐
+//     jns  short L                //  │ idiome MSVC de MODULO SIGNÉ % 2
+//     dec  eax                    //  │ (et NON un simple `& 1` : le fixup de
+//     or   eax, 0FFFFFFFEh        //  │  signe rend -3 % 2 == -1)
+//     inc  eax                    //  ┘
+//   L: add  eax, <base>           // 1, 3 ou 5 selon la catégorie
+//
+// Le résultat est passé tel quel à Util_SetClampedU8Field (paramètre NON
+// signé) : un `base` + résultat négatif deviendrait un unsigned énorme, donc
+// rejeté par le clamp `a2 <= 8` — comportement déjà reproduit par
+// SetActiveSlot(uint32_t). On garde donc le type signé ici pour rester fidèle
+// (en pratique g_GameTimeSec >= 0, le résultat vaut base ou base+1).
+inline int CursorBlinkSlot(int base, float gameTimeSec) {
+    return static_cast<int>(gameTimeSec + gameTimeSec) % 2 + base;
+}
+
+// ===========================================================================
+// Cursors() — instance UNIQUE du jeu de curseurs, miroir de dword_8E714C
+// (0x8E714C), qui est un GLOBAL dans le binaire et non un membre d'objet.
+// ===========================================================================
+// Les 161 références à 0x8E714C (cf. « CIBLE UNIQUE » ci-dessus) proviennent de
+// WinMain, App_Init, App_Shutdown ET de tout le rendu UI/scènes : aucun de ces
+// sites ne possède l'objet, tous adressent le même global. Exposer l'instance
+// ici est donc la transcription FIDÈLE — pas un contournement d'encapsulation.
+//
+// ⚠️ ATTENTION (câblage indissociable, cf. rapport W10) : tant qu'App conserve
+// son membre privé `cursors_` (App/App.h:43), il existerait DEUX CursorSet —
+// les scènes/UI écriraient dans ce singleton pendant qu'App ticke le membre,
+// et le curseur resterait figé alors même que le code PARAÎT complet.
+// App.h:43 / App.cpp:320/406/741 doivent basculer sur Cursors() DANS LE MÊME
+// changement (fichiers non possédés par W10 -> wiringTodoForOrchestrator).
+CursorSet& Cursors();
 
 // ===========================================================================
 // mMYINFO — Player_ResetAnimState 0x50F520.

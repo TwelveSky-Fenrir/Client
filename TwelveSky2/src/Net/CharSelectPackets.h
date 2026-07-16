@@ -68,22 +68,97 @@ namespace ts2::net {
 // `unk_1669380` de la 1ère fiche (stride 2522 dwords = 10088 o = kCharRecordSize) —
 // soustraction d'adresses : nom=+20, power=+56, zoneId=+5468, position=+5472/5476/5480.
 inline constexpr int kCharRecFieldName    = 20;   // 13 o, C-string (nom du personnage)
+// +36 : champ « job/classe » ÉCRIT PAR LE FORMULAIRE DE CRÉATION (dword_16709DC,
+// 3 écritures : 0x52537C aléatoire / 0x5260B2 flèche − / 0x526158 flèche +) et lu par
+// l'aperçu de CRÉATION comme index de race. DISTINCT de kCharRecFieldRace (+40) — voir
+// l'ancre détaillée sur celui-ci. Dans la branche LISTE, +36 ne sert QUE de SENTINELLE
+// testée `== 3` (Char_RenderModel 0x527020, `cmp dword ptr [ecx+24h], 3` @0x52754A).
 inline constexpr int kCharRecFieldJob     = 36;   // int32
-inline constexpr int kCharRecFieldFaction = 44;   // int32
+// +40 : RACE EFFECTIVE de la LISTE — index passé à PcModel_ResolveEquipSlot 0x4E46A0
+// (a2) pour résoudre le modèle 3D, et à PcSnd_ResolveEquipSlot (@0x5251E4) pour le son.
+// ANCRE DÉCISIVE — Char_RenderModel 0x527020 a DEUX branches (`cmp [ebp+arg_4], 0 ;
+// jz loc_527452` @0x52702F) qui lisent des champs DIFFÉRENTS :
+//   branche CRÉATION (arg_4 != 0) : `mov edx, [ecx+24h]` @0x527051 -> a2 = record+36
+//   branche LISTE    (arg_4 == 0) : `mov eax, [edx+28h]` @0x527536 -> a2 = record+40
+// (les DEUX passent record+44 en a3 : `mov eax,[edx+2Ch]` @0x52704A / `mov ecx,[eax+2Ch]`
+// @0x52752F). Ce n'est PAS un copier-coller : la branche LISTE lit AUSSI +36, mais comme
+// sentinelle `== 3` @0x52754A -> les deux champs COEXISTENT avec des rôles distincts.
+// RE-VÉRIFIÉ (désassemblage direct, cette session) + corroboré par data_refs :
+//   data_refs(0x16709E0) = fiche de création +40 -> ZÉRO référence : le client n'écrit
+//     JAMAIS +40 ; c'est le SERVEUR qui le remplit (écho op17 @0x52A71E).
+//   data_refs(0x16693A8) = fiche de liste +40 -> 5 réfs, TOUTES en lecture (0x51C52E,
+//     0x51C598, 0x51C622, 0x51C691 dans Scene_CharSelectUpdate ; 0x5251D8 dans
+//     Scene_CharSelectOnMouseUp).
+// => Rendre la LISTE avec +36 (= job) affiche le MAUVAIS modèle 3D. Cf.
+// ReadCharRecordListFields ci-dessous, l'accès à utiliser côté rendu de la liste.
+inline constexpr int kCharRecFieldRace    = 40;   // int32 — g_LocalElementSecondary 0x1673198
+// +44 : GENRE (0..1) — nom historique « faction » conservé pour ne pas casser
+// game::CharSlotInfo::faction (Game/CharSelectFlow.h, hors de ce front). PcModel_ResolveEquipSlot
+// 0x4E46A0 borne a2>2 et a3>1 (@0x4E46CC) => a2(race) ∈ [0..2], a3(genre) ∈ [0..1].
+// L'OFFSET d'émission est correct : divergence de NOMMAGE uniquement, ne pas y toucher.
+inline constexpr int kCharRecFieldFaction = 44;   // int32 — genre en réalité
 inline constexpr int kCharRecFieldFace    = 48;   // int32
 inline constexpr int kCharRecFieldHair    = 52;   // int32
+// +56 : le binaire l'utilise comme NIVEAU (g_SelfLevel 0x16731A8 : tier, affichage du
+// niveau, sélection par défaut). Nom « power » conservé — game::CharSlotInfo::power est
+// hors de ce front. Divergence de NOMMAGE uniquement, la valeur et l'usage sont corrects.
 inline constexpr int kCharRecFieldPower   = 56;   // int32 — dword_16693B8[2522*i] (unk_1669380+0x38)
-inline constexpr int kCharRecFieldPreset  = 216;  // int32 — lookPresetId (résolu job×variant)
+// +216 : ID D'OBJET DE L'ARME DE DÉPART, résolu dans la DB items — PAS un « lookPresetId ».
+// ANCRE : Char_RenderModel branche LISTE, `mov edx, [ecx+0D8h]` @0x527497 puis
+// `mov ecx, offset mITEM ; call MobDb_GetEntry` @0x52749E/0x5274A3 — EXACTEMENT le même
+// motif que les 8 autres slots d'équipement (+0x78/+0x88/+0xB8/+0xE8/+0xF8/+0x108/+0x118/
+// +0x128 ; p.ex. +0xE8 -> MobDb_GetEntry @0x5274BA, 2 instructions plus loin).
+// La FORMULE de résolution côté client reste `6*race + variant + 5` (bornes 5..19,
+// cf. game::ResolveLookPresetId) — seul le NOM du champ était faux.
+// ⚠️ +216 n'est écrit QU'À LA CONFIRMATION de la création (0x52669A..0x52675B) : l'aperçu
+// 3D du FORMULAIRE lit son arme sur la SCÈNE (this[15716] = +0xF590, `mov edx,[ecx+0F590h]`
+// @0x5271B8), PAS ici. Ne pas câbler +216 sur l'aperçu de création.
+inline constexpr int kCharRecFieldStartingWeaponItemId = 216;  // int32
 inline constexpr int kCharRecFieldZoneId  = 5468; // int32 — dword_166A8DC[2522*i] (+0x155C)
 inline constexpr int kCharRecFieldPosX    = 5472; // int32 — dword_166A8E0[2522*i], casté en float à l'usage
 inline constexpr int kCharRecFieldPosY    = 5476; // int32 — dword_166A8E4[2522*i]
 inline constexpr int kCharRecFieldPosZ    = 5480; // int32 — dword_166A8E8[2522*i]
+
+// Valeur de la SENTINELLE testée sur +36 par la branche LISTE de Char_RenderModel :
+// `cmp dword ptr [ecx+24h], 3 ; jnz loc_527669` @0x52754A/0x52754E. Si +36 != 3, le bloc
+// 0x527554..0x527669 est SAUTÉ. Sémantique du « 3 » NON PROUVÉE (on sait seulement
+// QUE le binaire teste cette valeur, pas POURQUOI).
+// TODO [0x52754A] : élucider ce que le bloc gardé dessine réellement (descendre
+// loc_527554..loc_527669) — nécessaire pour savoir ce qui disparaît quand +36 != 3.
+inline constexpr int32_t kCharRecJobSentinelValue = 3;
+
+// --- Champs de la fiche consommés par le RENDU DE LA LISTE (écran this[15714]==1) ---
+// Vue en LECTURE SEULE des champs que Char_RenderModel 0x527020 lit dans sa branche
+// LISTE (arg_4 == 0). Existe parce que game::CharSlotInfo (Game/CharSelectFlow.h, HORS
+// de ce front) n'expose NI la race (+40), NI l'arme de départ (+216), NI la sentinelle
+// (+36==3) : son champ `job` porte +36, qui n'est PAS la race de la liste (cf. l'ancre
+// de kCharRecFieldRace). Le rendu de la liste doit lire ICI, pas dans CharSlotInfo::job.
+struct CharRecordListFields {
+    int32_t race                 = 0;     // +40 — a2 de PcModel_ResolveEquipSlot @0x527536
+    int32_t gender               = 0;     // +44 — a3 de PcModel_ResolveEquipSlot @0x52752F
+    int32_t startingWeaponItemId = 0;     // +216 — MobDb_GetEntry(mITEM) @0x5274A3
+    int32_t job                  = 0;     // +36 — sentinelle uniquement dans la liste
+    bool    jobSentinelIs3        = false; // (+36 == 3) @0x52754A
+};
+
+// Lit les champs ci-dessus dans une fiche brute de kCharRecordSize octets.
+CharRecordListFields ReadCharRecordListFields(const uint8_t* rec);
+
+// Idem depuis net::g_CharRecords[slot]. Renvoie false (et laisse `out` par défaut) si
+// `slot` est hors [0, kCharRecordCount) — garde de PORT (le binaire indexe sans borne).
+bool ReadCharRecordListFields(int32_t slot, CharRecordListFields& out);
 
 // Parse une fiche brute de kCharRecordSize (10088) octets en un CharSlotInfo.
 // `occupied` reproduit EXACTEMENT le critère du binaire (Crt_Strcmp(name,"") != 0,
 // EA 0x51c2f7) : une fiche vide (nom vide) laisse tous les autres champs à leur valeur
 // par défaut (le binaire ne les exploite jamais dans ce cas — aucun octet à zéro n'est
 // interprété comme job/faction/etc pour un emplacement libre).
+//
+// ⚠️ `out.job` porte +36 (correct : +36 EST le champ job, cf. kCharRecFieldJob). Ce
+// n'est PAS la race du rendu de la LISTE : celle-ci est en +40 et n'est PAS exposée par
+// game::CharSlotInfo (struct hors de ce front). Le rendu de la liste doit passer par
+// ReadCharRecordListFields ci-dessus. Cf. l'ancre de kCharRecFieldRace (0x527536 vs
+// 0x527051) pour la preuve.
 void ParseCharRecord(const uint8_t* rec, game::CharSlotInfo& out);
 
 // Peuple `slots` à partir des 3 fiches persistées par Net_LoginRequest
@@ -106,17 +181,24 @@ inline constexpr int32_t kCharSelectErrRecv = 102;
 // réponse (fire-and-forget confirmé) : renvoie 0 dès que l'envoi a réussi, 101 sinon.
 int32_t AccountKeepAlive(NetClient& nc);
 
-// Net_CreateCharacter 0x52A4A0 (opcode 17). `lookPresetId` = id résolu côté client
-// par CharSelectFlow (table job×variant EXACTE, cf. ResolveLookPresetId). Envoie la
-// fiche de 10088 o (voir mapping d'offsets ci-dessus) ; consomme intégralement la
-// réponse de 10093 o = [1][code:4][fiche-écho:10088].
+// Net_CreateCharacter 0x52A4A0 (opcode 17). `startingWeaponItemId` (ex-`lookPresetId`,
+// RENOMMÉ : c'est un ID D'OBJET résolu dans la DB items, cf. l'ancre de
+// kCharRecFieldStartingWeaponItemId / MobDb_GetEntry @0x5274A3) = id résolu côté client
+// par CharSelectFlow (formule `6*race + variant + 5`, bornes 5..19, cf.
+// ResolveLookPresetId — la FORMULE est inchangée, seul le nom du champ était faux).
+// Envoie la fiche de 10088 o (voir mapping d'offsets ci-dessus) ; consomme intégralement
+// la réponse de 10093 o = [1][code:4][fiche-écho:10088].
+// TRAME RE-VÉRIFIÉE À L'OCTET (décompilation directe 0x52A4A0, cette session) :
+// len=10101 @0x52A582 (= 9 en-tête + 4 slot @9 + 10088 fiche @13) ; recv de 10093
+// @0x52A661 ; `Crt_Memcpy(v16 /*offset 9*/, &a1, 4u)` @0x52A562 ; `Crt_Memcpy(v17
+// /*offset 13*/, a2, 0x2768u)` @0x52A57A. Aucun octet résiduel (contrairement à op27).
 // MIROIR (EA 0x52a71e, garde `if (!v18)` EA 0x52a700) : sur code 0, la fiche écho
 // (recvBuf+5, 10088 o) est recopiée dans g_CharRecords[slot] — port fidèle du miroir
 // `unk_1669380 + 10088*slot` du binaire, le MÊME tableau que Net_LoginRequest 0x51B8E0
 // remplit au login. Sans cette recopie, LoadCharacterSlotsFromRecords relit une fiche
 // à zéro au prochain sous-état Init et le personnage créé disparaît.
 int32_t CreateCharacter(NetClient& nc, int32_t slot, const game::CharCreateForm& form,
-                        int32_t lookPresetId);
+                        int32_t startingWeaponItemId);
 
 // Net_CharSlotAction 0x52A740 (opcode 18). Deux actions PROUVÉES, deux appelants
 // distincts (tous deux atteints depuis UI_MsgBox_OnLButtonUp 0x5C0A90) :
@@ -132,10 +214,24 @@ int32_t CreateCharacter(NetClient& nc, int32_t slot, const game::CharCreateForm&
 int32_t CharSlotAction(NetClient& nc, int32_t slot, int32_t action, int32_t arg);
 
 // Net_ReqVerifyCharName 0x52B4C0 (opcode 24) — suppression de personnage confirmée par
-// SAISIE DU NOM (chemin distinct de l'opcode 18 action=1 : c'est un second mécanisme de
-// suppression, à double confirmation). Appelée par CharSelect_ReqDeleteCharByName
-// 0x529230 (EA 0x5292cd), elle-même atteinte UNIQUEMENT depuis UI_MsgBox_OnLButtonUp
-// 0x5C0A90 case 41 (EA 0x5c1743).
+// SAISIE DU NOM. Appelée par CharSelect_ReqDeleteCharByName 0x529230 (EA 0x5292cd),
+// elle-même atteinte UNIQUEMENT depuis UI_MsgBox_OnLButtonUp 0x5C0A90 case 41
+// (EA 0x5c1743).
+//
+// 🔴 CET OPCODE N'EST JAMAIS ÉMIS PAR CE CLIENT — ce n'est PAS un « second mécanisme de
+// suppression à double confirmation » (affirmation ERRONÉE des versions antérieures de ce
+// commentaire, corrigée ici). Le panneau de suppression par nom NE S'OUVRE JAMAIS :
+//   - `var_434` de Scene_CharSelectOnMouseUp, sur la FONCTION ENTIÈRE [0x522E50,0x526B90) :
+//     3 références seulement — 0x522E50 (déclaration de frame), `mov [ebp+var_434], 0`
+//     @0x525DFA, `cmp [ebp+var_434], 0` @0x525F91. AUCUNE écriture non nulle, AUCUN `lea`
+//     (donc aucun aliasing par pointeur) => `var_434 == 0` est INVARIANT => le
+//     `jnz 0x525FC0` n'est JAMAIS pris.
+//   - conséquence : `this[0xF57C] = 1` (ouverture du panneau) n'est écrit QU'À l'EA
+//     0x52601D, dans le bloc mort ; les 3 autres écritures de 0xF57C sont `= 0`.
+// La chaîne 0x525FC0 -> 0x529230 -> 0x52B4C0 est donc INATTEIGNABLE en entier.
+// => NE CÂBLER AUCUN CLIC vers VerifyCharName. La fonction reste portée (fidélité du
+// code présent dans le binaire) mais doit rester MORTE, conformément à la règle
+// « une fonction morte dans le binaire reste morte en C++ ».
 // Trame 62 o = en-tête 9 o + [slotEnc:i32@0][name:49@4] (53 o) ; réponse 5 o
 // = [1][code:4]. Codes routés par l'appelant : 0/1/2/3/4/5/101/102/default.
 //
@@ -155,6 +251,43 @@ game::EnterCharInfoResult ReqEnterCharInfo(NetClient& nc, int32_t slot);
 // ConnectToGameServer, cf. CharSelectFlow.cpp). SANS attente de réponse (fire-and-
 // forget confirmé, comme AccountKeepAlive) : renvoie 0 dès que l'envoi a réussi.
 int32_t ReqCancelEnter(NetClient& nc);
+
+// Net_AccountReq_op27 0x52BD80 (opcode 27). Émis par Scene_CharSelectOnMouseUp
+// (`call Net_AccountReq_op27` @0x523E07 — xref UNIQUE, cf. xrefs_to(0x52BD80) = 1 réf),
+// donc bien dans la surface d'émission de la scène 4.
+//
+// ⚠️ NE PAS CONFONDRE avec net::Net_SendPacket_Op27 (Net/SendPackets.h) : celui-là est
+// Net_SendPacket_Op27 0x4B5B90, opcode 0x1b, sur la socket de JEU (amélioration d'item).
+// Aucun rapport — homonymie d'indice de builder uniquement.
+//
+// `arg` : le binaire passe this[+0xF0A4] (`mov eax, [edx+0F0A4h]` @0x523DFA), un INDEX DE
+// SÉLECTION initialisé à -1 (@0x51C2C0, bloc Init de Scene_CharSelectUpdate), écrit par
+// Scene_CharSelectOnMouseDown (@0x521EB7), gardé `!= -1` juste avant l'émission
+// (`cmp dword ptr [eax+0F0A4h], 0FFFFFFFFh` @0x523DC1), et remis à -1 après (@0x523E3C,
+// @0x524073). Émis sur 4 OCTETS (`Crt_Memcpy(v15, &a1, 4u)` @0x52BE3E) — ce n'est PAS un
+// arg 1 octet, malgré le commentaire de l'IDB (« opcode-27 (1-byte arg) ») qui est FAUX.
+// TODO [0x521EB7] : sémantique exacte de this[+0xF0A4] (quelle liste ce panneau
+// sélectionne) NON PROUVÉE — seul son protocole (index, -1 = aucun) l'est.
+//
+// 🔴 DEUX ANOMALIES FIDÈLES, à ne PAS « corriger » :
+//  1. TRAME DE 14 OCTETS DONT LE 14e EST NON INITIALISÉ. `len = 0Eh` @0x52BE46 (14), mais
+//     seuls les octets 0..12 sont écrits (en-tête 9 o + `Crt_Memcpy(payload@9, &a1, 4u)`
+//     @0x52BE3E s'arrête à l'octet 12). L'octet 13 est de la PILE RÉSIDUELLE : il est
+//     malgré tout XORé (boucle `i < len` couvrant 0..13) et ENVOYÉ. Le layout de frame
+//     IDA le confirme : `var_3EF` (_BYTE[995]) commence au frame-offset 0x2D = octet 9,
+//     et rien n'écrit son index [4]. Il FAUT émettre 14 octets, sinon la trame est courte
+//     de 1 et désaligne le serveur.
+//     TODO [0x52BE46] : la VALEUR de l'octet 13 est de la pile non initialisée — non
+//     déterministe en statique. On émet 0 (le seul choix reproductible) ; un dump runtime
+//     x32dbg serait nécessaire pour connaître la valeur réelle observée.
+//  2. `dword_1675898 ← rx+5` est écrit INCONDITIONNELLEMENT (`Crt_Memcpy(&dword_1675898,
+//     &MEMORY[0x8156C5], 4u)` @0x52BFC4), AVANT le test du code (`*a2 = v16` @0x52BFD2) —
+//     contrairement à TOUS les autres builders, qui gardent leur effet par `if (!code)`
+//     (cf. op17 : `if (!v18)` @0x52A700). Aucune garde ici : le champ est écrasé même
+//     quand le serveur renvoie une erreur.
+// Réponse : recv de 9 o (`j != 9` @0x52BF27) = [1][code:4][valeur:4]. Renvoie le code
+// (rx+1, @0x52BFB0).
+int32_t AccountReq_op27(NetClient& nc, int32_t arg);
 
 // --- Layout CONFIRMÉ du "struct72" partagé (Op12.a4 / Op15.a2 / Op16.a2) ---
 // RE-CONFIRMÉ par décompilation fraîche (2026-07-14, accès idaTs2 direct) de

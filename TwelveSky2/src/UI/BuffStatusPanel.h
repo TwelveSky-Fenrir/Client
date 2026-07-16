@@ -82,10 +82,17 @@ namespace ts2::ui {
 // `game::PlayerEntity::buffs` (Game/GameState.h, struct ActiveBuff::id). Les valeurs
 // 0..kBuffKnownIconCount-1 pointent vers une icône .IMG réellement résolue (table
 // kKnownIcons, §9 points 1-9 et 11.max/14) ; toute AUTRE valeur (id négatif, ou
-// id >= kBuffKnownIconCount — notamment les 36 emplacements de la banque de debuffs
-// à durée §9.10, dont la table d'icônes `unk_A60D04` n'a pas pu être résolue en
-// fichier .IMG cette session, base différente de unk_8E8B50) retombe sur une
-// pastille colorée générique dérivée de l'id (voir PillColorForId, .cpp).
+// id >= kBuffKnownIconCount) retombe sur une pastille colorée générique dérivée de
+// l'id (voir PillColorForId, .cpp).
+//
+// MISE À JOUR (vague W9, 2026-07-16) : la banque de 36 debuffs à durée §9.10 n'utilise
+// PAS cet espace d'ids — elle a sa propre table d'atlas `unk_A60D04`, désormais
+// RÉSOLUE (elle ne l'était pas lors des passes précédentes) : c'est la base de la
+// CATÉGORIE 6 d'AssetMgr_InitAllSlots 0x4DEB50 (@0x4DECEA :
+// `Sprite2D_BuildPath(this + 5180*ii + 148*jj + 1540564, 6, ii, jj)`, avec
+// this = 0x8E8B30 -> 0x8E8B30 + 1540564 = 0xA60D04, EXACT), soit le gabarit
+// "G03_GDATA\D01_GIMAGE2D\007\007_%03d%03d.IMG" (Sprite2D_BuildPath 0x4D68E0 case 6,
+// arguments a3+1 et a4+1). Voir GetBankIconTex (.cpp) et le type GridEntry ci-dessous.
 enum BuffIconId : int {
     kBuffComboA = 0, kBuffComboB, kBuffComboC,                    // §9.1 combos élémentaires (dword_184C218)
     kBuffElemState1, kBuffElemState2, kBuffElemState3, kBuffElemState4, // §9.2 état élémentaire local
@@ -167,19 +174,40 @@ public:
 private:
     struct TextItem { int x, y; std::string text; D3DCOLOR color; };
 
+    // Une case effectivement dessinée dans la grille §9. Deux familles d'icônes
+    // COEXISTENT dans le binaire, avec des tables d'atlas DIFFÉRENTES :
+    //   - conditions §9.1-9.9/9.11-9.14 : icône FIXE de la table cat.1 (base
+    //     unk_8E8B50), sélectionnée par un id catalogue (BuffIconId) ;
+    //   - banque de 36 debuffs à durée §9.10 : icône de la table cat.6 (base
+    //     unk_A60D04), indexée par (élément local, INDEX DE BANQUE) -- cf.
+    //     GetBankIconTex (.cpp). C'est la SEULE famille qui clignote/expire.
+    // `game::ActiveBuff` (Game/GameState.h) ne peut pas porter l'index de banque
+    // (pas de champ, et ce header n'est pas modifiable depuis ce front), d'où ce
+    // type local qui unifie les deux familles pour un cursor de position unique.
+    struct GridEntry {
+        int   catalogId = -1;    // BuffIconId (icône cat.1) ; -1 si entrée de banque
+        int   bankIndex = -1;    // index 0..35 dans la banque (icône cat.6) ; -1 sinon
+        float remaining = -1.0f; // secondes restantes (banque uniquement ; -1 sinon)
+    };
+
     void RenderGrid();         // §9  EA 0x67BD54-0x67D9DA
     void RenderStatusPanel();  // §16 EA 0x6865BF-0x6868AB
 
     // Reconstruit CHAQUE FRAME (comme le binaire d'origine, qui ne stocke jamais ces
     // icônes -- il les recalcule à chaque Render) la liste effective à dessiner :
-    // `self.buffs` (modèle générique pour de futures sources réseau/expiry -- lu tel
-    // quel ici, la purge des entrées expirées reste faite par RenderGrid AVANT l'appel,
-    // comme avant cette mission) + les conditions de la grille §9 dont CETTE mission a
-    // confirmé une source de données RÉELLEMENT modélisée côté game::ClientRuntime (voir
-    // bandeau de tête du .cpp pour le détail de chaque source retenue/écartée). Appelée
-    // par RenderGrid ET OnMouseDown pour rester cohérentes sur le nombre d'icônes
-    // affichées/cliquables.
-    std::vector<game::ActiveBuff> BuildLiveBuffList() const;
+    // `self.buffs` (modèle générique pour de futures sources réseau/expiry) + les
+    // conditions §9 dont une source de données est RÉELLEMENT modélisée côté
+    // game::ClientRuntime (CollectWiredConditionBuffs) + la banque §9.10
+    // (CollectZoneStateBuffs). L'INDEX dans le vecteur retourné EST la position de
+    // grille (var_424 du binaire) : y figurer = occuper une case, même si l'icône est
+    // masquée par le clignotement (cf. RenderGrid). Appelée par RenderGrid ET
+    // OnMouseDown pour rester cohérentes sur le nombre d'icônes affichées/cliquables.
+    std::vector<GridEntry> BuildGridEntries() const;
+
+    // §9.10 -- banque de 36 debuffs à durée (EA 0x67D560-0x67D77F). Pousse une entrée
+    // par emplacement PRÉSENT et hors de la plage réservée [19,28]. Voir le bandeau de
+    // l'implémentation (.cpp) pour le layout (id/durée/horodatage) et les gardes.
+    void CollectZoneStateBuffs(std::vector<GridEntry>& out) const;
     // Lit les globals `game::g_Client.VarGet(...)` déjà peuplés par les handlers réseau
     // existants (Net/GameVarDispatch.cpp, Net/CharStatDeltaDispatch.cpp) et pousse dans
     // `out` un ActiveBuff par condition §9 confirmée câblable cette mission. Voir le
@@ -201,10 +229,18 @@ private:
     // pour ne pas collisionner avec les ids de la grille qui partagent la plage
     // [0, kBuffKnownIconCount)).
     gfx::GpuTexture* GetPanelIconTex(int fileNo);
+    // Icône d'un emplacement de la banque §9.10 : table cat.6 indexée par
+    // (élément local, index de banque) -- RÉSOLUE en fichier .IMG, voir .cpp.
+    // Cache dédié (bankIconCache_) : la clé est un couple, elle ne peut pas
+    // partager l'espace d'ids de gridIconCache_/panelIconCache_.
+    gfx::GpuTexture* GetBankIconTex(int element, int bankIndex);
 
     // Dessine une case de la grille : icône réelle si résolue, sinon pastille
     // colorée dérivée de l'id (PillColorForId, .cpp).
     void DrawGridIcon(int buffId, int x, int y, int size);
+    // Dessine une case du modèle unifié (catalogue OU banque), avec le même repli
+    // « pastille » que DrawGridIcon quand l'icône n'est pas résolue.
+    void DrawEntryIcon(const GridEntry& e, int x, int y, int size);
 
     IDirect3DDevice9*  device_ = nullptr;
     gfx::Font*          font_  = nullptr; // partagée, non possédée
@@ -214,6 +250,7 @@ private:
 
     std::unordered_map<int, gfx::GpuTexture> gridIconCache_;  // clé = BuffIconId
     std::unordered_map<int, gfx::GpuTexture> panelIconCache_; // clé = numéro de fichier .IMG
+    std::unordered_map<int, gfx::GpuTexture> bankIconCache_;  // clé = element*100 + bankIndex (cf. GetBankIconTex)
 
     std::vector<TextItem> pendingText_; // passe texte différée (hors batch sprite)
 

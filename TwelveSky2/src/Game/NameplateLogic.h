@@ -61,12 +61,58 @@
 //    couleur différents). Confirmé par recoupement avec Combat_CanTargetOnMap 0x558740 (même
 //    liste de valeurs spéciales, mode PVP par zone via Map_GetPvpMode).
 //  - Paramètres `a2`/`a3` de Char_DrawNameplate (a4 confirmé JAMAIS lu dans le corps de la
-//    fonction — supprimé de l'API) : d'après les 4 sites d'appel dans Scene_InGameRender
-//    (0x52D0B0) — a2=1/a3=indice de boucle pour la passe principale (g_EntityCount, boucle
-//    joueurs), a2=2 pour le surlignage de cible de compétence sous le curseur (jumptable
-//    Skill_CanCastAtCursor). a3 sert de booléen « n'est pas le joueur local » (indice de boucle
-//    != 0) : gate les barres PV/PM ET le surlignage de couleur guilde/alliance. Repris ici sous
-//    les noms `drawMode` (a2) et `notSelf` (a3).
+//    fonction — supprimé de l'API) : repris ici sous les noms `drawMode` (a2) et `notSelf`
+//    (a3). Voir le §DRAWMODE ci-dessous — la rédaction précédente (« a2=1 pour la passe
+//    principale ») décrivait un chemin MORT.
+//
+// =======================================================================================
+// §DRAWMODE — QUEL CHEMIN D'APPEL EXISTE RÉELLEMENT (Passe 4 / vague W9, front
+// nameplate-entity). LIRE AVANT DE TOUCHER À CE FICHIER.
+// =======================================================================================
+// `xrefs_to(Char_DrawNameplate 0x56EF40)` = EXACTEMENT 4 sites, TOUS dans
+// Scene_InGameRender 0x52D0B0 :
+//
+//   @0x52FC02  a2=1, a3=i  — boucle `for (i; i < g_EntityCount; ++i)` sur g_EntityArray.
+//                            ***CHEMIN MORT***, INATTEIGNABLE : la boucle est gardée par
+//                            `cmp ds:dword_1668F64, 1 / jz / cmp ds:dword_1668F64, 2 / jnz`
+//                            (@0x52FB8E..@0x52FC09) et dword_1668F64 N'EST JAMAIS ÉCRIT.
+//   @0x531052  a2=2, a3=idx — catégorie 1 du switch de survol (joueur neutre)
+//   @0x5310A5  a2=2, a3=idx — catégorie 2 (partenaire d'échange)
+//   @0x5310F8  a2=2, a3=idx — catégorie 3 (joueur attaquable)
+//
+// PREUVE que dword_1668F64 n'est jamais écrit (re-prouvée cette vague par DEUX voies
+// indépendantes, au niveau octet, sur l'image ENTIÈRE) :
+//   · find_bytes('64 8F 66 01', min_ea..max_ea) => 4 occurrences : 0x52FB90, 0x52FB99,
+//     0x52FC0B, 0x570088 — les 4 sont les OPÉRANDES des `cmp` ci-dessus. Aucun `mov`.
+//   · xrefs_to(0x1668F64) => 4 xrefs, toutes de type LECTURE (0x52FB8E, 0x52FB97,
+//     0x52FC09, 0x570086) ; définition `dword_1668F64 dd 0`.
+// => dword_1668F64 vaut 0 en permanence. `drawMode == 1` NE SE PRODUIT JAMAIS.
+//
+// CONSÉQUENCES DIRECTES, toutes vérifiées sur le désassemblage — les blocs suivants de
+// ComputeNameplateInfo() sont FIDÈLEMENT INERTES et doivent le RESTER :
+//   · Barres PV/PM         : gardées par `a2 == 1 && !a3 && g_Opt_ShowNameplates == 1`
+//                            (@0x56EFBF) -> mortes. (Cf. NameplateBar::atlasFrame : la
+//                            formule d'atlas est modélisée pour la fidélité, PAS pour être
+//                            rendue.)
+//   · Garde @0x56F679      : `a2 != 1 || g_Opt_ShowHitMarkers && (g_GmAuthLevel >= 1 ||
+//                            Math_Dist3D(...) <= 300.0)` -> avec a2=2 elle passe TOUJOURS
+//                            par court-circuit. `optShowHitMarkers`, `localGmAuthLevel` et
+//                            `selfX/Y/Z` n'ont donc AUCUN effet observable sur le chemin
+//                            vivant ; ils sont peuplés par fidélité, pas par nécessité.
+//                            (Le seul effet VIVANT de g_Opt_ShowHitMarkers dans ce domaine
+//                            est le 5e argument de World_PickEntityAtCursor 0x538AB0
+//                            @0x530F54 — cf. World/TerrainPicker.h.)
+//   · Bloc « détaillé »    : `if (dword_1668F64 == 1)` @0x57008D -> mort. Il contient la
+//                            ligne guilde/titre, le chuchoté, les 6 icônes de statut
+//                            (@0x570448..@0x5706C7) et l'overlay debug GM. D'où
+//                            `NameplateViewerContext::optDetailedNameplates` qui DOIT rester
+//                            false : le peupler afficherait ce que le binaire n'affiche
+//                            jamais.
+//
+// Autrement dit : le client d'origine ne dessine de plaque de nom QUE sur l'UNIQUE entité
+// sous le curseur, et JAMAIS sur le joueur local (la boucle de picking de
+// World_PickEntityAtCursor 0x538AB0 démarre à `i = 1` @0x538ACB — l'index 0 est exclu).
+// Le site d'appel côté ClientSource est Scene/WorldRenderer.cpp::drawNameplatePass().
 //
 // RÈGLE : ce fichier n'édite AUCUN header existant. Inclut Game/GameState.h (SelfState,
 // GameDatabases, g_World), Game/GameDatabase.h (transitif) et Game/StatFormulas.h
@@ -138,8 +184,23 @@ struct NameplateActor {
     // --- drapeaux ---
     bool hasTitleBarExtraHeight   = false; // +220 : influence l'offset Y du libellé (rendu, TODO Gfx)
     bool suppressExtraNameHeight  = false; // +576 : idem
-    bool isAdminTitle             = false; // +488 : (+122)==1
-    bool isAdminTitleAlt          = false; // +496 : (+124)==1 (n'a de sens que si isAdminTitle)
+    // ⚠️ NOMS SUSPECTS — « admin » n'est PAS prouvé ; indice fort du contraire (W9).
+    // World_PickEntityAtCursor 0x538AB0 lit CES MÊMES OFFSETS pour détecter le PARTENAIRE
+    // D'ÉCHANGE (catégorie de clic 2, @0x538BCC) :
+    //     g_TradePartnerIdLo[0] == 1 && g_TradePartnerIdLo[227*i] == 1
+    //  && dword_1687420[0]     == dword_1687420[227*i]
+    //  && dword_1687424[0]     != dword_1687424[227*i]
+    // avec g_TradePartnerIdLo = 0x168741C = entity+488, dword_1687420 = entity+492,
+    // dword_1687424 = entity+496 (base g_EntityArray 0x1687234). Le portage du picker
+    // utilise déjà ces 3 offsets sous les noms kBodyTradeFlag/kBodyTradeA/kBodyTradeB
+    // (World/TerrainPicker.cpp:118-120). La branche « admin » de Char_DrawNameplate
+    // (`(+122)==1` -> couleur 3 ou 4 selon `(+124)==1`, texte `nom + Str(72)`) est donc
+    // très probablement l'affichage « EN COURS D'ÉCHANGE », pas un titre d'administrateur.
+    // NON RENOMMÉS ici (règle « ne jamais deviner ») : le rôle exact de +492/+496 (idHi/idLo
+    // du partenaire ? compteur de session ?) n'est pas prouvé, et Str(72) n'est pas résolu
+    // (table de langue non déchiffrée). À trancher par un futur RE de l'écran d'échange.
+    bool isAdminTitle             = false; // +488 : (+122)==1  — == g_TradePartnerIdLo (cf. ci-dessus)
+    bool isAdminTitleAlt          = false; // +496 : (+124)==1  — == dword_1687424 (n'a de sens que si isAdminTitle)
     bool isWhisperTarget          = false; // +500 : (+125)==1
     bool hasAltWhisperColor       = false; // +748 : (+187)!=0
     bool isVipOrHighlighted       = false; // +544 (mot) : (+272)==1
@@ -188,12 +249,44 @@ struct NameplateLine {
     int color = kNameColorNeutral;
 };
 
-// Barre PV/PM (ratio seul ; PAS de sélection de sprite ici — cf. TODO Gfx).
+// Barre PV/PM au-dessus de la tête — Char_DrawNameplate @0x56F029..@0x56F10A.
+//
+// ⚠️ MORTE DANS LE BINAIRE : ce bloc est gardé par `a2 == 1 && !a3 && g_Opt_ShowNameplates
+// == 1` (@0x56EFBF) et `a2 == 1` ne se produit jamais (cf. §DRAWMODE en tête de fichier).
+// `atlasFrame` est modélisé pour la FIDÉLITÉ DE LA FORMULE (documenter exactement ce que
+// le binaire calculerait), PAS pour être rendu : aucun appelant ne doit dessiner ces
+// barres tant que dword_1668F64 reste non écrit — ce serait ajouter à l'écran ce que le
+// client d'origine n'affiche jamais.
+//
+// Formule EXACTE (transcrite instruction par instruction, W9) :
+//   PV @0x56F029 : `if (*((int*)this + 79) <= 0) v120 = 1375;`                (frame « vide »)
+//                  sinon `Crt_ftol((double)*((int*)this+79) * 48.0 / (double)*((int*)this+78))`
+//                  puis `v120 = v4 + 1376; if (v120 > 1424) v120 = 1424;`     @0x56F049..@0x56F05F
+//                  dessin `Sprite2D_Draw(&g_AssetMgr_UiAtlasSlots + 148*v120, x - 44, y)` @0x56F08F
+//   PM @0x56F0A1 : vide = 1425 ; sinon `ftol(*(this+81) * 48.0 / *(this+80)) + 1426`,
+//                  clamp 1474 ; dessin à `(x - 44, y + 9)`                     @0x56F10A
+// -> 49 frames par barre (PV 1376..1424, PM 1426..1474), ratio TRONQUÉ VERS ZÉRO
+// (Crt_ftol 0x760810, cf. Ftol() dans le .cpp). Stride d'atlas 148 (0x94), cohérent avec
+// `imul ecx, 94h` @0x530F43. Offsets : hpCur=idx79 (+316), hpMax=idx78 (+312),
+// mpCur=idx81 (+324), mpMax=idx80 (+320) — conformes à NameplateActor ci-dessus.
 struct NameplateBar {
     bool visible = false;
     int current = 0;
     int max = 0;
+    // Index de frame dans l'atlas UI (g_AssetMgr_UiAtlasSlots 0x8E8B50, stride 148 o).
+    // Défaut 1375 = frame « barre PV vide » (le défaut de la barre PM serait 1425 ; la
+    // valeur est écrasée par ComputeNameplateInfo dès que la barre est calculée).
+    int atlasFrame = 1375;
 };
+
+// Bornes d'atlas des barres PV/PM (littéraux du binaire, cf. bandeau de NameplateBar).
+constexpr int kHpBarFrameEmpty = 1375; // @0x56F029
+constexpr int kHpBarFrameBase  = 1376; // @0x56F049
+constexpr int kHpBarFrameMax   = 1424; // @0x56F05F (clamp)
+constexpr int kMpBarFrameEmpty = 1425; // @0x56F0A1
+constexpr int kMpBarFrameBase  = 1426;
+constexpr int kMpBarFrameMax   = 1474; // clamp
+constexpr double kBarFrameSpan = 48.0; // `* 48.0` des deux ratios
 
 // Identité d'icône de statut (ordre fidèle au binaire ; sprite réel = TODO Gfx). `A`..`E`/`F`
 // correspondent aux champs statusIconA..F de NameplateActor ; `PartyFlag` = condition
@@ -233,13 +326,32 @@ struct NameplateInfo {
 // n'effectue de rendu D3D.
 // ---------------------------------------------------------------------------
 struct NameplateHost {
-    // Target_IsBeyondClickRange 0x5410D0 : distance du point de dernier clic souris/monde
-    // (flt_800130/34/38, non modélisé) au point (x, y+10, z) >= 10.0 (l'appelant doit passer
-    // y DÉJÀ décalé de +10 — fidèle à l'appel d'origine (float*)this+63 avec a2=20.0, soit
-    // a1[1]+a2*0.5 = y+10). Hors périmètre (dépend de l'état souris/caméra) ; défaut (non
-    // branché) : toujours éligible (true), fidèle au cas le plus fréquent (le joueur ne vient
-    // pas de cliquer exactement sur l'entité).
-    std::function<bool(float x, float y, float z)> IsBeyondClickRange;
+    // Target_IsBeyondClickRange 0x5410D0 — ⚠️ NOM D'ORIGINE TROMPEUR : ce n'est PAS une
+    // distance à un « point de dernier clic souris ». C'est le NEAR-CULL CAMÉRA, identique
+    // à celui de Char_Draw. Décompilation intégrale (re-vérifiée Passe 4 / W9) :
+    //   BOOL __stdcall Target_IsBeyondClickRange(float *a1, float a2)
+    //   { v5 = (flt_800138 - a1[2])*(flt_800138 - a1[2])
+    //        + (flt_800134 - (a2*0.5 + a1[1]))*(flt_800134 - (a2*0.5 + a1[1]))
+    //        + (g_CameraPos - *a1)*(g_CameraPos - *a1);
+    //     return Math_Sqrt_0(v5) >= 10.0; }                       /*0x54113B..0x54116B*/
+    // Le triplet de référence est (g_CameraPos 0x800130, flt_800134, flt_800138) = la
+    // POSITION CAMÉRA — MÊME référence que DrawCullContext::cameraPos
+    // (Game/EntityDrawLogic.h:151). SOURCE DE L'ANCIENNE ERREUR IDENTIFIÉE : le commentaire
+    // de tête de l'IDB dit lui-même « [game] distance from world click point (flt_800130..) »
+    // alors que le SYMBOLE de ce même global est nommé g_CameraPos ; la rédaction précédente
+    // de ce bandeau avait recopié le commentaire trompeur plutôt que le symbole.
+    //
+    // RENOMMÉE (W9) `IsBeyondClickRange` -> `IsBeyondCameraNearCull` : aucun autre fichier
+    // ne référençait ce membre (World/TerrainPicker.h:199 ne cite NameplateHost que dans un
+    // commentaire).
+    //
+    // CONVENTION D'APPEL CONSERVÉE : l'appelant passe y DÉJÀ décalé de +10 — fidèle à
+    // l'appel d'origine @0x56EF96 `Target_IsBeyondClickRange((float*)this+63 /* = pos */,
+    // 20.0)`, soit a1[1] + a2*0.5 = y + 10.
+    // DÉSORMAIS BRANCHÉE (W9) sur game::IsBeyondCameraNearCull (Game/EntityDrawLogic.cpp:22,
+    // même formule) par Scene/WorldRenderer.cpp::drawNameplatePass(). Défaut (non branché) :
+    // true (aucun cull) — conservé pour les appelants qui n'ont pas de caméra sous la main.
+    std::function<bool(float x, float y, float z)> IsBeyondCameraNearCull;
 
     // Cam_ProjectToScreen 0x6A24F0 : le point projette-t-il à l'écran ? Gate la totalité du
     // bloc "nom" (mais PAS les barres PV/PM, qui ont leur propre appel). Hors périmètre (Gfx

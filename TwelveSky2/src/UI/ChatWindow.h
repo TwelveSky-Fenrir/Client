@@ -40,10 +40,19 @@
 //   - le flux game::g_Client.msg (Game/ClientRuntime.h) est optionnellement
 //     rebranche via SyncFromMessageLog() : les lignes System/Chat/Whisper/Faction
 //     deja poussees par les handlers reseau/gameplay alimentent les memes
-//     anneaux que AddLine/AddSystemLine (MsgKind::Floating hors perimetre, ce
-//     sont des bannieres HUD separees, non rendues ici — cf. HUD_RenderFloatingMessages
-//     0x5AF4C0 : verifie sans animation, show/hide net par flag+timer 10s, voir
-//     Game/ClientRuntime.h::MessageLog::Floating pour le detail).
+//     anneaux que AddLine/AddSystemLine.
+//
+// NOTICES FLOTTANTES (câblage 2026-07-16) : MsgKind::Floating n'est PLUS un puits.
+// Les bannieres flottantes sont un objet SEPARE dans le binaire (dword_1821D58, ni
+// g_ChatManager 0x184C3C8 ni la liste systeme dword_1822350) : elles sont donc portees
+// par un composant autonome UI/FloatingNotices.h (13 slots types, 10 s, sans fondu),
+// que ChatWindow se contente d'ALIMENTER (SyncFromMessageLog -> notices_.Show,
+// HUD_ShowFloatingMessage 0x5AEEC0) et de RENDRE (Render -> notices_.Render,
+// HUD_RenderFloatingMessages 0x5AF4C0). Ce portage tient parce que ChatWindow est le
+// seul consommateur deja cable de game::g_Client.msg (UI/GameHud.cpp L1283-1285) et
+// que l'original enchaine les deux rendus dans UI_RenderAllDialogs 0x5AE2D0 :
+// HUD_RenderFloatingMessages @0x5AE5A7 PUIS UI_SysMsgList_Render @0x5AE5B9 — ordre
+// reproduit a l'identique par Render() (notices en tete).
 //
 // NB inclusion : ce header n'inclut ni <d3d9.h> ni <winsock2.h> (forward decls),
 // afin que les .cpp gardent la liberte d'inclure Net/ (winsock2 en premier) avant
@@ -53,6 +62,11 @@
 #include <string>
 #include <deque>
 #include <array>
+
+// Notices flottantes du HUD (dword_1821D58) — header LEGER par construction (aucun
+// d3d9/d3dx9 : ses ressources GPU sont derriere un PIMPL), l'inclure ici ne rompt donc
+// pas le « NB inclusion » ci-dessus.
+#include "UI/FloatingNotices.h"
 
 // Interface COM D3D9 (fond optionnel) : forward-declaree, jamais dereferencee ici.
 struct IDirect3DTexture9;
@@ -165,8 +179,8 @@ public:
     // dernier appel (suit l'identite de la derniere ligne consommee pour
     // survivre a l'eviction FIFO cote source, kMaxLines=256). MsgKind::System ->
     // anneau systeme ; Chat/Whisper/Faction -> anneau chat (+ badge "non lu" si
-    // le canal n'est pas l'onglet actif) ; Floating ignore (bannieres HUD
-    // separees, hors perimetre fenetre de chat).
+    // le canal n'est pas l'onglet actif) ; Floating -> notices_.Show
+    // (HUD_ShowFloatingMessage 0x5AEEC0), cf. bandeau de tete.
     void SyncFromMessageLog(const game::MessageLog& log);
 
     // --- Saisie --------------------------------------------------------------
@@ -241,6 +255,11 @@ private:
     std::deque<ChatLine> chat_;
     std::deque<SysLine>  sys_;
     int   scroll_ = 0;   // decalage de defilement (lignes depuis le bas)
+
+    // Notices flottantes du HUD (objet dword_1821D58 du binaire, DISTINCT de
+    // g_ChatManager 0x184C3C8) : alimente par SyncFromMessageLog (MsgKind::Floating)
+    // et rendu en tete de Render(). Cf. bandeau de tete.
+    FloatingNotices notices_;
 
     std::array<bool, kTabCount> unread_{};   // badges "non lu" par onglet (this+620..636)
     std::array<bool, 8>         notif_{};    // badges de notification generiques (§13d)

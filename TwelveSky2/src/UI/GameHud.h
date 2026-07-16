@@ -42,6 +42,7 @@
 #include "Gfx/SpriteBatch.h"
 #include "Gfx/Font.h"
 #include "Gfx/GpuTexture.h"
+#include "Gfx/IconTextureCache.h" // cache d'atlas des 4 barres vitales (vague W9, cf. vitalsAtlasCache_)
 #include "UI/MinimapWidget.h"
 #include "UI/BuffStatusPanel.h"
 #include "UI/ChatWindow.h"
@@ -190,11 +191,42 @@ private:
     void DrawBorder(const HudRect& r, int thickness, D3DCOLOR color);
     void DrawBarFill(const HudRect& r, int cur, int max,
                      D3DCOLOR bg, D3DCOLOR fill);
+    // Variante à paliers discrets — REPLI des 4 barres vitales quand l'atlas .IMG manque
+    // (vague W9). Le binaire ne connaît QUE 41 paliers : `Crt_ftol(cur*41.0/max)`
+    // (UI_GameHud_Render 0x67A44B-0x67A45D), jamais un ratio continu. Volontairement
+    // SÉPARÉE de DrawBarFill ci-dessus, qui reste continue pour les §7/§8 (plaques de
+    // cible / cadres alliance : 36 paliers dans le binaire, hors périmètre de W9).
+    void DrawBarFillQuantized(const HudRect& r, int cur, int max, int steps,
+                              D3DCOLOR bg, D3DCOLOR fill);
+
+    // --- Barres vitales en frames d'atlas (vague W9, HUD-02) -------------------
+    // Le binaire ne dessine JAMAIS de rect plein pour les barres : il blitte la frame
+    // `base + ftol(cur*41.0/max)` (clampée à base+41) du tableau Sprite2D partagé
+    // g_AssetMgr_UiAtlasSlots 0x8E8B50 (stride 148), à sa taille native.
+    // Bases prouvées (UI_GameHud_Render 0x67A3C0) : PV 95 @0x67A462, PM 137 @0x67A515,
+    // EXP 179 @0x67A65A, Maîtrise 3543 @0x67A707.
+    // DrawAtlasFrame : blitte l'élément `frame` (fichier 001_%05d.IMG, index frame+1 —
+    // même convention que kVitalsFrameImgPath, cf. AssetMgr_InitAllSlots 0x4DEB50).
+    // DrawAtlasBar   : calcule la frame puis délègue. Toutes deux renvoient false si la
+    // texture manque -> l'appelant retombe sur DrawBarFillQuantized.
+    bool DrawAtlasFrame(int frame, int x, int y);
+    bool DrawAtlasBar(int baseFrame, int cur, int max, int x, int y);
 
     // Sous-passes de rendu.
-    void DrawVitalsFrame();     // cadre + portrait + remplissage des 2 barres
+    void DrawVitalsFrame();     // cadre + portrait + remplissage des 4 barres
     void DrawQuickSlotFrames(); // cases de la barre de quickslots
-    void DrawTextPass(int hp, int maxHp, int mp, int maxMp, int level, int currency);
+    // Lit ses valeurs (PV/PM/devise) elle-même depuis game::g_World — NE PAS repasser à
+    // une signature à paramètres (vague W9) : le binaire RÉÉCRIT la source des PV entre
+    // la barre et le texte (`if (dword_1687370 < 0) dword_1687370 = 0` @0x67A499), donc
+    // tout snapshot pris avant DrawVitalsFrame() afficherait la valeur PRÉ-clamp.
+    void DrawTextPass();
+    // §15 rangée de boutons de menu (UI_GameHud_Render 0x685177+) — vague W9, HUD-03.
+    void DrawMenuButtons();
+    // §4 pastille talisman (UI_GameHud_Render 0x67A787-0x67A826) — vague W9, HUD-09 partiel.
+    // Appelée depuis DrawVitalsFrame() (même passe sprites) ; voir GameHud.cpp pour la
+    // structure réelle du bloc (celle du dossier de gaps était inversée) et le TODO sur les
+    // blocs devise/durabilité laissés hors périmètre.
+    void DrawTalismanBadge();
 
     // §17 overlay debug temps réservé aux GM (EA 0x686942, dans UI_GameHud_Render,
     // condition binaire `dword_1676108 > 0 && g_GmAuthLevel > 0` @0x6868e8-0x6868f8).
@@ -260,6 +292,15 @@ private:
     // GameHud.cpp et GameHud::Init). D3DPOOL_MANAGED (GpuTexture) : survit au
     // device reset, pas de traitement particulier dans OnDeviceLost/Reset.
     gfx::GpuTexture    vitalsFrameTex_;
+
+    // Cache des frames d'atlas des 4 barres vitales (vague W9, HUD-02) — clé = chemin
+    // "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG". Chaque barre parcourt jusqu'à 42 frames
+    // distinctes selon le remplissage (bases 95/137/179/3543, 41 paliers) : sans cache,
+    // chaque frame serait re-décodée et ré-uploadée à CHAQUE image. Les échecs de
+    // chargement sont mémorisés par IconTextureCache (pas de retente par image), ce qui
+    // rend le repli DrawBarFillQuantized gratuit quand les .IMG sont absents.
+    // D3DPOOL_MANAGED (GpuTexture) : survit au device reset, comme vitalsFrameTex_.
+    gfx::IconTextureCache vitalsAtlasCache_;
 
     int  screenW_ = 0;
     int  screenH_ = 0;

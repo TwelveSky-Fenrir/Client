@@ -50,6 +50,23 @@ float Distance3D(float x1, float y1, float z1, float x2, float y2, float z2) {
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// Index de frame d'atlas d'une barre PV/PM — Char_DrawNameplate @0x56F029..@0x56F05F (PV)
+// et @0x56F0A1..@0x56F0D7 (PM). Les deux barres partagent EXACTEMENT la même forme, seuls
+// les 3 littéraux changent (cf. kHp*/kMp* dans NameplateLogic.h) :
+//     if (cur <= 0) frame = empty;
+//     else { frame = Crt_ftol((double)cur * 48.0 / (double)max) + base;
+//            if (frame > maxFrame) frame = maxFrame; }
+// Ftol = troncature vers zéro (Crt_ftol 0x760810). AUCUN clamp bas dans le binaire (cur>0
+// => ratio >= 0 => frame >= base), et AUCUNE garde max==0 : on neutralise la division par
+// zéro en traitant max<=0 comme la frame « vide » plutôt que de reproduire une valeur
+// indéterminée — même convention défensive que ComputeWeaponOverlayVariant
+// (Game/EntityDrawLogic.cpp:126). Ce bloc est de toute façon MORT (cf. §DRAWMODE).
+int BarAtlasFrame(int cur, int max, int emptyFrame, int baseFrame, int maxFrame) {
+    if (cur <= 0 || max <= 0) return emptyFrame;
+    const int frame = Ftol(static_cast<double>(cur) * kBarFrameSpan / static_cast<double>(max)) + baseFrame;
+    return (frame > maxFrame) ? maxFrame : frame;
+}
+
 // ---------------------------------------------------------------------------
 // Palette « marché » (morph 324/342) — 0x56F9E0..0x56FC80 (case 324) / fixe 2 (case 342).
 // pk in {0,1,2,3} -> {5,33,24,44} ; utilisée aussi telle quelle par le bloc titre détaillé
@@ -129,24 +146,34 @@ NameplateInfo ComputeNameplateInfo(const NameplateActor& actor,
     NameplateInfo info;
 
     // ---- Porte globale : 0x56ef96 ----
-    const bool clickGate = host.IsBeyondClickRange
-        ? host.IsBeyondClickRange(actor.x, actor.y + 10.0f, actor.z) // (float*)this+63, a2=20.0 -> y+a2*0.5
+    // Near-cull CAMÉRA (Target_IsBeyondClickRange 0x5410D0 — nom d'origine trompeur, cf. le
+    // bandeau de NameplateHost::IsBeyondCameraNearCull). y déjà décalé de +10 = a1[1]+a2*0.5
+    // avec l'a2=20.0 du site d'appel @0x56EF96.
+    const bool nearCullGate = host.IsBeyondCameraNearCull
+        ? host.IsBeyondCameraNearCull(actor.x, actor.y + 10.0f, actor.z) // (float*)this+63, a2=20.0
         : true;
-    if (!(actor.active && actor.hasIdentity && clickGate)) {
+    if (!(actor.active && actor.hasIdentity && nearCullGate)) {
         return info; // visible=false, tout le reste par défaut
     }
     info.visible = true;
 
-    // ---- Barres PV/PM : 0x56efbf..0x56f10a (mode "cible sélectionnée" uniquement) ----
+    // ---- Barres PV/PM : 0x56efbf..0x56f10a ----
+    // ⚠️ CHEMIN MORT : `a2 == 1` ne se produit jamais (dword_1668F64 jamais écrit — cf.
+    // §DRAWMODE du header). Bloc conservé pour la fidélité de la formule ; `visible` reste
+    // donc toujours false en pratique et AUCUN appelant ne doit dessiner ces barres.
     if (drawMode == 1 && !notSelf && ctx.optShowNameplates) {
         const bool onScreen = host.IsOnScreen ? host.IsOnScreen(actor.x, actor.y - 2.0f, actor.z) : true;
         if (onScreen) {
             info.hpBar.visible = true;
             info.hpBar.current = actor.hpCur;
             info.hpBar.max = actor.hpMax;
+            info.hpBar.atlasFrame = BarAtlasFrame(actor.hpCur, actor.hpMax,
+                                                   kHpBarFrameEmpty, kHpBarFrameBase, kHpBarFrameMax);
             info.mpBar.visible = true;
             info.mpBar.current = actor.mpCur;
             info.mpBar.max = actor.mpMax;
+            info.mpBar.atlasFrame = BarAtlasFrame(actor.mpCur, actor.mpMax,
+                                                   kMpBarFrameEmpty, kMpBarFrameBase, kMpBarFrameMax);
         }
     }
 

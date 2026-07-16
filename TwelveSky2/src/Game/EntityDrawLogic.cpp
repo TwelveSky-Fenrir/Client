@@ -82,6 +82,40 @@ NameTagContent ComputeNameTagContent(const NameTagRenderState& tag, const Vec3& 
     return out;
 }
 
+// Fx_MeleeSwingDrawMarker 0x5802C0 — libellé de nom des PNJ (g_NpcRenderArray). Voir le
+// bandeau de EntityDrawLogic.h pour la décompilation intégrale et les 2 sites d'appel
+// (@0x52FC72 mort / @0x531148 vivant, catégorie 4 du survol).
+ZoneNpcLabelContent ComputeZoneNpcLabelContent(const ZoneNpcLabelRenderState& npc,
+                                                int drawMode,
+                                                bool optShowHitMarkers,
+                                                const DrawCullContext& cull) {
+    ZoneNpcLabelContent out{};
+    if (!npc.active) return out; // `if (*((_DWORD*)this + 1))` @0x5802CC
+
+    // v5 = (float)*(int*)(def + 1332) @0x5802E3, puis
+    // Target_IsBeyondClickRange(this + 5 /* = pos */, v5) @0x5802F2 — MÊME primitive que
+    // le near-cull caméra de Char_Draw (cf. IsBeyondCameraNearCull ci-dessus).
+    const float radius = static_cast<float>(npc.clickRange);
+    if (!IsBeyondCameraNearCull(npc.pos, radius, cull.cameraPos)) return out;
+
+    // `if (a2 != 1 || g_Opt_ShowHitMarkers && Math_Dist3D(this+5, flt_1687330) <= 300.0)`
+    // @0x580332. Au seul site VIVANT (@0x531148) a2 vaut 2 -> court-circuit sur `a2 != 1`.
+    const bool showLabel = (drawMode != 1) ||
+        (optShowHitMarkers &&
+         Distance3D(npc.pos, cull.localPlayerPos) <= kSelfProximityDrawDistance);
+    if (!showLabel) return out;
+
+    out.visible    = true;
+    out.worldPos.x = npc.pos.x; // @0x58033C
+    // Somme ENTIÈRE `def[1332] + 1` PUIS ajout à pos.y en double (fidèle à
+    // `(double)(*(_DWORD*)(def + 1332) + 1) + *(this + 6)` @0x580359) — pas d'addition
+    // flottante des deux termes séparément.
+    out.worldPos.y = static_cast<float>(static_cast<double>(npc.clickRange + 1) + npc.pos.y);
+    out.worldPos.z = npc.pos.z; // @0x580362
+    out.colorCode  = Quest_GetMarkerSpriteBase(npc.markerDefId); // @0x580372 -> 10 (stub)
+    return out;
+}
+
 BodyMeshPlacement ComputeBodyMeshPlacement(const EntityRenderState& state) {
     BodyMeshPlacement out{};
     out.useAttachOffset = state.attached;

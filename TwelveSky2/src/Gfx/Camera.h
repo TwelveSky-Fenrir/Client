@@ -43,7 +43,28 @@ public:
     static constexpr float kRadToDeg = 57.2957763671875f; // 180/pi (0x42652EE1)
     // Garde-fou d'élévation : Cam_OrbitPitch/Camera_RotateEyePitch clampent à 89.9deg
     // (Cam_SetLookAt rejette au-delà de 89.99deg). On retient la borne stricte 89.9.
+    // NIVEAU MOTEUR — à ne pas confondre avec les deux bornes de CONTRÔLEUR ci-dessous ni
+    // avec le 89.99 de Camera_SetEyeTarget 0x403420 (@0x40350E, cf. Gfx/GxdRenderer.h) :
+    // les TROIS coexistent dans le binaire, à trois étages différents.
     static constexpr float kPitchLimitDeg = 89.9f;
+
+    // --- Bornes d'élévation du DRAG SOURIS (Camera_MouseDragRotate 0x50AFD0) -------------
+    // Deux bornes ASYMÉTRIQUES, posées par Camera_Init 0x50ABC0 (octets lus dans l'image) :
+    //   +68 (0x44) <- flt_7EDA24 = 0x41F00000 = 30.0f  (`fstp dword ptr [ecx+44h]` @0x50AC37)
+    //   +72 (0x48) <- flt_7A95B0 = 0x42A00000 = 80.0f  (`fstp dword ptr [edx+48h]` @0x50AC43)
+    //
+    // Sémantique de REVERT (et non de clamp) — cf. Camera::OrbitByMouse :
+    //   cible AU-DESSUS de l'oeil (`flt_800140 >= flt_800134`) et 30.0 < |elevDeg| @0x50B26A
+    //   oeil AU-DESSUS de la cible (`flt_800140 <  flt_800134`) et 80.0 < |elevDeg| @0x50B1BA
+    // -> l'original RESTAURE l'oeil ET la cible sauvegardés avant l'orbite
+    //    (Cam_SetLookAt @0x50B29B / @0x50B1EB + Camera_SetEyeTarget @0x50B2CF) puis SORT.
+    //
+    // Convention de signe résolue contre `target.y >= eye.y` : l'oeil dérivé vaut
+    // eye.y = target.y + dist*sin(pitch) (cf. Camera::Eye()), donc
+    //   target.y >= eye.y  <=>  sin(pitch) <= 0  <=>  pitch <= 0  -> borne 30deg
+    //   target.y <  eye.y  <=>  pitch > 0                          -> borne 80deg
+    static constexpr float kDragPitchLimitBelowDeg = 30.0f; // pitch <= 0 (caméra sous la cible)
+    static constexpr float kDragPitchLimitAboveDeg = 80.0f; // pitch >  0 (caméra au-dessus)
     // Bornes de zoom : Camera_Init écrit +84 = 25.0 (min) et +88 = 150.0 (max).
     static constexpr float kMinDistDefault = 25.0f;
     static constexpr float kMaxDistDefault = 150.0f;

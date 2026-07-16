@@ -196,6 +196,28 @@ OverheadNameContent ComputeOverheadNameContent(const EntityRenderState& state, c
 
 // -----------------------------------------------------------------------------
 // Char_DrawNameTag 0x583470 — gate + formatage "%s(%d)" vs "%s" + position.
+//
+// ///// CODE MORT DU BINAIRE — NE PAS CÂBLER (Passe 4 / vague W9, front nameplate-entity) /////
+// `xrefs_to(0x583470)` = EXACTEMENT 1 site : @0x52FCD9, situé À L'INTÉRIEUR du bloc
+// `if (dword_1668F64 == 1)` de Scene_InGameRender 0x52D0B0 (garde @0x52FC09
+// `cmp ds:dword_1668F64, 2 / jnz loc_52FD3A`, qui saute tout 0x52FC16..0x52FD3A).
+// Or dword_1668F64 N'EST JAMAIS ÉCRIT : re-prouvé au niveau octet cette vague par DEUX
+// voies indépendantes — `find_bytes('64 8F 66 01')` sur l'image entière = 4 occurrences
+// (0x52FB90 / 0x52FB99 / 0x52FC0B / 0x570088), toutes opérandes de `cmp` ; et
+// `xrefs_to(0x1668F64)` = 4 xrefs, toutes des LECTURES (0x52FB8E / 0x52FB97 / 0x52FC09 /
+// 0x570086), définition `dword_1668F64 dd 0`. Zéro `mov`, zéro écriture.
+// => Char_DrawNameTag n'est JAMAIS appelée par le client d'origine.
+//
+// L'implémentation ci-dessous est CONSERVÉE (elle est fidèle, cf. .cpp) mais reste
+// VOLONTAIREMENT SANS APPELANT : la câbler ajouterait à l'écran un libellé que le client
+// d'origine n'affiche jamais — l'inverse exact de la fidélité recherchée.
+// NB : le dossier de gaps W9 (HUD-NP-04) proposait de la câbler sur « une boucle
+// inconditionnelle sur les objets au sol ». CORRECTIF REFUSÉ, doublement erroné :
+//   (1) le chemin est mort (ci-dessus) ;
+//   (2) « objets au sol » est une erreur d'identification — @0x52FCAE itère
+//       `dword_17AB534` (stride 0x98 = 152, compteur dword_1687228), et
+//       World_PickEntityAtCursor 0x538AB0 range CE tableau en catégorie 6 dont AUCUN
+//       dessin de libellé n'est associé (cf. le switch @0x530FC7).
 // -----------------------------------------------------------------------------
 struct NameTagContent {
     bool visible = false;
@@ -203,6 +225,68 @@ struct NameTagContent {
     Vec3 worldPos{};               // pos + (0, 2.5, 0)
 };
 NameTagContent ComputeNameTagContent(const NameTagRenderState& tag, const Vec3& localPlayerPos);
+
+// -----------------------------------------------------------------------------
+// Quest_GetMarkerSpriteBase 0x540770 — STUB dans le binaire.
+// Décompilation intégrale (re-vérifiée Passe 4 / W9) :
+//     int __stdcall Quest_GetMarkerSpriteBase(int a1) { return 10; }  /*0x54077C*/
+// L'argument (`**(_DWORD**)this` au site d'appel @0x580372, soit `npcDef->id`) n'est
+// JAMAIS lu. Conservée sous forme de fonction plutôt qu'un `10` en dur au site d'appel
+// pour garder l'ancre visible et le jour où le stub cesserait d'en être un.
+// -----------------------------------------------------------------------------
+constexpr int kQuestMarkerSpriteBase = 10;
+inline int Quest_GetMarkerSpriteBase(int /*npcDefId — jamais lu, cf. 0x54077C*/) {
+    return kQuestMarkerSpriteBase;
+}
+
+// -----------------------------------------------------------------------------
+// Fx_MeleeSwingDrawMarker 0x5802C0 — LIBELLÉ DE NOM DES PNJ (pool de rendu
+// g_NpcRenderArray 0x1764D14, stride 88 o / 22 dw).
+//
+// ⚠️ MAL NOMMÉE DANS L'IDB : ce n'est ni une « traînée d'attaque » ni un billboard de
+// swing. Décompilation intégrale (Passe 4 / W9) — c'est le pendant PNJ de
+// Char_DrawOverheadName (monstres) et de Char_DrawNameplate (joueurs) :
+//     if (*((_DWORD*)this + 1)) {                                    /*0x5802CC : slot actif*/
+//       v5 = (float)*(int*)(*(_DWORD*)this + 1332);                  /*0x5802E3 : def+1332*/
+//       if (Target_IsBeyondClickRange(this + 5, v5)) {               /*0x5802F2 : near-cull caméra*/
+//         if (a2 != 1 || g_Opt_ShowHitMarkers && Math_Dist3D(this+5, flt_1687330) <= 300.0) { /*0x580332*/
+//           v7[0] = *(this + 5);                                     /*0x58033C : pos.x (byte +20)*/
+//           v7[1] = (double)(*(_DWORD*)(*(_DWORD*)this + 1332) + 1) + *(this + 6); /*0x580359*/
+//           v7[2] = *(this + 7);                                     /*0x580362 : pos.z (byte +28)*/
+//           MarkerSpriteBase = Quest_GetMarkerSpriteBase(**(_DWORD**)this);        /*0x580372*/
+//           UI_DrawNumberCentered((const char*)(*(_DWORD*)this + 4), v7, MarkerSpriteBase); /*0x58038A*/
+//         } } }
+// `*(_DWORD*)this` = le NpcDefRecord* du slot -> texte = def+4 (NpcDefRecord::name),
+// rayon/portée = def+1332 (NpcDefRecord::fieldF[1], déjà RÉSOLU dans
+// Game/ExtraDatabases.h:67-71 comme « portée d'interaction/clic »), couleur = 10.
+// Somme ENTIÈRE `def[1332] + 1` avant l'ajout à pos.y (même convention que
+// ComputeOverheadNameContent, cf. 0x5814AE) — PAS une addition flottante.
+//
+// SITES D'APPEL (`xrefs_to(0x5802C0)` = 2) :
+//   @0x52FC72 — MORT (dans le bloc `dword_1668F64 == 1`, cf. bandeau NameTagContent),  a2=1
+//   @0x531148 — VIVANT : catégorie 4 du switch de survol @0x530FC7,                     a2=2
+// Avec a2=2 la garde @0x580332 court-circuite (`a2 != 1`) : ni g_Opt_ShowHitMarkers ni le
+// cull des 300 unités n'ont d'effet sur le chemin réellement emprunté. Les deux paramètres
+// restent exposés ci-dessous pour rester fidèle à la fonction (et non à son seul appelant).
+// -----------------------------------------------------------------------------
+struct ZoneNpcLabelRenderState {
+    bool active       = false; // +4  (this[1]) : slot occupé — dword_1764D18[22j]
+    Vec3 pos{};                 // +20/+24/+28 (float* this+5/6/7) : position monde — unk_1764D28 + 22j
+    int  clickRange   = 0;      // def+1332 (NpcDefRecord::fieldF[1]) : rayon near-cull ET offset Y du libellé
+    int  markerDefId  = 0;      // def+0 (NpcDefRecord::id) : argument de Quest_GetMarkerSpriteBase (jamais lu)
+};
+struct ZoneNpcLabelContent {
+    bool visible   = false;
+    Vec3 worldPos{};                          // (pos.x, (clickRange + 1) + pos.y, pos.z)
+    int  colorCode = kQuestMarkerSpriteBase;  // Quest_GetMarkerSpriteBase -> 10 (littéral)
+};
+// `drawMode` = a2 d'origine (2 au seul site vivant) ; `optShowHitMarkers` = g_Opt_ShowHitMarkers
+// 0x84DED0. Le texte (def->name) n'est PAS renvoyé ici : l'appelant le lit sur le même
+// NpcDefRecord (cf. Scene/WorldRenderer.cpp::drawNameplatePass).
+ZoneNpcLabelContent ComputeZoneNpcLabelContent(const ZoneNpcLabelRenderState& npc,
+                                                int drawMode,
+                                                bool optShowHitMarkers,
+                                                const DrawCullContext& cull);
 
 // -----------------------------------------------------------------------------
 // Placement du maillage principal (Char_Draw/Shadow/Reflection, branchement sur
@@ -300,6 +384,30 @@ bool ShouldDrawStateOverlay(int resolvedOverlayId);
 // Simple passthrough des drapeaux, mais documente l'ordre de dessin garanti
 // (slot1 puis slot2 puis slot3) et les modèles fixes associés côté Gfx :
 //   slot1 -> unk_B63174, slot2 -> unk_B63208, slot3 -> unk_B5A180
+//
+// ///// ÉTAT DE CÂBLAGE — Passe 4 / vague W9 (gap erp-01), HONNÊTE ET NON RÉSOLU /////
+// SANS AUCUN APPELANT à ce jour (grep exhaustif de src/ : cette fonction n'apparaît qu'à
+// sa définition Game/EntityDrawLogic.cpp et à cette déclaration). CONSTAT RE-PROUVÉ ; le
+// câblage est BLOQUÉ, pas oublié — et le blocage est hors des fichiers de ce front :
+//   Offsets re-vérifiés à l'instruction près dans Char_Draw 0x5805C0 (W9) :
+//     580C12  cmp dword ptr [edx+100h], 0     ; slot1 actif   (this+256)
+//     580C2C  fld dword ptr [edx+104h]        ; slot1 arg flottant (this+260)
+//     580C39  mov ecx, offset unk_B63174      ; template slot1
+//     580C3E  call ModelObj_Draw
+//     580C46  cmp dword ptr [ecx+108h], 0     ; slot2 actif   (this+264)
+//     580C60  fld dword ptr [ecx+10Ch]        ; slot2 arg flottant (this+268)
+//   -> slot3 : +0x110 / +0x114. La forme d'appel est
+//      ModelObj_Draw(template, passe, <float>, this+0x20 /*pos*/, &var, 0), IDENTIQUE à
+//      celle de Char_DrawAura (ModelObj_Draw(unk_B60AB8 + 148*this[27], pass, 0.0,
+//      this+32, this+35)) : le float est donc le 2e ARGUMENT POSITIONNEL (curseur
+//      d'animation), PAS une échelle — le nom `slotNScale` ci-dessous est donc suspect,
+//      conservé tel quel faute de preuve directe du rôle exact (règle « ne jamais
+//      deviner »). Correction de nommage à faire quand ModelObj_Draw sera portée.
+//   BLOCAGE : ModelObj_Draw 0x4D71B0 et les tables de templates unk_B63174 / unk_B63208 /
+//   unk_B5A180 ne sont PAS modélisées dans ClientSource (aucun système model-object), et
+//   les champs effectSlotNActive/Scale ne sont peuplés par personne (leur producteur réel
+//   est Char_UpdateMotionState 0x5816A0 @0x581761/@0x581D57, logique de quête non portée).
+//   Émettre un draw ici exigerait d'INVENTER l'API model-object -> interdit (règle #8).
 // -----------------------------------------------------------------------------
 struct AttachedEffectSlots {
     bool slot1 = false; float slot1Scale = 0.0f;

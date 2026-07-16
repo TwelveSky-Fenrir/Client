@@ -4,6 +4,24 @@
 #include "Game/GameState.h"
 #include "Game/GameDatabase.h"
 #include "Game/NameplateLogic.h"
+#include "Game/NpcInteraction.h"  // game::Npc_GetNameplateColor (0x540790) — couleur des libelles MONSTRE (W9)
+#include "Game/ClientRuntime.h"   // game::Str (StrTable005_Get 0x4C1D10) — NameplateHost::ResolveString (W9)
+#include "Game/ExtraDatabases.h"  // game::NpcDefRecord (libelle PNJ : name@+4, fieldF[1]@+1332) — W9
+// world::World_PickEntityAtCursor (0x538AB0) + world::BuildScreenPickCamera — W9.
+// ⚠️⚠️ DÉPENDANCE DE LIEN À CÂBLER PAR L'ORCHESTRATEUR ⚠️⚠️
+// src\World\TerrainPicker.cpp et src\World\TerrainPicker.h existent sur disque (créés par le
+// front terrain-picker) mais NE SONT PAS listés dans TwelveSky2.vcxproj / .vcxproj.filters
+// (vérifié : 0 occurrence de « TerrainPicker » dans les deux fichiers, et le projet n'utilise
+// aucun glob — 138 <ClCompile Include=...> explicites, dont World\WorldMap.cpp et
+// World\WorldIntegration.cpp mais PAS World\TerrainPicker.cpp).
+// -> Tant que TerrainPicker.cpp n'est pas ajouté au projet, drawNameplatePass() ne LIERA PAS
+//    (unresolved external : world::World_PickEntityAtCursor, world::BuildScreenPickCamera).
+// Ce front ne touche pas au .vcxproj (règle de périmètre) : action remontée à
+// l'orchestrateur. AUCUNE autre solution n'était fidèle — réimplémenter le hit-test ici
+// aurait dupliqué les 5 Scene_RayHit* (0x5415E0/0x541680/0x541780/0x5418B0/0x541920) déjà
+// portés, ou fait inventer un picking (interdit).
+#include "World/TerrainPicker.h"
+#include "Config/GameOptions.h"   // config::g_Options (g_Opt_ShowHitMarkers/ShowNameplates 0x84DED0/D4) — W9
 #include "Game/StaticNpcLoader.h" // PNJ de decor (mission "PNJ DECOR VISIBLES A L'ECRAN", cf. Render())
 #include "Game/AnimationTick.h"       // ZoneNpc_AnimTickIsWired() / Monster_MotionTickIsWired() / IMotionFrameCountOracle — W7
 #include "Game/EntityLifecycleTick.h" // g_MonsterTickExt (motionState/animFrame par monstre) — W7
@@ -126,6 +144,75 @@ uint32_t ReadBodyU32LE(const std::array<uint8_t, 600>& body, size_t offset) {
     return v;
 }
 
+// ===========================================================================
+// Passe 4 / vague W9 — front nameplate-entity : champs lus par Char_DrawNameplate 0x56EF40
+// sur l'ENTITÉ (g_EntityArray 0x1687234, stride 908), traduits en offsets dans
+// PlayerEntity::body. RÈGLE DE CONVERSION : le body démarre à entity+0x18 (Pkt_SpawnCharacter
+// 0x4646C0 fait `Crt_Memcpy(&dword_168724C[227*i], v8, 600)` avec dword_168724C ==
+// g_EntityArray + 0x18) => bodyOffset = entityOffset - 24. Même convention que
+// kPlayerBodyWeaponItemIdOffset ci-dessus et que World/TerrainPicker.cpp:107-120.
+//
+// ⚠️ BORNE DURE : le body ne fait que 600 o, soit entity+24..entity+623. Les champs
+// d'entité au-delà de +623 (p. ex. altWhisperName +756) ne sont PAS dans le body — ce sont
+// des champs runtime écrits ailleurs. Ils ne sont donc PAS peuplés ici (et n'ont de toute
+// façon d'usage que dans le bloc « détaillé », mort — cf. §DRAWMODE de NameplateLogic.h).
+//
+// TRIPLE CORROBORATION des 3 offsets les plus structurants — World_PickEntityAtCursor
+// 0x538AB0 lit LES MÊMES champs sur LA MÊME base et les passe à Combat_CanTargetOnMap avec
+// EXACTEMENT la signature de NameplateHost::CanTargetOnMap(element, pkLevel, affiliation) :
+//     byte_168725C  = 0x1687234 + 0x28  -> entity+40  -> body+16  (affiliation)
+//     dword_168728C = 0x1687234 + 0x58  -> entity+88  -> body+64  (element)
+//     dword_1687320 = 0x1687234 + 0xEC  -> entity+236 -> body+212 (pkLevel)
+// -> valeurs identiques à celles déjà portées dans World/TerrainPicker.cpp (kBodyAffiliation
+// = 40-24, kBodyElement = 88-24, kBodyPkLevel = 236-24). Aucune divergence entre les deux
+// fronts.
+// ===========================================================================
+constexpr size_t kNpBodyHasIdentity   = 24  - 24; // entity+24  : identité résolue — MÊME champ que
+                                                   //   la garde `dword_168724C[227*i]` de 0x538AB0
+constexpr size_t kNpBodyGmAccount     = 28  - 24; // entity+28  : (this+7)==1  -> couleur 35 @0x56FFED
+constexpr size_t kNpBodyLevel         = 32  - 24; // entity+32  : (this+8)     @0x56F229
+constexpr size_t kNpBodyAffiliation   = 40  - 24; // entity+40  : (this+10)    @0x56F8B6
+constexpr size_t kNpBodyElement       = 88  - 24; // entity+88  : (this+22)    @0x56FD3F
+constexpr size_t kNpBodyTitleBarExtra = 220 - 24; // entity+220 : `cmp [ecx+0DCh],0` @0x56F115
+constexpr size_t kNpBodyEnchantRaw    = 224 - 24; // entity+224 : (this+56)    @0x56F6DC
+constexpr size_t kNpBodyPkLevel       = 236 - 24; // entity+236 : (this+59)    @0x56F29B
+constexpr size_t kNpBodySpecialPk     = 244 - 24; // entity+244 : (this+61)==12 -> couleur 44 @0x570006
+                                                   //   (== EntityManager kPActionState, même champ)
+constexpr size_t kNpBodyAlliance      = 472 - 24; // entity+472 : (this+118)   @0x56F870
+constexpr size_t kNpBodyAdminTitle    = 488 - 24; // entity+488 : (this+122)==1 @0x56F6C9 (cf. note
+                                                   //   « trade » de NameplateLogic.h)
+constexpr size_t kNpBodyAdminTitleAlt = 496 - 24; // entity+496 : (this+124)==1
+constexpr size_t kNpBodyVipWord       = 544 - 24; // entity+544 : MOT (this+272)==1 -> couleur 5 @0x56FFD7
+constexpr size_t kNpBodyRankTier      = 568 - 24; // entity+568 : (this+142)   @0x57002B
+constexpr size_t kNpBodySuppressExtra = 576 - 24; // entity+576 : `cmp [edx+240h],0` @0x56F124
+
+// Borne de lecture des chaînes d'affiliation/alliance. VALEUR REPRISE TELLE QUELLE de
+// World/TerrainPicker.cpp:111 (`kAffiliationMaxLen = 60 - 40`) : l'écart jusqu'au champ
+// connu suivant (subAffiliationName entity+60, cf. NameplateActor). NON PROUVÉE comme étant
+// la capacité réelle du buffer — c'est une borne DÉFENSIVE (jamais d'overrun, au pire un nom
+// tronqué plutôt qu'inventé), même convention que EntityManager::kPNameBufLen.
+constexpr size_t kNpBodyStringMaxLen = 60 - 40;
+
+// Lecture d'un mot 16 bits LE (VIP : `*((_WORD*)this + 272)` @0x56FFD7).
+uint16_t ReadBodyU16LE(const std::array<uint8_t, 600>& body, size_t offset) {
+    if (offset + sizeof(uint16_t) > body.size()) return 0;
+    uint16_t v = 0;
+    std::memcpy(&v, body.data() + offset, sizeof(v));
+    return v;
+}
+
+// Lecture d'une C-string bornée dans le body (même motif que
+// EntityManager::ReadPlayerName / TerrainPicker::ReadCString : aucun octet hors bornes).
+std::string ReadBodyCString(const std::array<uint8_t, 600>& body, size_t offset, size_t maxLen) {
+    if (offset >= body.size()) return std::string();
+    const size_t avail = body.size() - offset;
+    const size_t cap   = (maxLen < avail) ? maxLen : avail;
+    const uint8_t* p = body.data() + offset;
+    size_t len = 0;
+    while (len < cap && p[len] != 0) ++len;
+    return std::string(reinterpret_cast<const char*>(p), len);
+}
+
 } // namespace
 
 // Accesseur public de l'oracle (cf. Scene/WorldRenderer.h pour la justification du placement).
@@ -144,6 +231,25 @@ bool WorldRenderer::Init(gfx::Renderer& renderer, int screenW, int screenH) {
     screenW_ = screenW;
     screenH_ = screenH;
     if (!device_) { TS2_ERR("WorldRenderer::Init : device nul"); return false; }
+
+    // hWndParent 0x815184 pour le ScreenToClient de drawNameplatePass (@0x52FB6C) — W9.
+    // Récupéré depuis le device plutôt que via un nouveau paramètre d'Init() (dont le seul
+    // appelant, Scene/SceneManager.cpp, n'est pas un fichier de ce front) : hFocusWindow EST
+    // le HWND passé à CreateDevice par gfx::Renderer::Init(HWND, ...). Repli sur le
+    // hDeviceWindow de la swap-chain si le device a été créé sans fenêtre de focus explicite.
+    D3DDEVICE_CREATION_PARAMETERS cp{};
+    if (SUCCEEDED(device_->GetCreationParameters(&cp)) && cp.hFocusWindow) {
+        hwnd_ = cp.hFocusWindow;
+    } else {
+        IDirect3DSwapChain9* sc = nullptr;
+        if (SUCCEEDED(device_->GetSwapChain(0, &sc)) && sc) {
+            D3DPRESENT_PARAMETERS pp{};
+            if (SUCCEEDED(sc->GetPresentParameters(&pp))) hwnd_ = pp.hDeviceWindow;
+            sc->Release();
+        }
+    }
+    if (!hwnd_)
+        TS2_WARN("WorldRenderer::Init : HWND introuvable -> survol nameplate en coordonnees ecran brutes.");
 
     if (!meshRenderer_.Init(renderer)) {
         TS2_ERR("WorldRenderer::Init : MeshRenderer::Init a echoue");
@@ -196,6 +302,7 @@ void WorldRenderer::Shutdown() {
     // du npk sans qu'aucun draw ne reference des shaders deja liberes.
     shaderSet_.Release();
     device_ = nullptr;
+    hwnd_   = nullptr; // W9 : symétrie avec Init() (re-résolu depuis le device au prochain Init)
     ready_  = false;
 }
 
@@ -449,8 +556,11 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
     // physique de recul elle-même n'est pas portée (cf. Game/AnimationTick.cpp, TODO knockback).
 
     // PNJ GAMEPLAY : bodyMeshEligible=false -> AUCUN corps ni cube (l'original ne dessine
-    // jamais de mesh pour dword_17AB534, cf. DrawableEntity::bodyMeshEligible). Seule la
-    // nameplate plus bas est émise pour ces entités.
+    // jamais de mesh pour dword_17AB534, cf. DrawableEntity::bodyMeshEligible).
+    // MISE À JOUR W9 : « seule la nameplate est émise pour ces entités » — ANCIENNE MENTION
+    // DEVENUE FAUSSE, corrigée. Ces entités n'ont AUCUN libellé dans le client d'origine
+    // (Char_DrawNameTag 0x583470 = code mort, catégorie de clic 6 = aucun dessin — cf.
+    // drawNameplatePass, case 6). Elles ne produisent donc plus rien du tout ici.
     if (ent.bodyMeshEligible) {
         if (ent.hasBody) {
             // JOUEUR — PlayerPaperdoll (calque Char_RenderModel 0x527020) : UNE palette d'os
@@ -516,27 +626,349 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
         drawReflectionOverlay(bodyModel, pos, scale, rotDeg.y, view, proj);
     }
 
-    // Nameplate — game::ComputeNameplateInfo (Char_DrawNameplate 0x56EF40) réel :
-    // NameplateHost par défaut (callbacks non branchés -> replis documentés dans
-    // NameplateLogic.h, ex. CanTargetOnMap=false => jamais traité comme hostile).
-    game::NameplateActor actor{};
-    actor.active      = ent.renderState.active;
-    actor.hasIdentity = true; // TODO(fidélité) : identité réseau non testée séparément ici
-    actor.x = ent.renderState.pos.x;
-    actor.y = ent.renderState.pos.y;
-    actor.z = ent.renderState.pos.z;
-    actor.name = ent.name;
+    // ///// SUPPRIMÉ — Passe 4 / vague W9, front nameplate-entity (gaps HUD-NP-01/02/05) /////
+    // Ce site émettait `ComputeNameplateInfo(actor, /*drawMode=*/1, ent.notSelf, vctx, host)`
+    // pour CHAQUE joueur/monstre/PNJ à CHAQUE frame. TROIS défauts cumulés, tous corrigés en
+    // déplaçant le libellé dans drawNameplatePass() (cf. bandeau WorldRenderer.h) :
+    //   1. drawMode=1 reproduisait un CHEMIN MORT du binaire : `xrefs_to(0x56EF40)` = 4 sites,
+    //      et le seul en a2=1 (@0x52FC02) est gardé par `dword_1668F64 ∈ {1,2}`, global JAMAIS
+    //      écrit (find_bytes('64 8F 66 01') = 4 occurrences, toutes opérandes de `cmp` ;
+    //      xrefs_to(0x1668F64) = 4 lectures, 0 écriture). Les 3 sites VIVANTS
+    //      (@0x531052/@0x5310A5/@0x5310F8) passent a2=2, sur l'UNIQUE entité sous le curseur.
+    //   2. `vctx` n'était peuplé que de selfX/Y/Z -> optShowHitMarkers=false -> la garde
+    //      @0x56F679 (`a2 != 1 || g_Opt_ShowHitMarkers && (...)`) était FAUSSE -> mainLine.text
+    //      vide -> `drawEntityLabel()` n'était JAMAIS appelée. AUCUNE plaque de nom n'était
+    //      rendue, pour aucune entité, aucune frame.
+    //   3. Joueurs, monstres, PNJ gameplay ET PNJ de décor passaient tous par le MÊME
+    //      ComputeNameplateInfo (logique JOUEUR : enchantement/PK/guilde/marché), alors que le
+    //      binaire a 4 fonctions de libellé DISJOINTES avec des sources de couleur distinctes.
+    // Fidélité structurelle au passage : Char_Draw 0x5805C0 (le corps, cette fonction) ne
+    // dessine AUCUN libellé — les libellés vivent dans le bloc 2D (Gfx_Begin2D @0x52FB89) de
+    // Scene_InGameRender, pas dans le dispatcher de corps.
+    (void)viewProj; // conservé dans la signature : renderOne reste le point unique des 4 boucles
+}
 
+// ===========================================================================
+//  Passe « libellé de l'entité survolée » — bloc 2D de Scene_InGameRender 0x52D0B0
+//  (@0x52FB58..0x53120B). Voir le bandeau de déclaration dans WorldRenderer.h.
+// ===========================================================================
+
+void WorldRenderer::drawNameplatePass(const gfx::Camera& camera, const game::DrawCullContext& cull,
+                                      const D3DXMATRIX& viewProj) {
+    if (!font_.Ready()) return;
+
+    // ---- 1. Position curseur -> coordonnées client ------------------------
+    // @0x52FB5C `call ds:off_7A6364` (GetPhysicalCursorPos) puis @0x52FB6C
+    // `call ds:off_7A6368` (ScreenToClient) avec hWnd = ds:hWndParent (0x815184) ;
+    // Point.x -> var_94, Point.y -> var_4B4 = les 2 args écran de World_PickEntityAtCursor.
+    // ÉCART ASSUMÉ (1 appel) : on utilise GetCursorPos et non GetPhysicalCursorPos — même
+    // convention que UI/UIManager.cpp:293 (déjà en place pour UI_RenderAllDialogs 0x5AE2D0,
+    // qui fait pourtant lui aussi GetPhysicalCursorPos). Les deux ne diffèrent que sous
+    // virtualisation DPI ; s'aligner sur le reste de ClientSource évite deux conventions de
+    // curseur contradictoires dans le même process.
+    POINT pt{};
+    GetCursorPos(&pt);
+    if (hwnd_) ScreenToClient(hwnd_, &pt);
+
+    // ---- 2. Hit-test -> catégorie + index ---------------------------------
+    // World_PickEntityAtCursor 0x538AB0 (porté : World/TerrainPicker.cpp:206). Le binaire
+    // appelle DEUX fois la même fonction, la seule différence étant le 5e argument :
+    //   @0x530F7E `push 0` si g_Opt_ShowHitMarkers == 0   (cmp/jnz @0x530F54)
+    //   @0x530FA6 `push 1` sinon
+    // -> a5 == (g_Opt_ShowHitMarkers ? 1 : 0). C'est le SEUL effet VIVANT de cette option
+    // dans tout le domaine « plaques de nom » (cf. §DRAWMODE de Game/NameplateLogic.h).
+    const bool allowModifierTargets = (config::g_Options.ShowHitMarkers != 0);
+
+    // byte_8013FE < 0 (octet SIGNÉ = bit 7 posé = touche enfoncée). World/TerrainPicker.h:136-147
+    // établit que byte_8013FE == DirectInput state[0x2A] == DIK_LSHIFT (base du tableau
+    // DirectInput = g_GfxRenderer+5564 = 0x8013D4, doublement corroborée par byte_8013F2 ==
+    // DIK_A et byte_8013E5 == DIK_W, déjà portés).
+    // ÉCART ASSUMÉ ET DOCUMENTÉ : on lit l'état Win32 (GetAsyncKeyState) et non le tableau
+    // DirectInput, car ts2::input::InputSystem n'a AUCUNE instance globale (elle appartient à
+    // App et est passée par référence) et WorldRenderer::Render(camera) — dont l'appelant
+    // Scene/SceneManager.cpp n'est PAS un fichier de ce front — ne la reçoit pas. MÊME touche
+    // physique, MÊME sémantique 2 états ; la seule divergence théorique est le décalage d'une
+    // frame entre le snapshot DirectInput et l'état async. Préféré à un hook non assigné
+    // (qui laisserait toute cette passe morte). Cf. rapport : wiringTodoForOrchestrator.
+    const bool modifierKeyDown = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0;
+
+    const world::collision::ScreenPickCamera pickCam =
+        world::BuildScreenPickCamera(camera, screenW_, screenH_);
+    // EntityPickHost::CanTargetOnMap non branché (Combat_CanTargetOnMap 0x558740 non portée —
+    // dépend de Map_GetPvpMode 0x4FAB90 + du système de zones PVP) -> défaut false -> la
+    // catégorie 3 (joueur attaquable) ne sort jamais et retombe en catégorie 1. Dégradation
+    // déjà assumée par World/TerrainPicker.h:201-203 ; les catégories 1/2/3 convergeant TOUTES
+    // vers Char_DrawNameplate(a2=2), cela n'a aucun effet sur CE site d'appel-ci.
+    const world::EntityPickHost pickHost{};
+
+    int pickKind = 0, pickIndex = -1;
+    world::World_PickEntityAtCursor(game::g_World, pickCam, pt.x, pt.y,
+                                     allowModifierTargets, modifierKeyDown, pickHost,
+                                     pickKind, pickIndex);
+    if (pickKind == 0 || pickIndex < 0) return; // rien sous le curseur -> aucun libellé
+
+    // ---- 3. Contexte commun ----------------------------------------------
+    // g_SelfMorphNpcId 0x1675A98 == id de zone courant : équivalence établie par
+    // Scene/SceneManager.cpp:462 (`game::g_World.zoneId = zoneId; // g_SelfMorphNpcId`) et
+    // réutilisée telle quelle par World/TerrainPicker.cpp:250. C'est ce champ qui pilote les
+    // groupes « marché » 270..274 / 291 de Char_DrawNameplate.
     game::NameplateViewerContext vctx{};
+    vctx.localMorphNpcId = game::g_World.zoneId;
     vctx.selfX = cull.localPlayerPos.x;
     vctx.selfY = cull.localPlayerPos.y;
     vctx.selfZ = cull.localPlayerPos.z;
+    vctx.optShowNameplates = (config::g_Options.ShowNameplates != 0); // g_Opt_ShowNameplates 0x84DED4
+    vctx.optShowHitMarkers = (config::g_Options.ShowHitMarkers != 0); // g_Opt_ShowHitMarkers 0x84DED0
+    // optDetailedNameplates RESTE false — dword_1668F64 n'est JAMAIS écrit dans le binaire
+    // (4 lectures, 0 écriture) : le bloc titre/guilde/chuchoté/icônes/debug-GM qu'il garde
+    // (@0x57008D) est du CODE MORT. Le peupler afficherait ce que le client d'origine
+    // n'affiche jamais. NE PAS « allumer ». Cf. §DRAWMODE de Game/NameplateLogic.h.
+    //
+    // localGmAuthLevel / localFactionSubMode / localFactionFlag / chatColorWhisper /
+    // partyFlagIndicatorCount restent à 0 VOLONTAIREMENT : re-vérifié cette vague, aucun
+    // d'eux n'a d'effet observable sur le chemin vivant (drawMode=2) —
+    //   · localGmAuthLevel : lu par la garde @0x56F679 (court-circuitée par `a2 != 1`) et par
+    //     `hostile = gm <= 0 && CanTargetOnMap(...)` (CanTargetOnMap non branchée -> false
+    //     quel que soit gm) et par le bloc debug GM (mort). Le brancher exigerait
+    //     Net/NetClient.h (winsock2.h APRÈS le windows.h de WorldRenderer.h -> erreur
+    //     d'inclusion garantie) pour ZÉRO effet : refusé.
+    //   · localFactionSubMode / localFactionFlag : lus uniquement dans la branche `hostile`
+    //     (jamais prise, cf. ci-dessus).
+    //   · chatColorWhisper / partyFlagIndicatorCount : bloc « détaillé », mort.
+    game::NameplateHost host{};
+    // Near-cull CAMÉRA (Target_IsBeyondClickRange 0x5410D0, appel @0x56EF96 avec a2=20.0).
+    // BRANCHÉ (gap HUD-NP-09) sur l'implémentation DÉJÀ existante et identique
+    // game::IsBeyondCameraNearCull (Game/EntityDrawLogic.cpp:22) — jusqu'ici la callback
+    // était nulle et NameplateLogic retombait sur `true`, sautant purement le cull.
+    // Le callback reçoit y DÉJÀ décalé de +10 (cf. NameplateHost) : on repasse `y - 10` avec
+    // radius=20 pour reconstituer littéralement les arguments d'origine
+    // (`Target_IsBeyondClickRange((float*)this+63, 20.0)` -> dy = camY - (pos.y + 20*0.5)).
+    host.IsBeyondCameraNearCull = [&cull](float x, float y, float z) {
+        return game::IsBeyondCameraNearCull(game::Vec3{ x, y - 10.0f, z }, 20.0f, cull.cameraPos);
+    };
+    // StrTable005_Get(g_LangId, id) 0x4C1D10 -> game::Str (placeholder « #<id> » stable tant
+    // que 001.DAT n'est pas déchiffré, cf. Game/ClientRuntime.h:198-202). Branché : c'est la
+    // convention déjà retenue par tous les handlers réseau du projet.
+    host.ResolveString = [](int stringId) { return game::Str(stringId); };
+    // ResolveValueTierPrefix (UI_GetValueTierString 0x54CD40), ResolveEnchantName
+    // (Item_GetEnchantNameString 0x548330), CanTargetOnMap (Combat_CanTargetOnMap 0x558740),
+    // IsSameAffiliationAsLocal / IsSameAllianceAsLocal (sentinels sociaux) : AUCUNE n'est
+    // portée dans ClientSource (grep exhaustif) -> laissées nulles, replis documentés dans
+    // NameplateLogic.h ("" / false). TODO [ancres 0x54CD40, 0x548330, 0x558740] : à brancher
+    // ici même dès que ces fonctions existeront — ce site est leur consommateur.
+    // IsOnScreen (Cam_ProjectToScreen 0x6A24F0) : laissée nulle -> repli `true`. Le vrai
+    // gate écran est appliqué juste après par drawEntityLabel -> worldToScreen (qui rejette
+    // clip.w <= 0 et |ndc| > 1.5), donc le brancher ici ferait le travail deux fois.
 
-    const game::NameplateHost host{}; // tous callbacks nuls -> replis par défaut documentés
-    const game::NameplateInfo info = game::ComputeNameplateInfo(actor, /*drawMode=*/1, ent.notSelf, vctx, host);
-    if (info.visible && info.nameBlockVisible && !info.mainLine.text.empty()) {
-        const D3DXVECTOR3 labelPos(actor.x, actor.y + info.labelAnchorYOffset, actor.z);
-        drawEntityLabel(info.mainLine.text, labelPos, ColorFromNameplateCode(info.mainLine.color), viewProj);
+    // ---- 4. Switch 8 cas @0x530FC7 — AU PLUS UN libellé par frame ---------
+    switch (pickKind) {
+    // -------------------------------------------------------------------
+    // Catégories 1/2/3 — JOUEURS (g_EntityArray). Les 3 cas appellent le MÊME
+    // Char_DrawNameplate(&g_EntityArray[0x38C*idx], /*a2=*/2, /*a3=*/idx, arg_0) :
+    //   @0x531052 (cat 1, neutre) / @0x5310A5 (cat 2, échange) / @0x5310F8 (cat 3, attaquable)
+    // `a3` = l'indice de boucle du picker, dont la boucle joueurs démarre à `i = 1`
+    // (@0x538ACB) : l'index 0 (le joueur local) n'est JAMAIS retourné -> notSelf est
+    // TOUJOURS vrai sur ce chemin. Le client d'origine ne dessine donc jamais de plaque de
+    // nom au-dessus de SA PROPRE tête. La garde `pickIndex >= 1` ci-dessous matérialise
+    // cette invariante (défensive : le picker la garantit déjà).
+    // -------------------------------------------------------------------
+    case 1:
+    case 2:
+    case 3: {
+        if (static_cast<size_t>(pickIndex) >= game::g_World.players.size()) break;
+        if (pickIndex < 1) break; // self exclu par construction (@0x538ACB `for (i = 1; ...)`)
+        const game::PlayerEntity& p = game::g_World.players[static_cast<size_t>(pickIndex)];
+
+        game::NameplateActor actor{};
+        actor.active      = p.active;                                                  // entity+0
+        // hasIdentity (entity+24) : MÊME champ que la garde `dword_168724C[227*i]` du picker
+        // (0x168724C == g_EntityArray + 0x18 == entity+24 == body+0). Remplace l'ancien
+        // `actor.hasIdentity = true; // TODO(fidélité)` qui court-circuitait le test.
+        actor.hasIdentity = (ReadBodyU32LE(p.body, kNpBodyHasIdentity) != 0);
+        actor.x = p.x; actor.y = p.y; actor.z = p.z;   // entity+252/+256/+260, cf. @0x56F133..0x56F15D
+        actor.name = p.name;                            // entity+72 = body+48 (EntityManager::ReadPlayerName)
+
+        actor.level        = static_cast<int>(ReadBodyU32LE(p.body, kNpBodyLevel));
+        actor.element      = static_cast<int>(ReadBodyU32LE(p.body, kNpBodyElement));
+        actor.enchantRaw   = static_cast<int>(ReadBodyU32LE(p.body, kNpBodyEnchantRaw));
+        actor.pkLevel      = static_cast<int>(ReadBodyU32LE(p.body, kNpBodyPkLevel));
+        actor.rankTierValue = static_cast<int>(ReadBodyU32LE(p.body, kNpBodyRankTier));
+        actor.isGmAccount   = (ReadBodyU32LE(p.body, kNpBodyGmAccount) == 1);          // @0x56FFED -> 35
+        actor.isVipOrHighlighted = (ReadBodyU16LE(p.body, kNpBodyVipWord) == 1);       // @0x56FFD7 -> 5
+        actor.isSpecialPkState   = (ReadBodyU32LE(p.body, kNpBodySpecialPk) == 12);    // @0x570006 -> 44
+        actor.isAdminTitle       = (ReadBodyU32LE(p.body, kNpBodyAdminTitle) == 1);    // @0x56F6C9
+        actor.isAdminTitleAlt    = (ReadBodyU32LE(p.body, kNpBodyAdminTitleAlt) == 1);
+        actor.hasTitleBarExtraHeight  = (ReadBodyU32LE(p.body, kNpBodyTitleBarExtra) != 0); // @0x56F115
+        actor.suppressExtraNameHeight = (ReadBodyU32LE(p.body, kNpBodySuppressExtra) != 0); // @0x56F124
+        actor.affiliationName = ReadBodyCString(p.body, kNpBodyAffiliation, kNpBodyStringMaxLen);
+        actor.allianceName    = ReadBodyCString(p.body, kNpBodyAlliance,    kNpBodyStringMaxLen);
+        // hpCur/hpMax/mpCur/mpMax (entity+316/+312/+324/+320) NON peuplés : leur unique
+        // consommateur est le bloc barres PV/PM, gardé par `a2 == 1` (@0x56EFBF) donc MORT.
+        // titleKind / subAffiliationName / whisperName / statusIconA..F : idem, bloc
+        // « détaillé » (dword_1668F64 == 1) mort. Ne pas peupler ce qui ne peut être lu.
+
+        const game::NameplateInfo info =
+            game::ComputeNameplateInfo(actor, /*drawMode=*/2, /*notSelf=*/true, vctx, host);
+        if (info.visible && info.nameBlockVisible && !info.mainLine.text.empty()) {
+            const D3DXVECTOR3 labelPos(actor.x, actor.y + info.labelAnchorYOffset, actor.z);
+            drawEntityLabel(info.mainLine.text, labelPos,
+                            ColorFromNameplateCode(info.mainLine.color), viewProj);
+        }
+        break;
+    }
+
+    // -------------------------------------------------------------------
+    // Catégorie 4 — PNJ (pool de rendu g_NpcRenderArray, == g_World.npcRenderEntries après
+    // l'unification W7). Fx_MeleeSwingDrawMarker(&g_NpcRenderArray[0x58*idx], /*a2=*/2, idx)
+    // @0x531148. Texte = def->name (def+4), couleur = Quest_GetMarkerSpriteBase -> 10.
+    // -------------------------------------------------------------------
+    case 4: {
+        if (static_cast<size_t>(pickIndex) >= game::g_World.npcRenderEntries.size()) break;
+        const game::NpcRenderEntry& n = game::g_World.npcRenderEntries[static_cast<size_t>(pickIndex)];
+        if (!n.def) break; // `*(_DWORD*)this` déréférencé sans garde par le binaire ; on protège
+
+        game::ZoneNpcLabelRenderState st{};
+        st.active      = n.active;
+        st.pos         = { n.x, n.y, n.z };
+        st.clickRange  = static_cast<int>(n.def->fieldF[1]); // def+1332 (portée/clic, cf. ExtraDatabases.h)
+        st.markerDefId = static_cast<int>(n.def->id);        // def+0 (jamais lu par le stub 0x540770)
+
+        const game::ZoneNpcLabelContent lc =
+            game::ComputeZoneNpcLabelContent(st, /*drawMode=*/2, vctx.optShowHitMarkers, cull);
+        if (lc.visible) {
+            const std::string text(n.def->name, ::strnlen(n.def->name, sizeof(n.def->name)));
+            if (!text.empty()) {
+                drawEntityLabel(text, D3DXVECTOR3(lc.worldPos.x, lc.worldPos.y, lc.worldPos.z),
+                                ColorFromNameplateCode(lc.colorCode), viewProj);
+            }
+        }
+        break;
+    }
+
+    // -------------------------------------------------------------------
+    // Catégorie 5 — MONSTRES (dword_1766F74, stride 280).
+    // Char_DrawOverheadName(&dword_1766F74[0x118*idx], idx) @0x531199. Décompilation :
+    //   v5 = (float)*(int*)(*((_DWORD*)this + 24) + 252);          // def+252 = drawSize
+    //   if (Target_IsBeyondClickRange(this + 8, v5)) {             // near-cull caméra SEUL
+    //     v7[1] = (double)(*(def+252) + *(def+260) + 1) + *(this+9);        /*0x5814AE*/
+    //     NameplateColor = Npc_GetNameplateColor((int)this);                /*0x5814C3*/
+    //     UI_DrawNumberCentered((const char*)(def + 4), v7, NameplateColor);/*0x5814DC*/ }
+    // `this+24` (dword) = record+96 = MonsterEntity::def (documenté « +0x60 » dans
+    // GameState.h:211). Aucun cull des 300 unités, aucune garde ShowHitMarkers ici.
+    // -------------------------------------------------------------------
+    case 5: {
+        if (static_cast<size_t>(pickIndex) >= game::g_World.monsters.size()) break;
+        const game::MonsterEntity& m = game::g_World.monsters[static_cast<size_t>(pickIndex)];
+        if (!m.def) break;
+        const game::MonsterInfo& mi = *static_cast<const game::MonsterInfo*>(m.def);
+
+        // EntityRenderInfo : drawSize = def+252 = MonsterInfo::collDim[1] (collDim est à +248) ;
+        // nameplateExtraOffset = def+260 = MonsterInfo::field260. Ce bloc `info` n'était
+        // JAMAIS peuplé par WorldRenderer (écart relevé dans le bandeau WorldRenderer.h) :
+        // ComputeOverheadNameContent recevait donc radius=0 et une hauteur de libellé nulle.
+        game::EntityRenderInfo rinfo{};
+        rinfo.drawSize             = mi.collDim[1];
+        rinfo.nameplateExtraOffset = static_cast<int>(mi.field260);
+
+        game::EntityRenderState st{};
+        st.active = m.active;
+        st.pos    = { m.x, m.y, m.z }; // record+32/36/40 (this+8/9/10)
+        st.info   = &rinfo;
+
+        const game::OverheadNameContent oc = game::ComputeOverheadNameContent(st, cull);
+        if (oc.visible) {
+            const std::string text(mi.name, ::strnlen(mi.name, sizeof(mi.name))); // def+4
+            if (!text.empty()) {
+                // Npc_GetNameplateColor 0x540790 — DÉJÀ portée (Game/NpcInteraction.cpp:90) et
+                // jusqu'ici JAMAIS appelée pour les monstres : c'est LA source de couleur
+                // propre à ce libellé (10 = allié/élément apparié, 2 = hostile, 22/33 = écart
+                // de puissance), distincte de la palette PK/guilde/GM de Char_DrawNameplate.
+                game::NpcQuestContext qctx{};
+                qctx.localElement = static_cast<int>(game::g_World.self.element); // g_LocalElement 0x1673194
+                // dword_1687320[0] = entity[0]+236 = players[0].body+212 — MÊME champ que le
+                // pkLevel lu par le picker sur les autres entités (cf. bandeau des offsets).
+                if (!game::g_World.players.empty()) {
+                    qctx.factionFlag = static_cast<int>(
+                        ReadBodyU32LE(game::g_World.players[0].body, kNpBodyPkLevel));
+                }
+                // elementLoadout (g_ElementLoadout 0x1685E14) et pairedElement
+                // (Char_GetPairedElement 0x557C00) NON portés -> défauts documentés dans
+                // Game/NpcInteraction.h ({} et -1). TODO [ancres 0x1685E14 / 0x557C00].
+                const int colorCode = game::Npc_GetNameplateColor(
+                    m.def, qctx, game::g_World.self.level, game::g_World.self.levelBonus);
+                drawEntityLabel(text, D3DXVECTOR3(oc.worldPos.x, oc.worldPos.y, oc.worldPos.z),
+                                ColorFromNameplateCode(colorCode), viewProj);
+            }
+        }
+        break;
+    }
+
+    // -------------------------------------------------------------------
+    // Catégorie 6 — dword_17AB534 (stride 152). AUCUN libellé, VOLONTAIREMENT.
+    // Le case 6 du switch (@0x5311A0) ne fait QUE poser la paire de curseurs 5/6
+    // (`push 5` @0x5311B9) : il n'appelle AUCUNE fonction de dessin. Et la seule fonction
+    // qui dessine un libellé sur ce tableau, Char_DrawNameTag 0x583470, a pour UNIQUE xref
+    // @0x52FCD9 — à l'intérieur du bloc mort `dword_1668F64 == 1`.
+    // => ce tableau n'a JAMAIS de libellé dans le client d'origine. C'est aussi pourquoi la
+    // boucle `g_World.npcs` de Render() n'en émet plus aucun (elle en émettait un avant W9).
+    // -------------------------------------------------------------------
+    case 6:
+        break;
+
+    // -------------------------------------------------------------------
+    // Catégorie 7 — OBJETS DE ZONE (g_ZoneObjectArray 0x180EEF4, stride 76).
+    // Obj_DrawNameLabel(&g_ZoneObjectArray[19*idx]) @0x531206. Décompilation intégrale :
+    //   if (*(_DWORD *)this)                                            /*0x5840CF*/
+    //     if (Math_Dist3D((float *)this + 6, flt_1687330) <= 300.0) {   /*0x5840FD*/
+    //       Crt_Vsnprintf(v3, "%s", (const char *)this + 49);           /*0x584117*/
+    //       v4[0] = *((float *)this + 6);                               /*0x584128*/
+    //       v4[1] = *((float *)this + 7) + 12.0;                        /*0x58413A*/
+    //       v4[2] = *((float *)this + 8);                               /*0x584146*/
+    //       UI_DrawNumberCentered(v3, v4, 7); }                         /*0x58415B*/
+    // Aucun near-cull caméra, aucune garde d'option : SEULEMENT la distance <= 300 au joueur
+    // local, et une couleur LITTÉRALE 7. pos = record+24/28/32 = body+0/4/8 (le body démarre
+    // à record+0x18 — même conversion que World/TerrainPicker.cpp:347) ; texte = record+49 =
+    // body+25.
+    // -------------------------------------------------------------------
+    case 7: {
+        if (static_cast<size_t>(pickIndex) >= game::g_World.zoneObjects.size()) break;
+        const game::ZoneObjectEntity& z = game::g_World.zoneObjects[static_cast<size_t>(pickIndex)];
+        if (!z.active) break; // `if (*(_DWORD*)this)` @0x5840CF
+
+        float zp[3] = { 0.0f, 0.0f, 0.0f };
+        std::memcpy(zp, z.body.data(), sizeof(zp)); // record+24/28/32 == body+0/4/8
+
+        // `Math_Dist3D(pos, flt_1687330) <= 300.0` @0x5840FD (joueur local, PAS la caméra).
+        const game::Vec3 zpos{ zp[0], zp[1], zp[2] };
+        if (game::Distance3D(zpos, cull.localPlayerPos) > game::kSelfProximityDrawDistance) break;
+
+        // Texte = record+49 = body+25, C-string. Borne DÉFENSIVE : jusqu'à la fin du body
+        // (52 o, cf. GameState.h:359) — la capacité réelle n'est pas prouvée (le binaire
+        // Vsnprintf dans un buffer de 1000 o sans borne d'entrée). Jamais d'overrun.
+        const uint8_t* nameStart = z.body.data() + 25;
+        const size_t   nameCap   = z.body.size() - 25;
+        size_t nameLen = 0;
+        while (nameLen < nameCap && nameStart[nameLen] != 0) ++nameLen;
+        if (nameLen == 0) break;
+        const std::string text(reinterpret_cast<const char*>(nameStart), nameLen);
+
+        // v4[1] = pos.y + 12.0 (@0x58413A) ; couleur LITTÉRALE 7 (@0x58415B — un immédiat
+        // `push 7`, PAS une palette calculée, contrairement aux 3 autres libellés). Le 7 est
+        // écrit tel quel : il se trouve que game::kNameColorWhisper vaut aussi 7, mais c'est
+        // une COÏNCIDENCE de valeur, pas de rôle -> ne pas réutiliser cette constante ici.
+        // Tous ces codes vivent dans le MÊME espace (celui de l'argument couleur de
+        // UI_DrawNumberCentered 0x53FD00 / UI_DrawNumberValue 0x53FCC0), d'où le même
+        // ColorFromNameplateCode pour les 4 familles de libellés.
+        drawEntityLabel(text, D3DXVECTOR3(zp[0], zp[1] + 12.0f, zp[2]),
+                        ColorFromNameplateCode(7), viewProj);
+        break;
+    }
+
+    // Catégorie 0 (`Skill_CanCastAtCursor` @0x530FCE) : aucun libellé, seulement une forme de
+    // curseur (`push 7` / `push 8`). Rien à dessiner ici.
+    case 0:
+    default:
+        break;
     }
 }
 
@@ -713,6 +1145,22 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
     // g_NpcRenderArray 0x1764D14 (peuplé par Pkt_EnterWorld 0x464160), modélisé par la
     // boucle PNJ DE DÉCOR (ZoneNpcs) juste en dessous. Le cube jaune était donc une
     // INFIDÉLITÉ -> supprimé. reflectionEligible reste false (idem : aucun reflet PNJ).
+    //
+    // ///// ÉTAT W9 (front nameplate-entity) : CETTE BOUCLE N'ÉMET PLUS RIEN /////
+    // Avant W9 elle émettait une plaque de nom (via renderOne). C'était une INFIDÉLITÉ de
+    // plus : le binaire ne dessine AUCUN libellé pour dword_17AB534 — sa seule fonction de
+    // libellé (Char_DrawNameTag 0x583470) a pour unique xref @0x52FCD9, dans le bloc mort
+    // `dword_1668F64 == 1`, et la catégorie de clic 6 que World_PickEntityAtCursor attribue à
+    // ce tableau n'a aucun dessin associé (case 6 @0x5311A0 : curseur seul).
+    // La boucle est CONSERVÉE (et non supprimée) comme point d'ancrage du seul dessin que le
+    // binaire fait réellement sur ce tableau, aujourd'hui NON portable :
+    //   TODO [ancre Char_DrawAura 0x583400 @0x52DCB1 (passe 1) / @0x52EC88 (passe 2)] — gap
+    //   erp-08 : `if (this && pass in [1,2] && this[27] != -1) ModelObj_Draw(unk_B60AB8 +
+    //   148*this[27], pass, 0.0, this+32, this+35)`. BLOQUÉ : ModelObj_Draw 0x4D71B0 et la
+    //   table de templates unk_B60AB8 ne sont pas modélisées dans ClientSource, et
+    //   game::NpcEntity n'expose pas le champ +27 (id de template d'aura). Effet conditionnel
+    //   (seulement si cet id est posé) -> ne rien dessiner reste le comportement correct tant
+    //   que la source n'existe pas.
     for (size_t i = 0; i < game::g_World.npcs.size(); ++i) {
         const game::NpcEntity& n = game::g_World.npcs[i];
         if (!n.active) continue;
@@ -829,6 +1277,13 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         // absente de ClientSource. Cf. bandeau WorldRenderer.h §Ombre/reflet [B].
         renderOne(ent, cull, view, proj, viewProj);
     }
+
+    // ///// PASSE LIBELLÉ — Passe 4 / vague W9, front nameplate-entity /////
+    // APRÈS les 4 boucles de corps, comme dans Scene_InGameRender 0x52D0B0 où les libellés
+    // sont émis dans le bloc 2D ouvert par Gfx_Begin2D @0x52FB89, une fois toutes les passes
+    // 3D terminées — et JAMAIS depuis Char_Draw. Émet AU PLUS UN libellé par frame (celui de
+    // l'entité sous le curseur), fidèle au switch @0x530FC7.
+    drawNameplatePass(camera, cull, viewProj);
 
     font_.EndBatch();
 }

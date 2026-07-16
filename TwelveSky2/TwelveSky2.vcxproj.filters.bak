@@ -1,0 +1,963 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{10000000-0000-0000-0000-000000000001}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\App">
+      <UniqueIdentifier>{61DF74F8-0D9D-5E97-BCEB-4BA9039C2CFC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Asset">
+      <UniqueIdentifier>{DC278352-AD09-5861-B272-B25806BFD7A2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Audio">
+      <UniqueIdentifier>{D7282D51-3AB1-5C7C-8FB2-46EF0BC14B94}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Config">
+      <UniqueIdentifier>{C49CFAA3-BBC9-590E-A635-135942381E08}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Game">
+      <UniqueIdentifier>{0F7B8711-A479-566B-80E5-7574EE56D41B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Game\Combat">
+      <UniqueIdentifier>{82281FBF-0128-42C3-87E4-56D851EA449C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Game\Entities">
+      <UniqueIdentifier>{6E2FB4B7-7839-4550-BDC2-95D30EADF6B1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Game\Flow">
+      <UniqueIdentifier>{18FA6D57-8403-4D31-B8DF-993029C8A638}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Game\Items">
+      <UniqueIdentifier>{EA12EAB6-C2AD-4057-BD53-804DC6F7D01A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Game\Social">
+      <UniqueIdentifier>{FD7FD9BC-9069-45D0-90FF-47420BE3DF85}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Game\Data">
+      <UniqueIdentifier>{9A0EDBCB-F44A-4E21-BEF9-0687E191DA56}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Gfx">
+      <UniqueIdentifier>{2AED10B5-4E74-5722-A9CA-E91E30FEBAA2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Input">
+      <UniqueIdentifier>{3354AAEC-D292-5A48-8AE5-7B9E24307581}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Net">
+      <UniqueIdentifier>{CB077125-0FBF-57A8-800D-CB91832A09B1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Net\Handlers">
+      <UniqueIdentifier>{7A1E4F2B-9C3D-46E1-8B5F-2D6A0C93E4A7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Scene">
+      <UniqueIdentifier>{78F72F0F-AA4D-563A-8C2F-5716F2C7490F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Tools">
+      <UniqueIdentifier>{9B1A3C7D-6E2F-4B4A-8D1E-3F5A7C9E2B60}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\UI">
+      <UniqueIdentifier>{3AB5B03C-F4A4-52D4-9CB6-FA94CCBD3D04}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\UI\Windows">
+      <UniqueIdentifier>{F489FD1B-31EB-50CC-9B89-7FB279D35391}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\World">
+      <UniqueIdentifier>{1EE9E6B5-9B33-5AFC-AD62-FDDEE2639F8E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{20000000-0000-0000-0000-000000000001}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\App">
+      <UniqueIdentifier>{413262E9-75FB-5C57-BA86-37990EDB0738}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Asset">
+      <UniqueIdentifier>{01C7B5D0-ABFB-54CF-B6AF-A02AC5360616}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Audio">
+      <UniqueIdentifier>{FD3833B5-BE8E-500B-8355-1FCAE2B44601}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Config">
+      <UniqueIdentifier>{F1961620-E232-5C04-B684-81A85E3757C2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Core">
+      <UniqueIdentifier>{C20D7FAA-3F65-5B79-BCEC-D0B388D3D152}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Game">
+      <UniqueIdentifier>{151F90DE-DDA1-5CA3-B35C-B6ACD9166F78}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Game\Combat">
+      <UniqueIdentifier>{3C396511-FBDE-4081-9F42-E0465CE3B0E4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Game\Entities">
+      <UniqueIdentifier>{64E6B349-D53E-40C1-84C9-A0B7031DCDB2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Game\Flow">
+      <UniqueIdentifier>{A3A53F9B-4506-4018-A370-0BDFA77AA437}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Game\Items">
+      <UniqueIdentifier>{60AA1E1F-7605-48BC-87E3-BAC012A38EF8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Game\Social">
+      <UniqueIdentifier>{F9297A39-243F-47DC-AEDE-E3284A672BD4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Game\Data">
+      <UniqueIdentifier>{B9F6EB5B-9185-4EB7-AE78-5F6E2A76C3D9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Gfx">
+      <UniqueIdentifier>{95C68D2E-A156-5286-BF94-9BFB259D63DE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Input">
+      <UniqueIdentifier>{B352BFCB-4C4A-54D4-B81F-50E2C06667EF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Net">
+      <UniqueIdentifier>{16166A32-0666-5527-BA0F-1805DC43311C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Scene">
+      <UniqueIdentifier>{558548D2-E1C4-5DF2-A03B-B0A9CE11CF7D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Tools">
+      <UniqueIdentifier>{4D2F8A1C-7B3E-4F6D-9A2C-5E8B1D4F7A93}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\UI">
+      <UniqueIdentifier>{EC915410-79B3-5ED1-B9B7-38F3A5FD3405}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\UI\Windows">
+      <UniqueIdentifier>{D28CC0E5-B375-578F-AB28-FD7C3B7E80DC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\World">
+      <UniqueIdentifier>{40917095-DC59-5EE4-B623-076FE0D42573}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\App\App.cpp">
+      <Filter>Source Files\App</Filter>
+    </ClCompile>
+    <ClCompile Include="src\App\PlayerInputController.cpp">
+      <Filter>Source Files\App</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\AssetSelfTest.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\AtmosphereFile.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\ImgFile.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\Model.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\Motion.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\NpkArchive.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\Sound.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\Texture.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\WorldChunk.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\Xtea.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Asset\Zlib.cpp">
+      <Filter>Source Files\Asset</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Audio\AudioSystem.cpp">
+      <Filter>Source Files\Audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Audio\OggVorbisDecoder.cpp">
+      <Filter>Source Files\Audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Audio\Sound3D.cpp">
+      <Filter>Source Files\Audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Config\GameOptions.cpp">
+      <Filter>Source Files\Config</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ActionStateMachine.cpp">
+      <Filter>Source Files\Game\Combat</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\AnimationTick.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\AutoPlaySystem.cpp">
+      <Filter>Source Files\Game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\AutoTargetCombatGate.cpp">
+      <Filter>Source Files\Game\Combat</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\BitPacking.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\CameraWarpTick.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\CharSelectFlow.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ChatCommands.cpp">
+      <Filter>Source Files\Game\Social</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ClientRuntime.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\CombatSystem.cpp">
+      <Filter>Source Files\Game\Combat</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ComboPickupTick.cpp">
+      <Filter>Source Files\Game\Combat</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ConsumableBarLogic.cpp">
+      <Filter>Source Files\Game\Items</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\EnterWorldFlow.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\EntityDrawLogic.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\EntityLifecycleTick.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\EntityManager.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ExtraDatabases.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\GameDatabase.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\GameState.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\GroundAuraWorldObjectTick.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\GuildSystem.cpp">
+      <Filter>Source Files\Game\Social</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\InGameTickFlow.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\IntroFlow.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ItemPickupSystem.cpp">
+      <Filter>Source Files\Game\Items</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ItemSystem.cpp">
+      <Filter>Source Files\Game\Items</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\MapWarp.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\MiscManagers.cpp">
+      <Filter>Source Files\Game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\MotionPools.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\NameplateLogic.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\NpcInteraction.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\QuestSystem.cpp">
+      <Filter>Source Files\Game\Social</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ServerSelectFlow.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\SkillCombat.cpp">
+      <Filter>Source Files\Game\Combat</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\SkillSystem.cpp">
+      <Filter>Source Files\Game\Combat</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\SocialSystem.cpp">
+      <Filter>Source Files\Game\Social</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\StatBonusContributors.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\StatEngine.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\StatFormulas.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\StaticNpcLoader.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\StringTables.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\WarehouseSystem.cpp">
+      <Filter>Source Files\Game\Items</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\ZoneGroup.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\Camera.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\CameraThirdPersonBridge.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\Font.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\GpuTexture.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\GxdRenderer.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\IconTextureCache.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\MeshRenderer.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\MotionCache.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\ModelCache.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\Renderer.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\ShaderSet.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\SilverLiningSky.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\SkyRenderer.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\SpriteBatch.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Input\InputSystem.cpp">
+      <Filter>Source Files\Input</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\CharSelectPackets.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\CharStatDeltaDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\CombatResultApply.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\Framing.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_BossWorld.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_ChatSocial.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_Core.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_Entity.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_InvCells.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_InvDispatch.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_Misc.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_PartyGuild.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameHandlers_VendorTrade.cpp">
+      <Filter>Source Files\Net\Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\GameVarDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\ItemActionDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\ItemEffectDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\Login.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\NetClient.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\NetSystem.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\PacketDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\Rng.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\SendPackets.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\ServerStatusQuery.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\WorldEntityDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene\SceneAudit.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene\SceneManager.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene\WorldRenderer.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Tools\UiWindowSelfTest.cpp">
+      <Filter>Source Files\Tools</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Tools\WorldReflectionSelfTest.cpp">
+      <Filter>Source Files\Tools</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\AutoPlayWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\BuffStatusPanel.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\CharacterStatsWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\ChatWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\ConsumableBarWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\EnchantWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\EnterWorldRender.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\GameHud.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\GameWindows.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\GuildWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\IntroRender.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\InventoryWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\ItemTooltip.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\LoginScene.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\MinimapWidget.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\NpcDialogWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\OptionsWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\PanelSkin.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\PartyWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\PlayerTradeWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\QuestTrackerWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\ServerSelectRender.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\SkillTreeWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\SocialWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\UIManager.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\VendorShopWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\WarehouseWindow.cpp">
+      <Filter>Source Files\UI\Windows</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\Widgets.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\Win32EditBox.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\World\WorldIntegration.cpp">
+      <Filter>Source Files\World</Filter>
+    </ClCompile>
+    <ClCompile Include="src\World\WorldMap.cpp">
+      <Filter>Source Files\World</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\App\App.h">
+      <Filter>Header Files\App</Filter>
+    </ClInclude>
+    <ClInclude Include="src\App\PlayerInputController.h">
+      <Filter>Header Files\App</Filter>
+    </ClInclude>
+    <ClInclude Include="src\App\GameConfig.h">
+      <Filter>Header Files\App</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\AssetSelfTest.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\AtmosphereFile.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\ByteReader.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\FileUtil.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\ImgFile.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\Model.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\Motion.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\NpkArchive.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\Sound.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\Texture.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\WorldChunk.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\Xtea.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Asset\Zlib.h">
+      <Filter>Header Files\Asset</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Audio\AudioSystem.h">
+      <Filter>Header Files\Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Audio\OggVorbisDecoder.h">
+      <Filter>Header Files\Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Audio\Sound3D.h">
+      <Filter>Header Files\Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Config\GameOptions.h">
+      <Filter>Header Files\Config</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Core\Log.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Core\Types.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ActionStateMachine.h">
+      <Filter>Header Files\Game\Combat</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\AnimationTick.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\AutoPlaySystem.h">
+      <Filter>Header Files\Game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\AutoTargetCombatGate.h">
+      <Filter>Header Files\Game\Combat</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\BitPacking.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\CameraWarpTick.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\CharSelectFlow.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ChatCommands.h">
+      <Filter>Header Files\Game\Social</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ClientRuntime.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\CombatSystem.h">
+      <Filter>Header Files\Game\Combat</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ComboPickupTick.h">
+      <Filter>Header Files\Game\Combat</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ConsumableBarLogic.h">
+      <Filter>Header Files\Game\Items</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\EnterWorldFlow.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\EntityDrawLogic.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\EntityLifecycleTick.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\EntityManager.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ExtraDatabases.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\GameDatabase.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\GameState.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\GroundAuraWorldObjectTick.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\GuildSystem.h">
+      <Filter>Header Files\Game\Social</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\InGameTickFlow.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\IntroFlow.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ItemPickupSystem.h">
+      <Filter>Header Files\Game\Items</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ItemSystem.h">
+      <Filter>Header Files\Game\Items</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\MapWarp.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\MiscManagers.h">
+      <Filter>Header Files\Game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\MotionPools.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\MotionPoolsCoordResolver.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\NameplateLogic.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\NpcInteraction.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\QuestSystem.h">
+      <Filter>Header Files\Game\Social</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ServerSelectFlow.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\SkillCombat.h">
+      <Filter>Header Files\Game\Combat</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\SkillSystem.h">
+      <Filter>Header Files\Game\Combat</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\SocialSystem.h">
+      <Filter>Header Files\Game\Social</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\StatBonusContributors.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\StatEngine.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\StatFormulas.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\StaticNpcLoader.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\StringTables.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\WarehouseSystem.h">
+      <Filter>Header Files\Game\Items</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\ZoneGroup.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\Camera.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\CameraThirdPersonBridge.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\Font.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\GpuTexture.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\GxdRenderer.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\IconTextureCache.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\MeshRenderer.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\MotionCache.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\PlayerPaperdoll.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\ModelCache.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\Renderer.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\ShaderSet.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\SilverLiningSky.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\SkyRenderer.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\SpriteBatch.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\WorldGeometryRenderer.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Input\InputSystem.h">
+      <Filter>Header Files\Input</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\CharSelectPackets.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\CharStatDeltaDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\Cipher.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\ClientState.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\CombatResultApply.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\Framing.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\GameHandlers.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\GameVarDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\ItemActionDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\ItemEffectDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\Login.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\NetClient.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\NetSystem.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\Opcodes.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\PacketDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\Rng.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\SendPackets.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\ServerStatusQuery.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\WorldEntityDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Scene\SceneAudit.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Scene\SceneManager.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Scene\WorldRenderer.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Tools\UiWindowSelfTest.h">
+      <Filter>Header Files\Tools</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Tools\WorldReflectionSelfTest.h">
+      <Filter>Header Files\Tools</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\AutoPlayWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\BuffStatusPanel.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\CharacterStatsWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\ChatWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\ConsumableBarWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\EnchantWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\EnterWorldRender.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\GameHud.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\GameWindows.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\GuildWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\IntroRender.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\InventoryWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\ItemTooltip.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\LoginScene.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\MinimapWidget.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\NpcDialogWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\OptionsWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\PanelSkin.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\PartyWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\PlayerTradeWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\QuestTrackerWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\ServerSelectRender.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\SkillTreeWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\SocialWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\UIManager.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\VendorShopWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\WarehouseWindow.h">
+      <Filter>Header Files\UI\Windows</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\Widgets.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\Win32EditBox.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\World\WorldIntegration.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="src\World\WorldMap.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

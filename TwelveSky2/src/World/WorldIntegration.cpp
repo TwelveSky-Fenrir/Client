@@ -6,6 +6,7 @@
 #include "Asset/FileUtil.h"
 #include "Audio/Sound3D.h"
 #include "Audio/AudioSystem.h"
+#include "Gfx/GpuTexture.h" // BEW-01 : upload GPU des minimaps (type complet requis ici : ~WorldAssets)
 #include "Core/Log.h"
 
 #include <algorithm>
@@ -259,6 +260,24 @@ const asset::Texture* WorldAssets::Minimap(int index) const {
     if (index < 0 || index > 2) return nullptr; // 0=_MINIMAP01/1=_MINIMAP02/2=_MINIMAP03
     return minimaps_[static_cast<size_t>(index)].get(); // world+2092/+2132/+2172, stride 40 @0x681aab
 }
+// BEW-01 : surface D3D9 de la minimap `index` = champ +36 de l'objet cible (Tex_LoadCompressedDDS
+// 0x6A2E80 @0x6A3040 : D3DXCreateTextureFromFileInMemoryEx(..., this+9)). D3DPOOL_MANAGED côté
+// gfx::GpuTexture -> survit à un device reset, aucune recréation à câbler.
+IDirect3DTexture9* WorldAssets::MinimapTexture(int index) const {
+    if (index < 0 || index > 2) return nullptr;
+    const gfx::GpuTexture* t = minimapGpu_[static_cast<size_t>(index)].get();
+    return (t && t->Valid()) ? t->Handle() : nullptr;
+}
+// BEW-01 : var_868/var_864 de UI_GameHud_Render (@0x681560/@0x68157B) = champs +4/+8 de l'objet
+// texture d'index `mode` = en-tête GXD +0/+4 (`qmemcpy(this+1, header, 0x1C)` @0x6A2FFE) = dims
+// LOGIQUES. NE PAS utiliser asset::Texture::width/height (= surface DDS physique NextPow2).
+bool WorldAssets::MinimapLogicalSize(int index, int& outW, int& outH) const {
+    const asset::Texture* t = Minimap(index);
+    if (!t || t->imgLogicalWidth == 0 || t->imgLogicalHeight == 0) return false;
+    outW = static_cast<int>(t->imgLogicalWidth);   // texture+4  @0x681560 (dword_14A906C[0x28*mode])
+    outH = static_cast<int>(t->imgLogicalHeight);  // texture+8  @0x68157B (dword_14A9070[0x28*mode])
+    return true;
+}
 WorldAssets::MinimapBounds WorldAssets::MinimapWorldBounds() const {
     MinimapBounds b{0.0f, 0.0f, 0.0f, 0.0f, false};
     const asset::CollisionMesh* m = TerrainMesh(); // dword_14A88C8 = quadtree .WG (g_GameWorld+140)
@@ -384,20 +403,51 @@ void WorldAssets::FreeFaces(void* user, CollisionSlot slot) {
 bool WorldAssets::LoadMinimap(void* user, int index, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     if (index < 1 || index > 3) return false;
-    auto& slot = self->minimaps_[static_cast<size_t>(index - 1)];
+    const size_t i = static_cast<size_t>(index - 1);
+    auto& slot = self->minimaps_[i];
     slot = std::make_unique<asset::Texture>();
-    // Enveloppe GXD .IMG famille T : Texture::LoadFile MATÉRIALISE désormais les pixels (blocs DXT)
-    // via ImgFile + LoadFromImgFile (Asset/Texture.cpp:96-111 / Texture.h:45-47) — format PROUVÉ
-    // identique à Tex_LoadCompressedDDS 0x6A2E80 (en-tête GXD 36 o + DDS embarqué, cf. 0x6A2FFE/
-    // 0x6A3040). Exposée par WorldAssets::Minimap(index) (GX-ICON-01).
-    return slot->LoadFile(self->gameDataDir_ + "\\" + path);
+    self->minimapGpu_[i].reset(); // recharge de zone : l'ancienne surface tombe (world+2092+40*i écrasé)
+    // Enveloppe GXD .IMG famille T : Texture::LoadFile MATÉRIALISE les pixels (blocs DXT) via
+    // ImgFile + LoadFromImgFile — format PROUVÉ identique à Tex_LoadCompressedDDS 0x6A2E80
+    // (en-tête GXD 36 o + DDS embarqué, cf. @0x6A2FFE `qmemcpy(this+1, header, 0x1C)` / @0x6A3040
+    // D3DXCreateTextureFromFileInMemoryEx).
+    if (!slot->LoadFile(self->gameDataDir_ + "\\" + path)) return false;
+
+    // BEW-01 : le binaire ne s'arrête PAS au décodage — @0x6A3040 il crée la texture D3D9 et la
+    // range dans l'objet (+36), objet que UI_GameHud_Render blitte ensuite @0x681AB1. On reproduit
+    // cet upload ici : la texture appartient au MONDE (world+2092+40*index), pas au HUD. Sans
+    // device (SetDevice non appelé), on reste CPU-only et la mini-carte dégrade proprement sur son
+    // aplat — jamais de crash.
+    if (!self->device_) {
+        TS2_WARN("World : minimap %d decodee mais device absent (SetDevice non appele) "
+                 "-> mini-carte sans fond.", index);
+        return true; // le décodage a réussi : case 8/9/10 renvoie bien 1 (fidèle @0x4DD2xx)
+    }
+    // CreateFromTexture (CreateTexture + LockRect sur les blocs déjà décodés) plutôt que
+    // CreateFromImgFile (réplique D3DX exacte) : `slot` porte déjà les blocs, inutile de relire le
+    // fichier. Écart bénin assumé : la cible passe mipLevels=1 à D3DXCreateTextureFromFileInMemoryEx
+    // (@0x6A3040) là où CreateFromTexture téléverse tous les niveaux du DDS — ID3DXSprite ne lit que
+    // le niveau 0, le blit @0x681AB1 est identique.
+    auto gpu = std::make_unique<gfx::GpuTexture>();
+    if (!gpu->CreateFromTexture(self->device_, *slot)) {
+        TS2_WARN("World : upload GPU de la minimap %d echoue (format %d non supporte).",
+                 index, static_cast<int>(slot->format));
+        return true; // idem : l'échec d'upload ne fait pas échouer le chargement de zone
+    }
+    self->minimapGpu_[i] = std::move(gpu);
+    TS2_LOG("World : minimap %d prete (logique %ux%u, surface %ux%u).", index,
+            slot->imgLogicalWidth, slot->imgLogicalHeight, slot->width, slot->height);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
-// Audio de zone — conteneur .WSOUND parsé (byte-exact), mais le PCM final exige
-// un décodeur Ogg Vorbis (libvorbis/libogg) NON lié à ce projet : le chargement
-// s'arrête proprement à "conteneur valide, PCM indisponible" plutôt que de
-// simuler un son. AudioSystem::LoadPcm renvoie false sans callback enregistré.
+// Audio de zone — conteneur .WSOUND parsé (byte-exact) PUIS réellement décodé.
+// NOTE (AUD-05) : le bandeau précédent affirmait « décodage Ogg indisponible / décodeur Ogg
+// absent, échec propre attendu ». C'est PÉRIMÉ : Audio/OggVorbisDecoder.cpp existe et
+// AudioSystem::Init le branche (AudioSystem.cpp:300-301 `if (!HasLoadCallback())
+// SetLoadCallback(&OggVorbisLoadCallback);`), libvorbis étant réellement liée. Le PCM est donc
+// bien produit — d'où la gravité de l'ancien LoadWorldBgm : il décodait TOUT puis jetait.
+// Le repli « muet sans crash » demeure si DirectSound est indisponible ou le fichier absent.
 // ---------------------------------------------------------------------------
 bool WorldAssets::LoadWorldSound(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
@@ -415,19 +465,51 @@ bool WorldAssets::LoadWorldSound(void* user, const char* path) {
         emitters.push_back({ e.soundIndex, { e.x, e.y, e.z }, e.radius });
 
     self->soundBank_ = std::make_unique<audio::SoundBank>();
-    // Ne fait PAS échouer LoadZoneResource si le PCM ne peut être décodé : le
-    // conteneur (métadonnées + émetteurs) est correctement chargé quoi qu'il arrive
-    // (cf. limitation Ogg documentée ci-dessus).
+    // Ne fait PAS échouer LoadZoneResource si un son ne peut être ouvert : le conteneur
+    // (métadonnées + émetteurs) est correctement chargé quoi qu'il arrive.
     self->soundBank_->Load(soundPaths, emitters);
+    // AUD-03 : cette banque est le pendant de dword_14A90E0. Elle reste MUETTE tant que
+    // WSndBank_UpdatePositional 0x4DAC30 n'est pas appelé par frame (@0x5321EC, en tête de
+    // Player_UpdateLocalAnim 0x5321D0) — tick porté dans Game/AnimationTick.*, HORS de ce front.
+    // Fournisseur exposé ici : WorldAssets::SoundBank() (cf. .h). Câblage : voir rapport de front.
     return true;
 }
+// AUD-05 — World_LoadZoneResource 0x4DCB60 case 12 @0x4DD43E :
+//   Snd_LoadOggToBuffers(ecx = g_GameWorld + 0x8BC, "G03_GDATA\D10_WORLDBGM\Z%03d.BGM", 1, 1, 1)
+// avec g_GameWorld = 0x14A883C -> ecx = 0x14A90F8 = le slot PERSISTANT du monde. Deux corrections
+// prouvées par rapport à l'état précédent :
+//   1. le SoundBuffer était AUTOMATIQUE (pile) -> ~SoundBuffer() au `return` détruisait les
+//      IDirectSoundBuffer à peine décodés. Il est désormais membre (`worldBgm_`), pendant exact
+//      de g_GameWorld+2236 : le slot survit, comme dans la cible.
+//   2. le mode était PlayMode::Loop (=kind 2) alors que les pushes @0x4DD425-0x4DD429 donnent
+//      a3 = kind = 1 = ONE-SHOT single (cf. commentaire IDA de Snd_LoadOggToBuffers 0x6A8120 :
+//      « 1=one-shot single, 2=loop single, 3=pool »). PlayMode::OneShot (Audio/AudioSystem.h:85).
+// La case 12 CHARGE seulement : le play est un site distinct (PlayWorldBgm, cf. .h).
 bool WorldAssets::LoadWorldBgm(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
-    (void)self;
-    audio::SoundBuffer bgm; // décodage Ogg indisponible (cf. note ci-dessus) -> échec propre attendu.
-    const bool ok = bgm.LoadFromPath(self->gameDataDir_ + "\\" + path, audio::PlayMode::Loop, 1);
-    if (!ok) TS2_WARN("World : BGM \"%s\" — conteneur trouve mais decodeur Ogg absent.", path);
+    self->worldBgm_ = std::make_unique<audio::SoundBuffer>(); // slot g_GameWorld+2236 (0x14A90F8)
+    const bool ok = self->worldBgm_->LoadFromPath(self->gameDataDir_ + "\\" + path,
+                                                  audio::PlayMode::OneShot, 1); // kind=1 @0x4DD429
+    if (!ok) {
+        // .BGM absent / DirectSound indisponible -> muet, jamais de crash (le binaire non plus
+        // n'échoue pas la zone : la case 12 retombe sur def_4DCBA4 @0x4DD443).
+        TS2_WARN("World : BGM \"%s\" indisponible (fichier absent ou audio non initialise).", path);
+        self->worldBgm_.reset();
+    }
     return ok;
+}
+// Player_ResetCombatState : @0x50F75A `cmp ds:g_BgmEnabled, 1` / @0x50F761 `jnz` ->
+// @0x50F769 `mov ecx, offset dword_14A90F8` (= g_GameWorld+0x8BC, le slot chargé ci-dessus) ->
+// @0x50F76E `call Snd_Play3D` avec les pushes 0 / 0x64 / 0 = (pan=0, vol=100, a2=0).
+void WorldAssets::PlayWorldBgm(bool bgmEnabled) {
+    if (!bgmEnabled) return;   // gate g_BgmEnabled 0x84DEF0 @0x50F75A
+    if (!worldBgm_) return;    // slot non chargé -> no-op (Snd_Play3D sort sur !loaded)
+    worldBgm_->Play(100, 0);   // vol = 0x64 @0x50F765, pan = 0 @0x50F763
+}
+// Snd_ReleaseBuffers 0x6A80D0 sur le slot monde.
+void WorldAssets::ReleaseWorldBgm() {
+    if (worldBgm_) worldBgm_->Release();
+    worldBgm_.reset();
 }
 
 // .ATM par zone (World_LoadZoneResource case 7, seul appelant de ce hook — cf. World/

@@ -27,8 +27,13 @@
 #include <string>
 #include <vector>
 
+// COM (global) — évite d'inclure d3d9.h/d3dx9.h ici (même idiome que Scene/SceneManager.h:15).
+struct IDirect3DDevice9;
+struct IDirect3DTexture9;
+
 namespace ts2::asset { class WorldChunk; struct Texture; class WSound; }
-namespace ts2::audio { class SoundBank; }
+namespace ts2::audio { class SoundBank; class SoundBuffer; }
+namespace ts2::gfx   { class GpuTexture; } // Gfx/GpuTexture.h — inclus par le .cpp seulement
 
 namespace ts2::world {
 
@@ -81,6 +86,13 @@ public:
 
     // Construit les hooks liés à cette instance (user = this). À passer à WorldMap.
     WorldLoadHooks MakeHooks();
+
+    // Device D3D9 servant à UPLOADER les textures de zone déjà décodées (aujourd'hui : les 3
+    // minimaps, cf. MinimapTexture ci-dessous). Doit être posé AVANT le premier LoadZoneResource
+    // (idem WorldMap::SetDevice). Sans device, les minimaps restent CPU-only et MinimapTexture()
+    // renvoie nullptr -> la mini-carte retombe sur son aplat (dégradation propre « zone non chargée »).
+    void SetDevice(IDirect3DDevice9* dev) { device_ = dev; }
+    IDirect3DDevice9* Device() const { return device_; }
 
     // Racine "GameData" (contient G03_GDATA\D07_GWORLD, D09_WSOUND, D10_WORLDBGM, D11_ATMOSPHERE).
     const std::string& GameDataDir() const { return gameDataDir_; }
@@ -174,14 +186,31 @@ public:
                        bool twoSide) const;                                                // 0x699a80
 
     // -----------------------------------------------------------------------
-    // GX-ICON-01 — Minimap de zone (les 3 textures Tex_LoadCompressedDDS 0x6a2e80, chargées mais
-    // jamais exposées). FOURNISSEUR pour UI/MinimapWidget (autre vague) : je produis/expose, je ne
-    // câble PAS le consommateur UI. Les 3 minimaps SONT consommées par le binaire (accès indexé
-    // @0x681aab, PAS mortes) ; la sélection 0/1/2 vient de widget+0x268, gardée par widget+0x264==1
-    // (@0x6818b4/@0x6818c7) — état UI, hors périmètre monde.
+    // GX-ICON-01 / BEW-01 — Minimap de zone (3 textures Tex_LoadCompressedDDS 0x6A2E80). Les 3
+    // minimaps SONT consommées par le binaire (accès indexé @0x681AAB, PAS mortes) ; la sélection
+    // 0/1/2 vient de widget+0x268, gardée par widget+0x264==1 (@0x6818B4/@0x6818C7) — état UI.
+    // ÉTAT : le consommateur EXISTE désormais (UI/MinimapWidget::DrawPanels, blit crop 145x128) et
+    // reçoit texture+bornes via ui::MinimapWidget::SetSourceProvider — à poser dans
+    // Scene/SceneManager.cpp (voir le rapport de front, le câblage n'est pas dans ce fichier).
     // -----------------------------------------------------------------------
     // Texture de minimap par index 0..2 (0=_MINIMAP01, 1=_MINIMAP02, 2=_MINIMAP03). nullptr sinon.
     const asset::Texture* Minimap(int index) const;                                       // 0x6a2e80
+
+    // --- BEW-01 : ce que le consommateur UI (UI/MinimapWidget) doit réellement recevoir -------
+    // La texture GPU de la minimap `index`, uploadée par LoadMinimap quand SetDevice a été appelé.
+    // nullptr si zone/index non chargé ou device absent. D3DPOOL_MANAGED (gfx::GpuTexture) -> AUCUNE
+    // recréation nécessaire sur OnDeviceLost/OnDeviceReset. Ancre : Tex_LoadCompressedDDS 0x6A2E80
+    // @0x6A3040 (D3DXCreateTextureFromFileInMemoryEx -> objet+36 = IDirect3DTexture9*, ici Handle()).
+    IDirect3DTexture9* MinimapTexture(int index) const;
+    // Dimensions LOGIQUES (en-tête GXD +0/+4) de la minimap `index` = EXACTEMENT var_868/var_864 de
+    // UI_GameHud_Render : @0x681560 `mov ecx, ds:dword_14A906C[eax]` et @0x68157B `mov ecx,
+    // ds:dword_14A9070[eax]` avec eax = 0x28*mode — or dword_14A906C == unk_14A9068+4 et
+    // dword_14A9070 == unk_14A9068+8, soit les champs +4/+8 de l'OBJET TEXTURE d'index `mode`
+    // (`qmemcpy(this+1, header, 0x1C)` @0x6A2FFE). Ce ne sont donc PAS des « échelles par mode » :
+    // c'est la taille logique de l'image, distincte de la surface D3D9 physique NextPow2
+    // (Util_NextPow2_GXD @0x6A3040) -> asset::Texture::imgLogicalWidth/Height, JAMAIS width/height.
+    // false si index invalide / non chargé.
+    bool MinimapLogicalSize(int index, int& outW, int& outH) const;                        // 0x6a2e80
     // Bornes monde de la minimap = bbox de la RACINE du quadtree .WG (dword_14A88C8 = TerrainMesh()
     // ->nodes[0]). Ancre IDA : UI_GameHud_Render @0x681513/@0x681527/@0x681535/@0x681546 (noter les
     // DEUX négations sur Z). Projection self->pixel côté UI (hors périmètre) :
@@ -189,6 +218,42 @@ public:
     //   py = (int)( logicalH * (-self.z  - negMaxZ) / (negMinZ - negMaxZ) )
     struct MinimapBounds { float minX; float maxX; float negMaxZ; float negMinZ; bool valid; };
     MinimapBounds MinimapWorldBounds() const;
+
+    // -----------------------------------------------------------------------
+    // AUD-03 — FOURNISSEUR pour le tick d'ambiance positionnelle. `soundBank_` (chargé par
+    // LoadWorldSound, case 11) est le pendant de la banque globale dword_14A90E0 ; le binaire
+    // la rafraîchit CHAQUE frame en TÊTE de Player_UpdateLocalAnim 0x5321D0 :
+    //   @0x5321DC  mov eax, ds:g_Opt_MusicVolume   ; 0x84DEE8, option idx10, 0..100 (PAS un booléen)
+    //   @0x5321E2  push offset flt_1687330         ; = dword_1687234+0xFC = position du self
+    //   @0x5321E7  mov ecx, offset dword_14A90E0   ; banque globale
+    //   @0x5321EC  call WSndBank_UpdatePositional  ; 0x4DAC30  (xref UNIQUE 1/1)
+    // Mapping vers la signature C++ existante (Audio/Sound3D.h:147) : a5 -> (enable = a5 != 0,
+    // enableScale = a5). Le TICK lui-même vit dans Game/AnimationTick.* (hors de ce front) : cet
+    // accesseur est le prérequis de son câblage. nullptr tant qu'aucune zone n'a chargé son .WSOUND.
+    // -----------------------------------------------------------------------
+    audio::SoundBank* SoundBank() const { return soundBank_.get(); }                       // 0x4dac30
+
+    // -----------------------------------------------------------------------
+    // AUD-05 — BGM de zone : slot PERSISTANT, pendant exact de g_GameWorld+2236 (0x14A90F8).
+    // World_LoadZoneResource 0x4DCB60 case 12 @0x4DD43E :
+    //   Snd_LoadOggToBuffers(this + 0x8BC, "G03_GDATA\D10_WORLDBGM\Z%03d.BGM", 1, 1, 1)
+    //   -> ecx = g_GameWorld(0x14A883C) + 0x8BC = 0x14A90F8 ; a3 = kind = 1 = ONE-SHOT single
+    //      (et NON 2=loop : cf. commentaire IDA de Snd_LoadOggToBuffers 0x6A8120).
+    // Le play est ailleurs — Player_ResetCombatState @0x50F769 `mov ecx, offset dword_14A90F8`
+    // (= le MÊME slot) puis @0x50F76E `call Snd_Play3D` avec vol=0x64=100 / pan=0, gardé par
+    // @0x50F75A `cmp ds:g_BgmEnabled, 1` (0x84DEF0). PlayWorldBgm() reproduit ce site.
+    //
+    // ⚠️ CONFLIT DE MODÈLE à arbitrer par l'orchestrateur (voir rapport) : Scene/SceneManager.cpp
+    // (LoadZoneBgm/bgm_) joue DÉJÀ ce même Z%03d.BGM via cSceneMgr+612 — qui est, lui, le slot du
+    // BGM de menu (Scene_ServerSelectUpdate 0x518B30). Câbler PlayWorldBgm() SANS retirer
+    // LoadZoneBgm ferait jouer la piste DEUX FOIS. Les deux slots sont distincts dans la cible.
+    // -----------------------------------------------------------------------
+    audio::SoundBuffer* WorldBgm() const { return worldBgm_.get(); }                       // g_GameWorld+2236
+    // Player_ResetCombatState @0x50F75A/@0x50F769/@0x50F76E : if (g_BgmEnabled == 1)
+    //   Snd_Play3D(&dword_14A90F8, 0, /*vol*/100, /*pan*/0). No-op si le slot n'est pas chargé.
+    void PlayWorldBgm(bool bgmEnabled);                                                    // 0x50f76e
+    // Snd_ReleaseBuffers 0x6A80D0 sur le slot monde (libère le SoundObj de g_GameWorld+2236).
+    void ReleaseWorldBgm();                                                                // 0x6a80d0
 
 private:
     // --- Implémentations des hooks (signatures WorldLoadHooks, `user` = this*). ---
@@ -220,6 +285,7 @@ private:
     const asset::CollisionMesh* MainCollisionMesh() const;
 
     std::string gameDataDir_;
+    IDirect3DDevice9* device_ = nullptr;  // posé par SetDevice (upload des minimaps, BEW-01)
 
     std::unique_ptr<asset::WorldChunk> wm_;             // CollisionSlot::Main
     std::unique_ptr<asset::WorldChunk> wj_;             // CollisionSlot::WJ
@@ -233,9 +299,19 @@ private:
     // ShadowBytes() (le renderer crée la texture GPU sans dépendre d'Asset/Texture.h).
     std::unique_ptr<asset::Texture>    shadow_;
     std::vector<uint8_t>               shadowBytes_;
+    // Les 3 minimaps de zone = world+2092/+2132/+2172 (unk_14A9068, stride 40 @0x681AAB).
+    //   `minimaps_`   = objet CPU décodé (dims logiques + blocs DXT)  — asset::Texture.
+    //   `minimapGpu_` = surface D3D9 correspondante (champ +36 de l'objet cible, @0x6A3040),
+    //                   uploadée par LoadMinimap si SetDevice a été appelé. BEW-01.
     std::array<std::unique_ptr<asset::Texture>, 3> minimaps_;
+    std::array<std::unique_ptr<gfx::GpuTexture>, 3> minimapGpu_; // type incomplet ici : ~WorldAssets est
+                                                                 // défini dans le .cpp (GpuTexture complet)
     std::unique_ptr<asset::WSound>     wsound_;
     std::unique_ptr<audio::SoundBank>  soundBank_;
+    // AUD-05 : slot BGM PERSISTANT de la zone = g_GameWorld+2236 (0x14A90F8), chargé par
+    // LoadWorldBgm (case 12 @0x4DD43E). Avant ce front, un SoundBuffer AUTOMATIQUE de pile était
+    // décodé puis détruit au `return` — travail pur perdu.
+    std::unique_ptr<audio::SoundBuffer> worldBgm_;
     asset::AtmosphereFile              atmosphere_; // Z%03d.ATM de la zone courante (case 7)
     SilverLiningConfig                 silverLining_; // SilverLining.config (global, session)
 };

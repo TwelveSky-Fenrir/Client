@@ -209,12 +209,15 @@ void OnGroupClicked(ServerSelectState& state, const ServerSelectHost& host, int3
 // prête, consommable immédiatement OU au prochain UpdateServerSelect()).
 bool OnServerClicked(ServerSelectState& state, const ServerSelectHost& host, int32_t serverIndex);
 
-// Relâchement de clic sur le bouton d'action/retour (Scene_ServerSelectOnMouseUp
-// 0x519AC0) : dans le binaire ouvre une confirmation modale de retour arrière — PAS de
-// logique de flux d'état associée (TODO rendu/UI : ouvrir la NoticeDlg de confirmation).
-// Exposée pour complétude de l'API d'entrée souris de la scène.
+// Relâchement de clic sur le bouton d'action/sortie (Scene_ServerSelectOnMouseUp 0x519AC0) :
+// dans le binaire, ce bouton n'est PAS un « retour arrière » mais une SORTIE DE JEU — il
+// ouvre la MsgBox de confirmation partagée UI_MsgBox_Open(dword_1822438, action_id=1, EA
+// 0x519B3E) dont le « Oui » pose g_QuitFlag=1 (UI_MsgBox_OnLButtonUp case 1, EA 0x5C0BFB).
+// Ce comportement (latch au down + confirmation au up + quit) est câblé côté rendu/entrée
+// dans UI/LoginScene.cpp (ServerSelectOnMouseDown/Up + ExitConfirmRender) et
+// UI/ServerSelectRender.cpp (OnActionButtonMouseDown/Up) ; ce stub reste sans logique de
+// flux (aucun champ de ServerSelectState n'est modifié par le binaire ici).
 inline void OnActionButtonReleased(ServerSelectState& /*state*/) {
-    // TODO UI : NoticeDlg de confirmation "retour arrière" (UI_NoticeDlg_Open 0x5C0280).
 }
 
 } // namespace ts2::game

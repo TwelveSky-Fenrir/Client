@@ -431,6 +431,28 @@ private:
     void drawEntityLabel(const std::string& text, const D3DXVECTOR3& worldPos,
                          D3DCOLOR color, const D3DXMATRIX& viewProj);
 
+    // =======================================================================
+    // Passe « libellé de l'entité survolée » — Passe 4 / vague W9, front nameplate-entity.
+    //
+    // REMPLACE l'ancien bloc nameplate de renderOne() (une plaque PAR ENTITÉ et PAR FRAME,
+    // drawMode=1), qui reproduisait un CHEMIN MORT du binaire et, de surcroît, ne
+    // dessinait RIEN (NameplateViewerContext vide -> garde @0x56F679 fausse -> mainLine
+    // vide). Cf. le §DRAWMODE de Game/NameplateLogic.h pour la preuve complète.
+    //
+    // STRUCTURE FIDÈLE : dans Scene_InGameRender 0x52D0B0, le corps (Char_Draw 0x5805C0)
+    // et le libellé (Char_DrawNameplate 0x56EF40 / Char_DrawOverheadName 0x581440 /
+    // Fx_MeleeSwingDrawMarker 0x5802C0 / Obj_DrawNameLabel 0x5840B0) sont dessinés par des
+    // fonctions DIFFÉRENTES, à des endroits DIFFÉRENTS : les corps dans les passes 3D, les
+    // libellés dans le bloc 2D ouvert par Gfx_Begin2D @0x52FB89. renderOne() ne fait donc
+    // plus QUE le corps, et cette passe unique (appelée après les 4 boucles de Render())
+    // reproduit le bloc 2D @0x52FB58..0x53120B :
+    //     GetPhysicalCursorPos(&pt) @0x52FB5C ; ScreenToClient(hWndParent, &pt) @0x52FB6C
+    //     World_PickEntityAtCursor(..., g_Opt_ShowHitMarkers ? 1 : 0) @0x530F7E / @0x530FA6
+    //     switch (kind) 8 cas @0x530FC7 -> AU PLUS UN libellé par frame
+    // =======================================================================
+    void drawNameplatePass(const gfx::Camera& camera, const game::DrawCullContext& cull,
+                           const D3DXMATRIX& viewProj);
+
     // Une entité déjà normalisée pour la boucle de rendu (players/monsters/npcs
     // convergent tous ici, cf. WorldRenderer.cpp).
     struct DrawableEntity {
@@ -534,6 +556,13 @@ private:
     gfx::Font         font_;
     std::unique_ptr<gfx::ModelCache> modelCache_; // cf. Init() pour le choix de gameDataDir="."
     IDirect3DDevice9* device_    = nullptr;
+    // hWndParent 0x815184 (fenêtre principale) — nécessaire au ScreenToClient de
+    // drawNameplatePass (@0x52FB6C). PAS de nouveau paramètre d'Init() ni de hook à poser
+    // par l'orchestrateur : la fenêtre est récupérée depuis le device lui-même
+    // (IDirect3DDevice9::GetCreationParameters().hFocusWindow == le HWND passé à
+    // CreateDevice par gfx::Renderer::Init), donc ce front reste auto-suffisant. nullptr
+    // -> ScreenToClient est sauté (mêmes coordonnées écran), comme UI/UIManager.cpp:294.
+    HWND              hwnd_      = nullptr;
     ID3DXMesh*        cubeMesh_  = nullptr; // placeholder (D3DXCreateBox 1x1x1)
     int  screenW_ = 0, screenH_ = 0;
     bool ready_   = false;

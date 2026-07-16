@@ -10,10 +10,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring> // std::memcpy (lecture des entrées 8 o de la banque §9.10)
 
 namespace ts2::ui {
 
 namespace {
+
+// --- §9.10, banque de debuffs à durée (EA 0x67D560-0x67D77F) -------------------
+// Voir le bandeau de CollectZoneStateBuffs pour la preuve de chaque valeur.
+constexpr size_t kZoneStateBytes = 288; // 36 * 8 == sizeof(RecvPackets.h::zoneStateBlock)
+constexpr int    kZoneBankCount  = 36;  // `cmp var_438, 24h / jge` @0x67D578
+constexpr int    kZoneSkipLo     = 0x13; // 19 — `cmp var_438, 13h / jl`  @0x67D597
+constexpr int    kZoneSkipHi     = 0x1C; // 28 — `cmp var_438, 1Ch / jg`  @0x67D5A0
 
 // Gabarit de chemin identique à celui utilisé par GameHud.cpp (kVitalsFrameImgPath) :
 // catégorie 1 de la table Sprite2D partagée (base unk_8E8B50, cf. bandeau de tête de
@@ -241,6 +249,42 @@ gfx::GpuTexture* BuffStatusPanel::GetPanelIconTex(int fileNo) {
     return res.first->second.Valid() ? &res.first->second : nullptr;
 }
 
+// Icône d'un emplacement de la banque §9.10 (G07). Le binaire blitte l'entrée
+// Sprite2D `unk_A60D04 + 0x143C * g_LocalElementSecondary + 0x94 * i`
+// (EA 0x67D613-0x67D62B, duplicat 0x67D6EE-0x67D706 et 0x67D74C-0x67D764) :
+// stride d'entrée 0x94 = 148 o, stride de bloc par élément 0x143C = 5180 = 35*148.
+// unk_A60D04 est la base de la CATÉGORIE 6 d'AssetMgr_InitAllSlots 0x4DEB50
+// (@0x4DECEA : `Sprite2D_BuildPath(this + 5180*ii + 148*jj + 1540564, 6, ii, jj)`,
+// this = 0x8E8B30 -> 0x8E8B30 + 1540564 = 0xA60D04, division/somme EXACTES), donc
+// gabarit `Sprite2D_BuildPath 0x4D68E0` case 6 (@0x4D6A0C) :
+//   "G03_GDATA\D01_GIMAGE2D\007\007_%03d%03d.IMG", (a3 + 1, a4 + 1) = (élément+1, index+1).
+// ⚠️ QUIRK DU BINAIRE reproduit tel quel : la table cat.6 ne porte que 35 entrées par
+// élément (`for (jj = 0; jj < 35; ++jj)`) alors que la boucle de rendu va jusqu'à
+// l'index 35 (`cmp var_438, 24h` = 36 emplacements) -> dans le binaire, l'index 35
+// déborde sur le bloc de l'élément suivant. Ici le fichier 036 n'existe pas pour cet
+// élément : le chargement échoue -> repli pastille. Divergence bénigne et assumée
+// (on n'affiche pas l'icône d'un autre élément), PAS une correction du binaire.
+gfx::GpuTexture* BuffStatusPanel::GetBankIconTex(int element, int bankIndex) {
+    if (element < 0 || bankIndex < 0) return nullptr;
+    const int key = element * 100 + bankIndex; // bankIndex <= 35 -> pas de collision
+
+    auto it = bankIconCache_.find(key);
+    if (it != bankIconCache_.end())
+        return it->second.Valid() ? &it->second : nullptr;
+
+    gfx::GpuTexture tex;
+    if (device_) {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "G03_GDATA\\D01_GIMAGE2D\\007\\007_%03d%03d.IMG",
+                      element + 1, bankIndex + 1);
+        asset::ImgFile img;
+        if (img.Load(std::string(buf)))
+            tex.CreateFromImgFile(device_, img);
+    }
+    auto res = bankIconCache_.emplace(key, std::move(tex));
+    return res.first->second.Valid() ? &res.first->second : nullptr;
+}
+
 void BuffStatusPanel::DrawGridIcon(int buffId, int x, int y, int size) {
     gfx::GpuTexture* tex = GetGridIconTex(buffId);
     if (tex && tex->Handle() && tex->Width() > 0 && tex->Height() > 0) {
@@ -251,6 +295,37 @@ void BuffStatusPanel::DrawGridIcon(int buffId, int x, int y, int size) {
     }
     // Repli « pastille colorée » (icône .IMG non résolue pour cet id).
     DrawFilledRect(x, y, size, size, PillColorForId(buffId));
+    DrawBorder(x, y, size, size, 1, 0xFF000000u);
+}
+
+void BuffStatusPanel::DrawEntryIcon(const GridEntry& e, int x, int y, int size) {
+    if (e.bankIndex < 0) {          // condition §9 « catalogue » -> table cat.1
+        DrawGridIcon(e.catalogId, x, y, size);
+        return;
+    }
+
+    // Entrée de banque §9.10 -> table cat.6, indexée par (élément local, index).
+    // TODO [g_LocalElementSecondary 0x1673198] : l'axe ÉLÉMENT est inerte côté C++ --
+    // `game::g_World.self.elementSecondary` (Game/GameState.h:408, le modèle retenu par
+    // ce codebase, cf. Net/GameHandlers_VendorTrade.cpp:333) n'a AUCUN écrivain (Grep
+    // exhaustif : uniquement des comparaisons), et l'échappatoire concurrente
+    // `g_Client.Var(0x1673198)` n'est écrite nulle part non plus (uniquement LUE par
+    // Net/GameHandlers_Misc.cpp:304). L'élément vaut donc 0 en permanence -> on charge
+    // toujours la variante d'élément 1 ("007_001NNN.IMG"). Ce n'est pas un signal FAUX
+    // (0 est une valeur d'élément légitime) mais la variante peut être la mauvaise pour
+    // un joueur d'un autre élément. À corriger en câblant un écrivain de 0x1673198
+    // (hors de ce front).
+    const int element = game::g_World.self.elementSecondary;
+    gfx::GpuTexture* tex = GetBankIconTex(element, e.bankIndex);
+    if (tex && tex->Handle() && tex->Width() > 0 && tex->Height() > 0) {
+        const float sx = static_cast<float>(size) / static_cast<float>(tex->Width());
+        const float sy = static_cast<float>(size) / static_cast<float>(tex->Height());
+        sprite_.DrawSpriteScaled(tex->Handle(), nullptr, x, y, sx, sy, gfx::kSpriteWhite, true);
+        return;
+    }
+    // Repli pastille : id dérivé de l'index de banque, décalé hors de l'espace des ids
+    // catalogue pour que PillColorForId produise une teinte distincte et stable.
+    DrawFilledRect(x, y, size, size, PillColorForId(kBuffKnownIconCount + e.bankIndex));
     DrawBorder(x, y, size, size, 1, 0xFF000000u);
 }
 
@@ -423,63 +498,173 @@ void BuffStatusPanel::CollectWiredConditionBuffs(std::vector<game::ActiveBuff>& 
     if (g_Client.VarGet(0x1675878) > 0) out.push_back({ kBuffFlagAdd5, 0.0f });
 }
 
-std::vector<game::ActiveBuff> BuffStatusPanel::BuildLiveBuffList() const {
-    std::vector<game::ActiveBuff> out = game::g_World.Self().buffs; // futures sources réseau/expiry
-    CollectWiredConditionBuffs(out);
-    return out;
+// =============================================================================
+// §9.10 — Banque de 36 debuffs à durée (EA 0x67D560-0x67D77F)
+// =============================================================================
+// LAYOUT PROUVÉ (disasm, pas pseudocode) : tableau de 36 entrées de 8 octets à
+// 0x16758D8. Le stride de 8 est établi par le SIB `dword_16758D8[ecx*8]` (@0x67D58B) —
+// une échelle x86 ∈ {1,2,4,8} : {id:u32 @+0, durée:u32 @+4}. 36 * 8 = 288 = la taille
+// exacte de `zoneStateBlock[288]` (Net/RecvPackets.h:16), recopié vers dword_16758D8
+// par Pkt_EnterWorld (@0x4641CE `push offset dword_16758D8`). Un tableau SÉPARÉ de 36
+// horodatages de départ suit, CONTIGU : flt_16759F8 = 0x16758D8 + 288.
+//
+// SOURCES DE DONNÉES DÉJÀ CÂBLÉES côté C++ (rien à écrire, seulement à consommer) :
+//   - Game/EntityManager.cpp:300  (OnEnterWorld) : `self.zoneState.assign(p.zoneStateBlock, ...)`
+//                                                  <-> memcpy 0x120 o @0x4641CE
+//   - Game/EntityManager.cpp:614-616 (OnCharStateUpdate, branche SELF, flag==1) :
+//       WrZoneU32(8*i, val)                      <-> dword_16758D8[2*i] @0x46530C
+//       WrZoneU32(8*i+4, extra)                  <-> dword_16758DC[2*i] @0x465326
+//       g_Client.VarF(0x16759F8+4*i) = gameTimeSec <-> flt_16759F8[i]   @0x465339
+// C'est le paquet 0x10 (Pkt_CharStateUpdate 0x464C10) qui maintient la banque en vie :
+// il transporte DÉJÀ la durée, que le C++ capte correctement — seul le CONSOMMATEUR
+// manquait (G03).
+//
+// GARDES (dans l'ordre exact du binaire) :
+//   1. `cmp var_438, 24h / jge` @0x67D578          -> 36 emplacements
+//   2. `cmp dword_16758D8[ecx*8], 1 / jge` @0x67D58B -> présent ssi (int32)id >= 1
+//      (jge = comparaison SIGNÉE)
+//   3. `cmp var_438,13h / jl` + `cmp var_438,1Ch / jg` @0x67D597-0x67D5A9 ->
+//      les index 19..28 (0x13..0x1C) INCLUS sont sautés : ni dessinés, ni comptés.
+// Reste : `fild dword_16758DC[edx*8]` (`fild` = chargement d'entier SIGNÉ) puis
+// `fld g_GameTimeSec / fsub flt_16759F8[eax*4] / fsubp` @0x67D5B1-0x67D5CD, soit
+//   restant = (float)(int32)durée - (g_GameTimeSec - horodatageDépart)
+//
+// PAS DE PURGE (G11) : la grille du binaire n'a AUCUNE condition d'expiration — une
+// entrée à `restant` négatif continue d'être dessinée (branche <= 10 -> clignotement
+// perpétuel) tant que `id >= 1`. La SEULE remise à zéro est le flag==2 du paquet 0x10
+// (@0x465D48-0x465D5F, qui zéroe id et durée SANS toucher l'horodatage). La purge
+// locale qui existait ici (`buffs.erase(remove_if(... now >= expiryTime))`) a donc été
+// SUPPRIMÉE : elle détruisait définitivement une entrée que le serveur n'avait pas
+// retirée.
+void BuffStatusPanel::CollectZoneStateBuffs(std::vector<GridEntry>& out) const {
+    const std::vector<uint8_t>& zs = game::g_World.self.zoneState;
+    // Le binaire adresse toujours le BSS de 288 o ; côté C++ le vecteur est vide tant
+    // qu'aucun EnterWorld/CharStateUpdate n'a eu lieu.
+    if (zs.size() < kZoneStateBytes) return;
+
+    const float now = game::g_World.gameTimeSec;
+
+    for (int i = 0; i < kZoneBankCount; ++i) {              // garde 1 @0x67D578
+        int32_t id = 0, dur = 0;
+        std::memcpy(&id,  zs.data() + 8 * i,     4);        // dword_16758D8[i*8]
+        std::memcpy(&dur, zs.data() + 8 * i + 4, 4);        // dword_16758DC[i*8]
+
+        if (id < 1) continue;                               // garde 2 @0x67D58B (jge, signé)
+        if (i >= kZoneSkipLo && i <= kZoneSkipHi) continue; // garde 3 @0x67D597-0x67D5A9
+
+        // Horodatage de départ : flt_16759F8[i]. `VarF` n'est pas const -> on relit les
+        // MÊMES 4 octets via VarGet (le slot est un int32 réinterprété en float, cf.
+        // Game/ClientRuntime.h::VarF) et on les réinterprète ici.
+        const int32_t bits = game::g_Client.VarGet(0x16759F8u + 4u * static_cast<uint32_t>(i));
+        float start = 0.0f;
+        std::memcpy(&start, &bits, 4);
+
+        GridEntry e;
+        e.bankIndex = i;                                    // var_438 (index de BANQUE)
+        e.remaining = static_cast<float>(dur) - (now - start); // @0x67D5B1-0x67D5CD
+        out.push_back(e);
+        // La POSITION de grille (var_424) n'est PAS stockée ici : c'est l'index dans
+        // `out`, incrémenté du seul fait d'avoir été poussé -> voir BuildGridEntries.
+    }
+}
+
+std::vector<BuffStatusPanel::GridEntry> BuffStatusPanel::BuildGridEntries() const {
+    std::vector<GridEntry> entries;
+    const float now = game::g_World.gameTimeSec;
+
+    // 1. `self.buffs` — modèle générique (Game/GameState.h) conservé comme point
+    //    d'ancrage pour de futures sources. ⚠️ Il n'a toujours AUCUN écrivain dans
+    //    src/ : c'est VOULU ici (cf. G03) — la banque §9.10 ci-dessous NE PASSE PAS
+    //    par lui, elle lit directement `self.zoneState`, qui est la donnée réellement
+    //    alimentée par le réseau.
+    // NB : `buffs` est porté par PlayerEntity (Game/GameState.h:200) -> accès via
+    // Self(), alors que `zoneState`/`elementSecondary` sont portés par SelfState
+    // (GameState.h:474/408) -> accès via `.self`. Deux structures différentes.
+    for (const game::ActiveBuff& b : game::g_World.Self().buffs) {
+        GridEntry e;
+        e.catalogId = b.id;
+        e.remaining = (b.expiryTime > 0.0f) ? (b.expiryTime - now) : -1.0f;
+        entries.push_back(e);
+    }
+
+    // 2. Conditions §9 câblées (§9.3/9.5/9.7/9.11/9.13/9.14) — icônes FIXES, sans
+    //    durée ni clignotement (le binaire ne dessine qu'une icône `> 0` pour elles).
+    {
+        std::vector<game::ActiveBuff> wired;
+        CollectWiredConditionBuffs(wired);
+        for (const game::ActiveBuff& b : wired) {
+            GridEntry e;
+            e.catalogId = b.id;
+            entries.push_back(e);
+        }
+    }
+
+    // 3. §9.10 — banque de 36 debuffs à durée.
+    //    ÉCART DE POSITION ABSOLUE ASSUMÉ (et inévitable) : dans le binaire, §9.10
+    //    s'insère entre §9.9 et §9.11 et hérite d'un var_424 déjà avancé par les ~50
+    //    conditions §9.1-9.9. Seules 8 de ces ~50 conditions ont une source de données
+    //    modélisée (cf. bandeau de CollectWiredConditionBuffs) : le cursor ne peut donc
+    //    PAS coïncider avec celui du binaire, quel que soit l'ordre choisi ici. Ce qui
+    //    EST reproduit fidèlement, et qui est l'objet de G06, c'est la DISSOCIATION
+    //    index de banque (var_438, source de l'icône) / position de grille (var_424) et
+    //    la règle d'avancement du cursor.
+    CollectZoneStateBuffs(entries);
+
+    return entries;
 }
 
 // =============================================================================
 // §9 — Grille de buffs/debuffs (7 colonnes)
 // =============================================================================
+// Position : `(var_4 + 28*(var_424 % 7), 5 + 28*(var_424 / 7))` — EA 0x67D5E9-0x67D612
+// (`idiv 7` ; quotient*0x1C+5 = y, reste*0x1C + var_4 = x). var_4 == kGridX == 220.
+//
+// RÈGLE DU CURSOR (G06), prouvée par le graphe de sauts et NON par le pseudocode :
+// `loc_67D770` (`var_424 += 1`) est atteint par DEUX chemins —
+//   - 0x67D695 `jmp loc_67D770`  (après le dessin normal), ET
+//   - 0x67D6B6 `jnz loc_67D770`  (branche de clignotement qui MASQUE l'icône).
+// Le cursor avance donc pour TOUTE entrée passant les gardes, dessinée OU NON : le
+// clignotement masque le blit SANS décaler les icônes suivantes. (Le dossier de gaps
+// affirmait l'inverse — « var_424 n'est incrémenté que sur un chemin réellement
+// dessiné » — ce qui aurait fait sautiller toute la grille à 1 Hz.) Ici cette règle
+// est structurelle : figurer dans `entries` = occuper une position.
 void BuffStatusPanel::RenderGrid() {
-    game::PlayerEntity& self = game::g_World.Self();
     const float now = game::g_World.gameTimeSec;
 
-    // Purge des entrées expirées. Le binaire d'origine ne « stocke » jamais un buff
-    // expiré (il RECALCULE la grille depuis les variables sources chaque frame) ;
-    // notre modèle générique doit donc nettoyer explicitement ce que le binaire
-    // n'aurait simplement plus dessiné.
-    auto& buffs = self.buffs;
-    buffs.erase(std::remove_if(buffs.begin(), buffs.end(),
-                    [now](const game::ActiveBuff& b) {
-                        return b.expiryTime > 0.0f && now >= b.expiryTime;
-                    }),
-                buffs.end());
+    const std::vector<GridEntry> entries = BuildGridEntries();
+    const int count = std::min<int>(static_cast<int>(entries.size()), kGridMaxIcons);
 
-    // self.buffs (purgé ci-dessus) + conditions §9 câblées cette mission (mission
-    // "CABLAGE GRILLE DE BUFFS", 2026-07-14 -- cf. bandeau de CollectWiredConditionBuffs
-    // pour le détail par adresse). Ces dernières n'ont pas d'expiryTime connue (le
-    // binaire ne dessine qu'une icône `> 0`, pas de compte à rebours pour elles) donc
-    // aucun texte de durée ne leur est associé ci-dessous (remaining reste -1).
-    const std::vector<game::ActiveBuff> liveList = BuildLiveBuffList();
-
-    const int count = std::min<int>(static_cast<int>(liveList.size()), kGridMaxIcons);
     for (int j = 0; j < count; ++j) {
-        const game::ActiveBuff& b = liveList[static_cast<size_t>(j)];
-        const int col = j % kGridCols;
-        const int row = j / kGridCols;
-        const int x = kGridX + col * kIconPitch;
-        const int y = kGridY + row * kIconPitch;
+        const GridEntry& e = entries[static_cast<size_t>(j)];
+        const int x = kGridX + (j % kGridCols) * kIconPitch;
+        const int y = kGridY + (j / kGridCols) * kIconPitch;
 
-        float remaining = -1.0f;
-        if (b.expiryTime > 0.0f) remaining = b.expiryTime - now;
-
-        // Clignotement (doc §9.10) : icône dessinée une frame sur deux quand il
-        // reste <= 10 s (`Crt_ftol(g_GameTimeSec*2)%2==1`).
-        const bool nearExpiry = remaining >= 0.0f && remaining <= 10.0f;
-        const bool skipDraw   = nearExpiry && (static_cast<int>(now * 2.0f) % 2 == 1);
-        if (!skipDraw)
-            DrawGridIcon(b.id, x, y, kIconSize);
-
-        // Timer de durée restante, en texte, si l'état le permet (durée finie).
-        if (remaining >= 0.0f) {
-            char buf[16];
-            const int secs = static_cast<int>(std::ceil(remaining));
-            std::snprintf(buf, sizeof(buf), "%d", secs);
-            const D3DCOLOR col2 = nearExpiry ? 0xFFFF6060u : 0xFFFFFFFFu;
-            pendingText_.push_back({ x, y + kIconSize - 11, buf, col2 });
+        bool draw = true;
+        if (e.bankIndex >= 0) {
+            // Seule la banque §9.10 clignote (le bloc 0x67D69A est INTERNE à sa boucle).
+            // `Crt_ftol(restant)` @0x67D5D3 puis `cmp eax, 0Ah / jle loc_67D69A`
+            // @0x67D5D8 : le clignotement s'applique dès que le restant TRONQUÉ est
+            // <= 10 — SANS borne basse (un restant négatif clignote perpétuellement,
+            // cf. G05/G11). Crt_ftol tronque vers zéro == static_cast<int>.
+            if (static_cast<int>(e.remaining) <= 10) {
+                // @0x67D69A-0x67D6B6 : `fld g_GameTimeSec / fadd st,st / Crt_ftol /
+                // and eax,80000001h / (fixup modulo négatif) / cmp eax,1 / jnz loc_67D770`
+                // -> le binaire DESSINE ssi ftol(2*t) % 2 == 1 (demi-période IMPAIRE).
+                // L'ancien code C++ faisait `skipDraw = ... % 2 == 1` : polarité
+                // EXACTEMENT INVERSÉE (icône visible quand l'original la masque). G05.
+                const int half = static_cast<int>(now * 2.0f);
+                draw = (half % 2 == 1);
+            }
         }
+
+        if (draw)
+            DrawEntryIcon(e, x, y, kIconSize);
+
+        // AUCUN TEXTE (G12) : le désassemblage exhaustif de la boucle 0x67D560-0x67D856
+        // ne contient QUE Sprite2D_HitTest (0x67D632, 0x67D70D) et Sprite2D_Draw
+        // (0x67D690, 0x67D76B, 0x67D7F1, 0x67D842) — aucun appel de police, aucun
+        // UI_DrawNumberValue. Le compte à rebours numérique qui était dessiné ici était
+        // inventé : la durée restante ne sert QU'À la garde de clignotement ci-dessus.
     }
 }
 
@@ -565,7 +750,9 @@ bool BuffStatusPanel::OnMouseDown(int x, int y) {
     // (doc : « toutes les icônes de la grille sont cliquables » -> ouverture de
     // tooltip générique, non modélisée ici ; on reproduit seulement la consommation
     // de l'événement).
-    const int count = std::min<int>(static_cast<int>(BuildLiveBuffList().size()), kGridMaxIcons);
+    // Même source que RenderGrid (BuildGridEntries) : le nombre d'icônes cliquables
+    // reste aligné sur le nombre d'icônes affichées, banque §9.10 comprise.
+    const int count = std::min<int>(static_cast<int>(BuildGridEntries().size()), kGridMaxIcons);
     if (count > 0) {
         const int rows = (count + kGridCols - 1) / kGridCols;
         const int gridW = kGridCols * kIconPitch;

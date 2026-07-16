@@ -117,11 +117,54 @@ public:
     // Saisie clavier / touche (chaîne UI_RouteKeyInput 0x5ADF50). `vk` = virtual-key.
     virtual bool OnKey(int vk)             { (void)vk; return false; }
 
+    // --- Clic DROIT (gap UIFW-01) ------------------------------------------
+    // Chaîne UI_RouteRButtonDown 0x5AD5D0 (1er slot appelé @0x5AD5E4) / UI_RouteRButtonUp
+    // 0x5ADA90 (1er slot @0x5ADAA4) : 38 slots « premier consommateur gagne », strictement
+    // le même motif `test eax,eax / jz / mov eax,1 / jmp` que les chaînes clic-gauche.
+    // ⚠ Dans l'IDB, les slots de la chaîne 0x5AD5D0 portent l'étiquette HÉRITÉE et
+    // TROMPEUSE `UI_Dlg_OnLButtonDblClk_*` : leur rôle réel est OnRButtonDown (cf.
+    // commentaire de tête IDA de 0x5AD5D0). Handlers réels (non-stubs) : cGameHud_OnRButtonDown
+    // 0x6318E0 (@0x5AD7E4), cQuickSlotWin_OnRButtonDown 0x6608D0 (@0x5AD804),
+    // UI_NpcWin_OnRDown_Dispatch 0x5DDC50 (@0x5AD7A4), UI_OptionsWnd_OnRButtonDown 0x66A170,
+    // UI_CharListWnd_OnRButtonDown 0x66E840, UI_RankWnd_OnRButtonDown 0x6747E0, etc.
+    virtual bool OnRButtonDown(int x, int y) { (void)x; (void)y; return false; }
+    virtual bool OnRButtonUp(int x, int y)   { (void)x; (void)y; return false; }
+
     // Rendu per-frame (appelé en ordre INVERSE du routage). Reçoit la position curseur
     // client pour le survol, comme UI_RenderAllDialogs qui pousse (x,y) à chaque draw.
     virtual void Render(const UiContext& ctx, int cursorX, int cursorY) {
         (void)ctx; (void)cursorX; (void)cursorY;
     }
+
+    // --- Passe de SURVOL / infobulle (gap UIFW-03) -------------------------
+    // Miroir de UI_RouteRButtonExamine 0x5AE5E0. ⚠ Malgré son nom IDA, cette fonction
+    // n'a RIEN à voir avec le bouton droit : `xrefs_to 0x5AE5E0` renvoie EXACTEMENT 1
+    // xref, @0x5AE5C9 — la DERNIÈRE instruction utile de UI_RenderAllDialogs 0x5AE2D0
+    // (suivie de `mov esp,ebp / pop ebp / retn` @0x5AE5CE). C'est donc une passe de
+    // SURVOL par frame, exécutée APRÈS les ~39 draws, avec le MÊME (x,y) curseur client
+    // que les draws (var_C/var_10, issus de GetPhysicalCursorPos @0x5AE2DD).
+    // Deux propriétés structurelles à préserver :
+    //   (1) chaîne « premier consommateur gagne » -> UN SEUL tooltip par frame ;
+    //   (2) exécutée après tous les Render -> le tooltip est TOUJOURS au-dessus.
+    // Consommateurs réels : UI_Shop_ShowItemTooltip 0x5C9360 (@0x5AE6B1),
+    // UI_Warehouse_ShowItemTooltip 0x5CB4A0 (@0x5AE702), UI_ItemListWin_OnMove 0x5D2510
+    // (@0x5AE71D), UI_StorageWin_OnMove 0x5D7D20 (@0x5AE738), UI_NpcWin_OnMove_Dispatch
+    // 0x5DE8C0 (@0x5AE76E), cGameHud_DrawTooltipDispatch 0x64EA30 (@0x5AE7A4),
+    // cQuickSlotWin_DrawTooltip 0x6620E0 (@0x5AE7BF), UI_QuickBar_Handle 0x6869E0
+    // (@0x5AE8CD), UI_ConsumableBar_OnRightClick 0x68E940 (@0x5AE8E8).
+    // Renvoie true si CE dialogue a dessiné son infobulle (= consomme la passe).
+    virtual bool OnHover(const UiContext& ctx, int cursorX, int cursorY) {
+        (void)ctx; (void)cursorX; (void)cursorY; return false;
+    }
+
+    // Opt-out de UIManager::CloseAll (défaut public/documenté du binaire : fermé).
+    // UI_CloseAllDialogs 0x5AC590 n'agit PAS sur toute l'UI : sa liste est FIGÉE (~27
+    // cibles) et laisse VOLONTAIREMENT ouverts MsgBox (dword_1822438), NoticeDlg,
+    // TextInput, ItemListWin, StorageWin, ClanWin, NpcWin, AutoPlay — alors que
+    // UI_ResetAllDialogs 0x5AC3F0 (~42 cibles) les réinitialise, LUI (MsgBox : appel
+    // UI_Dlg_OnReset_ClearFlag8_5C08A0(dword_1822438) @0x5AC430, sans contrepartie dans
+    // 0x5AC590). Un dialogue absent de la liste 0x5AC590 doit renvoyer false ici.
+    virtual bool ClosedByCloseAll() const { return true; }
 
     bool IsOpen() const { return bOpen_; }  // *(this+8)
     int  X() const { return x_; }           // *(this+0)
@@ -165,6 +208,12 @@ public:
     bool OnKey(int vk) override;
     void Render(const UiContext& ctx, int cursorX, int cursorY) override;
 
+    // UI_CloseAllDialogs 0x5AC590 ne touche PAS dword_1822438 (le MsgBox partagé) : la
+    // liste @0x5AC5A2-0x5AC6D1 ne le cite jamais. Seul UI_ResetAllDialogs 0x5AC3F0 le
+    // remet à plat (@0x5AC430). Ouvrir une fenêtre ne doit donc PAS avaler la boîte
+    // modale en cours — d'où l'opt-out.
+    bool ClosedByCloseAll() const override { return false; }
+
 private:
     struct Rect { int x, y, w, h; };
     // Géométrie recalculée chaque frame à partir des dimensions écran (centrage).
@@ -207,14 +256,25 @@ public:
     bool RouteMouseDown(int x, int y); // UI_RouteLButtonDown 0x5AC740
     bool RouteMouseUp(int x, int y);   // UI_RouteLButtonUp   0x5AD0F0
     bool RouteKey(int vk);             // UI_RouteKeyInput    0x5ADF50
+    // Clic DROIT (gap UIFW-01). Noms attendus TELS QUELS par le front App, qui a déjà
+    // assigné ses hooks et les documente : App/App.cpp:633 et :651 citent
+    // « ts2::ui::UIManager::RouteRButtonDown/Up ». NE PAS renommer sans re-câbler App.
+    bool RouteRButtonDown(int x, int y); // UI_RouteRButtonDown 0x5AD5D0
+    bool RouteRButtonUp(int x, int y);   // UI_RouteRButtonUp   0x5ADA90
 
     // Pass de rendu per-frame (ordre inverse du routage). À appeler depuis
     // Scene_*Render, une seule fois par frame. UI_RenderAllDialogs 0x5AE2D0.
     void Render();
 
     // --- Cycle de vie global ---
-    void ResetAll(); // UI_ResetAllDialogs 0x5AC3F0 (transitions de scène)
-    void CloseAll(); // UI_CloseAllDialogs 0x5AC590 (ouvrir une fenêtre ferme les autres)
+    // ⚠ 0x5AC3F0 et 0x5AC590 sont DEUX fonctions DISTINCTES, aux listes différentes —
+    // ne pas les confondre (elles l'étaient ici jusqu'à la vague W9, cf. gap N-1).
+    void ResetAll(); // UI_ResetAllDialogs 0x5AC3F0 (transitions de scène) : ~42 cibles,
+                     // TOUT est remis à plat, MsgBox compris (@0x5AC430), focus EDIT
+                     // relâché INCONDITIONNELLEMENT (UI_FocusEditBox(mgr,0) @0x5AC3FE).
+    void CloseAll(); // UI_CloseAllDialogs 0x5AC590 (ouvrir une fenêtre ferme les autres) :
+                     // liste FIGÉE de ~27 cibles, qui épargne MsgBox & co. Les dialogues
+                     // hors liste s'excluent via Dialog::ClosedByCloseAll() -> false.
 
     // Accès au dialogue MsgBox intégré (partagé, comme unk_1822438).
     MsgBoxDialog& MsgBox() { return msgBox_; }
@@ -229,6 +289,10 @@ private:
     UIManager& operator=(const UIManager&) = delete;
 
     bool CreateWhiteTexture(IDirect3DDevice9* dev);
+    // Passe de survol « premier consommateur gagne » (UI_RouteRButtonExamine 0x5AE5E0,
+    // appelée @0x5AE5C9 en fin de UI_RenderAllDialogs). Exécutée à la fin de CHAQUE
+    // sous-passe de Render() — voir la justification détaillée sur la définition.
+    void RunHoverChain(int cx, int cy);
 
     UiContext             ctx_;
     HWND                  hwnd_ = nullptr;

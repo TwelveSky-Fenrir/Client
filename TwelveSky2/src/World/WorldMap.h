@@ -226,12 +226,13 @@ public:
                          float outPos[3]) const;
 
     // --- Champs relevés de l'objet monde ---
-    // CONFLICT C-03 (voir Docs/TS2_WORLD_ROSETTA.md §2) : `valid_` (this+4) ET `atmosphereLoaded_`
-    // (byte_18C67C8) désignent le MÊME octet g_WorldEnv+4 dans la cible. IDA : World_LoadMap
-    // 0x41176E fait `*(this+4)=1` en succès (armant le court-circuit `||` de la case 7), remis à 0
-    // par World_UnloadMap 0x411a80. Ici LoadMap ne pose que `valid_` -> le court-circuit case 7 ne
-    // s'arme jamais (correctif fidèle = poser aussi `atmosphereLoaded_` en succès ; jalon compilé dédié).
-    bool  valid_       = false;   // this+4  (mis à 1 par World_LoadMap en succès) = byte_18C67C8 (CONFLICT C-03)
+    // BEW-03 / ex-CONFLICT C-03 (Docs/TS2_WORLD_ROSETTA.md §2) — RÉSOLU : `valid_` (this+4) ET
+    // `atmosphereLoaded_` (byte_18C67C8) désignent le MÊME octet g_WorldEnv+4 dans la cible
+    // (World_LoadMap @0x41176E `mov byte ptr [ebx+4], 1`, ebx = this = g_WorldEnv 0x18C67C4 ; lu
+    // par World_LoadZoneResource case 7 @0x4DD202). LoadMap arme désormais les DEUX en branche
+    // succès -> le court-circuit `||` de la case 7 fonctionne (World_LoadMap 1x/session).
+    // Remis à 0 par World_UnloadMap 0x411A80 dans la cible — NON porté ici (TODO au .cpp).
+    bool  valid_       = false;   // this+4  (mis à 1 par World_LoadMap en succès) = byte_18C67C8
     void* atmosphere_  = nullptr; // this+8  (objet cAtmosphere)
     void* device_      = nullptr; // this+12 (device D3D)
 
@@ -240,9 +241,10 @@ public:
     // la zone 291 est au contraire pilotée par `mode` (voir CurrentZoneModelPath).
     int flagZ291Variant = 0;      // dword_1686134
 
-    // Flag byte_18C67C8 : atmosphère déjà chargée (case 7). Si vrai, on saute World_LoadMap.
-    // (byte_18C67C8 == g_WorldEnv+4 == le MÊME octet que `valid_` dans la cible — CONFLICT C-03 ci-dessus.)
-    bool atmosphereLoaded_ = false; // byte_18C67C8
+    // Flag byte_18C67C8 (nommé g_WorldEnvAtmInitFlag dans l'IDB) : atmosphère déjà chargée (case 7).
+    // Si vrai, on saute World_LoadMap (@0x4DD217 `jnz short loc_4DD23B`). byte_18C67C8 == g_WorldEnv+4
+    // == le MÊME octet que `valid_` dans la cible (cf. bandeau ci-dessus) : LoadMap arme les deux.
+    bool atmosphereLoaded_ = false; // byte_18C67C8 (0x18C67C8), armé @0x41176E, lu @0x4DD202
 
     // Templates de chemins (relevés tels quels dans .rdata).
     static constexpr char kFmtWG[]       = "G03_GDATA\\D07_GWORLD\\Z%03d.WG";

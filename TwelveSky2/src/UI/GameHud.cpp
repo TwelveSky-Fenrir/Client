@@ -193,8 +193,82 @@
 // (`this+24 - 352/196` selon `dword_184C648`, ni l'un ni l'autre modélisés ailleurs dans
 // ClientSource) non plus prouvable statiquement : ancrée haut-centre, sous la mini-carte/
 // devise, même politique de « simplification assumée, jamais bloquante » que §2 ci-dessus.
+// ⚠️ VAGUE W9 « hud-vitals » (2026-07-16) — 6 correctifs, chacun re-prouvé par disasm frais
+// via idaTs2 (lecture seule) avant écriture. Résumé des écarts corrigés dans CE fichier :
+//
+//  1. HUD-02 — les 4 barres vitales étaient dessinées en RECTS COLORÉS (DrawBarFill). Le
+//     binaire n'en dessine JAMAIS : ce sont des frames du tableau Sprite2D partagé
+//     g_AssetMgr_UiAtlasSlots 0x8E8B50 (stride 148 = 0x94), sélectionnées par
+//     `base + Crt_ftol(cur*41.0/max)` clampé à base+41 (41 paliers discrets). Bases
+//     RE-PROUVÉES ce jour : PV 95/clamp 136 @0x67A462-0x67A471, PM 137/178
+//     @0x67A515-0x67A526, EXP 179/220 @0x67A65A-0x67A66B, Maîtrise 3543/3584
+//     @0x67A707-0x67A718 (base Chi ABSENTE du fichier avant cette passe). Toutes à x=57
+//     (`push 39h`), y = 8/22/36/50. Voir DrawAtlasBar/DrawAtlasFrame ; repli
+//     DrawBarFillQuantized (41 paliers) si le .IMG manque.
+//
+//  2. HUD-VIT-01 + HUD-VIT-02 — les barres/textes PV/PM lisaient game::g_World.self
+//     (self.hp/maxHp/mp/maxMp), un stockage PARALLÈLE que la couche Net ne resynchronise
+//     jamais (.mp/.maxMp/.maxHp ne sont JAMAIS miroités depuis le flux serveur). Le
+//     binaire lit les CHAMPS DU TABLEAU JOUEURS (dword_1687234, stride 0x38C, index 0 =
+//     self) : PV cour. dword_1687370 (=players[0]+0x13C=body+292) / PV max dword_168736C
+//     (+0x138=body+288) @0x67A442-0x67A457 ; PM cour. dword_1687378 (+0x144=body+300) /
+//     PM max dword_1687374 (+0x140=body+296) @0x67A4F5-0x67A50A. Ces 4 champs sont DÉJÀ
+//     écrits fidèlement par Pkt_CharStatDelta 0x465D90 (`imul ecx,38Ch` @0x465FF5-0x46604E)
+//     -> Net/CharStatDeltaDispatch.cpp (B_288/B_HP/B_296/B_MP = 288/292/296/300) qui
+//     miroite aussi p.hp/p.mp (ReflectBars). Le DÉNOMINATEUR n'est donc PAS Char_CalcMaxHP
+//     0x4D4ED0 / Char_CalcMaxMP 0x4D59B0 : `xrefs_to` sur ces deux fonctions ne renvoie
+//     qu'UN SEUL appelant chacune — cDrawWin_Draw @0x62A191/@0x62A1F8, la fenêtre de stats,
+//     qui n'écrit AUCUN global de barre. self.maxHp/self.maxMp restent donc corrects POUR
+//     CETTE FENÊTRE et sont conservés tels quels (§8 alliance, §7 plaques de cible).
+//
+//  3. HUD-VIT-06 — (a) clamp `if (dword_1687370 < 0) dword_1687370 = 0` @0x67A490-0x67A499 :
+//     effet de bord PERSISTANT du chemin de rendu, APRÈS la barre et AVANT le texte, non
+//     reproduit -> ajouté (cf. DrawVitalsFrame, et bandeau de GameHud.h::DrawTextPass pour
+//     la contrainte d'ordre qui en découle). (b) devise : le binaire formate `"%d"` NU
+//     (aD @0x7A9780, `push offset aD` @0x67A885) ; le préfixe « Or : » n'existe dans AUCUNE
+//     chaîne du binaire -> retiré. (c) « Lv %d » : AUCUN tracé de niveau n'existe dans le
+//     bloc vitales 0x67A3C0-0x67A8FA (seuls textes : "%d/%d" PV, "%d/%d" PM, "%.3f" EXP,
+//     "%d/%d" maîtrise, "%d" devise) -> invention pure, supprimée. (d) 41 paliers, cf. (1).
+//
+//  4. HUD-03 — la rangée de ~17 boutons de menu était HIT-TESTÉE (OnMouseDown) mais JAMAIS
+//     dessinée : `kMenuButtons` n'avait que 2 occurrences dans tout src/ (sa définition et
+//     la boucle de clic), zéro dans Render() -> boutons cliquables et invisibles. Motif
+//     RE-PROUVÉ @0x685177-0x685229 (3 états exclusifs, `this+7Ch`=124, `dy=-11h`=-17,
+//     bouton suivant `add ecx,1B2h`=+434). Câblé via DrawMenuButtons(), cf. Render().
+//
+//  5. G01 — game::InitConsumableBar n'avait AUCUN appelant dans tout src/ (vérifié par grep
+//     exhaustif) : slots_ restait value-initialisé -> les 10 cases restaient `Empty` -> la
+//     quickbar ne dessinait que des cadres vides en permanence. Câblé dans Init().
+//
+//  6. HUD-09 (partiel) — pastille talisman à l'ancre FIXE (190,75). ⚠️ La structure décrite
+//     par le dossier de gaps était FAUSSE (garde annoncée `dword_16758A4 <= 0` englobant
+//     tout le bloc, avec unk_981A84 en « else » de la plage talisman). Vérité re-prouvée
+//     @0x67A787-0x67A826 : la garde est `> 0` et unk_981A84 est SA branche (`jle 67A7A6`
+//     puis `jmp 67A826`) ; la branche `<= 0` teste 10 <= g_TalismanSlot < 20 et dessine le
+//     MÊME sprite unk_9819F0 pour les DEUX plages d'id (19051-19060 ET 19061-19070) ; enfin
+//     devise/durabilité ne sont PAS gardées par dword_16758A4. Portage de la seule partie
+//     dont l'ancre est lisible statiquement — cf. DrawTalismanBadge() et son TODO pour les
+//     blocs durabilité (largeurs de sprites non lisibles dans l'IDB).
+//
+// GAPS DU DOSSIER VOLONTAIREMENT NON APPLIQUÉS (voir rapport de mission) :
+//  - HUD-VIT-05 : RÉFUTÉ. Le dossier conclut que mLEVEL+6380 n'est jamais écrit (.bss à
+//    zéro -> l'original divise par 0). Faux : maybe_LevelTable_InitFloats 0x4C2380 écrit
+//    *(this+1595)..*(this+1606) @0x4C238A-0x4C2419 — exactement les dwords que lit
+//    0x4C2BF0 (`*(this + a2 + 1594)`, a2∈[1,12]) — et son unique appelant
+//    CrtInit_LevelTableThunk 0x7A5260 est un initialiseur statique CRT exécuté au
+//    démarrage. L'absence de xref sur 0x8E8AF4 s'explique par l'indexation calculée
+//    (ecx=mLEVEL), pas par l'absence d'écrivain. Le C++ porte DÉJÀ ces valeurs
+//    correctement (game::GetRebirthExpSpan, Game/GameDatabase.cpp:151) et la ligne C++
+//    citée par le gap n'existe plus. Appliquer le « correctif » aurait inscrit une
+//    fausseté et effacé un portage correct.
+//  - G02 (barre HUD pilotée par g_Container5, 3 pages × 14 slots) : correctif RÉEL mais
+//    INAPPLICABLE depuis ce front — `kQuickSlotCount` (GameHud.h:62) est consommé par 4
+//    fichiers appartenant à d'autres fronts (Game/ConsumableBarLogic.{h,cpp},
+//    UI/ConsumableBarWindow.{h,cpp}) : le passer de 10 à 14 muterait silencieusement leur
+//    ABI (dont `totalIconsW` de ConsumableBarWindow.cpp:71). Escaladé à l'orchestrateur.
 #include "UI/GameHud.h"
-#include "Game/GameState.h"      // game::g_World (self.hp/maxHp/mp/maxMp/level/currency)
+#include "Game/GameState.h"      // game::g_World (self.*, players[0] = source FIDÈLE des barres, cf. bandeau W9 §2)
+#include "Game/ConsumableBarLogic.h" // game::InitConsumableBar (câblage G01, cf. Init())
 #include "Game/GameDatabase.h"   // game::GetLevelInfo/LevelInfo (§1 barre EXP, mission W4-F2)
 #include "Game/ActionStateMachine.h" // game::CharActionState (CastSlot0-2/Channel -> indicateur de cast §16, mission 2026-07-14)
 #include "Game/ClientRuntime.h"  // game::g_Client.msg (MessageLog -> ChatWindow, mission 2026-07-14)
@@ -208,6 +282,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstring> // std::memcpy (RdBodyI32/WrBodyI32, cf. anonymous namespace ci-dessous)
+#include <string>
 
 namespace ts2::ui {
 
@@ -234,6 +310,72 @@ constexpr D3DCOLOR kExpFill     = 0xFF9A46E0u; // remplissage EXP (violet)
 constexpr D3DCOLOR kMasteryBg   = 0xFF08201Cu; // fond barre de maîtrise (vert sombre)
 constexpr D3DCOLOR kMasteryFill = 0xFF2CC888u; // remplissage maîtrise (vert)
 constexpr int      kMasteryMax  = 3000;        // push 0BB8h @0x67A737 ; dbl_7EDAE8 = 3000.0
+
+// --- Barres vitales : frames d'atlas (HUD-02, vague W9) ----------------------
+// Motif IDENTIQUE pour les 4 barres dans UI_GameHud_Render 0x67A3C0 :
+//   if (cur > 0) {                                   // gate `cmp <cur>,0 / jle`
+//     v = Crt_ftol(cur * 41.0 / max);                // fmul dbl_7A9860 (=41.0) / fidiv
+//     frame = v + BASE;                              // add eax, <BASE>
+//     if (frame > BASE+41) frame = BASE+41;          // clamp
+//     Sprite2D_Draw(&g_AssetMgr_UiAtlasSlots + 148*frame, 57, Y);
+//   }
+// dbl_7A9860 relu à l'octet = 41.0 ; le clamp binaire vaut TOUJOURS BASE+41 (136/178/220/
+// 3584 pour 95/137/179/3543) -> exprimé ici comme base+kVitalsBarSteps, pas dupliqué.
+constexpr int kVitalsBarSteps   = 41;   // dbl_7A9860 = 41.0 (@0x67A451/0x67A504/0x67A649/0x67A6F6)
+constexpr int kHpBarBase        = 95;   // add eax, 5Fh   @0x67A462 ; clamp 88h=136 @0x67A471
+constexpr int kMpBarBase        = 137;  // add eax, 89h   @0x67A515 ; clamp 0B2h=178 @0x67A526
+constexpr int kExpBarBase       = 179;  // add eax, 0B3h  @0x67A65A ; clamp 0DCh=220 @0x67A66B
+constexpr int kMasteryBarBase   = 3543; // add eax, 0DD7h @0x67A707 ; clamp 0E00h=3584 @0x67A718
+constexpr int kVitalsBarX       = 57;   // push 39h — constant sur les 4 barres
+constexpr int kHpBarY           = 8;    // push 8   @0x67A478
+constexpr int kMpBarY           = 22;   // push 16h @0x67A52D
+constexpr int kExpBarY          = 36;   // push 24h @0x67A672
+constexpr int kMasteryBarY      = 50;   // push 32h @0x67A71F
+
+// Gabarit de chemin des éléments du tableau Sprite2D catégorie 1 : l'élément i porte le
+// fichier d'index i+1 (Sprite2D_BuildPath 0x4D68E0 `case 1:` -> "…\001\001_%05d.IMG", a3+1 ;
+// boucle AssetMgr_InitAllSlots 0x4DEB50 `for (i=0;i<4500;++i)`). MÊME convention que
+// kVitalsFrameImgPath ci-dessous (élément 93 -> 001_00094.IMG). La base Maîtrise 3543
+// (+41 = 3584) reste dans les 4500 éléments de la catégorie.
+constexpr const char* kVitalsAtlasPathFmt = "G03_GDATA\\D01_GIMAGE2D\\001\\001_%05d.IMG";
+
+// --- §15 boutons de menu (HUD-03) — repli coloré ------------------------------
+// Les 3 états du binaire sont des Sprite2D AUTONOMES (unk_944C60 normal / unk_944CF4 survol
+// / unk_944EB0 actif), PAS des éléments de g_AssetMgr_UiAtlasSlots : leur champ filename@+4
+// est rempli au runtime, aucun littéral statique ne les relie à un .IMG (même limite que le
+// cadre vitales avant sa résolution). Repli pastille colorée, cf. DrawMenuButtons().
+constexpr D3DCOLOR kMenuBtnBg     = 0xC0242430u;
+constexpr D3DCOLOR kMenuBtnBorder = 0xFF50505Eu;
+
+// --- §4 pastille talisman (HUD-09) — repli coloré ----------------------------
+// Ancre FIXE (190,75) : `push 4Bh`(75) / `push 0BEh`(190) @0x67A790-0x67A792 (branche
+// dword_16758A4 > 0, sprite unk_981A84) et mêmes littéraux dans la branche talisman
+// (sprite unk_9819F0). Sprite2D autonomes -> repli coloré, même politique que §15.
+constexpr int      kTalismanBadgeX = 190; // push 0BEh @0x67A792
+constexpr int      kTalismanBadgeY = 75;  // push 4Bh  @0x67A790
+constexpr int      kTalismanBadgeSz = 20; // taille non lisible (Sprite2D natif) — repli
+constexpr D3DCOLOR kTalismanActive = 0xFFD8A030u; // dword_16758A4 > 0 (unk_981A84)
+constexpr D3DCOLOR kTalismanSlotted = 0xFF3A8A46u; // plage d'id talisman valide (unk_9819F0)
+
+// Lecture/écriture d'un int32 dans le body brut d'une entité (PlayerEntity::body, +0x18 de
+// l'entité). Même convention que Net/CharStatDeltaDispatch.cpp::RdI32/WrI32 et
+// Game/AutoPlaySystem.cpp::ReadI32 (non exportées, réimplantées localement).
+int32_t RdBodyI32(const std::array<uint8_t, 600>& body, size_t off) {
+    int32_t v = 0;
+    std::memcpy(&v, body.data() + off, sizeof(v));
+    return v;
+}
+void WrBodyI32(std::array<uint8_t, 600>& body, size_t off, int32_t v) {
+    std::memcpy(body.data() + off, &v, sizeof(v));
+}
+
+// Offsets des 4 champs de barre dans le body (= global - dword_1687234 - 0x18, le body
+// démarrant à entity+0x18). IDENTIQUES aux constantes B_288/B_HP/B_296/B_MP de
+// Net/CharStatDeltaDispatch.cpp:76-79, seul écrivain serveur de ces champs (op 0x11).
+constexpr size_t kBodyHpMax = 288; // dword_168736C (players[0]+0x138) — fidiv @0x67A457
+constexpr size_t kBodyHpCur = 292; // dword_1687370 (players[0]+0x13C) — fild  @0x67A44B
+constexpr size_t kBodyMpMax = 296; // dword_1687374 (players[0]+0x140) — fidiv @0x67A50A
+constexpr size_t kBodyMpCur = 300; // dword_1687378 (players[0]+0x144) — fild  @0x67A4FE
 
 // §1 EXP : progression/span exacts extraits de UI_GameHud_Render 0x67A59E (disasm
 // vérifié cette mission). Getters LevelTable_GetId 0x4C2930 -> LevelInfo::expCumul (+4),
@@ -418,6 +560,21 @@ bool GameHud::Init(gfx::Renderer& renderer, int screenW, int screenH) {
     // repli sur nullptr -> Render()/OnMouseDown() retombent sur l'ancien chemin.
     quickBarWindow_ = std::make_unique<ConsumableBarWindow>();
 
+    // G01 (vague W9) — peuplement initial des quickslots : game::InitConsumableBar
+    // (Game/ConsumableBarLogic.cpp:25, port de UI_ConsumableBar_Init 0x68E270) n'avait
+    // AUCUN appelant dans tout src/ (grep exhaustif). slots_ restait donc value-initialisé
+    // -> les 10 cases gardaient type == QuickSlotType::Empty -> ConsumableBarWindow::Render
+    // ne dessinait que des cadres vides, GetIconTex n'était jamais atteint et HitTest/OnClick
+    // renvoyaient toujours ConsumableAction::None. `slots_` est un
+    // std::array<QuickSlot, kQuickSlotCount> == game::ConsumableSlots (alias, ConsumableBarLogic.h:41).
+    // ⚠️ PALLIATIF ASSUMÉ, pas la source finale : le catalogue en dur de InitConsumableBar
+    // (540,565,…) provient du DIALOGUE consommable UI_ConsumableBar_* 0x68E270 (widget
+    // séparé, 28 cases), alors que la barre du HUD est réellement pilotée par g_Container5
+    // (3 pages × 14 slots × 3 dwords, bloc 0x684DC9-0x685155). Bascule non faisable depuis
+    // ce front : elle impose kQuickSlotCount 10 -> 14, consommé par 4 fichiers appartenant à
+    // d'autres fronts (cf. bandeau de tête, gap G02 escaladé à l'orchestrateur).
+    game::InitConsumableBar(slots_);
+
     TS2_LOG("GameHud initialise (%dx%d)", screenW_, screenH_);
     return true;
 }
@@ -426,6 +583,10 @@ void GameHud::Shutdown() {
     rendererPtr_ = nullptr;
     quickBarWindow_.reset();
     buffPanel_.Shutdown();
+    // Frames d'atlas des 4 barres vitales (vague W9) : libère les IDirect3DTexture9
+    // résidentes AVANT que device_ ne soit remis à nullptr ci-dessous (GpuTexture::Release
+    // n'a pas besoin du device, mais l'ordre reste cohérent avec vitalsFrameTex_).
+    vitalsAtlasCache_.Clear();
     vitalsFrameTex_.Release();
     if (white_) { white_->Release(); white_ = nullptr; }
     font_.Shutdown();
@@ -611,6 +772,63 @@ void GameHud::DrawBarFill(const HudRect& r, int cur, int max,
     DrawBorder(r, 1, kBarBorder);
 }
 
+// Repli des 4 barres vitales quand l'atlas .IMG manque (HUD-02/HUD-VIT-06(d), vague W9).
+// Identique à DrawBarFill ci-dessus, mais le remplissage est QUANTIFIÉ sur `steps` paliers :
+// le binaire ne calcule jamais un ratio continu, il tronque `Crt_ftol(cur*41.0/max)` pour
+// choisir une frame parmi 41 (@0x67A44B-0x67A45D). À 99 % de PV le binaire affiche donc le
+// palier 40/41, pas un remplissage à 99 %. Reproduit ici avec la MÊME troncature.
+void GameHud::DrawBarFillQuantized(const HudRect& r, int cur, int max, int steps,
+                                   D3DCOLOR bg, D3DCOLOR fill) {
+    DrawFilledRect(r, bg);
+
+    int level = 0;
+    if (max > 0 && cur > 0 && steps > 0) {
+        // Crt_ftol = troncature vers zéro (cf. Gfx : « conversion float→int (troncature) »).
+        level = static_cast<int>(static_cast<double>(cur) * steps / static_cast<double>(max));
+        level = std::clamp(level, 0, steps); // clamp binaire `frame > BASE+41 -> BASE+41`
+    }
+    const int inner  = 1;
+    const int availW = r.w - 2 * inner;
+    const int fillW  = (steps > 0) ? availW * level / steps : 0;
+    if (fillW > 0) {
+        DrawFilledRect(HudRect{ r.x + inner, r.y + inner, fillW, r.h - 2 * inner }, fill);
+    }
+    DrawBorder(r, 1, kBarBorder);
+}
+
+// =============================================================================
+// Barres vitales en frames d'atlas — HUD-02 (vague W9)
+// Ancre : UI_GameHud_Render 0x67A3C0, motif ×4 (cf. bandeau de tête §1 et les constantes
+// kHpBarBase/… ci-dessus). Sprite2D_Draw 0x4D6B20 blitte à la TAILLE NATIVE du sprite :
+// DrawSprite(tex, nullptr, x, y) est l'équivalent exact (pas de mise à l'échelle).
+// =============================================================================
+
+// Blitte l'élément `frame` du tableau Sprite2D catégorie 1. false si la texture manque
+// (fichier absent/illisible) -> l'appelant retombe sur le rect quantifié.
+bool GameHud::DrawAtlasFrame(int frame, int x, int y) {
+    if (!device_ || frame < 0 || !sprite_.Ready()) return false;
+
+    char path[128];
+    // index fichier = frame+1 (Sprite2D_BuildPath 0x4D68E0 `case 1:` -> a3+1).
+    std::snprintf(path, sizeof(path), kVitalsAtlasPathFmt, frame + 1);
+
+    gfx::GpuTexture* tex = vitalsAtlasCache_.GetOrLoad(device_, std::string(path));
+    if (!tex || !tex->Valid()) return false; // échec mis en cache (pas de retente par image)
+
+    return SUCCEEDED(sprite_.DrawSprite(tex->Handle(), nullptr, x, y));
+}
+
+// frame = base + ftol(cur*41.0/max), clampée à base+41 — puis blit à (x,y).
+// NB : la barre de Maîtrise divise par une CONSTANTE (`fdiv dbl_7EDAE8` = 3000.0 @0x67A6FC,
+// et non `fidiv` sur un global) ; passer max=kMasteryMax est arithmétiquement identique.
+bool GameHud::DrawAtlasBar(int baseFrame, int cur, int max, int x, int y) {
+    if (max <= 0) return false; // le binaire ne garde pas cette division ; garde C++ (div/0)
+    int frame = baseFrame +
+                static_cast<int>(static_cast<double>(cur) * kVitalsBarSteps / static_cast<double>(max));
+    if (frame > baseFrame + kVitalsBarSteps) frame = baseFrame + kVitalsBarSteps; // clamp binaire
+    return DrawAtlasFrame(frame, x, y);
+}
+
 // =============================================================================
 // Sous-passes
 // =============================================================================
@@ -631,36 +849,123 @@ void GameHud::DrawVitalsFrame() {
     DrawFilledRect(layout_.portrait, kPortraitBg);
     DrawBorder(layout_.portrait, 1, kFrameBorder);
 
-    // Remplissage des barres depuis l'état local du joueur.
-    const game::SelfState& self = game::g_World.self;
-    DrawBarFill(layout_.hpBar, self.hp, self.maxHp, kHpBg, kHpFill);
-    DrawBarFill(layout_.mpBar, self.mp, self.maxMp, kMpBg, kMpFill);
+    // --- Barres PV/PM (HUD-02 + HUD-VIT-01 + HUD-VIT-02, vague W9) ------------
+    // SOURCE FIDÈLE = les champs du tableau joueurs (index 0 = self), PAS game::g_World.self
+    // (stockage parallèle jamais resynchronisé par la couche Net — cf. bandeau de tête §2) :
+    //   PV : cour. body+292 (dword_1687370) / max body+288 (dword_168736C) @0x67A442-0x67A457
+    //   PM : cour. body+300 (dword_1687378) / max body+296 (dword_1687374) @0x67A4F5-0x67A50A
+    // On lit le BODY BRUT et non les champs clairs players[0].hp/.mp : ces derniers ne sont
+    // qu'un MIROIR de body+292/+300 posé par Net/CharStatDeltaDispatch.cpp::ReflectBars, là
+    // où body+292/+300 SONT littéralement dword_1687370/dword_1687378, les globals que le
+    // binaire lit. Lire la source plutôt que le miroir évite tout écart si un chemin écrit
+    // le body sans re-miroiter (et les MAX n'ont de toute façon aucun champ clair).
+    // g_World.Self() garantit l'existence de l'index 0 (emplace si le tableau est vide).
+    game::PlayerEntity& p0 = game::g_World.Self();
+    const int hpCur = RdBodyI32(p0.body, kBodyHpCur);
+    const int hpMax = RdBodyI32(p0.body, kBodyHpMax);
+    const int mpCur = RdBodyI32(p0.body, kBodyMpCur);
+    const int mpMax = RdBodyI32(p0.body, kBodyMpMax);
+
+    // Gate `cmp dword_1687370,0 / jle loc_67A490` @0x67A442 : barre dessinée seulement si
+    // PV courant > 0. Atlas d'abord, repli quantifié si le .IMG manque (consigne du front).
+    if (hpCur > 0) {
+        if (!DrawAtlasBar(kHpBarBase, hpCur, hpMax, kVitalsBarX, kHpBarY))
+            DrawBarFillQuantized(layout_.hpBar, hpCur, hpMax, kVitalsBarSteps, kHpBg, kHpFill);
+    }
+
+    // HUD-VIT-06(a) — clamp RÉÉCRIVANT LA SOURCE @0x67A490-0x67A499 :
+    //   `cmp dword_1687370,0 / jge loc_67A4A3 / mov dword_1687370,0`
+    // Effet de bord PERSISTANT du chemin de rendu, placé APRÈS la barre et AVANT le texte
+    // "%d/%d" (@0x67A4A3-0x67A4B0) : le texte affiche donc « 0/max », jamais un négatif.
+    // On écrit les DEUX représentations (body+292 = le global du binaire, et son miroir
+    // clair p0.hp) pour ne pas les désynchroniser — ReflectBars les tient égaux.
+    if (hpCur < 0) {
+        WrBodyI32(p0.body, kBodyHpCur, 0);
+        p0.hp = 0;
+    }
+
+    // Gate `cmp dword_1687378,0 / jle loc_67A545` @0x67A4F5.
+    if (mpCur > 0) {
+        if (!DrawAtlasBar(kMpBarBase, mpCur, mpMax, kVitalsBarX, kMpBarY))
+            DrawBarFillQuantized(layout_.mpBar, mpCur, mpMax, kVitalsBarSteps, kMpBg, kMpFill);
+    }
 
     // §1 barre EXP + barre Maîtrise élémentaire (mission W4-F2, UI_GameHud_Render
-    // 0x67A59E-0x67A782). Rects LOCAUX dérivés de layout_.frame — le header GameHud.h
-    // étant en lecture seule, aucun champ Layout ne peut être ajouté : on réutilise le
-    // même x=57 / largeur 150 / pas de 14 px que hpBar (y=8) / mpBar (y=22), fidèle aux
-    // ancres de fill (57,36) @0x67A672 et (57,50) @0x67A71F.
+    // 0x67A59E-0x67A782). Rects LOCAUX dérivés de layout_.frame (rects de REPLI seulement —
+    // le chemin normal passe par l'atlas, ancré en absolu à x=57 comme le binaire) : même
+    // x=57 / largeur 150 / pas de 14 px que hpBar (y=8) / mpBar (y=22), fidèle aux ancres
+    // de fill (57,36) @0x67A672 et (57,50) @0x67A71F.
+    const game::SelfState& self = game::g_World.self; // level/levelBonus : hors barres, cf. §2
     const HudRect& fr = layout_.frame;
-    const HudRect expBar{ fr.x + 57, fr.y + 36, 150, 12 };     // fill (0x39,0x24) @0x67A672
-    const HudRect masteryBar{ fr.x + 57, fr.y + 50, 150, 12 }; // fill (0x39,0x32) @0x67A71F
+    const HudRect expBar{ fr.x + kVitalsBarX, fr.y + kExpBarY, 150, 12 };
+    const HudRect masteryBar{ fr.x + kVitalsBarX, fr.y + kMasteryBarY, 150, 12 };
 
     int expProgress = 0, expSpan = 0;
     ComputeExpProgress(self.level, self.levelBonus, expProgress, expSpan);
-    // Gate fidèle `cmp var_84C,0 / jle` @0x67A641 : dessiné seulement si progress > 0
-    // (DrawBarFill clampe déjà le ratio [0,1], équivalent du clamp de frame 220 @0x67A66B).
+    // Gate fidèle `cmp var_84C,0 / jle` @0x67A641 : dessiné seulement si progress > 0.
     // NB : `&& expSpan > 0` est un AJOUT au binaire (garde div/0 côté C++ — le binaire
     // divise par var_850 sans le tester, cf. fidiv @0x67A64F). Depuis le câblage de
     // GetRebirthExpSpan ci-dessus, span est non nul sur les deux branches (renaissance et
     // normale) : cette garde n'altère donc plus jamais le rendu. Conservée par prudence.
-    if (expProgress > 0 && expSpan > 0)
-        DrawBarFill(expBar, expProgress, expSpan, kExpBg, kExpFill);
+    if (expProgress > 0 && expSpan > 0) {
+        if (!DrawAtlasBar(kExpBarBase, expProgress, expSpan, kVitalsBarX, kExpBarY))
+            DrawBarFillQuantized(expBar, expProgress, expSpan, kVitalsBarSteps, kExpBg, kExpFill);
+    }
 
-    // Maîtrise élémentaire : échelle FIXE /3000 (dbl_7EDAE8 @0x67A6FC), dessinée si
-    // val > 0 (cmp dword_168746C,0 / jle @0x67A6EE).
+    // Maîtrise élémentaire : échelle FIXE /3000 (fdiv dbl_7EDAE8 @0x67A6FC — constante, pas
+    // un global), dessinée si val > 0 (cmp dword_168746C,0 / jle @0x67A6EE).
     const int chi = game::g_Client.VarGet(0x168746C); // dword_168746C @0x67A6E7
-    if (chi > 0)
-        DrawBarFill(masteryBar, chi, kMasteryMax, kMasteryBg, kMasteryFill);
+    if (chi > 0) {
+        if (!DrawAtlasBar(kMasteryBarBase, chi, kMasteryMax, kVitalsBarX, kMasteryBarY))
+            DrawBarFillQuantized(masteryBar, chi, kMasteryMax, kVitalsBarSteps, kMasteryBg, kMasteryFill);
+    }
+
+    // §4 pastille talisman (HUD-09 partiel) — ancre fixe (190,75), cf. DrawTalismanBadge().
+    DrawTalismanBadge();
+}
+
+// =============================================================================
+// §4 pastille talisman — HUD-09 (vague W9, PARTIEL et STRUCTURE CORRIGÉE)
+// Ancre : UI_GameHud_Render @0x67A787-0x67A826. Structure RÉELLE re-prouvée par disasm
+// (celle du dossier de gaps était fausse, cf. bandeau de tête §6) :
+//   if (dword_16758A4 > 0)            { Sprite2D_Draw(unk_981A84, 190, 75); }   // jle 67A7A6
+//   else if (10 <= g_TalismanSlot < 20                                          // 67A7A6-67A7B6
+//            && dword_1674710[slot] ∈ [19051..19060] ∪ [19061..19070])
+//                                     { Sprite2D_Draw(unk_9819F0, 190, 75); }   // MÊME sprite
+//   // sinon : RIEN n'est dessiné
+// Les DEUX plages d'id dessinent le MÊME sprite unk_9819F0 : elles sont donc fusionnées en
+// un seul test [19051..19070] (équivalent strict, pas une simplification abusive).
+// TODO [ancre 0x67A826] : les blocs SUIVANTS (devise sur fond unk_96644C, 2× durabilité
+// « %d/100 » depuis dword_167325C, 42 paliers via dbl_7BAFD8=42.0 — et NON 41 — bases
+// 0x41B=1051/clamp 0x445=1093) ne sont PAS gardés par dword_16758A4 et sont laissés hors
+// périmètre : leurs ancres dérivent de largeurs de sprites (W(unk_96644C), W(unk_8F16A4))
+// que l'IDB ne donne pas statiquement (champs +108/+112 nuls, même limite que layout_.frame),
+// et le bloc durabilité exige g_SelectedInvItemId + MobDb_GetEntry(mITEM) + record[0xBC]
+// ∉ {1Ch,1Fh,20h}. Les inventer produirait un placement faux. La devise reste affichée par
+// DrawTextPass() à son ancre simplifiée documentée.
+// =============================================================================
+void GameHud::DrawTalismanBadge() {
+    const HudRect badge{ kTalismanBadgeX, kTalismanBadgeY, kTalismanBadgeSz, kTalismanBadgeSz };
+
+    // Branche `cmp dword_16758A4,0 / jle loc_67A7A6` @0x67A787 : > 0 -> unk_981A84, puis
+    // `jmp loc_67A826` (les deux branches sont EXCLUSIVES).
+    if (game::g_Client.VarGet(0x16758A4) > 0) {
+        DrawFilledRect(badge, kTalismanActive);
+        DrawBorder(badge, 1, kFrameBorder);
+        return;
+    }
+
+    // Branche talisman : `cmp g_TalismanSlot,0Ah / jl` + `cmp …,14h / jge` @0x67A7A6-0x67A7B6.
+    const int slot = game::g_Client.VarGet(0x1674760); // g_TalismanSlot 0x1674760
+    if (slot < 10 || slot >= 20) return;               // sinon : RIEN (pas de sprite « else »)
+
+    // dword_1674710[slot] : `cmp ds:dword_1674710[eax*4], 4A6Bh` @0x67A7BD (19051) ; plages
+    // [4A6Bh..4A74h] (19051-19060) et [4A75h..4A7Eh] (19061-19070) -> MÊME sprite unk_9819F0.
+    const int itemId = game::g_Client.VarGet(0x1674710 + static_cast<uint32_t>(slot) * 4);
+    if (itemId < 19051 || itemId > 19070) return;
+
+    DrawFilledRect(badge, kTalismanSlotted);
+    DrawBorder(badge, 1, kFrameBorder);
 }
 
 // Repli si quickBarWindow_ n'a pas pu être alloué (bad_alloc, cf. Init()) — ancien
@@ -813,16 +1118,30 @@ bool GameHud::AllianceFramesContains(int x, int y) const {
 }
 
 // Passe texte (police via son propre ID3DXSprite -> lot séparé).
-void GameHud::DrawTextPass(int hp, int maxHp, int mp, int maxMp, int level, int currency) {
+// Ne prend AUCUN paramètre (vague W9) : lit ses valeurs elle-même, cf. GameHud.h — le
+// clamp PV @0x67A499 posé par DrawVitalsFrame() doit être VU par le texte "%d/%d".
+void GameHud::DrawTextPass() {
     if (!font_.Ready()) return;
     char buf[64];
 
+    // Sources FIDÈLES des textes PV/PM = players[0] (cf. bandeau de tête §2 et
+    // DrawVitalsFrame) : le binaire pousse dword_1687370/dword_168736C @0x67A4A3-0x67A4AA
+    // (PV) et dword_1687378/dword_1687374 @0x67A545-0x67A54B (PM) dans "%d/%d".
+    // Relecture APRÈS le clamp de DrawVitalsFrame -> jamais de PV négatif affiché.
+    const game::PlayerEntity& p0 = game::g_World.Self();
+    const int hp    = RdBodyI32(p0.body, kBodyHpCur); // dword_1687370 (body+292), post-clamp
+    const int maxHp = RdBodyI32(p0.body, kBodyHpMax); // dword_168736C (body+288)
+    const int mp    = RdBodyI32(p0.body, kBodyMpCur); // dword_1687378 (body+300)
+    const int maxMp = RdBodyI32(p0.body, kBodyMpMax); // dword_1687374 (body+296)
+    // Devise : g_Currency 0x1673180, lu directement par le binaire @0x67A87F.
+    const int currency = game::g_World.self.currency;
+
     font_.BeginBatch(D3DXSPRITE_ALPHABLEND);
 
-    // Libellé « niveau » dans le portrait.
-    std::snprintf(buf, sizeof(buf), "Lv %d", level);
-    font_.DrawTextStyled(buf, layout_.portrait.x + 4, layout_.portrait.y + 4,
-                         kTextColor, gfx::kStyleShadow);
+    // HUD-VIT-06(c) — le libellé « Lv %d » dessiné ici auparavant était une INVENTION :
+    // aucun tracé de niveau n'existe dans le bloc vitales 0x67A3C0-0x67A8FA (seuls textes :
+    // "%d/%d" PV @0x67A4B0, "%d/%d" PM @0x67A552, "%.3f" EXP @0x67A6A2, "%d/%d" maîtrise
+    // @0x67A742, "%d" devise @0x67A885). Supprimé — le portrait reste un cadre nu.
 
     // Valeurs "%d/%d" HP/MP ALIGNÉES À DROITE sur le bord x=207, comme le binaire
     // (et comme EXP/Maîtrise plus bas dans ce fichier). HP : x=0xCF-largeur, y=7
@@ -873,7 +1192,10 @@ void GameHud::DrawTextPass(int hp, int maxHp, int mp, int maxMp, int level, int 
     // juste sous le cadre mini-carte ; ici, à défaut de connaître la largeur du
     // panneau mini-carte non chargée (cf. bandeau MinimapWidget.h), ancré au bord
     // d'écran avec une marge fixe — simplification assumée, jamais bloquante.
-    std::snprintf(buf, sizeof(buf), "Or : %d", currency);
+    // HUD-VIT-06(b) : format "%d" NU, fidèle au binaire (`push offset aD` @0x67A885, aD =
+    // "%d" @0x7A9780). Le préfixe « Or : » écrit ici auparavant n'existe dans AUCUNE chaîne
+    // du binaire (le contexte est porté par le sprite de fond unk_96644C, pas par le texte).
+    std::snprintf(buf, sizeof(buf), "%d", currency);
     {
         const int tw = font_.MeasureText(buf);
         font_.DrawTextStyled(buf, screenW_ - tw - 8, 4, kTextColor, gfx::kStyleShadow);
@@ -1085,12 +1407,63 @@ constexpr int kMenuBtnH = 16;
 } // namespace
 
 // =============================================================================
+// §15 rangée de boutons de menu — HUD-03 (vague W9)
+// Ancre : UI_GameHud_Render @0x685177-0x685229 (motif re-prouvé par disasm ce jour), répété
+// ~17 fois (bouton suivant : `add ecx, 1B2h` = +434 @0x68524B -> unk_94A724/94A7B8/94A84C).
+// AVANT cette passe, kMenuButtons n'était lu QUE par OnMouseDown : les boutons étaient
+// cliquables mais JAMAIS dessinés (grep exhaustif sur src/ : 2 occurrences, aucune en rendu).
+//
+// Motif binaire par bouton (this = fond de quickbar, this[0]/this[1] = son coin) :
+//   if (Sprite2D_HitTest(&unk_944C60, this[0], this[1]-11h, curX, curY))   // 0x68517D
+//        Util_SetClampedU8Field(dword_8E714C, 0);                          // 0x68518D
+//   if (*(this+7Ch))  Sprite2D_Draw(&unk_944EB0, ...);   // actif   0x685198 -> 0x685224
+//   else if (hit)     Sprite2D_Draw(&unk_944CF4, ...);   // survol   0x6851C1 -> 0x6851E5
+//   else              Sprite2D_Draw(&unk_944C60, ...);   // normal            0x685207
+//
+// DEUX états sur trois ne sont pas reproductibles ici, et sont laissés en TODO explicites
+// PLUTÔT QUE DEVINÉS (règle #8) :
+//  - TODO [ancre 0x685198] : l'état « actif » teste le flag U8 `this+flagOff` de l'objet HUD
+//    du binaire (ex. this+7Ch=124 pour le 1er bouton) — cet objet n'est PAS modélisé côté
+//    C++ (GameHud ne partage aucun layout mémoire avec lui) et la cible réelle de
+//    Util_SetClampedU8Field(dword_8E714C, 0) n'est pas identifiée statiquement. Tous les
+//    boutons sont donc rendus dans l'état « normal ».
+//  - TODO [ancre 0x6851C1] : l'état « survol » exige la position du curseur. Render() n'y a
+//    pas accès (ctx.cursorX/cursorY restent à (-1,-1) : aucun WM_MOUSEMOVE n'est routé de
+//    Scene/SceneManager.cpp vers hud_, même limite que quickBarWindow_ ci-dessous).
+//
+// ANCRE : (layout_.quickBar.x+4, layout_.quickBar.y+4) — RIGOUREUSEMENT la même expression
+// que OnMouseDown() plus bas, pour garantir dessin ≡ hit-test. ÉCART DOCUMENTÉ vs le
+// binaire : l'ancre réelle @0x684CA8-0x684D08 dérive du sprite de fond de quickbar
+// unk_940388 (`nWidth/2 - W/2`, `nHeight - H`), dont les dimensions ne sont pas lisibles
+// statiquement (champs +108/+112 nuls dans l'IDB) ; layout_.quickBar est déjà une estimation
+// dérivée du pitch réel (cf. InitLayout). Réutiliser la même expression des deux côtés est
+// la seule façon de rester cohérent sans inventer une largeur de sprite.
+// =============================================================================
+void GameHud::DrawMenuButtons() {
+    const int anchorX = layout_.quickBar.x + 4; // this[0] (cf. EA 0x684CB0 et OnMouseDown)
+    const int anchorY = layout_.quickBar.y + 4; // this[1] (cf. EA 0x684CBC et OnMouseDown)
+
+    for (const MenuBtn& mb : kMenuButtons) {
+        const HudRect r{ anchorX + mb.dx, anchorY + mb.dy, kMenuBtnW, kMenuBtnH };
+        // État « normal » (unk_944C60) pour tous : cf. les 2 TODO du bandeau ci-dessus.
+        // Repli pastille colorée — les 3 sprites d'état sont des Sprite2D AUTONOMES dont le
+        // champ filename@+4 est rempli au runtime (aucun littéral statique ne les relie à un
+        // .IMG), à la différence des barres vitales qui indexent g_AssetMgr_UiAtlasSlots.
+        DrawFilledRect(r, kMenuBtnBg);
+        DrawBorder(r, 1, kMenuBtnBorder);
+    }
+}
+
+// =============================================================================
 // Render — cGameHud_Render 0x64A900
 // =============================================================================
 void GameHud::Render() {
     if (!visible_ || !device_ || !sprite_.Ready()) return;
 
-    const game::SelfState& self = game::g_World.self;
+    // (vague W9) L'alias `const game::SelfState& self` qui vivait ici n'existe plus : son
+    // seul consommateur était l'appel DrawTextPass(self.hp, self.maxHp, …), désormais
+    // sans paramètre — et ces champs étaient précisément la MAUVAISE source (cf. bandeau
+    // de tête §2). Les sous-passes lisent chacune leur source directement.
 
     // Contexte partagé UiContext (cf. UI/UIManager.h) — construit localement, PAS
     // de dépendance à un UIManager::Instance() enregistré (GameHud n'est pas un
@@ -1128,6 +1501,12 @@ void GameHud::Render() {
         } else {
             DrawQuickSlotFrames(); // repli si l'allocation a échoué (cf. Init())
         }
+        // §15 rangée de boutons de menu (HUD-03, vague W9) — dessinée APRÈS la quickbar
+        // (les boutons sont ancrés sur SON coin et débordent au-dessus, dy=-17), fidèle à
+        // l'ordre du binaire (bloc 0x685177+ après la boucle de slots 0x684DC9-0x685155).
+        // Contrepartie de rendu du hit-test de OnMouseDown() : sans cet appel, les ~17
+        // boutons restaient cliquables mais invisibles.
+        DrawMenuButtons();
         minimap_.DrawPanels(sprite_, white_);
         // §7 plaques de cible verrouillée x2 (mission W4-F2, UI_GameHud_Render 0x67B0D3 /
         // 0x67B436) — panneaux d'information à (0,105+), dessinés AVANT les lignes alliance
@@ -1171,9 +1550,11 @@ void GameHud::Render() {
         sprite_.End();
     }
 
-    // Passe 2 : texte (lot de sprites distinct de la police) — barres HP/MP/niveau
-    // + §2 devise.
-    DrawTextPass(self.hp, self.maxHp, self.mp, self.maxMp, self.level, self.currency);
+    // Passe 2 : texte (lot de sprites distinct de la police) — valeurs PV/PM + §2 devise.
+    // DrawTextPass() lit désormais ses sources elle-même (players[0], cf. bandeau §2) : le
+    // clamp PV @0x67A499 posé par DrawVitalsFrame() ci-dessus DOIT être vu par le texte,
+    // ce qu'un snapshot passé en paramètre depuis ici empêcherait.
+    DrawTextPass();
 
     // Passe 2bis : texte de la quickbar réelle (numéros de touche, quantités
     // possédées, message de retour du dernier clic) — deuxième sous-passe

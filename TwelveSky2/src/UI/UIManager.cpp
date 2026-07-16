@@ -283,15 +283,46 @@ bool UIManager::RouteKey(int vk) {
     return false;
 }
 
+// --- Clic DROIT (gap UIFW-01) ----------------------------------------------
+// UI_RouteRButtonDown 0x5AD5D0 : 38 slots enchaînés, 1er qui renvoie 1 consomme
+// (`test eax,eax / jz / mov eax,1 / jmp` — p. ex. @0x5AD5E4 -> @0x5AD5ED pour le slot 0,
+// jusqu'au `return ...(a1,a2) != 0` @0x5ADA8A du dernier). Aucun bloc de tête (à la
+// différence de UI_RouteLButtonDown 0x5AC740, dont le bloc chat 0x5AC75B-0x5ACC01 précède
+// la chaîne) : le routeur attaque directement les dialogues, d'où la boucle nue ci-dessous.
+//
+// ⚠ La GARDE D'ÉTAT n'est PAS ici : elle vit dans Input_OnRButtonDown 0x50ADB0 @0x50AE17
+// (g_SceneMgr==6 && g_SceneSubState==4 && g_SelfActionState[0] ∈ {11,12,33..37} => le clic
+// droit est INTÉGRALEMENT avalé, ce routeur n'étant même pas appelé). Elle est déjà
+// reproduite, à son juste étage, par App::RButtonGateOpen (App/App.cpp:1167).
+bool UIManager::RouteRButtonDown(int x, int y) {
+    for (Dialog* d : dialogs_)
+        if (d && d->OnRButtonDown(x, y)) return true;
+    return false;
+}
+
+bool UIManager::RouteRButtonUp(int x, int y) {
+    // UI_RouteRButtonUp 0x5ADA90 : chaîne symétrique (1er slot @0x5ADAA4, motif
+    // `test eax,eax / jz loc_5ADAB7 / mov eax,1 / jmp loc_5ADF4A`).
+    for (Dialog* d : dialogs_)
+        if (d && d->OnRButtonUp(x, y)) return true;
+    return false;
+}
+
 void UIManager::Render() {
     if (!inited_) return;
     ctx_.gameTimeSec = gfx::g_GameTimeSec;
 
     // Position curseur -> coordonnées client (UI_RenderAllDialogs 0x5AE2D0 :
-    // GetPhysicalCursorPos + ScreenToClient).
+    // GetPhysicalCursorPos @0x5AE2DD puis ScreenToClient(hWndParent 0x815184) @0x5AE2EE).
+    //
+    // TT-10 — GetPhysicalCursorPos, PAS GetCursorPos (le commentaire citait déjà la bonne
+    // API @0x5AE2DD alors que l'appel était GetCursorPos : divergence réelle). Les deux ne
+    // coïncident que sans virtualisation DPI ; sous un client 32-bit non DPI-aware sur un
+    // écran mis à l'échelle, GetCursorPos renvoie des coordonnées LOGIQUES et décale tout
+    // le hit-test UI + l'ancrage des infobulles. Le binaire est physique de bout en bout.
     POINT p{};
-    GetCursorPos(&p);
-    if (hwnd_) ScreenToClient(hwnd_, &p);
+    GetPhysicalCursorPos(&p);                                   // 0x5AE2DD
+    if (hwnd_) ScreenToClient(hwnd_, &p);                       // 0x5AE2EE
     const int cx = p.x, cy = p.y;
 
     // Rendu en ORDRE INVERSE du registre : fond d'abord, popups modaux en dernier
@@ -313,6 +344,7 @@ void UIManager::Render() {
         if (SUCCEEDED(ctx_.sprites->Begin(D3DXSPRITE_ALPHABLEND))) {
             for (auto it = dialogs_.rbegin(); it != dialogs_.rend(); ++it)
                 if (*it) (*it)->Render(ctx_, cx, cy);
+            RunHoverChain(cx, cy);   // 0x5AE5C9 — après TOUS les draws de la sous-passe
             ctx_.sprites->End();
         }
     }
@@ -322,18 +354,70 @@ void UIManager::Render() {
         ctx_.phase = UiPhase::Text;
         for (auto it = dialogs_.rbegin(); it != dialogs_.rend(); ++it)
             if (*it) (*it)->Render(ctx_, cx, cy);
+        RunHoverChain(cx, cy);       // 0x5AE5C9 — idem, volet texte de l'infobulle
         ctx_.font->EndBatch();
     }
 }
 
+// UIFW-03 — passe de SURVOL, miroir de UI_RouteRButtonExamine 0x5AE5E0 (appelée
+// @0x5AE5C9, DERNIER call de UI_RenderAllDialogs 0x5AE2D0, juste avant `mov esp,ebp /
+// pop ebp / retn` @0x5AE5CE). Chaîne « premier consommateur gagne » : le 1er dialogue
+// qui dessine son infobulle arrête la passe (un seul tooltip par frame, @0x5AE6B1 Shop,
+// @0x5AE702 Warehouse, @0x5AE71D ItemListWin, @0x5AE738 StorageWin, @0x5AE76E NpcWin,
+// @0x5AE7A4 cGameHud, @0x5AE7BF QuickSlot, @0x5AE8CD QuickBar, @0x5AE8E8 ConsumableBar).
+//
+// ORDRE : la chaîne d'origine suit l'ordre canonique du routage ; on itère donc dialogs_
+// à l'endroit (comme RouteMouseDown), et NON à l'envers comme les draws.
+//
+// PLACEMENT — appelée à la fin de CHAQUE sous-passe, et non une 3e fois après les deux
+// (ce que suggérait le dossier de gaps) : UiContext::FillRect ne dessine QU'EN phase
+// Panels (UIManager.cpp:18) et UiContext::Text QU'EN phase Text (UIManager.cpp:39), donc
+// une passe placée après les deux ne dessinerait RIEN. Le binaire, lui, n'a qu'UN SEUL
+// batch 2D (Gfx_Begin2D @0x51B189 ... UI_RenderAllDialogs @0x51B59D ... Gfx_End2D
+// @0x51B5A7 dans Scene_LoginRender 0x51B020), où le tooltip est simplement soumis en
+// dernier. Curseur et états étant identiques dans les deux sous-passes, le gagnant est le
+// MÊME dialogue de façon déterministe : l'infobulle est donc bien soumise en dernier dans
+// chaque lot, donc au-dessus. C'est la transposition la plus fidèle possible tant que
+// l'archi deux-passes tient (cf. TODO GX2D-01 au-dessus de `enum class UiPhase`).
+void UIManager::RunHoverChain(int cx, int cy) {
+    for (Dialog* d : dialogs_)
+        if (d && d->OnHover(ctx_, cx, cy)) return;   // 1er consommateur gagne
+}
+
 void UIManager::ResetAll() {
-    // UI_ResetAllDialogs 0x5AC3F0 : état neutre aux transitions de scène.
+    // UI_ResetAllDialogs 0x5AC3F0 : état neutre aux transitions de scène. ~42 cibles
+    // (@0x5AC408-0x5AC589), SANS exception — MsgBox inclus (@0x5AC430) — plus un
+    // UI_FocusEditBox(&g_UIEditBoxMgr, 0) INCONDITIONNEL en tête (@0x5AC3FE). Fermer
+    // tous les dialogues enregistrés est donc bien le miroir fidèle ici.
     for (Dialog* d : dialogs_) if (d) d->Close();
 }
 
 void UIManager::CloseAll() {
-    // UI_CloseAllDialogs 0x5AC590 : ferme tout (ouvrir une fenêtre ferme les autres).
-    for (Dialog* d : dialogs_) if (d) d->Close();
+    // N-1 — UI_CloseAllDialogs 0x5AC590 (ouvrir une fenêtre ferme les autres). Ce N'EST
+    // PAS ResetAll : sa liste est FIGÉE (~27 cibles, @0x5AC5A2-0x5AC6D1) et laisse
+    // délibérément intacts MsgBox (dword_1822438), NoticeDlg, TextInput, ItemListWin,
+    // StorageWin, ClanWin, NpcWin et AutoPlay — tous absents de la liste. D'où le filtre
+    // ClosedByCloseAll() : sans lui, ouvrir une fenêtre avalait la boîte modale en cours
+    // (défaut réel, les 3 appelants actuels — ClanContextMenu.cpp:238,
+    // StoragePwWindow.cpp:156, PartyWindow.cpp:135 — passent tous par ici).
+    for (Dialog* d : dialogs_)
+        if (d && d->ClosedByCloseAll()) d->Close();
+
+    // Le focus EDIT n'est relâché que CONDITIONNELLEMENT (@0x5AC669) :
+    //   if (g_UIEditBoxMgr == 20) UI_FocusEditBox(&g_UIEditBoxMgr, 0);   // @0x5AC672
+    // — contrairement au relâchement inconditionnel de ResetAll (@0x5AC3FE). Sans état de
+    // focus EDIT modélisé dans UIManager (les 21 EDIT natifs de UI_CreateEditBoxes 0x50E460
+    // ne sont pas câblés, cf. UI/Win32EditBox.h), rien à faire ici.
+    // TODO [ancre 0x5AC669] : à porter si/quand le focus EDIT natif est câblé.
+
+    // TODO [ancre 0x5AC59B] : le 2e paramètre de UI_CloseAllDialogs(this, a2) gate
+    //   `cDrawWin_Close(dword_1839290)` @0x5AC5A2 + `cGameHud_Hide(dword_1839568)` @0x5AC5AC.
+    // Les 3 sites appelants réels du binaire passent TOUS a2=1 (UI_ClanWin_Open @0x5D8E50,
+    // UI_StoragePwWnd_ProcNet @0x666F44, UI_MemberSelectWnd_ProcNet @0x6677C4) : le HUD
+    // DEVRAIT donc être masqué ici. NON MODÉLISABLE dans UIManager, qui ne possède ni le
+    // HUD ni la DrawWin (ils vivent dans SceneManager : hud_). Volontairement PAS de
+    // paramètre `alsoHudAndDrawWin` ajouté : personne ne pourrait l'honorer, ce ne serait
+    // qu'un bouton mort. À traiter côté front Scene (cf. rapport de front, wiringTodo).
 }
 
 } // namespace ts2::ui

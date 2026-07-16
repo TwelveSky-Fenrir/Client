@@ -2,7 +2,6 @@
 #include "UI/MinimapWidget.h"
 #include "Game/StaticNpcLoader.h"
 
-#include <algorithm>
 #include <cstdio>
 
 namespace ts2::ui {
@@ -32,19 +31,28 @@ constexpr int kOtherDotSize = 4;
 constexpr int kSmallPanelW = 150, kSmallPanelH = 150;
 constexpr int kBigPanelW   = 210, kBigPanelH   = 260;
 constexpr int kToggleW = 20, kToggleH = 16;
-constexpr int kViewportMarginSide = 6;
-constexpr int kViewportTop        = 22; // sous le bouton bascule
-constexpr int kViewportBottomSmall = 6;
-constexpr int kViewportBottomBig   = 40; // réserve nom de zone + coordonnées (§12a)
 
-// Rayon monde (unités jeu) visible depuis le centre de la mini-carte. RÉEL dans
-// le binaire : bornes de map dword_14A88C8 (bbox 6 floats) + échelle par mode
-// dword_14A906C/dword_14A9070 (table 10 floats/mode, indexée this+616) — AUCUNE
-// des deux n'est modélisée dans Game/GameState.h (pas de table de bbox de map)
-// dans cette passe. Remplacé par une constante empirique (échelle « zoom
-// standard » d'un MMORPG de ce gabarit) ; à remplacer par la vraie bbox/échelle
-// runtime dès qu'elle sera dumpée (cf. CLAUDE.md, x32dbg).
-constexpr float kWorldViewRadius = 4000.0f;
+// --- Géométrie du viewport : PROUVÉE (BEW-01), plus estimée ---------------------------------
+// UI_DrawSprite du fond de carte @0x681A6C-0x681AB1 : push 0x80 / push 0x91 (h/w) puis
+// destination `[var_89C][4] + 0x2A` (y) et `[var_89C][0] + 4` (x). Idem en mode 2 @0x681D33.
+// Le viewport est donc FIXE à (frame.x+4, frame.y+42, 145, 128) — indépendant de bigMode_ —
+// et NON un rectangle dérivé de marges (l'ancien kViewportMarginSide/kViewportTop/... était
+// une invention). Le panneau, lui, reste estimé (sprites unk_8F16A4/unk_8F1AB0 non lisibles
+// statiquement), mais il est dimensionné pour contenir ce viewport prouvé.
+constexpr int kViewportX = 0x04; // @0x681A98 (`add edx, 4`)
+constexpr int kViewportY = 0x2A; // @0x681A8C (`add eax, 2Ah`)  = 42
+constexpr int kViewportW = 0x91; // @0x681A71 (`push 91h`)      = 145
+constexpr int kViewportH = 0x80; // @0x681A6C (`push 80h`)      = 128
+
+// Décalage du crop : le self est visé au CENTRE de la fenêtre 145x128.
+// @0x681995 (`sub ecx, 48h`) et @0x681A08 (`sub ecx, 40h`).
+constexpr int kCropHalfW = 0x48; // 72
+constexpr int kCropHalfH = 0x40; // 64
+
+// Bornes d'OMISSION des marqueurs @0x681EC0-0x681F03 (asymétriques dans la cible : 0x96=150 et
+// 0xA8=168 ne collent pas exactement à 4+145=149 / 42+128=170 — reproduit tel quel, pas « corrigé »).
+constexpr int kMarkerMaxX = 0x96; // @0x681ED3 (`add edx, 96h`)
+constexpr int kMarkerMaxY = 0xA8; // @0x681EFB (`add eax, 0A8h`)
 } // namespace
 
 // =============================================================================
@@ -65,12 +73,14 @@ void MinimapWidget::RecomputeLayout() {
     layout_.frame = MmRect{ screenW_ - panelW, 0, panelW, panelH };
     layout_.toggleBtn = MmRect{ layout_.frame.x + 2, layout_.frame.y + 2, kToggleW, kToggleH };
 
-    const int vpBottom = bigMode_ ? kViewportBottomBig : kViewportBottomSmall;
+    // BEW-01 : viewport PROUVÉ (frame + (4,42), 145x128) — cf. constantes ci-dessus. Fixe dans la
+    // cible, quel que soit this+612/this+616 : les 3 modes blittent au MÊME endroit, seul le
+    // rectangle SOURCE change (@0x681A6C-0x681AB1 vs @0x681D33-0x681D6B).
     layout_.viewport = MmRect{
-        layout_.frame.x + kViewportMarginSide,
-        layout_.frame.y + kViewportTop,
-        panelW - 2 * kViewportMarginSide,
-        panelH - kViewportTop - vpBottom
+        layout_.frame.x + kViewportX,
+        layout_.frame.y + kViewportY,
+        kViewportW,
+        kViewportH
     };
 }
 
@@ -123,42 +133,58 @@ void MinimapWidget::DrawDot(gfx::SpriteBatch& sprite, IDirect3DTexture9* whiteTe
 }
 
 // =============================================================================
-// Projection monde -> écran (§12c, formule d'origine :
-// (monde - min) * échelle / (max - min), ici recentrée sur le joueur local
-// faute de bbox de map modélisée — voir kWorldViewRadius ci-dessus).
+// BEW-01 — Projection monde -> image -> écran. Formules RÉELLES, relevées à l'octet dans
+// UI_GameHud_Render 0x67A3C0 ; elles remplacent l'ancien ProjectToViewport « radar » qui
+// utilisait un rayon monde inventé (kWorldViewRadius=4000) ET inversait clamp/omission.
 // =============================================================================
-bool MinimapWidget::ProjectToViewport(float wx, float wz, float selfX, float selfZ,
-                                      int& outX, int& outY) const {
-    const float scaleX = (static_cast<float>(layout_.viewport.w) * 0.5f) / kWorldViewRadius;
-    const float scaleY = (static_cast<float>(layout_.viewport.h) * 0.5f) / kWorldViewRadius;
-    const int cx = layout_.viewport.x + layout_.viewport.w / 2;
-    const int cy = layout_.viewport.y + layout_.viewport.h / 2;
 
-    int px = cx + static_cast<int>((wx - selfX) * scaleX);
-    int py = cy + static_cast<int>((wz - selfZ) * scaleY);
+// @0x681915-0x68193C (X) et @0x681942-0x681969 (Y). L'ordre FPU exact est :
+//   fild imgW ; fld wx ; fsub minX ; fmulp -> imgW*(wx-minX)
+//   fld maxX  ; fsub minX ; fdivp -> / (maxX-minX) ; call Crt_ftol (troncature vers zéro).
+// Le -wz vient du `fchs` @0x68190D (le monde est en Z, l'image en Y descendant).
+void MinimapWidget::WorldToImagePixel(const MinimapSource& s, float wx, float wz,
+                                      int& px, int& py) {
+    const float spanX = s.maxX - s.minX;          // var_844 - var_848
+    const float spanY = s.negMinZ - s.negMaxZ;    // var_83C - var_840
+    px = (spanX != 0.0f)
+             ? static_cast<int>(static_cast<float>(s.imgW) * (wx - s.minX) / spanX)
+             : 0;
+    py = (spanY != 0.0f)
+             ? static_cast<int>(static_cast<float>(s.imgH) * (-wz - s.negMaxZ) / spanY)
+             : 0;
+}
 
-    const int minX = layout_.viewport.x + 1, maxX = layout_.viewport.x + layout_.viewport.w - 2;
-    const int minY = layout_.viewport.y + 1, maxY = layout_.viewport.y + layout_.viewport.h - 2;
+// @0x68198F-0x6819FC (X) / @0x681A02-0x681A54 (Y). Structure de la cible, branche par branche :
+//   srcX = selfPx - 0x48 ; if (srcX < 0) srcX = 0 ;                          (`jns` @0x68199E)
+//                          else if (srcX > imgW-0x91) srcX = imgW-0x91 ;     (`jle` @0x6819CF)
+// (Le binaire compense en parallèle la position du marqueur self var_838 ; cette compensation est
+// algébriquement équivalente à `sx = frame.x + 4 + px - srcX` dans les TROIS branches — vérifié —
+// donc MarkerScreenPos la reproduit sans dupliquer le calcul.)
+// NB fidélité : si imgW < 0x91, `imgW-0x91` est négatif et la cible clampe srcX à une valeur
+// NÉGATIVE. Reproduit tel quel (aucune minimap réelle n'est plus étroite que 145).
+void MinimapWidget::ComputeCrop(const MinimapSource& s, int selfPx, int selfPy,
+                                int& srcX, int& srcY) {
+    srcX = selfPx - kCropHalfW;                       // @0x681995
+    if (srcX < 0) srcX = 0;                           // @0x68199E -> @0x6819B2
+    else if (srcX > s.imgW - kViewportW)              // @0x6819C4/@0x6819CF
+        srcX = s.imgW - kViewportW;                   // @0x6819FC
 
-    switch (windowMode_) {
-        case MinimapWindowMode::Free:
-            // §12b case 2 : pas de clamp dans le binaire (blit direct plein
-            // cadre) — ici on omet simplement les points hors panneau pour ne
-            // pas dessiner par-dessus le reste du HUD.
-            if (px < minX || px > maxX || py < minY || py > maxY) return false;
-            break;
-        case MinimapWindowMode::Full:
-        case MinimapWindowMode::ClampedCenter:
-        default:
-            // §12b case 0/1 : fenêtre clampée — le marqueur reste visible au
-            // bord (comportement radar), jamais omis.
-            px = std::clamp(px, minX, maxX);
-            py = std::clamp(py, minY, maxY);
-            break;
-    }
+    srcY = selfPy - kCropHalfH;                       // @0x681A08
+    if (srcY < 0) srcY = 0;                           // @0x681A0E -> @0x681A19
+    else if (srcY > s.imgH - kViewportH)              // @0x681A28/@0x681A30
+        srcY = s.imgH - kViewportH;                   // @0x681A54
+}
 
-    outX = px;
-    outY = py;
+// @0x681E7E-0x681F05. Position écran du marqueur + test d'OMISSION (jamais de clamp).
+bool MinimapWidget::MarkerScreenPos(int px, int py, int srcX, int srcY,
+                                    int& sx, int& sy) const {
+    sx = layout_.frame.x + px - srcX + kViewportX;  // @0x681E8C/@0x681E90
+    sy = layout_.frame.y + py - srcY + kViewportY;  // @0x681EAB/@0x681EAF
+    // @0x681EC3 `jl` / @0x681ED9 `jg` / @0x681EED `jl` / @0x681F00 `jle` -> sinon jmp loc_68229E.
+    if (sx < layout_.frame.x + kViewportX)  return false;
+    if (sx > layout_.frame.x + kMarkerMaxX) return false;
+    if (sy < layout_.frame.y + kViewportY)  return false;
+    if (sy > layout_.frame.y + kMarkerMaxY) return false;
     return true;
 }
 
@@ -167,8 +193,9 @@ bool MinimapWidget::ProjectToViewport(float wx, float wz, float selfX, float sel
 // l'appelant, voir GameHud::Render).
 // =============================================================================
 void MinimapWidget::DrawPanels(gfx::SpriteBatch& sprite, IDirect3DTexture9* whiteTex) {
-    // Fond du panneau (§12a — substitut du sprite .IMG unk_8F16A4/unk_8F1738,
-    // dimensions réelles non lisibles statiquement, cf. bandeau de tête).
+    // Fond du panneau (§12a — substitut du sprite .IMG unk_8F16A4/unk_8F1AB0, dimensions réelles
+    // non lisibles statiquement). Dessiné AVANT la garde de taille, comme @0x6818A9 (Sprite2D_Draw
+    // de unk_8F1AB0) qui précède le `cmp [eax+264h], 1` @0x6818B4.
     DrawFilledRect(sprite, whiteTex, layout_.frame, kPanelBg);
     DrawBorderRect(sprite, whiteTex, layout_.frame, 1, kPanelBorder);
 
@@ -176,38 +203,96 @@ void MinimapWidget::DrawPanels(gfx::SpriteBatch& sprite, IDirect3DTexture9* whit
     DrawFilledRect(sprite, whiteTex, layout_.toggleBtn, kButtonBg);
     DrawBorderRect(sprite, whiteTex, layout_.toggleBtn, 1, kButtonBorder);
 
-    // Zone de projection (« carte ») — le cercle/carré de fond minimal demandé
-    // par la mission (carré, fidèle au binaire qui blitte un sprite rectangulaire,
-    // pas un disque).
-    DrawFilledRect(sprite, whiteTex, layout_.viewport, kViewportBg);
-    DrawBorderRect(sprite, whiteTex, layout_.viewport, 1, kViewportBorder);
+    // GARDE PROUVÉE @0x6818B4 : `cmp dword ptr [eax+264h], 1 ; jnz loc_683934` — en PETITE carte,
+    // la cible ne dessine NI fond de carte NI marqueurs. L'ancien code les dessinait toujours.
+    if (!bigMode_) return;
 
-    // Joueur local au centre (§12c « joueur lui-même » — players[0], cf.
-    // Game/GameState.h : GameWorld::Self() garantit un slot valide).
-    const game::PlayerEntity& self = game::g_World.Self();
-    const float selfX = self.x, selfZ = self.z;
+    // --- Fond de carte de la zone (BEW-01) --------------------------------------------------
+    // this+616 (windowMode_) indexe les 3 textures : `imul ecx, 28h ; add ecx, offset unk_14A9068`
+    // @0x681AA8/@0x681AAB. Le provider est câblé depuis Scene/SceneManager.cpp.
+    MinimapSource src{};
+    const bool haveSrc = sourceProvider_
+                         && sourceProvider_(static_cast<int>(windowMode_), src)
+                         && src.tex != nullptr && src.imgW > 0 && src.imgH > 0
+                         && src.maxX != src.minX && src.negMinZ != src.negMaxZ;
 
-    const int cx = layout_.viewport.x + layout_.viewport.w / 2;
-    const int cy = layout_.viewport.y + layout_.viewport.h / 2;
-    DrawDot(sprite, whiteTex, cx, cy, kSelfDotSize, kSelfDotColor);
+    const game::PlayerEntity& self = game::g_World.Self(); // flt_1687330/flt_1687338 = dword_1687234+0xFC/+0x104
+    int srcX = 0, srcY = 0;
 
-    // Joueurs distants (§12c — roster d'alliance non modélisé côté GameState,
-    // cf. TODO du .h : tous les joueurs actifs hors self sont projetés).
+    if (!haveSrc) {
+        // REPLI (zone sans minimap chargée / provider absent). La cible ne connaît pas ce cas :
+        // UI_DrawSprite 0x6A3080 sort immédiatement si l'objet texture n'est pas valide (`if (*this)`
+        // @0x6A3080) -> l'aire reste simplement vide. On garde un aplat + bordure pour que le HUD
+        // reste lisible, et on continue à projeter les marqueurs (sans crop : srcX=srcY=0).
+        DrawFilledRect(sprite, whiteTex, layout_.viewport, kViewportBg);
+        DrawBorderRect(sprite, whiteTex, layout_.viewport, 1, kViewportBorder);
+    } else if (windowMode_ == MinimapWindowMode::Free) {
+        // case 2 @0x681C7D : srcX=srcY=0 (@0x681D1F/@0x681D29) puis UI_DrawSprite avec a4=0
+        // (@0x681D33-0x681D6B) -> rect source plein (0,0,imgW,imgH) et blit à la taille NATURELLE
+        // de l'image (pas de mise à l'échelle : UI_DrawSprite ne fait que Draw(tex, rect, pos)).
+        RECT full{ 0, 0, src.imgW, src.imgH };
+        sprite.DrawSprite(src.tex, &full,
+                          layout_.frame.x + kViewportX, layout_.frame.y + kViewportY,
+                          gfx::kSpriteWhite); // couleur -1 codée en dur @0x6A30FC
+    } else {
+        // cases 0 (@0x6818FB) et 1 (@0x681ABB) : IDENTIQUES dans la cible (doc §12b « redondant/
+        // vestige de refactor ») -> crop 145x128 défilant, centré sur le self et clampé aux bords.
+        int selfPx = 0, selfPy = 0;
+        WorldToImagePixel(src, self.x, self.z, selfPx, selfPy);
+        ComputeCrop(src, selfPx, selfPy, srcX, srcY);
+        RECT crop{ srcX, srcY, srcX + kViewportW, srcY + kViewportH }; // a5..a8 @0x681A6C-0x681A80
+        sprite.DrawSprite(src.tex, &crop,
+                          layout_.frame.x + kViewportX, layout_.frame.y + kViewportY,
+                          gfx::kSpriteWhite);
+    }
+
+    // --- Marqueurs --------------------------------------------------------------------------
+    // Tous passent par la MÊME règle que la cible : pixel image -> écran via le crop courant,
+    // puis OMISSION hors bornes (jamais de clamp au bord) — cf. MarkerScreenPos.
+
+    // Joueur local (var_838/var_20). PROUVÉ dans les TROIS modes : cases 0/1 le calculent
+    // @0x68196F-0x68198C (avec compensation du clamp) et le mode 2 le calcule aussi
+    // @0x681CF1-0x681D1C (frame + px + 4 / frame + py + 0x2A, crop nul) -> pas de gate de mode ici.
+    // Le centre du viewport n'est le bon endroit QUE si le crop n'est pas clampé : en bord de carte
+    // le self DÉRIVE du centre. L'ancien code le fixait au centre en permanence — infidèle.
+    if (haveSrc) {
+        int px = 0, py = 0, sx = 0, sy = 0;
+        WorldToImagePixel(src, self.x, self.z, px, py);
+        if (MarkerScreenPos(px, py, srcX, srcY, sx, sy))
+            DrawDot(sprite, whiteTex, sx, sy, kSelfDotSize, kSelfDotColor);
+    } else {
+        // Repli sans carte : le self au centre (aucune bbox pour projeter quoi que ce soit).
+        DrawDot(sprite, whiteTex, layout_.viewport.x + layout_.viewport.w / 2,
+                layout_.viewport.y + layout_.viewport.h / 2, kSelfDotSize, kSelfDotColor);
+        return; // sans bbox réelle, aucune autre projection n'a de sens
+    }
+
+    // Gate de mode des marqueurs d'entités. PROUVÉ pour la boucle PNJ uniquement : le switch PAR
+    // ENTRÉE @0x681DDD-@0x681DF3 route case 0 -> 0x681DF8, case 1 -> 0x68204D, et DÉFAUT (mode 2)
+    // -> `jmp loc_68229E` = l'étiquette de continuation de boucle -> aucun PNJ dessiné en mode 2.
+    // INFERENCE (non prouvée) pour joueurs/monstres : ils ne figurent PAS dans ce bloc de la cible
+    // (qui ne projette que g_NpcRenderArray) — ce sont des ajouts de modélisation, cf. bandeau du
+    // .h. On les aligne sur la seule règle prouvée voisine plutôt que d'inventer un comportement.
+    if (windowMode_ == MinimapWindowMode::Free) return; // @0x681DF3
+
+    // Joueurs distants (§12c — roster d'alliance non modélisé côté GameState, cf. TODO du .h :
+    // tous les joueurs actifs hors self sont projetés).
     for (size_t i = 1; i < game::g_World.players.size(); ++i) {
         const game::PlayerEntity& p = game::g_World.players[i];
         if (!p.active) continue;
-        int px, py;
-        if (ProjectToViewport(p.x, p.z, selfX, selfZ, px, py))
-            DrawDot(sprite, whiteTex, px, py, kOtherDotSize, kPlayerDotColor);
+        int px = 0, py = 0, sx = 0, sy = 0;
+        WorldToImagePixel(src, p.x, p.z, px, py);
+        if (MarkerScreenPos(px, py, srcX, srcY, sx, sy))
+            DrawDot(sprite, whiteTex, sx, sy, kOtherDotSize, kPlayerDotColor);
     }
 
-    // Monstres (§12c) — surbrillance clignotante si désigné par
-    // SetQuestHighlightMonster (formule d'origine §9 : ftol(gameTime*2)%2==1,
-    // une frame sur deux masquée).
+    // Monstres (§12c) — surbrillance clignotante si désigné par SetQuestHighlightMonster
+    // (formule d'origine §9 : ftol(gameTime*2)%2==1, une frame sur deux masquée).
     for (const game::MonsterEntity& m : game::g_World.monsters) {
         if (!m.active) continue;
-        int px, py;
-        if (!ProjectToViewport(m.x, m.z, selfX, selfZ, px, py)) continue;
+        int px = 0, py = 0, sx = 0, sy = 0;
+        WorldToImagePixel(src, m.x, m.z, px, py);
+        if (!MarkerScreenPos(px, py, srcX, srcY, sx, sy)) continue;
 
         D3DCOLOR color = kMonsterDotColor;
         if (questHighlightMonster_.valid() && m.id == questHighlightMonster_) {
@@ -215,23 +300,32 @@ void MinimapWidget::DrawPanels(gfx::SpriteBatch& sprite, IDirect3DTexture9* whit
             if (!blinkOn) continue; // clignote : une frame sur deux non dessinée
             color = kQuestDotColor;
         }
-        DrawDot(sprite, whiteTex, px, py, kOtherDotSize, color);
+        DrawDot(sprite, whiteTex, sx, sy, kOtherDotSize, color);
     }
 
-    // PNJ de décor (§12c « NPC » — g_NpcRenderArray côté binaire, équivalent
-    // client-source game::ZoneNpcs()/StaticNpcLoader, cf. bandeau de tête du
-    // .h). Pas de tableau gameplay `game::g_World.npcs` ici : la doc §12c
-    // confirme que l'original lit le tableau de RENDU, pas le tableau réseau
-    // dword_17AB534 — cf. justification complète dans MinimapWidget.h.
+    // PNJ de décor — la SEULE catégorie que ce bloc de la cible dessine réellement
+    // (g_NpcRenderArray 0x1764D14, stride 0x58 ; boucle @0x681D8B bornée par g_NpcCount 0x1687220).
+    // Équivalent client-source = game::ZoneNpcs()/StaticNpcLoader (cf. bandeau du .h).
+    // Icônes par type (switch sur def+0x520 = fieldB @0x681F19 -> atlas 0x92D/0x930/0x933/0x936/
+    // 0x939) non modélisées : l'atlas appartient à GameHud, hors périmètre -> point de couleur unique.
     for (const game::StaticNpcSlot& n : game::ZoneNpcs()) {
-        int px, py;
-        if (ProjectToViewport(n.x, n.z, selfX, selfZ, px, py))
-            DrawDot(sprite, whiteTex, px, py, kOtherDotSize, kNpcDotColor);
+        // @0x681DA6 `cmp ds:dword_1764D18[edx], 0 ; jnz` -> slot inactif (entry+4 == 0) = SAUTÉ.
+        // Indispensable depuis W7 : ZoneNpcs() est un pool de 100 slots FIXES à TROUS (cf.
+        // Game/StaticNpcLoader.h) — l'ancienne boucle, sans ce test, plantait un marqueur à
+        // l'origine du monde pour chaque slot vide.
+        if (!n.active) continue;
+        // @0x681DC0 `cmp dword ptr [ecx+524h], 4 ; jnz` avec ecx = entry->def -> def+1316 =
+        // NpcDefRecord::fieldC (Game/ExtraDatabases.h:56). La valeur 4 est exclue de la mini-carte.
+        if (n.def && n.def->fieldC == 4u) continue; // 4u : fieldC est un uint32_t (pas de C4389)
+        // x @0x1764D28+i*88 (= entry+20) et z @0x1764D30+i*88 (= entry+28) @0x681E01/@0x681E16.
+        int px = 0, py = 0, sx = 0, sy = 0;
+        WorldToImagePixel(src, n.x, n.z, px, py);
+        if (MarkerScreenPos(px, py, srcX, srcY, sx, sy))
+            DrawDot(sprite, whiteTex, sx, sy, kOtherDotSize, kNpcDotColor);
     }
 
-    // TODO groupe/alliance : voir bandeau de tête de MinimapWidget.h (aucun
-    // roster d'alliance côté GameState) — repli propre, le reste de la
-    // mini-carte reste pleinement fonctionnel.
+    // TODO groupe/alliance : voir bandeau de tête de MinimapWidget.h (aucun roster d'alliance
+    // côté GameState) — repli propre, le reste de la mini-carte reste pleinement fonctionnel.
 }
 
 // =============================================================================

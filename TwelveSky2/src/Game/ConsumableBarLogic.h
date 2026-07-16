@@ -1,6 +1,39 @@
-// Game/ConsumableBarLogic.h — logique d'interaction de la barre de consommables
-// (assignation/déclenchement de slot, PAS le rendu pixel).
+// Game/ConsumableBarLogic.h — logique d'interaction du PANNEAU DE CONSOMMABLES
+// 28 cases (assignation/déclenchement de slot, PAS le rendu pixel).
 //
+// =============================================================================
+// ⚠️ CE MODULE NE MODÉLISE **PAS** LA BARRE DU HUD (précision W9, 2026-07-16)
+// =============================================================================
+// Deux objets DISTINCTS du binaire ont longtemps été confondus ici :
+//
+//   (a) le PANNEAU 28 cases        — UI_ConsumableBar_* 0x68E270+ : grille 4 x 7,
+//       pas 52 px, catalogue FIXE d'items, bouton fermer, garde de visibilité
+//       `*(this+2)`, ouvre un DRAG (Item_BeginDragTransaction 0x5AFDF0). C'est CE
+//       module. Son RENDU (UI_ConsumableBar_Render 0x68E6E0) n'est pas porté, et
+//       son appelant non plus : les fonctions ci-dessous n'ont donc AUCUN appelant
+//       réel aujourd'hui, à l'exception de TriggerSlot/TriggerSlotByHotkey, appelées
+//       par UI/ConsumableBarWindow (voir ci-dessous).
+//
+//   (b) la BARRE DU HUD (« quickbar ») — UI_GameHud_Render 0x67A3C0, bloc
+//       0x684CA8-0x685177 : grille 1 x 14, pas 30 px, PAS de catalogue privé (elle
+//       lit `g_Container5` @0x16743FC : 3 pages x 14 slots x 3 dwords), 3 types de
+//       slot (compétence/onglet/objet), overlay de recharge, numéro de page. Elle
+//       est portée par UI/ConsumableBarWindow.{h,cpp}, qui lit désormais
+//       `g_Container5` DIRECTEMENT et n'utilise plus ce module pour son rendu.
+//
+// Conséquence pratique : les constantes de grille (kGridColumns=4, kGridStride=52…),
+// `InitConsumableBar` (catalogue fixe), `HitTestConsumableBar`, `OnClick`,
+// `OnMouseUp`, `OnRightClick` et `ConsumableBarState` décrivent (a) et NE DOIVENT PAS
+// être utilisés pour (b). Ils restent ici, sans appelant, en attendant le portage du
+// panneau 28 cases — un stub du binaire reste un stub (on ne supprime pas un portage
+// fidèle parce que son appelant n'est pas encore écrit).
+//
+// Le chemin de clic RÉEL de la barre HUD est cGameHud_OnMouseDown 0x62B080 : NON
+// reversé à ce jour. `UI/ConsumableBarWindow::OnClick` continue donc d'appeler
+// `TriggerSlot` ci-dessous faute de mieux — c'est un pis-aller documenté, PAS une
+// preuve pour la barre HUD.
+//
+// -----------------------------------------------------------------------------
 // Réécriture C++ PROPRE mais fidèle des fonctions suivantes du binaire non pické
 // TwelveSky2.exe (imagebase 0x400000, IDB idaTs2) :
 //   UI_ConsumableBar_Init         0x68E270  -> InitConsumableBar
@@ -151,6 +184,10 @@ uint32_t InventoryCount(uint32_t itemId);
 // ITEM_INFO ET possédé (>=1 exemplaire) ; Skill -> toujours false ici
 // (TODO : nécessite Game/SkillSystem.h, hors contrat de headers de ce module,
 // + la vraie fonction de cooldown/hotkey non localisée, cf. bandeau en tête).
+// SANS APPELANT depuis W9 (2026-07-16) : son unique consommateur teintait en rouge
+// les cases « objet manquant » de la barre HUD — un effet INVENTÉ (le binaire ne
+// dessine aucun rectangle sur cette barre, cf. UI/ConsumableBarWindow.h), retiré
+// avec le reste du rendu non fidèle. Conservé comme point d'extension déclaré.
 bool IsSlotUsable(const ConsumableSlots& slots, int index);
 
 // Déclenchement par touche numérique : mapping DIK_1..DIK_9 = 0x02..0x0A,

@@ -11,7 +11,6 @@
 //
 // Modules non écrits (stubés localement, fidèles à la SIGNATURE, corps // TODO) :
 //   Char_CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0)  -> moteur de stats
-//   Snd3D_PlayScaledVolume (0x4DA380)                 -> audio
 //   Map_BeginWarpToFactionTown[Ex] (0x55C510/0x55C9A0)-> warp de carte
 //   Net_ShopAction_4 (0x5C95C0)                       -> action réseau (boutique)
 //   Player_CheckStateDigit (0x511740)                 -> contrôleur joueur
@@ -109,8 +108,45 @@ void ratingRecalcSet() {
 }
 
 // --- Stubs de sous-systèmes non écrits (signatures fidèles) -----------------
-// TODO(audio) Snd3D_PlayScaledVolume 0x4DA380 (jouer un son d'événement).
-void Snd3D_PlayScaledVolume(int /*id*/, int /*vol*/, int /*flag*/) {}
+//
+// [W10 / AUD-02] Le stub no-op `Snd3D_PlayScaledVolume(int,int,int) {}` qui vivait
+// ICI a été SUPPRIMÉ : il était doublement trompeur.
+//   1) Il masquait le trou aux audits locaux (le code compilait et « appelait un
+//      son » qui n'existait pas) ;
+//   2) sa SIGNATURE était fausse. Vérité IDA (Snd3D_PlayScaledVolume 0x4DA380,
+//      `retn 0Ch` @0x4DA3E7 + `mov [ebp+var_4], ecx` @0x4DA386) :
+//        char __thiscall(Snd3D* this, int arg0, int percent, char arg8)
+//      — le 1er paramètre est un POINTEUR d'émetteur, pas un id. Le
+//      `__userpurge(a2@ebx, a3@edi)` affiché par Hex-Rays est un ARTEFACT
+//      (ebx/edi appartiennent à Snd_Play3D, pas au prologue).
+//   3) Le 3e argument est MORT : `mov byte ptr [ebp+arg_8], 0` @0x4DA389 écrase
+//      l'argument AVANT tout usage, puis `movzx ecx, [ebp+arg_8]` @0x4DA395 ->
+//      Snd3D_EnsureLoaded(this, 0). Le `push 1` des 6 sites n'a aucun effet.
+//
+// ÉMETTEUR DES 6 SITES — identité RÉSOLUE (vague W10). Les 6 sites sont
+// byte-identiques : `push 1 / push 64h / push 0 / mov ecx, offset flt_1490A7C /
+// call Snd3D_PlayScaledVolume` (arg0=0, percent=100, arg8=1 mort).
+// flt_1490A7C n'est pas un global isolé : c'est le slot 189 de la banque de type
+// 4 du gestionnaire d'assets —
+//   AssetMgr_InitAllSlots 0x4DEB50 (appelant unique App_Init, `mov ecx, offset
+//   g_ModelMotionArray` @0x46224B, this = 0x8E8B30) ; boucle banque 4
+//   @0x4E05C3..0x4E05F9 : `for (i=0; i<0x19A; ++i) Snd3D_SetISNPath(this +
+//   0xB9F18C + 0xC0*i, /*type=*/4, i, 0, 0, 0)` — 410 slots, stride 192.
+//   base = 0x8E8B30 + 0xB9F18C = 0x1487CBC ;
+//   (0x1490A7C - 0x1487CBC) / 0xC0 = 189 exactement.
+// Snd3D_SetISNPath 0x4DA0C0 case 4 = "G03_GDATA\D06_GSOUND\004\E%03d001001.ISN"
+// avec (a3+1) => le fichier joué est E190001001.ISN.
+//
+// BLOQUÉ : aucune banque d'émetteurs Snd3D n'existe côté C++. audio::Emitter
+// (Audio/Sound3D.h:72, méthode PlayScaledVolume(int percent, float nowSec) —
+// signature correcte) n'est instanciée que par audio::SoundBank
+// (World/WorldIntegration.cpp:417), qui est le WSndBank d'AMBIANCE : système
+// distinct, sans Snd3D_SetISNPath. Construire la banque relève de Audio/* +
+// Asset/* + Game/MotionPools — tous hors périmètre de ce front, et la
+// réimplémenter ici ferait double emploi. Les 6 appels sont donc remplacés par
+// des TODO ancrés (voir chaque case), et la dépendance est remontée à
+// l'orchestrateur. NE PAS re-poser un stub no-op à la place.
+//
 // Map_BeginWarpToFactionTown 0x55C510 — __thiscall(this=g_LocalPlayerSheet, mode) ; élément =
 // g_LocalElement 0x1673194 = g_World.self.element. Résolution + armement des globals de warp
 // (pas d'émission réseau : nc reste au défaut nullptr, convention MapWarp.h).
@@ -192,7 +228,9 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
 
     case 15: // dword_16746E8 + son + Msg 654
         g_Client.Var(0x16746E8) = value;      // /*0x468501*/
-        Snd3D_PlayScaledVolume(0, 100, 1);    // /*0x468512*/
+        // TODO(audio) [ancre 0x468512] Snd3D_PlayScaledVolume(flt_1490A7C, arg0=0,
+        //   percent=100) -> E190001001.ISN. Bloqué : aucune banque d'émetteurs
+        //   Snd3D côté C++ (cf. bloc AUD-02 en tête de fichier).
         sysMsg(654);                          // /*0x468527*/
         break;
 
@@ -261,7 +299,8 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
 
     case 31: // dword_1674794 + son + Msg 1185
         g_Client.Var(0x1674794) = value;   // /*0x468792*/
-        Snd3D_PlayScaledVolume(0, 100, 1); // /*0x4687a3*/
+        // TODO(audio) [ancre 0x4687A3] Snd3D_PlayScaledVolume(flt_1490A7C, arg0=0,
+        //   percent=100) -> E190001001.ISN. Bloqué (cf. bloc AUD-02 en tête de fichier).
         sysMsg(1185);                      // /*0x4687b8*/
         break;
 
@@ -474,7 +513,8 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
 
     case 99: // dword_1675730 + son + Msg 2321
         g_Client.Var(0x1675730) = value;   // /*0x46931b*/
-        Snd3D_PlayScaledVolume(0, 100, 1); // /*0x46932b*/
+        // TODO(audio) [ancre 0x46932B] Snd3D_PlayScaledVolume(flt_1490A7C, arg0=0,
+        //   percent=100) -> E190001001.ISN. Bloqué (cf. bloc AUD-02 en tête de fichier).
         sysMsg(2321);                      // /*0x469341*/
         break;
 
@@ -484,7 +524,8 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
 
     case 104: // dword_1675738 + son + Msg 2354
         g_Client.Var(0x1675738) = value;   // /*0x469382*/
-        Snd3D_PlayScaledVolume(0, 100, 1); // /*0x469393*/
+        // TODO(audio) [ancre 0x469393] Snd3D_PlayScaledVolume(flt_1490A7C, arg0=0,
+        //   percent=100) -> E190001001.ISN. Bloqué (cf. bloc AUD-02 en tête de fichier).
         sysMsg(2354);                      // /*0x4693a8*/
         break;
 
@@ -561,7 +602,8 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
 
     case 115: // dword_1675890 + son + Msg 2528
         g_Client.Var(0x1675890) = value;   // /*0x4695b8*/
-        Snd3D_PlayScaledVolume(0, 100, 1); // /*0x4695c8*/
+        // TODO(audio) [ancre 0x4695C8] Snd3D_PlayScaledVolume(flt_1490A7C, arg0=0,
+        //   percent=100) -> E190001001.ISN. Bloqué (cf. bloc AUD-02 en tête de fichier).
         sysMsg(2528);                      // /*0x4695de*/
         break;
 
@@ -584,7 +626,8 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
 
     case 120: // dword_1675640 + son + Msg 2654
         g_Client.Var(0x1675640) = value;   // /*0x469653*/
-        Snd3D_PlayScaledVolume(0, 100, 1); // /*0x469663*/
+        // TODO(audio) [ancre 0x469663] Snd3D_PlayScaledVolume(flt_1490A7C, arg0=0,
+        //   percent=100) -> E190001001.ISN. Bloqué (cf. bloc AUD-02 en tête de fichier).
         sysMsg(2654);                      // /*0x469679*/
         break;
 

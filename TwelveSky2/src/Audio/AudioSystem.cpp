@@ -1,6 +1,7 @@
 // Audio/AudioSystem.cpp — enveloppe DirectSound8 fidèle (voir AudioSystem.h).
 #include "Audio/AudioSystem.h"
 #include "Audio/OggVorbisDecoder.h"   // OggVorbisLoadCallback (décodage Ogg -> PCM 16-bit stéréo 44100)
+#include "Config/GameOptions.h"       // g_Options.SoundVolume == g_SfxMasterVolume 0x84DEEC (idx11, off 0x2C)
 
 #include <cmath>
 #include <cstring>
@@ -164,7 +165,7 @@ bool SoundBuffer::IsPlaying() const {
     return false;
 }
 
-bool SoundBuffer::Play(int volumePercent, int pan) {
+bool SoundBuffer::Play(int volumePercent, int pan, int loop) {
     // Snd_Play3D 0x6A85C0 : SetVolume(mB) + SetPan(100*pan) + Play(flags).
     // ex-VeryOldClient: SOUNDDATA_FOR_GXD::Play — `switch(mLoadSort)` : sort1/2 = mSoundData[0]
     //   (bit1 `status&2`=BUFFERLOST -> Free) ; sort3 = 1re voix libre (`(status&1)==0`) après
@@ -174,7 +175,9 @@ bool SoundBuffer::Play(int volumePercent, int pan) {
 
     const LONG mb  = PercentToMillibel(volumePercent);
     const LONG dpan = static_cast<LONG>(100 * pan);
-    const DWORD playFlags = (mode_ == PlayMode::Loop) ? DSBPLAY_LOOPING : 0u;
+    // kind==2 (Loop) : `push 1` LITTÉRAL @0x6A873B -> boucle toujours, `loop` ignoré.
+    // kind==1/3      : flags = (loop != 0) ? DSBPLAY_LOOPING : 0  (@0x6A877C..0x6A8799).
+    const DWORD playFlags = (mode_ == PlayMode::Loop || loop != 0) ? DSBPLAY_LOOPING : 0u;
 
     if (mode_ == PlayMode::OneShot || mode_ == PlayMode::Loop) {
         IDirectSoundBuffer* b = buffers_[0];
@@ -203,7 +206,8 @@ bool SoundBuffer::Play(int volumePercent, int pan) {
             if (status & DSBSTATUS_PLAYING) continue;   // occupé -> suivant
             b->SetVolume(mb);
             b->SetPan(dpan);
-            return SUCCEEDED(b->Play(0, 0, 0));
+            // kind==3 : flags = (loop != 0) ? DSBPLAY_LOOPING : 0 (@0x6A86C2), PAS 0 en dur.
+            return SUCCEEDED(b->Play(0, 0, playFlags));
         }
         return false; // tous occupés
     }
@@ -285,6 +289,21 @@ void BgmChannel::Release() { buf_.Release(); }   // Snd_ReleaseBuffers 0x6A80D0
 AudioSystem& AudioSystem::Instance() {
     static AudioSystem inst;
     return inst;
+}
+
+int AudioSystem::MasterVolume() const {
+    // g_SfxMasterVolume 0x84DEEC = g_Options(0x84DEC0) + 0x2C = champ idx11 SoundVolume.
+    // Lecture DIRECTE et FRAÎCHE, comme les 3 play du binaire (@0x4DA3BC / 0x4DA3FB / 0x4DA432
+    // / 0x4DA45D / 0x4DA524) : le slider d'options agit dès le son suivant.
+    // Pas de bornage à la lecture — le binaire consomme le mot brut ; la plage [0,100] est
+    // garantie en amont par UI_OptionsWnd_OnClick 0x66D140 / GameOptions::Normalize().
+    return config::g_Options.SoundVolume;
+}
+
+void AudioSystem::SetMasterVolume(int percent) {
+    // Écrit le champ d'option LUI-MÊME (aucune copie locale) — bornage [0,100] conservé, comme
+    // le clamp par champ de UI_OptionsWnd_OnClick 0x66D140.
+    config::g_Options.SoundVolume = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
 }
 
 AudioSystem::~AudioSystem() { Shutdown(); }

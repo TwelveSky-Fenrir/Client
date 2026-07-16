@@ -22,6 +22,15 @@
 #include "Game/StatEngine.h"   // game::StatEngine::CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0)
 #include "Game/MapWarp.h"      // game::BeginWarpToFactionTown (résolution warp, pas l'envoi)
 #include "Game/MotionPoolsCoordResolver.h" // game::g_CoordResolver (coordonnées réelles 003.BIN)
+// PREMIÈRE arête Net -> UI du dépôt (jusqu'ici Net/ n'incluait AUCUN UI/). Introduite
+// délibérément pour câbler UNE ancre précise : Net_OnPartyMemberNameSet 0x4909A0 appelle
+// UI_MemberSelectWnd_Open @0x4909F8 SANS AUCUNE GARDE (la garde arène est *dans* _Open,
+// @0x66726E). C'est l'AMORCE de toute la chaîne du sélecteur de membre : sans elle, les
+// émissions Op57/Op58 de UI/PartyWindow restent du code mort (cf. UI/PartyWindow.h:71-83).
+// Placé APRÈS Net/SendPackets.h -> Net/NetClient.h, qui tire <winsock2.h> AVANT <windows.h>
+// (UI/GameWindows.h tire <windows.h> transitivement via UIManager.h -> <d3d9.h>) : l'ordre
+// Winsock du projet est donc préservé.
+#include "UI/GameWindows.h"                // ts2::ui::GameWindows::Instance()->Party()
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -265,8 +274,17 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         const std::string nm = Name(p.name);
         if (p.slotIndex < g_World.partyRoster.names.size())
             g_World.partyRoster.names[p.slotIndex] = nm;
-        // TODO(ui): UI_MemberSelectWnd_Open (fenêtre de sélection de membre à inviter).
-        //   Aucun message système côté handler d'origine.
+        // 0x4909F8 : `return UI_MemberSelectWnd_Open(g_MemberSelectWnd);` — dernière
+        // instruction du handler, INCONDITIONNELLE (re-vérifiée au décompilé 2026-07-16 :
+        // le corps entier est memcpy(index) / memcpy(nom 13 o) / Crt_StringInit / ce call ;
+        // AUCUNE garde). La garde arène (Str 1352) vit DANS _Open @0x66726E, transcrite
+        // par PartyWindow::OpenMemberSelect — ne pas la dupliquer ici.
+        // Aucun message système côté handler d'origine.
+        // L'instance est nulle hors scène InGame (GameWindows est créé/détruit avec le HUD) :
+        // le paquet est alors simplement sans effet UI, l'écriture du roster ci-dessus ayant
+        // déjà eu lieu — même ordre que le binaire (écriture PUIS ouverture).
+        if (ts2::ui::GameWindows* gw = ts2::ui::GameWindows::Instance())
+            gw->Party().OpenMemberSelect();
     });
 
     // 0x3f PartyMemberValueSet (Net_OnPartyMemberValueSet 0x490A10) — fixe une valeur de

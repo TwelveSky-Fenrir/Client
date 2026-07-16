@@ -488,18 +488,29 @@ bool Skill_CanCastAtCursor(const float selfPos[3], const SelfState& self, const 
                            (slot.typeCode == 3 || slot.typeCode == 22 || slot.typeCode == 41);
 
     if (!targeted) {
-        if (picker.IsPointBlocked(selfPos)) return false;
+        if (picker.IsPointBlocked(selfPos)) return false;                  // 0x540F5C
         float hit[3] = {0, 0, 0};
-        return picker.PickRayScreen(screenX, screenY, /*wantEntityHit=*/false, hit);
+        // 0x540F83 : `mov ecx, offset dword_14A88E4` (= Main/.WM) + dernier arg = 0.
+        // ⚠ La branche NON verrouillée passe twoSide=0, PAS 1 (le dossier de gaps l'omet) :
+        // seuls les DEUX appels de la branche verrouillée ci-dessous passent 1.
+        return picker.PickRayScreen(screenX, screenY, world::CollisionSlot::Main,
+                                     /*twoSide=*/false, hit);
     }
 
-    if (!Skill_IsCurrentAttackSet(morph.currentActionId)) return false;
+    if (!Skill_IsCurrentAttackSet(morph.currentActionId)) return false;    // 0x540FA2
 
-    // Picking « verrouillé sur cible » (mirroir Terrain_PickRayScreen(...,1) 0x699A80).
-    // Le binaire retente UNE fois si le 1er appel échoue avant d'abandonner (0x54105f).
+    // Picking « à cible verrouillée » : le binaire interroge DEUX MAILLES DIFFÉRENTES —
+    // .WJ d'abord (@0x540FC4 `mov ecx, offset dword_14A898C`), puis .WM en repli
+    // (@0x54105F `mov ecx, offset dword_14A88E4`), les deux avec twoSide=1.
+    // CORRECTIF G-PICK-03 : l'ancien code rappelait DEUX FOIS LA MÊME requête (même
+    // fonction pure, mêmes arguments) — le repli était mathématiquement mort et la branche
+    // « cast à cible verrouillée » perdait tout picking dès que la maille .WJ ne touchait pas.
     float hit[3] = {0, 0, 0};
-    if (!picker.PickRayScreen(screenX, screenY, /*wantEntityHit=*/true, hit)) {
-        if (!picker.PickRayScreen(screenX, screenY, /*wantEntityHit=*/true, hit)) return false;
+    if (!picker.PickRayScreen(screenX, screenY, world::CollisionSlot::WJ,
+                               /*twoSide=*/true, hit) &&
+        !picker.PickRayScreen(screenX, screenY, world::CollisionSlot::Main,
+                               /*twoSide=*/true, hit)) {
+        return false;                                                       // 0x5410C7
     }
 
     const float dx = selfPos[0] - hit[0];

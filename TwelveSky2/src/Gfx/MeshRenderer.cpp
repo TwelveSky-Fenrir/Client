@@ -548,6 +548,44 @@ void MeshRenderer::drawMeshSweep(const SkinnedModel& model, const D3DXMATRIX& wo
     }
 }
 
+// TODO [ancre 0x40CDC9] PASSE 1 (billboard) NON IMPLÉMENTÉE — gap SH-05, Passe 4 / W9.
+// BLOQUÉE PAR UNE DONNÉE NON PROUVÉE, PAS PAR LE TEMPS. État exact de l'enquête :
+//
+//  CE QUI EST PROUVÉ (et donc immédiatement disponible le jour du déblocage) :
+//   * La garde : `mov esi, 1` @0x40CCED -> `jmp loc_40CDC6` @0x40CD22 -> `cmp [ebx+34h], esi`
+//     @0x40CDC6 / `jnz loc_40D3A8` @0x40CDC9  ==>  la branche est prise ssi `mesh+52 == 1`.
+//   * Les champs sont TOUS lisibles depuis asset::SObjectMesh::header (Asset/Model.h, non
+//     possédé) SANS le modifier — équivalence de layout établie par Mesh_ReadFromMemory
+//     0x40C380 : `qmemcpy(a1+1, v6+a2, 0x44)` @0x40C3C9 copie le disque +4..+71 vers mesh+4,
+//     `qmemcpy(a1+18, v6+a2+68, 0x130)` @0x40C3EC copie +72..+375 vers mesh+72, et le
+//     parseur C++ (Model.cpp:88-89) range exactement ces 372 octets dans `header`. D'où :
+//       header[48] = mesh+52 (flag billboard, u32)   header[52] = mesh+56 (mode axe, u32)
+//       header[56] = mesh+60 (largeur, float)        header[60] = mesh+64 (hauteur, float)
+//       header[68..371] = mesh+72..+375 = les 4 RenderVertex(76 o) inline du quad
+//   * Le rendu : skinning CPU des 4 sommets par la palette (@0x40CE47..0x40D0F9), centroïde
+//     x0.25 (@0x40D117..0x40D129), demi-largeur = (mesh+60)*0.5 (`fld [ebx+3Ch]` @0x40CDCF),
+//     demi-hauteur = (mesh+64)*0.5 (`fld [ebx+40h]` @0x40CDFF), bind passe 1 VS01+PS02
+//     (@0x40D2A3..0x40D2DC), SetMatrix(mWorldViewProjMatrix) @0x40D32B,
+//     SetFloatArray(mLightAmbient, 3) @0x40D34D, SetTexture @0x40D36C,
+//     SetVertexDeclaration @0x40D383, DrawPrimitiveUP(TRIANGLESTRIP, 2, quad, 76) @0x40D39A.
+//
+//  CE QUI BLOQUE (non prouvé — NE PAS DEVINER, cf. règle projet) : l'orientation du quad.
+//   Le vecteur d'axe est `&flt_18C5264` si (mesh+56)==1 (`cmp [ebx+38h], esi` @0x40CDD2),
+//   sinon `&unk_18C52BC`. Or ces deux adresses SONT des champs de g_GxdRenderer :
+//     0x18C5264 - 0x18C4EF8 = 876   |   0x18C52BC - 0x18C4EF8 = 964
+//   `xrefs_to` sur les deux ne rend QUE DES LECTEURS (9 et 7 : Model_DrawSkinnedSubset,
+//   PtclDef_RenderQuads, Mesh_DrawAnimatedFrame, cMesh_RenderAnimated,
+//   cMesh_RenderBillboardOutline, cVtxAnimMesh_RenderAnimated/RenderFrame/
+//   RenderBillboardShadow) — AUCUN writer absolu, l'écriture étant esi-relative
+//   (esi = this = 0x18C4EF8), même schéma que flt_18C53C0 (cf. MeshRenderer.h:396-401).
+//   Le producteur présumé est GXD_BeginScene 0x404640 (base/up billboard, +876/+888/+964/+976)
+//   — MAIS `xrefs_to(0x404640)` = 0 : la fonction est MORTE dans le binaire. On a donc
+//   9 lecteurs vivants d'une valeur qu'aucun producteur atteignable ne calcule : soit un
+//   autre writer esi-relatif reste à trouver, soit ces vecteurs sont figés à l'init.
+//   -> Fabriquer ici un axe « caméra droite/haut » serait une INVENTION : le quad serait
+//      orienté, mais pas comme l'original. Tant que le producteur de +876/+964 n'est pas
+//      identifié (piste : x32dbg, watch mémoire sur 0x18C5264 pendant une frame in-game),
+//      la branche billboard reste non écrite. Ne pas « compléter » ce TODO au jugé.
 void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
                                      const D3DXMATRIX&  world,
                                      const BonePalette& palette,

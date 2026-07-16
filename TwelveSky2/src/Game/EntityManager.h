@@ -16,12 +16,25 @@
 // sous-systeme (grille de ramassage) sont declares ici. Voir RE/net_handler_notes.md
 // et Docs/TS2_PROTOCOL_SPEC.md pour la semantique d'origine.
 #pragma once
+#include <cstddef>   // size_t (kPMoveState/kPMoveStateLen ci-dessous)
 #include <cstdint>
 #include <vector>
 #include "Game/GameState.h"
 #include "Net/RecvPackets.h"
 
 namespace ts2::game {
+
+// Offsets du bloc « move-state » du JOUEUR, relatifs au body (600 o) du slot.
+// EXPOSES (etaient fichier-local dans EntityManager.cpp) pour la couche d'intention
+// Game/PlayerCmdController.*, qui lit/ecrit ce meme bloc : dans le binaire c'est le
+// global g_SelfMoveStateBlock 0x1687324, et g_EntityArray 0x1687234 + 0x18 (body) + 216
+// = 0x1687324 — c'est donc DEJA ce bloc-ci, pas un etat separe. Recoupe par body+228 =
+// 0x1687330 = flt_1687330 (position monde du joueur local).
+// Layout : {animSlot@+0, actionState@+4, animFrame@+8, pos@+12, dest@+24, facing@+36,
+//           targetFacing@+40, targetKind@+44, ...} — cf. TS2_MoveStateBlock (IDB) et
+//           Game/PlayerCmdController.h::MoveCmdBlock.
+inline constexpr size_t kPMoveState    = 216;  // bloc move-state (72 o) -> g_SelfMoveStateBlock
+inline constexpr size_t kPMoveStateLen = 72;
 
 // Grille de ramassage au sol (dword_1674400 / g_Container5_ItemId de l'original).
 // ATTENTION : ce n'est PAS le tableau d'objets-monde GameWorld::groundItems

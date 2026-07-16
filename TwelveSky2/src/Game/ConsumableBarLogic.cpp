@@ -1,5 +1,12 @@
 // Game/ConsumableBarLogic.cpp — voir Game/ConsumableBarLogic.h pour la table de
 // correspondance EA <-> fonction et le bandeau d'écart binaire/module.
+//
+// ⚠️ Ce fichier porte le PANNEAU 28 cases (UI_ConsumableBar_* 0x68E270+, grille 4x7,
+// pas 52), PAS la barre du HUD (UI_GameHud_Render 0x67A3C0 @0x684CA8-0x685177, grille
+// 1x14, pas 30, source g_Container5 0x16743FC) — cette dernière est portée par
+// UI/ConsumableBarWindow.{h,cpp}, qui lit g_Container5 directement. Voir le bandeau
+// « CE MODULE NE MODÉLISE PAS LA BARRE DU HUD » en tête du header avant d'appeler
+// quoi que ce soit d'ici.
 #include "Game/ConsumableBarLogic.h"
 
 #include <cstddef>

@@ -1,0 +1,397 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{A1B2C3D4-1111-2222-3333-444455556666}</ProjectGuid>
+    <RootNamespace>TwelveSky2</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <!-- Sortie de l'exe DIRECTEMENT dans GameData (racine des dossiers du jeu
+         G01_GFONT/G02_GINFO/G03_GDATA/...) : le .exe se trouve a la racine et resout les
+         chemins relatifs du jeu sans configuration (cwd = son propre dossier, cf.
+         ResolveGameDataDir candidat "."). Les intermediaires (.obj/.pdb de compil) restent
+         ranges sous build\int\ pour ne PAS polluer GameData. Debug et Release ecrivent le
+         meme GameData\TwelveSky2.exe (on lance une config a la fois). -->
+    <OutDir>$(ProjectDir)GameData\</OutDir>
+    <IntDir>$(SolutionDir)build\int\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <!-- DirectX SDK (June 2010) : fournit d3dx9 (sprite/police/effet/texture). -->
+    <DXSDK>$(DXSDK_DIR)</DXSDK>
+    <DXSDK Condition="'$(DXSDK)' == ''">C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\</DXSDK>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- src d'abord ; DXSDK Include ensuite (fournit d3dx9.h ; d3d9.h y est aussi, cohérent).
+           external\oggvorbis\include : ogg/vorbis/vorbisfile (Audio/OggVorbisDecoder).
+           external\SilverLining\Include : headers SDK (utilises seulement si
+           TS2_SILVERLINING_ENGINE_AVAILABLE=1 ; inoffensif sinon). -->
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)external\oggvorbis\include;$(ProjectDir)external\SilverLining\Include;$(DXSDK)Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- /FS : ecriture PDB synchronisee (evite C1041 quand le toolset compile en parallele). -->
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <!-- ole32.lib : Co* (CoInitializeEx/CoCreateInstance/CoUninitialize) ; strmiids.lib :
+           GUID DirectShow (CLSID_FilterGraph, IID_IGraphBuilder/IMediaControl/IVideoWindow/
+           IMediaEventEx), requis par App::Run() (lecture bloquante INTRO.AVI, fidele WinMain 0x4609C0). -->
+      <!-- vorbisfile/vorbis/ogg statiques (Audio/OggVorbisDecoder) : libs prebuild /MT
+           (LIBCMT) -> le projet est bascule en /MT (cf. RuntimeLibrary ci-dessous).
+           legacy_stdio_definitions.lib : les libs ogg (compilees avant VS2015) referencent
+           _sprintf, symbole jadis exporte mais desormais inline dans l'UCRT ; cette lib
+           fournit ces definitions heritees (corrige LNK2001 _sprintf). -->
+      <AdditionalDependencies>user32.lib;gdi32.lib;winmm.lib;ole32.lib;strmiids.lib;vorbisfile_static.lib;vorbis_static.lib;ogg_static.lib;legacy_stdio_definitions.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(DXSDK)Lib\x86;$(ProjectDir)external\oggvorbis\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <!-- _DEBUG retire + /MT (au lieu de /MDd) : les libs ogg prebuild sont /MT (LIBCMT,
+           CRT statique release) ; le projet doit matcher. _DEBUG n'est reference nulle part
+           dans src/ -> aucun impact comportemental. Debug = non optimise + PDB, CRT statique. -->
+      <PreprocessorDefinitions>WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- /MT (au lieu de /MD) : match des libs ogg prebuild /MT (LIBCMT). Exe autonome. -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <!-- mPOINTER : 9 curseurs Win32 (RT_GROUP_CURSOR), cf. src/Game/MiscManagers.h. -->
+    <ResourceCompile Include="TwelveSky2.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\App\App.cpp" />
+    <ClCompile Include="src\App\PlayerInputController.cpp" />
+    <ClCompile Include="src\Asset\AssetSelfTest.cpp" />
+    <ClCompile Include="src\Asset\AtmosphereFile.cpp" />
+    <ClCompile Include="src\Asset\ImgFile.cpp" />
+    <ClCompile Include="src\Asset\Model.cpp" />
+    <ClCompile Include="src\Asset\Motion.cpp" />
+    <ClCompile Include="src\Asset\NpkArchive.cpp" />
+    <ClCompile Include="src\Asset\Sound.cpp" />
+    <ClCompile Include="src\Asset\Texture.cpp" />
+    <ClCompile Include="src\Asset\WorldChunk.cpp" />
+    <ClCompile Include="src\Asset\Xtea.cpp" />
+    <ClCompile Include="src\Asset\Zlib.cpp" />
+    <ClCompile Include="src\Audio\AudioSystem.cpp" />
+    <ClCompile Include="src\Audio\OggVorbisDecoder.cpp" />
+    <ClCompile Include="src\Audio\Sound3D.cpp" />
+    <ClCompile Include="src\Config\GameOptions.cpp" />
+    <ClCompile Include="src\Game\ActionStateMachine.cpp" />
+    <ClCompile Include="src\Game\AnimationTick.cpp" />
+    <ClCompile Include="src\Game\AutoPlaySystem.cpp" />
+    <ClCompile Include="src\Game\AutoTargetCombatGate.cpp" />
+    <ClCompile Include="src\Game\BitPacking.cpp" />
+    <ClCompile Include="src\Game\CameraWarpTick.cpp" />
+    <ClCompile Include="src\Game\CharSelectFlow.cpp" />
+    <ClCompile Include="src\Game\ChatCommands.cpp" />
+    <ClCompile Include="src\Game\ClientRuntime.cpp" />
+    <ClCompile Include="src\Game\CombatSystem.cpp" />
+    <ClCompile Include="src\Game\ComboPickupTick.cpp" />
+    <ClCompile Include="src\Game\ConsumableBarLogic.cpp" />
+    <ClCompile Include="src\Game\EnterWorldFlow.cpp" />
+    <ClCompile Include="src\Game\EntityDrawLogic.cpp" />
+    <ClCompile Include="src\Game\EntityLifecycleTick.cpp" />
+    <ClCompile Include="src\Game\EntityManager.cpp" />
+    <ClCompile Include="src\Game\ExtraDatabases.cpp" />
+    <ClCompile Include="src\Game\GameDatabase.cpp" />
+    <ClCompile Include="src\Game\GameState.cpp" />
+    <ClCompile Include="src\Game\GroundAuraWorldObjectTick.cpp" />
+    <ClCompile Include="src\Game\GuildSystem.cpp" />
+    <ClCompile Include="src\Game\InGameTickFlow.cpp" />
+    <ClCompile Include="src\Game\IntroFlow.cpp" />
+    <ClCompile Include="src\Game\ItemPickupSystem.cpp" />
+    <ClCompile Include="src\Game\ItemSystem.cpp" />
+    <ClCompile Include="src\Game\MapWarp.cpp" />
+    <ClCompile Include="src\Game\MiscManagers.cpp" />
+    <ClCompile Include="src\Game\MotionPools.cpp" />
+    <ClCompile Include="src\Game\NameplateLogic.cpp" />
+    <ClCompile Include="src\Game\NpcInteraction.cpp" />
+    <ClCompile Include="src\Game\QuestSystem.cpp" />
+    <ClCompile Include="src\Game\ServerSelectFlow.cpp" />
+    <ClCompile Include="src\Game\SkillCombat.cpp" />
+    <ClCompile Include="src\Game\SkillSystem.cpp" />
+    <ClCompile Include="src\Game\SocialSystem.cpp" />
+    <ClCompile Include="src\Game\StatBonusContributors.cpp" />
+    <ClCompile Include="src\Game\StatEngine.cpp" />
+    <ClCompile Include="src\Game\StatFormulas.cpp" />
+    <ClCompile Include="src\Game\StaticNpcLoader.cpp" />
+    <ClCompile Include="src\Game\StringTables.cpp" />
+    <ClCompile Include="src\Game\WarehouseSystem.cpp" />
+    <ClCompile Include="src\Game\ZoneGroup.cpp" />
+    <ClCompile Include="src\Gfx\Camera.cpp" />
+    <ClCompile Include="src\Gfx\CameraThirdPersonBridge.cpp" />
+    <ClCompile Include="src\Gfx\Font.cpp" />
+    <ClCompile Include="src\Gfx\GpuTexture.cpp" />
+    <ClCompile Include="src\Gfx\GxdRenderer.cpp" />
+    <ClCompile Include="src\Gfx\IconTextureCache.cpp" />
+    <ClCompile Include="src\Gfx\MeshRenderer.cpp" />
+    <ClCompile Include="src\Gfx\MotionCache.cpp" />
+    <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp" />
+    <ClCompile Include="src\Gfx\ModelCache.cpp" />
+    <ClCompile Include="src\Gfx\Renderer.cpp" />
+    <ClCompile Include="src\Gfx\ShaderSet.cpp" />
+    <ClCompile Include="src\Gfx\SilverLiningSky.cpp" />
+    <ClCompile Include="src\Gfx\SkyRenderer.cpp" />
+    <ClCompile Include="src\Gfx\SpriteBatch.cpp" />
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer.cpp" />
+    <ClCompile Include="src\Input\InputSystem.cpp" />
+    <ClCompile Include="src\Net\CharSelectPackets.cpp" />
+    <ClCompile Include="src\Net\CharStatDeltaDispatch.cpp" />
+    <ClCompile Include="src\Net\CombatResultApply.cpp" />
+    <ClCompile Include="src\Net\Framing.cpp" />
+    <ClCompile Include="src\Net\GameHandlers.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_BossWorld.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_ChatSocial.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_Core.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_Entity.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_InvCells.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_InvDispatch.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_Misc.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_PartyGuild.cpp" />
+    <ClCompile Include="src\Net\GameHandlers_VendorTrade.cpp" />
+    <ClCompile Include="src\Net\GameVarDispatch.cpp" />
+    <ClCompile Include="src\Net\ItemActionDispatch.cpp" />
+    <ClCompile Include="src\Net\ItemEffectDispatch.cpp" />
+    <ClCompile Include="src\Net\Login.cpp" />
+    <ClCompile Include="src\Net\NetClient.cpp" />
+    <ClCompile Include="src\Net\NetSystem.cpp" />
+    <ClCompile Include="src\Net\PacketDispatch.cpp" />
+    <ClCompile Include="src\Net\Rng.cpp" />
+    <ClCompile Include="src\Net\SendPackets.cpp" />
+    <ClCompile Include="src\Net\ServerStatusQuery.cpp" />
+    <ClCompile Include="src\Net\WorldEntityDispatch.cpp" />
+    <ClCompile Include="src\Scene\SceneAudit.cpp" />
+    <ClCompile Include="src\Scene\SceneManager.cpp" />
+    <ClCompile Include="src\Scene\WorldRenderer.cpp" />
+    <ClCompile Include="src\Tools\UiWindowSelfTest.cpp" />
+    <ClCompile Include="src\Tools\WorldReflectionSelfTest.cpp" />
+    <ClCompile Include="src\UI\AutoPlayWindow.cpp" />
+    <ClCompile Include="src\UI\BuffStatusPanel.cpp" />
+    <ClCompile Include="src\UI\CharacterStatsWindow.cpp" />
+    <ClCompile Include="src\UI\ChatWindow.cpp" />
+    <ClCompile Include="src\UI\ConsumableBarWindow.cpp" />
+    <ClCompile Include="src\UI\EnchantWindow.cpp" />
+    <ClCompile Include="src\UI\EnterWorldRender.cpp" />
+    <ClCompile Include="src\UI\GameHud.cpp" />
+    <ClCompile Include="src\UI\GameWindows.cpp" />
+    <ClCompile Include="src\UI\GuildWindow.cpp" />
+    <ClCompile Include="src\UI\IntroRender.cpp" />
+    <ClCompile Include="src\UI\InventoryWindow.cpp" />
+    <ClCompile Include="src\UI\ItemTooltip.cpp" />
+    <ClCompile Include="src\UI\LoginScene.cpp" />
+    <ClCompile Include="src\UI\MinimapWidget.cpp" />
+    <ClCompile Include="src\UI\NpcDialogWindow.cpp" />
+    <ClCompile Include="src\UI\OptionsWindow.cpp" />
+    <ClCompile Include="src\UI\PanelSkin.cpp" />
+    <ClCompile Include="src\UI\PartyWindow.cpp" />
+    <ClCompile Include="src\UI\PlayerTradeWindow.cpp" />
+    <ClCompile Include="src\UI\QuestTrackerWindow.cpp" />
+    <ClCompile Include="src\UI\ServerSelectRender.cpp" />
+    <ClCompile Include="src\UI\SkillTreeWindow.cpp" />
+    <ClCompile Include="src\UI\SocialWindow.cpp" />
+    <ClCompile Include="src\UI\UIManager.cpp" />
+    <ClCompile Include="src\UI\VendorShopWindow.cpp" />
+    <ClCompile Include="src\UI\WarehouseWindow.cpp" />
+    <ClCompile Include="src\UI\Widgets.cpp" />
+    <ClCompile Include="src\UI\Win32EditBox.cpp" />
+    <ClCompile Include="src\World\WorldIntegration.cpp" />
+    <ClCompile Include="src\World\WorldMap.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\App\App.h" />
+    <ClInclude Include="src\App\PlayerInputController.h" />
+    <ClInclude Include="src\App\GameConfig.h" />
+    <ClInclude Include="src\Asset\AssetSelfTest.h" />
+    <ClInclude Include="src\Asset\AtmosphereFile.h" />
+    <ClInclude Include="src\Asset\ByteReader.h" />
+    <ClInclude Include="src\Asset\FileUtil.h" />
+    <ClInclude Include="src\Asset\ImgFile.h" />
+    <ClInclude Include="src\Asset\Model.h" />
+    <ClInclude Include="src\Asset\Motion.h" />
+    <ClInclude Include="src\Asset\NpkArchive.h" />
+    <ClInclude Include="src\Asset\Sound.h" />
+    <ClInclude Include="src\Asset\Texture.h" />
+    <ClInclude Include="src\Asset\WorldChunk.h" />
+    <ClInclude Include="src\Asset\Xtea.h" />
+    <ClInclude Include="src\Asset\Zlib.h" />
+    <ClInclude Include="src\Audio\AudioSystem.h" />
+    <ClInclude Include="src\Audio\OggVorbisDecoder.h" />
+    <ClInclude Include="src\Audio\Sound3D.h" />
+    <ClInclude Include="src\Config\GameOptions.h" />
+    <ClInclude Include="src\Core\Log.h" />
+    <ClInclude Include="src\Core\Types.h" />
+    <ClInclude Include="src\Game\ActionStateMachine.h" />
+    <ClInclude Include="src\Game\AnimationTick.h" />
+    <ClInclude Include="src\Game\AutoPlaySystem.h" />
+    <ClInclude Include="src\Game\AutoTargetCombatGate.h" />
+    <ClInclude Include="src\Game\BitPacking.h" />
+    <ClInclude Include="src\Game\CameraWarpTick.h" />
+    <ClInclude Include="src\Game\CharSelectFlow.h" />
+    <ClInclude Include="src\Game\ChatCommands.h" />
+    <ClInclude Include="src\Game\ClientRuntime.h" />
+    <ClInclude Include="src\Game\CombatSystem.h" />
+    <ClInclude Include="src\Game\ComboPickupTick.h" />
+    <ClInclude Include="src\Game\ConsumableBarLogic.h" />
+    <ClInclude Include="src\Game\EnterWorldFlow.h" />
+    <ClInclude Include="src\Game\EntityDrawLogic.h" />
+    <ClInclude Include="src\Game\EntityLifecycleTick.h" />
+    <ClInclude Include="src\Game\EntityManager.h" />
+    <ClInclude Include="src\Game\ExtraDatabases.h" />
+    <ClInclude Include="src\Game\GameDatabase.h" />
+    <ClInclude Include="src\Game\GameState.h" />
+    <ClInclude Include="src\Game\GroundAuraWorldObjectTick.h" />
+    <ClInclude Include="src\Game\GuildSystem.h" />
+    <ClInclude Include="src\Game\InGameTickFlow.h" />
+    <ClInclude Include="src\Game\IntroFlow.h" />
+    <ClInclude Include="src\Game\ItemPickupSystem.h" />
+    <ClInclude Include="src\Game\ItemSystem.h" />
+    <ClInclude Include="src\Game\MapWarp.h" />
+    <ClInclude Include="src\Game\MiscManagers.h" />
+    <ClInclude Include="src\Game\MotionPools.h" />
+    <ClInclude Include="src\Game\MotionPoolsCoordResolver.h" />
+    <ClInclude Include="src\Game\NameplateLogic.h" />
+    <ClInclude Include="src\Game\NpcInteraction.h" />
+    <ClInclude Include="src\Game\QuestSystem.h" />
+    <ClInclude Include="src\Game\ServerSelectFlow.h" />
+    <ClInclude Include="src\Game\SkillCombat.h" />
+    <ClInclude Include="src\Game\SkillSystem.h" />
+    <ClInclude Include="src\Game\SocialSystem.h" />
+    <ClInclude Include="src\Game\StatBonusContributors.h" />
+    <ClInclude Include="src\Game\StatEngine.h" />
+    <ClInclude Include="src\Game\StatFormulas.h" />
+    <ClInclude Include="src\Game\StaticNpcLoader.h" />
+    <ClInclude Include="src\Game\StringTables.h" />
+    <ClInclude Include="src\Game\WarehouseSystem.h" />
+    <ClInclude Include="src\Game\ZoneGroup.h" />
+    <ClInclude Include="src\Gfx\Camera.h" />
+    <ClInclude Include="src\Gfx\CameraThirdPersonBridge.h" />
+    <ClInclude Include="src\Gfx\Font.h" />
+    <ClInclude Include="src\Gfx\GpuTexture.h" />
+    <ClInclude Include="src\Gfx\GxdRenderer.h" />
+    <ClInclude Include="src\Gfx\IconTextureCache.h" />
+    <ClInclude Include="src\Gfx\MeshRenderer.h" />
+    <ClInclude Include="src\Gfx\MotionCache.h" />
+    <ClInclude Include="src\Gfx\PlayerPaperdoll.h" />
+    <ClInclude Include="src\Gfx\ModelCache.h" />
+    <ClInclude Include="src\Gfx\Renderer.h" />
+    <ClInclude Include="src\Gfx\ShaderSet.h" />
+    <ClInclude Include="src\Gfx\SilverLiningSky.h" />
+    <ClInclude Include="src\Gfx\SkyRenderer.h" />
+    <ClInclude Include="src\Gfx\SpriteBatch.h" />
+    <ClInclude Include="src\Gfx\WorldGeometryRenderer.h" />
+    <ClInclude Include="src\Input\InputSystem.h" />
+    <ClInclude Include="src\Net\CharSelectPackets.h" />
+    <ClInclude Include="src\Net\CharStatDeltaDispatch.h" />
+    <ClInclude Include="src\Net\Cipher.h" />
+    <ClInclude Include="src\Net\ClientState.h" />
+    <ClInclude Include="src\Net\CombatResultApply.h" />
+    <ClInclude Include="src\Net\Framing.h" />
+    <ClInclude Include="src\Net\GameHandlers.h" />
+    <ClInclude Include="src\Net\GameVarDispatch.h" />
+    <ClInclude Include="src\Net\ItemActionDispatch.h" />
+    <ClInclude Include="src\Net\ItemEffectDispatch.h" />
+    <ClInclude Include="src\Net\Login.h" />
+    <ClInclude Include="src\Net\NetClient.h" />
+    <ClInclude Include="src\Net\NetSystem.h" />
+    <ClInclude Include="src\Net\Opcodes.h" />
+    <ClInclude Include="src\Net\PacketDispatch.h" />
+    <ClInclude Include="src\Net\RecvPackets.h" />
+    <ClInclude Include="src\Net\Rng.h" />
+    <ClInclude Include="src\Net\SendPackets.h" />
+    <ClInclude Include="src\Net\ServerStatusQuery.h" />
+    <ClInclude Include="src\Net\WorldEntityDispatch.h" />
+    <ClInclude Include="src\Scene\SceneAudit.h" />
+    <ClInclude Include="src\Scene\SceneManager.h" />
+    <ClInclude Include="src\Scene\WorldRenderer.h" />
+    <ClInclude Include="src\Tools\UiWindowSelfTest.h" />
+    <ClInclude Include="src\Tools\WorldReflectionSelfTest.h" />
+    <ClInclude Include="src\UI\AutoPlayWindow.h" />
+    <ClInclude Include="src\UI\BuffStatusPanel.h" />
+    <ClInclude Include="src\UI\CharacterStatsWindow.h" />
+    <ClInclude Include="src\UI\ChatWindow.h" />
+    <ClInclude Include="src\UI\ConsumableBarWindow.h" />
+    <ClInclude Include="src\UI\EnchantWindow.h" />
+    <ClInclude Include="src\UI\EnterWorldRender.h" />
+    <ClInclude Include="src\UI\GameHud.h" />
+    <ClInclude Include="src\UI\GameWindows.h" />
+    <ClInclude Include="src\UI\GuildWindow.h" />
+    <ClInclude Include="src\UI\IntroRender.h" />
+    <ClInclude Include="src\UI\InventoryWindow.h" />
+    <ClInclude Include="src\UI\ItemTooltip.h" />
+    <ClInclude Include="src\UI\LoginScene.h" />
+    <ClInclude Include="src\UI\MinimapWidget.h" />
+    <ClInclude Include="src\UI\NpcDialogWindow.h" />
+    <ClInclude Include="src\UI\OptionsWindow.h" />
+    <ClInclude Include="src\UI\PanelSkin.h" />
+    <ClInclude Include="src\UI\PartyWindow.h" />
+    <ClInclude Include="src\UI\PlayerTradeWindow.h" />
+    <ClInclude Include="src\UI\QuestTrackerWindow.h" />
+    <ClInclude Include="src\UI\ServerSelectRender.h" />
+    <ClInclude Include="src\UI\SkillTreeWindow.h" />
+    <ClInclude Include="src\UI\SocialWindow.h" />
+    <ClInclude Include="src\UI\UIManager.h" />
+    <ClInclude Include="src\UI\VendorShopWindow.h" />
+    <ClInclude Include="src\UI\WarehouseWindow.h" />
+    <ClInclude Include="src\UI\Widgets.h" />
+    <ClInclude Include="src\UI\Win32EditBox.h" />
+    <ClInclude Include="src\World\WorldIntegration.h" />
+    <ClInclude Include="src\World\WorldMap.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

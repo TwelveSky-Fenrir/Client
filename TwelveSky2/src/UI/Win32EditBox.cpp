@@ -7,7 +7,7 @@
 
 namespace ts2::ui {
 
-bool Win32EditBox::Create(HWND parent, int x, int y, int w, int h, bool password) {
+bool Win32EditBox::Create(HWND parent, int x, int y, int w, int h, int boxIndex) {
     // Recréation propre : détruit tout handle préexistant (Create idempotent).
     Destroy();
 
@@ -15,15 +15,12 @@ bool Win32EditBox::Create(HWND parent, int x, int y, int w, int h, bool password
         TS2_WARN("Win32EditBox::Create : parent HWND nul, creation ignoree");
         return false;
     }
-
-    // Style fidèle EA (CreateWindowExA @0x50ED93) :
-    //   0x50800080 = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL.
-    DWORD style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL;
-    // Déviation fidèle-UX assumée : le binaire masque le mot de passe en
-    // logiciel au rendu (Scene_LoginRender 0x51B020), pas via ES_PASSWORD. Un
-    // contrôle natif visible impose ES_PASSWORD pour un masquage visuel réel.
-    if (password) {
-        style |= ES_PASSWORD;
+    if (boxIndex < 0 || boxIndex >= kEditBoxCount) {
+        // Le binaire ne crée QUE les 21 boîtes de sa boucle (`if (v16 >= 21)` @0x50ED0D) :
+        // hors de cette plage il n'y a ni id de contrôle ni limite de saisie définis.
+        TS2_WARN("Win32EditBox::Create : boxIndex %d hors [0,%d), creation ignoree",
+                 boxIndex, kEditBoxCount);
+        return false;
     }
 
     // hInstance = celui du module ayant créé la fenêtre parente, récupéré
@@ -31,17 +28,20 @@ bool Win32EditBox::Create(HWND parent, int x, int y, int w, int h, bool password
     // App::hInst_ dans le binaire) sans étendre la signature du wrapper.
     HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtr(parent, GWLP_HINSTANCE));
 
-    // dwExStyle = WS_EX_CLIENTEDGE (0x100), classe "EDIT" (insensible à la
-    // casse), pas de texte initial, id de contrôle laissé à 0 (le wrapper
-    // n'utilise pas WM_COMMAND ; l'appelant identifie le champ par son HWND).
+    // CreateWindowExA @0x50ED93, à l'identique : exStyle=0x100 (WS_EX_CLIENTEDGE),
+    // classe "edit" (système, insensible à la casse), pas de texte initial, style
+    // CONSTANT 0x50800080 pour les 21 boîtes (aucun ES_PASSWORD : gap UIFW-07 corrigé —
+    // le masquage est logiciel, cf. Crt_Memset(String, 42, strlen) @0x51B3CE), et
+    // hMenu = (HMENU)(v16 + 1) = l'id de contrôle (@0x50ED93 ; l'ancien nullptr était
+    // la 2e divergence prouvée du gap).
     hwnd_ = CreateWindowExA(
-        WS_EX_CLIENTEDGE,
-        "EDIT",
+        kEditExStyle,
+        "edit",
         nullptr,
-        style,
+        kEditStyle,
         x, y, w, h,
         parent,
-        nullptr,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(boxIndex + 1)),
         hInst,
         nullptr);
 
@@ -50,10 +50,25 @@ bool Win32EditBox::Create(HWND parent, int x, int y, int w, int h, bool password
         return false;
     }
 
-    // État de repos fidèle : contrôle créé masqué (ShowWindow(h, SW_HIDE) @0x50EDC4).
+    // État de repos fidèle — et PERMANENT : ShowWindow(h, 0) = SW_HIDE @0x50EDC4. C'est
+    // l'unique ShowWindow posé sur un EDIT dans tout le binaire : ils ne sont JAMAIS
+    // affichés (tampon texte + cible de focus seulement, cf. en-tête de Win32EditBox.h).
     ShowWindow(hwnd_, SW_HIDE);
-    // Limite de saisie fidèle : EM_LIMITTEXT=0xC5 à 0x7F=127 (boxes 0/1 @0x50EDF8).
-    SendMessageA(hwnd_, EM_LIMITTEXT, static_cast<WPARAM>(kMaxText - 1), 0);
+
+    // Limite de saisie fidèle, PAR BOÎTE : EM_LIMITTEXT (0xC5) à kEditLimit[boxIndex]
+    // (switch @0x50EDDD). La boîte 20 tombe dans `default: LABEL_2` = aucun EM_LIMITTEXT
+    // envoyé, d'où la garde `!= 0` (l'ancien code posait 127 pour TOUTES les boîtes).
+    if (kEditLimit[boxIndex] != 0) {
+        SendMessageA(hwnd_, EM_LIMITTEXT,
+                     static_cast<WPARAM>(kEditLimit[boxIndex]), 0);
+    }
+
+    // TODO [ancre 0x50EE19 / UI_EditBoxWndProc 0x50E070] : le binaire sous-classe ensuite
+    // les boîtes 0..19 — `SetWindowLongA(h, -4 /*GWL_WNDPROC*/, UI_EditBoxWndProc)`, le
+    // proc précédent étant mémorisé dans lpPrevWndFunc 0x1669018 — et ABANDONNE la
+    // création (`return 0`) si SetWindowLongA renvoie 0. Non reproduit : le proc route
+    // Tab/Entrée vers des cibles de scène et s'appuie sur le focus global g_UIEditBoxMgr
+    // 0x1668FC0, absents de ce wrapper (détail des filtres en tête de Win32EditBox.h).
 
     return true;
 }

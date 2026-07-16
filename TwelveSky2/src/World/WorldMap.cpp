@@ -410,12 +410,26 @@ bool WorldMap::LoadMap(const std::string& mapName, const std::string& drmKey) {
     }
 
     // --- Branche succès : atmosphere[+644]=1, this+4=1, météo par défaut, Atmosphere.DAT ---
-    // *(atmosphere+644) = 1  (marqueur interne de l'objet atmosphère).
-    // CONFLICT C-03 (TS2_WORLD_ROSETTA.md §2) : la cible pose `*(this+4)=1` ICI (World_LoadMap
-    // 0x41176E), MÊME octet que byte_18C67C8, ce qui ARME le court-circuit `||` de la case 7
-    // (1x/session jusqu'à World_UnloadMap 0x411a80). Fidélité : `atmosphereLoaded_` devrait être
-    // posé ici aussi ; ne l'étant pas, la case 7 relance LoadMap à chaque zone. Correctif = jalon compilé.
-    valid_ = true;                       // this+4 = 1  (= byte_18C67C8, cf. CONFLICT C-03)
+    // *(atmosphere+644) = 1  (marqueur interne de l'objet atmosphère) — `mov byte ptr [eax+284h], 1`
+    // @0x411765 avec eax = [ebx+8] = l'objet cAtmosphere (0x284 = 644).
+    //
+    // BEW-03 / CONFLICT C-03 (TS2_WORLD_ROSETTA.md §2) — RÉSOLU ICI (re-prouvé à l'octet en IDA) :
+    //   World_LoadMap @0x41176E : `mov byte ptr [ebx+4], 1` avec ebx = this = g_WorldEnv 0x18C67C4
+    //     -> l'octet écrit est EXACTEMENT 0x18C67C8 = g_WorldEnvAtmInitFlag (nom IDA du flag).
+    //   World_LoadZoneResource case 7 @0x4DD202 : `mov dl, ds:g_WorldEnvAtmInitFlag` ... @0x4DD217
+    //     `jnz short loc_4DD23B` -> flag armé = saut de World_LoadMap, on va droit au .ATM.
+    //   Le commentaire IDA de World_LoadMap le dit : « appelé UNE FOIS par World_LoadZoneResource
+    //   case 7 (gardé par byte_18C67C8) ».
+    // Le port C++ avait SPLIT cet octet unique en deux membres (`valid_` posé ici, `atmosphereLoaded_`
+    // testé case 7 mais jamais armé) -> le court-circuit `||` restait toujours faux et LoadMap était
+    // relancé À CHAQUE zone (réallocation cAtmosphere 648 o, re-validation licence SilverLining, météo
+    // remise à défaut). On arme donc les DEUX membres avec la même écriture : ils re-désignent le même
+    // octet 0x18C67C8, sans casser les lecteurs existants de `valid_` (qui porte d'autres sémantiques).
+    // TODO [World_UnloadMap 0x411A80] : non porté à ce jour (aucun symbole côté C++, grep vide) — c'est
+    // lui qui remet cet octet à 0 dans la cible. Tant qu'il n'existe pas, `atmosphereLoaded_` reste armé
+    // pour la session, ce qui EST le comportement de la cible entre load et unload.
+    valid_ = true;                       // this+4 = 1  @0x41176E (= byte_18C67C8 0x18C67C8)
+    atmosphereLoaded_ = true;            // MÊME octet @0x41176E : arme le court-circuit case 7 @0x4DD217
     // Str_Assign(mapName) : mémorise le nom de map (byte_815190 côté binaire) — omis (leaf).
     weather_.fill(0);                    // memcpy(this+180, &dword_18C5358, 0x68) : template 104 o, tout à 0.
 
@@ -519,9 +533,10 @@ unsigned char WorldMap::LoadZoneResource(int zoneId, ResourceKind kind) {
             if (zoneId == -1) return static_cast<unsigned char>(v3);
             // if (atmosphereLoaded || World_LoadMap(...)) { charger .ATM }
             // Structure byte-exacte (World_LoadZoneResource 0x4dcb60 case 7 : `byte_18C67C8 ||
-            // World_LoadMap 0x4116b0`). CONFLICT C-03 : le flag byte_18C67C8 n'étant jamais armé
-            // par LoadMap ici (cf. WorldMap.cpp branche succès), ce court-circuit reste toujours
-            // faux -> LoadMap relancé à chaque zone (l'original 1x/session).
+            // World_LoadMap 0x4116b0`), lecture du garde @0x4DD202 / saut @0x4DD217.
+            // BEW-03 : le court-circuit s'arme DÉSORMAIS réellement — LoadMap pose `atmosphereLoaded_`
+            // en branche succès (@0x41176E, cf. plus haut), donc World_LoadMap n'est appelé qu'1x/session
+            // comme dans la cible, et non plus à chaque zone.
             bool proceed = atmosphereLoaded_;
             if (!proceed) {
                 bool ok = LoadMap(kAtmosphereResourceDir); // -> dword_18C67C4, device g_GfxRenderer_pDevice

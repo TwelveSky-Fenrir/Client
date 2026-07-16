@@ -28,6 +28,13 @@
 
 namespace ts2::gfx {
 
+// Les 12 shaders du npk (Gfx/ShaderSet.h). Déclaration avancée SEULEMENT : RenderPostBlur
+// reçoit le jeu de shaders en PARAMÈTRE (il ne le possède pas) pour ne pas créer de
+// dépendance d'en-tête GxdRenderer.h -> ShaderSet.h. Dans le binaire les slots shader sont
+// des globals de fichier (bloc 0x1945918+) que GXD_RenderPostBlur 0x4053E0 lit via
+// this+527404..+527528 — ici ils transitent par la référence.
+class ShaderSet;
+
 class GxdRenderer {
 public:
     // Modes d'ambiance de SetDirectionalLight (param edi de GXD_SetDirectionalLight).
@@ -76,8 +83,86 @@ public:
     // Renvoie false si le point est hors frustum.
     bool WorldToScreen(const D3DXVECTOR3& world, int& sx, int& sy) const;
 
-    // Position caméra (oeil/cible) — la vue est reconstruite chaque frame dans SetupFrame.
-    void SetCamera(const D3DXVECTOR3& eye, const D3DXVECTOR3& at) { m_eye = eye; m_at = at; }
+    // -----------------------------------------------------------------------------------
+    // (GXD_RenderPostBlur 0x4053E0) Bloom/post-blur : downsample du back-buffer en demi-
+    // résolution, flou horizontal (passe 6 = PS12) puis vertical (passe 7 = PS14) en
+    // ping-pong, enfin composite additif SRCCOLOR/ONE sur le back-buffer.
+    //
+    // AUCUNE OPTION D'ACTIVATION — fidèle : la garde d'origine `cmp [ecx+18h], 1` @0x4053ED
+    // porte sur dword_18C4F10 (= base+24) dont xrefs_to ne donne QU'UN writer,
+    // GXD_InitGlobalState @0x4013AC (`= 1`) : la garde est TOUJOURS vraie et la branche
+    // `else` (Release des 4 RT) est morte. Le bloom n'est pas désactivable dans le client.
+    //
+    // CONTRAT DE SCÈNE (impératif) : la fonction d'origine fait EndScene/BeginScene autour
+    // de CHAQUE bascule de render target — elle SUPPOSE donc une scène OUVERTE en entrée et
+    // en laisse une OUVERTE en sortie. À appeler entre BeginFrame() et EndFrame().
+    //
+    // ⚠ CÂBLAGE À POSER HORS DE CE FICHIER (aucun fichier de ce front n'est le miroir de
+    //   Scene_InGameRender 0x52D0B0) : l'appel d'origine est UNIQUE et INCONDITIONNEL, en
+    //   ligne droite @0x52FB53 (`mov ecx, offset g_GxdRenderer ; call GXD_RenderPostBlur`),
+    //   entre Env_StepTimeOfDay @0x52FB49 et Gfx_Begin2D @0x52FB89 — donc APRÈS tout le
+    //   rendu 3D et AVANT le passage en 2D. Cf. le pavé de câblage dans GxdRenderer.cpp.
+    void RenderPostBlur(const ShaderSet& shaders);
+
+    // -----------------------------------------------------------------------------------
+    // (GXD_OnDeviceLost 0x4042E0) Pose le drapeau de device perdu (+527548 @0x4042EC) puis
+    // libère les ressources D3DPOOL_DEFAULT possédées. Ordre de libération d'origine relu au
+    // décompilateur : +548 (surfA), +540 (texA), +552 (surfB), +544 (texB) — chacune remise à
+    // 0 après Release(). Ce sont EXACTEMENT les 4 cibles de rendu du bloom ci-dessus.
+    // À appeler AVANT IDirect3DDevice9::Reset (homologue @0x5188A8).
+    void OnDeviceLost();
+
+    // (GXD_RestoreAfterReset 0x404570) Gardée par le drapeau `+527548 == 1` @0x40457A ;
+    // renvoie true sans rien faire si le drapeau n'est pas posé (`return 1` @0x4045B7), et
+    // ne remet le drapeau à 0 (@0x404629) qu'en cas de succès total.
+    // À appeler APRÈS un Reset() RÉUSSI (homologue @0x5188BC).
+    //
+    // PORTÉE RÉDUITE ASSUMÉE (et non un oubli) : l'original recrée aussi, sous ce même
+    // drapeau, la déclaration de vertex skinné (CreateVertexDeclaration vtbl+344 @0x40461F,
+    // g_GxdSkinnedVertexDecl76 0x814A58 -> +526880) et RECOMPILE les 12 shaders dans l'ordre
+    // VS01,PS02,VS03,PS04,VS05,PS06,VS07,PS08,VS09,PS12,PS14,VS15 (`return 0` @0x4045B8 si
+    // l'un échoue), et appelle World_ReloadMap @0x40458F si une carte est chargée (+6352).
+    // Côté ClientSource, AUCUN de ces trois objets n'appartient à GxdRenderer : la
+    // déclaration + les 12 shaders sont à ts2::gfx::ShaderSet (Gfx/ShaderSet.h, non possédé
+    // par ce front) et la carte à World/. Techniquement ils survivent d'ailleurs à Reset()
+    // (IDirect3DVertexShader9/PixelShader9/VertexDeclaration9 ne sont pas D3DPOOL_DEFAULT) :
+    // ce rechargement est défensif chez l'original. Leurs propriétaires doivent passer par
+    // l'observateur Renderer::SetDeviceCallbacks (cf. Gfx/Renderer.h).
+    // Les 4 RT du bloom, elles, sont bien D3DPOOL_DEFAULT et sont recréées PARESSEUSEMENT
+    // par RenderPostBlur (`if (!*(a1+540))` @0x40547A) — exactement comme l'original.
+    bool RestoreAfterReset();
+
+    // -----------------------------------------------------------------------------------
+    // (Camera_SetEyeTarget 0x403420) Pousse le couple oeil (+712..+720) / cible (+724..+732).
+    // RENVOIE UN BOOLÉEN et REJETTE deux cas — sémantique relue au décompilateur :
+    //   1. `if (a5==a2 && a6==a3 && a7==a4) return 0;` @0x403465  -> oeil == cible.
+    //   2. angle d'élévation |asin(|eye.y-at.y| / dist) * 57.2957763671875| > 89.989998
+    //      @0x40350E -> `return 0` : trop près du pôle pour LookAtLH (up figé (0,1,0)).
+    // Les champs ne sont écrits QUE si les deux tests passent (@0x403522..0x403574).
+    // NB : cette borne 89.99 est DISTINCTE du clamp 89.9 de Cam_OrbitPitch 0x69CF90
+    // (cf. Camera.h::kPitchLimitDeg) et des bornes 30/80 du drag souris — les trois
+    // coexistent, à trois niveaux différents.
+    //
+    // ⚠ SANS APPELANT à ce jour (grep : les seuls hits `SetCamera` sont
+    //   MeshRenderer::SetCamera(view, proj), une AUTRE classe). L'original, lui, a 33
+    //   appelants vivants (Camera_MouseDragRotate, Camera_MouseWheelZoom,
+    //   Camera_UpdateFromInput, Scene_InGameUpdate, Camera_UpdateCollision) : le câblage
+    //   est à poser hors de ce front (App/App.cpp ou Scene/).
+    bool SetCamera(const D3DXVECTOR3& eye, const D3DXVECTOR3& at);
+
+    // Setters de COPIE (Scene_*Render : Object A -> Object B, une fois par frame).
+    // Frontière prouvée par Scene_IntroRender 0x518880 (identique dans les 5 autres scènes) :
+    //   qmemcpy(&unk_18C51E4, &unk_800154, 0x40) @0x5188DC : m_matView (+748) <- GfxRenderer+828
+    //   qmemcpy(&g_WorldMatrix, &dword_800244, 0x40) @0x5188ED : m_matWorld (+988) <- +1068
+    //   dword_18C51D8/DC/E0 (+736/+740/+744) <- g_CameraDir 0x800148/4C/50 (+816/+820/+824)
+    //     @0x5188F5 / @0x518901 / @0x51890C
+    // Ces champs sont DISJOINTS de +712/+724 (oeil/cible ci-dessus) : les deux chemins
+    // coexistent dans le binaire, ils ne se remplacent pas.
+    // ⚠ SANS APPELANT à ce jour — câblage à poser hors de ce front (App/App.cpp, garde
+    //   `if (renderer_.BeginFrame())`, ou Scene/).
+    void SetViewMatrix(const D3DXMATRIX& view) { m_matView = view; }   // (+748)
+    void SetWorldMatrix(const D3DXMATRIX& world) { m_matWorld = world; } // (+988)
+    void SetViewDir(const D3DXVECTOR3& dir) { m_viewDir = dir; }       // (+736)
 
     IDirect3DDevice9*   Device()   const { return m_device; }
     const D3DXMATRIX&   Proj()     const { return m_matProj; }
@@ -93,6 +178,11 @@ public:
 private:
     void BuildMatrices();                // proj / vue / monde / demi-viewport
     void BuildDefaultMaterialAndLight(); // matériau + lumière directionnelle
+    // Crée paresseusement les 4 cibles de rendu demi-résolution du bloom (@0x40547A..0x405563).
+    // false si une création échoue (l'original libère alors ce qu'il avait déjà pris et sort).
+    bool EnsureBlurTargets();
+    // Release() + remise à nullptr des 4 RT, ordre d'origine +548, +540, +552, +544.
+    void ReleaseBlurTargets();
     void BuildFrustumPlanes();           // Frustum_BuildPlanes 0x406090
     bool FrustumContains(const D3DXVECTOR3& world) const; // Frustum_ContainsPoint5 0x406560
 
@@ -121,14 +211,56 @@ private:
     int      m_currentShaderId = 0;   // (+526884) programme courant, remis à 0 par frame — ex-VeryOldClient: mPresentShaderProgramNumber (0=fixed,6=Filter1,7=Filter2)
 
     bool m_useLinearFilter = false;  // (+8) 0 => anisotrope (défaut), !=0 => linéaire — ex-VeryOldClient: mSamplerOptionValue (ctor=0)
-    // GXD_DeviceReinit 0x4023F0 (test à 0x402928 : this+200 = caps+36 = RasterCaps & 0x4000000).
-    // ex-VeryOldClient: mCheckDepthBias. Le bit 0x4000000 = D3DPRASTERCAPS_DEPTHBIAS (depth-bias
-    // hérité), PAS l'anisotropie (0x20000). NB : la Rosetta §2 étiquette ce bit
-    // « SLOPESCALEDEPTHBIAS », mais 0x4000000 EST DEPTHBIAS (SLOPESCALEDEPTHBIAS = 0x2000000) —
-    // IDA gagne, on teste le bit 0x4000000 tel quel. L'anisotropie ne dépend PAS de ce champ :
-    // le filtre anisotrope est piloté par m_useLinearFilter (+8) et m_maxAnisotropy, cf. ConfigSamplerStates.
-    bool m_depthBiasCapable = false; // (+28) RasterCaps & D3DPRASTERCAPS_DEPTHBIAS (0x4000000)
-    bool m_twoSidedStencil = false;  // (+32) D3DSTENCILCAPS_TWOSIDED — ex-VeryOldClient: mCheckTwoSideStencilFunction (StencilCaps&0x100)
+
+    // -----------------------------------------------------------------------------------
+    // CHAMPS +28 / +32 — DOUBLE IDENTITÉ (gap G3, corrigé Passe 4 / W9).
+    //
+    // Ces deux dwords portent DEUX noms selon le bout par lequel on les regarde :
+    //   +28 = 0x18C4F14 = « m_depthBiasCapable » (producteur : caps GPU) == g_ShadowsEnabled
+    //         (consommateur : porte de TOUT le rendu d'ombre, lue @0x40EEF8)
+    //   +32 = 0x18C4F18 = « m_twoSidedStencil »  (producteur) == g_ShadowMethod
+    //         (consommateur : 0 = z-fail Carmack 2 passes, 1 = stencil two-sided ;
+    //          lue @0x40EFCC / @0x40F27B / @0x40F66A)
+    //
+    // ILS VALENT TOUJOURS 1 DANS LE BINAIRE — deux preuves qui se cumulent :
+    //   1. GXD_InitGlobalState 0x401320 les pose à 1 (`mov ebx, 1` @0x401365 puis
+    //      `mov ds:g_ShadowsEnabled, ebx` @0x4013B2 / `mov ds:g_ShadowMethod, ebx` @0x4013B8).
+    //   2. GXD_DeviceReinit ne fait que les VERROUILLER à 1, jamais les effacer — relu au
+    //      désassemblage : `jz short loc_40292D ; mov [esi+1Ch], edi` @0x402928/@0x40292A et
+    //      `test dword ptr [esi+12Ch], 100h ; jz ; mov [esi+20h], edi` @0x40292D..@0x402939
+    //      (edi = 1, 0x1C = 28, 0x20 = 32). AUCUNE branche `else` : un GPU dépourvu de la cap
+    //      laisse simplement le 1 de l'init en place.
+    //   GXD_FreeGlobalState 0x401530 (décompilée intégralement) ne touche NI +28 NI +32 —
+    //   d'où l'absence de remise à false dans Shutdown() (cf. GxdRenderer.cpp).
+    // => on initialise à `true` et on n'écrit JAMAIS `false` (cf. DeviceReinit).
+    //
+    // ⚠ MODÈLE CONSOMMATEUR FAISANT AUTORITÉ : Gfx/MeshRenderer.h:391-392
+    //   (shadowsEnabled_ = true / shadowMethod_ = 1, mêmes ancres 0x4013B2/0x4013B8). Le même
+    //   champ binaire est donc modélisé DEUX FOIS dans ClientSource ; en cas de divergence
+    //   future, MeshRenderer.h gagne — c'est lui qui pilote réellement une branche de rendu.
+    //   DepthBiasCapable()/TwoSidedStencil() n'ont, eux, aucun appelant (grep).
+    // NB producteur : le bit 0x4000000 = D3DPRASTERCAPS_DEPTHBIAS (depth-bias hérité), PAS
+    // l'anisotropie (0x20000). La Rosetta §2 étiquette ce bit « SLOPESCALEDEPTHBIAS », mais
+    // 0x4000000 EST DEPTHBIAS (SLOPESCALEDEPTHBIAS = 0x2000000) — IDA gagne. L'anisotropie ne
+    // dépend PAS de ce champ (cf. m_useLinearFilter / m_maxAnisotropy, ConfigSamplerStates).
+    // ex-VeryOldClient: mCheckDepthBias / mCheckTwoSideStencilFunction.
+    bool m_depthBiasCapable = true; // (+28) == g_ShadowsEnabled 0x18C4F14, figé à 1
+    bool m_twoSidedStencil  = true; // (+32) == g_ShadowMethod   0x18C4F18, figé à 1
+
+    // ----- Post-process bloom (GXD_RenderPostBlur 0x4053E0) — D3DPOOL_DEFAULT -------------
+    // Créées PARESSEUSEMENT au 1er RenderPostBlur (`if (!*(a1+540))` @0x40547A) et libérées
+    // par OnDeviceLost(). surfX = GetSurfaceLevel(0) de texX (vtbl+72 @0x4054AC / @0x405536).
+    // Ping-pong : texA = downsample(backbuffer) -> texB = flouH(texA) -> texA = flouV(texB)
+    //             -> backbuffer += texA (SRCCOLOR/ONE).
+    IDirect3DTexture9* m_blurTexA  = nullptr; // (+540)
+    IDirect3DTexture9* m_blurTexB  = nullptr; // (+544)
+    IDirect3DSurface9* m_blurSurfA = nullptr; // (+548) surface 0 de m_blurTexA
+    IDirect3DSurface9* m_blurSurfB = nullptr; // (+552) surface 0 de m_blurTexB
+
+    // (+527548) Drapeau « device perdu » : posé par OnDeviceLost (@0x4042EC), consommé et
+    // effacé par RestoreAfterReset (@0x40457A / @0x404629), remis à 0 par DeviceReinit
+    // (@0x402451).
+    bool m_deviceLost = false;
 
     // Plans de frustum (Frustum_BuildPlanes 0x406090, this+309..332 dans l'original,
     // soit 6 plans de 4 floats extraits de la matrice combinée vue*projection par la

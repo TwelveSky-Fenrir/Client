@@ -43,7 +43,10 @@
 // Le conteneur .WSOUND/.ISN/.BGM et le décodage Ogg sont gérés ailleurs (Asset/Sound).
 // Ce module reçoit le PCM déjà décodé, soit directement, soit via un callback de chargement.
 //
-// Module autonome : ne dépend d'aucun autre .cpp du projet (leaf). Namespace ts2::audio.
+// Dépendances : l'EN-TÊTE reste autonome ; AudioSystem.cpp inclut Config/GameOptions.h pour
+//   lire g_Options.SoundVolume (= g_SfxMasterVolume 0x84DEEC, le MÊME mot mémoire dans le
+//   binaire — cf. MasterVolume()). Config/GameOptions.h n'inclut que <cstddef>/<cstdint> :
+//   aucun cycle. Namespace ts2::audio.
 #pragma once
 
 #ifndef DIRECTSOUND_VERSION
@@ -146,8 +149,11 @@ public:
 
     // Démarre la lecture (Snd_Play3D 0x6A85C0). volumePercent 0..100, pan brut (SetPan = 100*pan).
     //   OneShot/Loop : (re)joue le buffer unique. Pool : joue le premier buffer non-actif.
+    //   `loop` = arg_0 de Snd_Play3D : non nul -> DSBPLAY_LOOPING sur les modes OneShot/Pool
+    //   (branche @0x6A877C..0x6A8799). Le mode Loop boucle TOUJOURS, quel que soit `loop`
+    //   (`push 1` littéral @0x6A873B/0x6A86E7) : `loop` y est sans effet.
     // ex-VeryOldClient: SOUNDDATA_FOR_GXD::Play (dispatch `switch(mLoadSort)` 1/2/3). CONFIRMED.
-    bool Play(int volumePercent, int pan = 0);
+    bool Play(int volumePercent, int pan = 0, int loop = 0);
 
     // Met à jour volume/pan des buffers DEJA en lecture, sans (re)démarrer (Snd_Play2D 0x6A8880).
     // ex-VeryOldClient: SOUNDDATA_FOR_GXD::ChangeVolumeAndPan (garde « only-if-playing »). CONFIRMED.
@@ -206,13 +212,19 @@ private:
 //       0x50f76e    Snd_Play3D(g_GameWorld+2236, ..., vol=100, pan=0, a8=v4)
 //
 // === Boucle DSBPLAY_LOOPING : arbitrage (IDA lu DIRECTEMENT, Snd_Play3D 0x6A85C0) ===
-//   Le drapeau de boucle dépend du kind ET de l'arg a8 :
-//     - kind==1 (OneShot) : Play(...,flags) avec flags=(a8!=0)?1:0   (branche a8 @0x6a8785)
-//     - kind==2 (Loop)    : Play(...,1) — DSBPLAY_LOOPING TOUJOURS    (@0x6a8742)
-//     - kind==3 (Pool)    : Play(...,flags) avec flags=(a8!=0)?1:0    (branche a8 @0x6a86c2)
-//   Les DEUX sites BGM chargent kind=1 (zone) / kind=3 (menu), PAS kind=2. Le a8 du play
-//   de zone (Player_ResetCombatState, a8=v4) est un local NON initialisé -> indéterminable
-//   statiquement ; le play de menu passe a8=0. La continuité du BGM de zone est en outre
+//   CORRECTION (vague W9) : il n'existe AUCUN 4e argument « a8 ». Snd_Play3D fait `retn 0Ch`
+//   sur ses SIX sorties (@0x6A86E2, 0x6A86F5, 0x6A8714, 0x6A8748, 0x6A8796, 0x6A87A8) = 3
+//   arguments pile, point final : Snd_Play3D(SoundObj*@ecx, int loop, int volPercent, int pan).
+//   Le « a8 » du pseudo-code est un ARTEFACT : le modèle esp d'Hex-Rays est cassé par deux
+//   `call dword ptr [ecx+3Ch/40h]` mal typés (delta annoncé 4 au lieu de 0x10 @0x6A86B8 et de
+//   0xC @0x6A877C) ; après recalcul, `[esp+4+arg_8]` @0x6A877C désigne arg_0 = loop.
+//   Le drapeau de boucle dépend donc du kind ET de `loop` (arg_0) :
+//     - kind==1 (OneShot) : Play(...,flags) avec flags=(loop!=0)?1:0  (branche @0x6A8785)
+//     - kind==2 (Loop)    : Play(...,1) — DSBPLAY_LOOPING TOUJOURS    (`push 1` @0x6A873B)
+//     - kind==3 (Pool)    : Play(...,flags) avec flags=(loop!=0)?1:0  (branche @0x6A86C2)
+//   Les DEUX sites BGM chargent kind=1 (zone) / kind=3 (menu), PAS kind=2. Le `loop` du play
+//   de zone (Player_ResetCombatState) est un local NON initialisé -> indéterminable
+//   statiquement ; le play de menu passe loop=0. La continuité du BGM de zone est en outre
 //   assurée par une RELANCE toutes les 900 s dans Player_UpdateLocalAnim 0x5321EC (hook
 //   AnimationTick::PlayAmbientBgm — HORS de ce module).
 //   -> CHOIX documenté : ce slot autonome charge en PlayMode::Loop (kind=2) pour garantir
@@ -269,9 +281,17 @@ public:
     bool           Available() const { return available_; }      // g_DirectSoundAvailable
     IDirectSound8* Device()    const { return device_; }         // g_pDirectSound8
 
-    // Volume SFX maître 0..100 (g_SfxMasterVolume). Consommé par les émetteurs Snd3D.
-    void SetMasterVolume(int percent) { masterVolume_ = percent < 0 ? 0 : (percent > 100 ? 100 : percent); }
-    int  MasterVolume() const { return masterVolume_; }
+    // Volume SFX maître 0..100 (g_SfxMasterVolume 0x84DEEC). Consommé par les émetteurs Snd3D.
+    //
+    // AUCUNE COPIE : 0x84DEEC EST le champ d'option idx11 lui-même (offset 0x2C de g_Options
+    // 0x84DEC0, cf. Config/GameOptions.h). Les 3 fonctions de play le RELISENT à chaque appel
+    // (@0x4DA3BC `imul eax, ds:g_SfxMasterVolume`, @0x4DA3FB `cmp`, @0x4DA432 `mov`,
+    //  @0x4DA45D `cmp`, @0x4DA524 `fimul`) -> dans le binaire, bouger le slider agit
+    // INSTANTANÉMENT sur tous les sons suivants. Un membre mis en cache au boot (l'ancien
+    // `masterVolume_`) rendait le slider d'options inopérant jusqu'au relancement.
+    // Défini hors-ligne dans AudioSystem.cpp (accès à config::g_Options sans dépendance d'en-tête).
+    void SetMasterVolume(int percent);
+    int  MasterVolume() const;
 
     // Callback de décodage PCM (branché par Asset/Sound). Utilisé par LoadFromPath / EnsureLoaded.
     void SetLoadCallback(PcmLoadCallback cb) { loadCb_ = std::move(cb); }
@@ -299,7 +319,8 @@ private:
 
     IDirectSound8* device_ = nullptr;   // renderer+1452 — ex-VeryOldClient: GXD::mDirectSound
     bool  available_ = false;           // renderer+1448 — ex-VeryOldClient: GXD::mCheckValidStateForSound
-    int   masterVolume_ = 100;          // 0x84DEEC      — ex-VeryOldClient: mGAMEOPTION->mSoundOption[1]
+    // PAS de `masterVolume_` : le volume SFX vit dans config::g_Options.SoundVolume, qui EST
+    // g_SfxMasterVolume 0x84DEEC (cf. MasterVolume()). — ex-VeryOldClient: mGAMEOPTION->mSoundOption[1]
 
     PcmLoadCallback loadCb_;
 

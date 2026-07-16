@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -543,6 +543,24 @@
     <ClCompile Include="src\World\WorldMap.cpp">
       <Filter>Source Files\World</Filter>
     </ClCompile>
+    <ClCompile Include="src\Game\PlayerCmdController.cpp">
+      <Filter>Source Files\Game</Filter>
+    </ClCompile>
+    <ClCompile Include="src\World\TerrainPicker.cpp">
+      <Filter>Source Files\World</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\ClanContextMenu.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\ShareBoxWindow.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\StoragePwWindow.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\FloatingNotices.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h">
@@ -958,6 +976,24 @@
     </ClInclude>
     <ClInclude Include="src\World\WorldMap.h">
       <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\PlayerCmdController.h">
+      <Filter>Header Files\Game</Filter>
+    </ClInclude>
+    <ClInclude Include="src\World\TerrainPicker.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\ClanContextMenu.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\ShareBoxWindow.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\StoragePwWindow.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\FloatingNotices.h">
+      <Filter>Header Files\UI</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

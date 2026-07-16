@@ -175,28 +175,40 @@ bool EditBox::OnChar(unsigned int ch) {
 bool EditBox::OnKey(int vk) {
     if (!focused_ || !enabled_)
         return false;
+
+    // NAVIGATION DE CARET AVALÉE — UI_EditBoxWndProc 0x50E070, branche default
+    // (def_50E0C4 @0x50E342) : `cmp var_5C, 100h / jz loc_50E38E` @0x50e34e puis
+    //   loc_50E38E: `cmp var_60, 23h / jb loc_50E3A9`  @0x50e394-0x50e398
+    //               `cmp var_60, 28h / jbe loc_50E3A2` @0x50e39a-0x50e39e
+    //   loc_50E3A2: `mov eax, 1 / jmp loc_50E3C6`      @0x50e3a2-0x50e3a7
+    // => sur WM_KEYDOWN (0x100), tout wParam dans [0x23..0x28] renvoie 1 SANS jamais
+    // atteindre CallWindowProcA(lpPrevWndFunc, …) @0x50e3c0 : l'EDITProc natif ne
+    // voit JAMAIS ces touches. Couvre VK_END(0x23), VK_HOME(0x24), VK_LEFT(0x25),
+    // VK_UP(0x26), VK_RIGHT(0x27), VK_DOWN(0x28).
+    //
+    // Cette branche est atteinte par `default:` ET par les `goto LABEL_53` de TOUS
+    // les cas nommés (0,1,3,4,5,7,8,9,10,15) — les flèches n'étant jamais wParam
+    // 9/13, le filtre s'applique à TOUTES les boîtes sous-classées. Conséquence
+    // prouvée : dans le binaire le caret est EN PERMANENCE en fin de texte et la
+    // saisie est append-only. Consommé, sans aucun effet (gap UIFW-04).
+    if (vk >= 0x23 && vk <= 0x28)
+        return true;
+
     switch (vk) {
-    case VK_BACK: // 0x08 : suppression avant le caret
+    case VK_BACK: // 0x08 : non filtré par 0x50E070 -> transmis à l'EDITProc natif.
+        // caret_ vaut toujours text_.size() (voir ci-dessus) : supprime donc
+        // TOUJOURS le dernier caractère.
         if (caret_ > 0) {
             text_.erase(caret_ - 1, 1);
             --caret_;
         }
         return true;
-    case VK_DELETE: // 0x2E : suppression sous le caret
+    case VK_DELETE: // 0x2E : non filtré (hors de [0x23..0x28]) -> atteint l'EDITProc
+        // natif, mais le caret étant toujours en fin de texte, c'est un no-op DE
+        // FAIT. La garde ci-dessous le reproduit sans cas particulier :
+        // caret_ == text_.size() => aucune suppression.
         if (caret_ < text_.size())
             text_.erase(caret_, 1);
-        return true;
-    case VK_LEFT: // 0x25
-        if (caret_ > 0) --caret_;
-        return true;
-    case VK_RIGHT: // 0x27
-        if (caret_ < text_.size()) ++caret_;
-        return true;
-    case VK_HOME: // 0x24
-        caret_ = 0;
-        return true;
-    case VK_END: // 0x23
-        caret_ = text_.size();
         return true;
     case VK_RETURN: // 0x0D : soumission (fidèle : UI_Chat_SubmitInput / login)
         if (onSubmit_) onSubmit_();

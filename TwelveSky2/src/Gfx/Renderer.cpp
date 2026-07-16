@@ -148,21 +148,31 @@ void Renderer::SetDeviceCallbacks(DeviceNotifyFn onLost, DeviceNotifyFn onReset,
     notifyUser_ = user;
 }
 
-// GXD_OnDeviceLost 0x4042E0 (relu intégralement) : dans le binaire d'origine, cette
-// fonction libère ~24 ressources D3DPOOL_DEFAULT nommées par offset (Release() via
-// vtable+8) réparties sur l'objet renderer géant (VB/IB de shadow volumes, surfaces
-// offscreen de post-process/blur @+526880..+527536, etc.), puis appelle
-// World_Shutdown(this+6348) si une carte est chargée (flag +6352) et pose le drapeau
-// +527548 que GXD_RestoreAfterReset 0x404570 consomme. Elle est appelée par les
-// Scene_*Render quand Gfx_HandleDeviceLostReset a posé *a5=1 (ex. 0x51B058).
-// Non applicable telle quelle ici : dans ClientSource, TOUTES les ressources D3D9 créées
-// par le renderer (VB/IB de Gfx/MeshRenderer.cpp, Gfx/WorldGeometryRenderer.cpp, textures
-// de Gfx/GpuTexture.cpp) sont allouées en D3DPOOL_MANAGED (cf. leurs CreateVertexBuffer/
-// CreateIndexBuffer/CreateTexture), donc gérées automatiquement par Direct3D9 à travers
-// Reset() -- rien à libérer explicitement ici tant qu'aucun composant D3DPOOL_DEFAULT
-// (render target offscreen, vertex buffer dynamique) n'existe côté ClientSource. Si un tel
-// composant est ajouté plus tard (ex. post-process blur, shadow volumes), il devra
-// s'enregistrer ici (Release avant Reset) pour rester fidèle à ce que fait l'original.
+// COUPLE DEVICE-LOST D'OBJECT B (gap G5, câblé Passe 4 / W9).
+//
+// MISE À JOUR — le pavé précédent disait « rien à libérer ici tant qu'aucun composant
+// D3DPOOL_DEFAULT n'existe côté ClientSource ; si un tel composant est ajouté (ex.
+// post-process blur), il devra s'enregistrer ici ». CE CAS S'EST PRODUIT : GxdRenderer::
+// RenderPostBlur (GXD_RenderPostBlur 0x4053E0) crée 4 cibles de rendu demi-résolution en
+// D3DUSAGE_RENDERTARGET + D3DPOOL_DEFAULT (+540/+544/+548/+552). Sans le couple ci-dessous,
+// Reset() échouerait tant que ces 4 objets sont vivants (règle D3D9) -> device jamais
+// restauré après Alt+Tab. Le reste du constat tient toujours : les VB/IB/textures de
+// Gfx/MeshRenderer.cpp, Gfx/WorldGeometryRenderer.cpp et Gfx/GpuTexture.cpp sont en
+// D3DPOOL_MANAGED et survivent seuls à Reset().
+//
+// Protocole d'origine, prouvé par Scene_IntroRender 0x518880 (identique dans les 5 autres
+// scènes) : `result = Gfx_HandleDeviceLostReset(g_GfxRenderer, ..., &v9)` @0x518894 ;
+//   si result == 0 && v9 == 1 -> GXD_OnDeviceLost(&g_GxdRenderer)   @0x5188A8, retour immédiat
+//   si result != 0            -> GXD_RestoreAfterReset(&g_GxdRenderer) @0x5188BC puis BeginFrame
+// Transposition : Object A (ce Renderer) POSSÈDE le Reset ; on encadre donc directement
+// l'appel Reset() par les deux méthodes d'Object B, ce qui place OnDeviceLost avant le
+// Reset et RestoreAfterReset après un Reset réussi — même ordre relatif que l'original.
+// (L'original les appelle depuis les scènes plutôt qu'ici parce que Gfx_HandleDeviceLostReset
+// 0x69DD40 n'a aucune référence à g_GxdRenderer ; le résultat observable est le même.)
+//
+// Les 12 shaders + la déclaration de vertex skinné que GXD_RestoreAfterReset 0x404570
+// recompile sous le même drapeau appartiennent à ts2::gfx::ShaderSet, pas à GxdRenderer :
+// leur restauration passe par l'observateur onReset_ (cf. SetDeviceCallbacks / Renderer.h).
 bool Renderer::HandleDeviceLost() {
     // --- Gfx_HandleDeviceLostReset 0x69DD40, séquence relue instruction par instruction ---
     // TestCooperativeLevel = vtbl+12 @0x69DD4C (device @+604 = 0x800074).
@@ -175,10 +185,17 @@ bool Renderer::HandleDeviceLost() {
     if (hr == D3DERR_DEVICENOTRESET) {
         // Le binaire Release() d'abord ses 4 textures/surfaces de glow D3DPOOL_DEFAULT
         // (+632/+624/+636/+628, Release = vtbl+8 @0x69DD95..0x69DDF4, chacune remise à 0).
-        // Rien à faire ici : toutes les ressources D3D9 de ClientSource sont créées en
-        // D3DPOOL_MANAGED (cf. Gfx/MeshRenderer.cpp, Gfx/WorldGeometryRenderer.cpp,
-        // Gfx/GpuTexture.cpp, UIManager::CreateWhiteTexture) et survivent donc à Reset().
-        // Le post-process de glow (+1432 et son effet "FILTER") n'est pas porté.
+        // Les ressources D3DPOOL_MANAGED de ClientSource (Gfx/MeshRenderer.cpp,
+        // Gfx/WorldGeometryRenderer.cpp, Gfx/GpuTexture.cpp, UIManager::CreateWhiteTexture)
+        // survivent seules à Reset(). Le post-process de glow (+1432, effet "FILTER") n'est
+        // pas porté.
+
+        // GXD_OnDeviceLost 0x4042E0 (Object B) — AVANT le Reset, homologue @0x5188A8.
+        // Libère les 4 cibles de rendu D3DPOOL_DEFAULT du bloom (+540/+544/+548/+552) créées
+        // par GxdRenderer::RenderPostBlur et pose le drapeau +527548. SANS CET APPEL, le
+        // Reset() ci-dessous échouerait (D3D9 refuse un Reset tant qu'une ressource
+        // D3DPOOL_DEFAULT est vivante). No-op sûr si le bloom n'a jamais tourné.
+        GxdRenderer::Instance().OnDeviceLost();
 
         // OnLostDevice AVANT Reset — ordre PROUVÉ @0x69DE3E, court-circuité par `&&` :
         //   Effect(+620) vtbl+276 -> Font(+612) vtbl+64 -> Sprite(+608) vtbl+48.
@@ -196,6 +213,12 @@ bool Renderer::HandleDeviceLost() {
         //   Sprite(+608) vtbl+52 -> Font(+612) vtbl+68 -> Effect(+620) vtbl+280.
         if (onReset_) onReset_(notifyUser_);
 
+        // GXD_RestoreAfterReset 0x404570 (Object B) — APRÈS un Reset RÉUSSI, homologue
+        // @0x5188BC. Consomme le drapeau +527548 posé ci-dessus. Les 4 RT du bloom ne sont
+        // PAS recréées ici : RenderPostBlur les recrée paresseusement à la frame suivante
+        // (`if (!*(a1+540))` @0x40547A), exactement comme l'original.
+        GxdRenderer::Instance().RestoreAfterReset();
+
         // Sampler ET render states ne survivent PAS à Reset() en D3D9 : le binaire les repose
         // intégralement dans la foulée (SetViewport/SetTransform/SetMaterial/SetLight/
         // SetRenderState/SetSamplerState, 0x69DF3A..0x69E1AC). On repose ici le sous-ensemble
@@ -208,17 +231,16 @@ bool Renderer::HandleDeviceLost() {
         // Le rendu reprend à la frame suivante, quand TestCooperativeLevel renverra D3D_OK.
         return false;
 
-        // GXD_RestoreAfterReset 0x404570 : le binaire ne l'appelle PAS ici mais dans les
-        // Scene_*Render, juste après un Gfx_HandleDeviceLostReset ayant renvoyé 1 (ex.
-        // 0x51B06C dans Scene_LoginRender) — et son corps est gardé par le drapeau +527548
-        // que GXD_OnDeviceLost 0x4042E0 vient de poser. Elle recompile les 12 shaders,
-        // recrée la déclaration de vertex skinné 76 o (g_GxdSkinnedVertexDecl76 0x814A58) et,
-        // si une carte est chargée, appelle World_ReloadMap 0x411B60. Non porté ici : Renderer
-        // est le wrapper D3D9 bas niveau et n'a aucune référence à ts2::gfx::ShaderSet ni à
-        // World/WorldMap. Techniquement IDirect3DVertexShader9/IDirect3DPixelShader9/
-        // IDirect3DVertexDeclaration9 ne sont PAS D3DPOOL_DEFAULT et survivent à Reset() : ce
-        // rechargement est défensif plutôt que nécessaire. Les propriétaires de ces objets
-        // doivent s'y prendre via l'observateur onReset_ ci-dessus, pas depuis Renderer.
+        // RESTE NON PORTÉ de GXD_RestoreAfterReset 0x404570 (le drapeau +527548 et les 4 RT du
+        // bloom, eux, sont désormais traités ci-dessus par GxdRenderer::RestoreAfterReset) :
+        // l'original recompile aussi les 12 shaders, recrée la déclaration de vertex skinné
+        // 76 o (g_GxdSkinnedVertexDecl76 0x814A58 -> +526880 @0x40461F) et, si une carte est
+        // chargée (+6352), appelle World_ReloadMap 0x411B60 @0x40458F. Ces trois familles
+        // n'appartiennent pas à Renderer (wrapper D3D9 bas niveau, sans référence à
+        // ts2::gfx::ShaderSet ni à World/WorldMap). Techniquement IDirect3DVertexShader9 /
+        // IDirect3DPixelShader9 / IDirect3DVertexDeclaration9 ne sont PAS D3DPOOL_DEFAULT et
+        // survivent à Reset() : ce rechargement est défensif plutôt que nécessaire. Leurs
+        // propriétaires doivent passer par l'observateur onReset_ ci-dessus.
     }
 
     // Tout autre HRESULT NON NUL @0x69DD69 (ex. D3DERR_DRIVERINTERNALERROR) : *a5=1, `return 0`.

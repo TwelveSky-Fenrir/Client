@@ -53,6 +53,28 @@ enum class Scene {
 // automates (points de synchro commentés dans le .cpp). // 0x1676184
 extern int g_SceneSubState;
 
+// ---------------------------------------------------------------------------
+// SCN-01 — Action du bouton OK du dialogue de notice (byte_18225C8).
+// Reproduit `switch (*(this+4))` @0x5C04C9 de UI_NoticeDlg_OnLButtonUp 0x5C03F0, exécuté
+// juste après UI_NoticeDlg_Close (@0x5C04A5) :
+//   1 -> rien · 2 -> Net_CloseSocket + retour ServerSelect (@0x5C04DF/@0x5C04E4)
+//   3 -> "[ABNORMAL_END] ( 3 )" + g_QuitFlag=1 (@0x5C0516/@0x5C051B)
+//   4..9 -> Net_SendOp44/48/54/66/73/60 (@0x5C0531..@0x5C0586)
+// Vit ICI (et non dans le front UI) parce que ses deux actions structurantes sont des
+// changements d'ÉTAT DE SCÈNE, propriété de ce module : le retour en scène 2 est mis en
+// attente et consommé par SceneManager::Update, comme sceneEnterWorldPending.
+//
+// Les types Oui/Non du registre MsgBox (8/9/10/14/19/20) sont IGNORÉS ici : ils sont déjà
+// émis par UI/GameWindows.cpp::SyncPrompt (Net_SendOp45/49/67/74/55/61). Les deux tables se
+// chevauchent en VALEUR mais pas en SÉMANTIQUE — cf. le bandeau détaillé dans le .cpp.
+//
+// APPELANT ATTENDU (câblage à poser par l'orchestrateur, fichier NON possédé par ce front) :
+// UI/GameWindows.cpp:211-216, dans le callback OK de MsgBox().Open, qui porte aujourd'hui le
+// TODO [ancre 0x5C04DF] et se contente de `game::g_Client.prompt.Close();`. Y ajouter :
+//     ts2::Notice_DispatchOkAction(type);   // 0x5C04C9 (avant le prompt.Close() existant)
+// (le `type` y est déjà capturé par le lambda ; inclure "Scene/SceneManager.h").
+void Notice_DispatchOkAction(int type); // 0x5C03F0 / switch @0x5C04C9
+
 // En-tête de l'objet cSceneMgr : [+0 id][+4 sous-état][+8 compteur de frames][+12 tampon 150 dw][+612 slot BGM].
 class SceneManager {
 public:
@@ -94,6 +116,30 @@ public:
     void  Change(Scene s);
     Scene Current() const { return scene_; }
 
+    // --- Saisie texte in-game (GAP-APPLIFE-02) -------------------------------
+    // UI_Chat_FocusInput 0x68B200 : donne le focus à la boîte de saisie de chat.
+    // Reproduit la garde d'entrée @0x68B217 `if (g_SceneMgr == 6 && g_SceneSubState == 4)`
+    // — hors de cet état, l'original ne fait RIEN (pas de focus). Renvoie true si le
+    // focus a effectivement été pris.
+    // Son UNIQUE appelant d'origine est App_WndProc 0x461930 @0x461B5E (`if (a3 == 13)`,
+    // seul traitement clavier du WndProc) : c'est donc à App/App.cpp de l'appeler — cf.
+    // RouteTextInputKey ci-dessous, qui empaquette cet appel avec l'arbitrage du focus.
+    bool  FocusChatInput();          // 0x68B200
+    // Point d'entrée clavier WM_KEYDOWN pour la saisie texte, à appeler depuis
+    // App::HandleMessage AVANT la restriction `scene_.Current() != Scene::InGame`
+    // (App/App.cpp) qui réserve OnKeyDown au chemin DIK. Renvoie true si la touche a été
+    // CONSOMMÉE par un champ de saisie (l'appelant ne doit alors pas la propager).
+    //
+    // Reproduit l'arbitrage RÉEL du binaire, qui n'est PAS « le chat d'abord » :
+    //   - UI_EditBoxWndProc 0x50E070 : quand un EDIT natif a le focus, c'est LUI qui reçoit
+    //     WM_KEYDOWN et mange la touche (case 4 : `wParam==13` -> UI_Chat_SubmitInput
+    //     0x68B330 @0x50E1D6) — la fenêtre principale ne voit alors rien ;
+    //   - sinon la fenêtre principale reçoit WM_KEYDOWN et VK_RETURN ouvre le chat
+    //     (App_WndProc @0x461B5E -> UI_Chat_FocusInput 0x68B200).
+    // ClientSource n'a aucun EDIT natif vivant (la saisie in-game est le widget
+    // custom-dessiné ui::ChatWindow) : ce routage EST l'équivalent fidèle de 0x50E070.
+    bool  RouteTextInputKey(int vk); // 0x50E070 / 0x461B5E
+
     // Perte/restauration du device D3D9 (autour d'un Reset()).
     void  OnDeviceLost();
     void  OnDeviceReset();
@@ -102,6 +148,18 @@ private:
     // Applique la transition demandée par LoginScene (PendingScene) et gère
     // l'entrée en jeu (init HUD la 1re fois).
     void  ConsumePending();
+
+    // UIFW-08 — porte d'état d'action des entrées souris, reproduite depuis les 4 entrées
+    // Input_OnLButtonDown 0x50AC90 (@0x50ACF7) / Input_OnLButtonUp 0x50AD20 (@0x50AD87) /
+    // Input_OnRButtonDown 0x50ADB0 (@0x50AE17) / Input_OnRButtonUp 0x50AE40, toutes gardées
+    // par le MÊME test :
+    //   if ( (g_SceneMgr != 6 || g_SceneSubState != 4
+    //      || g_SelfActionState[0] != 11 && != 12 && != 33 && != 34 && != 35 && != 36 && != 37)
+    //     && !UI_RouteLButtonDown(...) )  cSceneMgr_OnLButtonDown(...);
+    // Autrement dit : en jeu (scène 6 / sous-état 4) ET g_SelfActionState[0] 0x1687328 dans
+    // {11,12,33,34,35,36,37}, le clic est TOTALEMENT avalé — ni UI, ni monde. Renvoie true
+    // dans ce cas. // 0x50ACF7 / 0x50AD87
+    bool  InputSwallowedByActionState() const;
 
     // --- Slot BGM de scène (cSceneMgr +612 : cSceneMgr_ReinitBgm 0x517A80 /
     //     SceneMgr_ReleaseSoundBuffers 0x517B60). ---

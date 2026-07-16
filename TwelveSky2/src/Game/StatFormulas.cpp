@@ -4,6 +4,9 @@
 #include "Game/StatBonusContributors.h"   // Item_SumGemStatBonus, Char_SumGemStat*, SkillTree_SumBonuses
                                           // (inclut déjà ItemSystem.h : Item_GetElementalBonus, etc.)
 #include "Game/ClientRuntime.h"          // g_Client.VarGet — cf. bloc g_EquipAux ci-dessous
+#include "Game/SkillSystem.h"            // Skill_GetRecord / Skill_ReadI32 / skillinfo::kOffSection
+                                         // (SkillGrowthTbl_GetRecord 0x4C4E90 dans CalcElementResist).
+                                         // Pas de cycle : SkillSystem.h n'inclut que GameState.h.
 
 namespace ts2::game {
 namespace {
@@ -112,6 +115,112 @@ const int G304_gt400  [16] = {0,2,6,12,20,30,42,56,72,90,110,134,164,194,224,254
 
 inline int pick(const int* t, int gi) { int k = gi % 100; return (k >= 1 && k <= 15) ? t[k] : 0; }
 
+// ---------------------------------------------------------------------------
+// Tables de dégâts d'arme id -> constante (Weapon_BaseMinDamage 0x4C99F0,
+// Weapon_BaseMaxDamage 0x4C9E10, Weapon_SpecialDamageA 0x4CA230,
+// Weapon_SpecialDamageB 0x4CA350). Fonctions PURES __stdcall(int itemId), aucun global lu
+// hormis la table ITEM_INFO (mITEM). Garde commune : record introuvable -> 0.0 ; puis
+// `*(Entry+188) != <typeCode>` -> 0.0 (offset 188 = 188/4 = idx47 = ItemInfo::typeCode,
+// le même champ que consomme classifyRecord ci-dessus).
+//
+// NB PÉRIMÈTRE : le dossier de gaps demandait ces 4 tables dans Game/ItemSystem.cpp/.h —
+// fichiers NON possédés par ce front. Elles sont donc placées ici, dans le namespace anonyme
+// de leur unique consommateur (Char_CalcAttackRatingMin/Max). Si un autre front en a besoin,
+// les remonter dans ItemSystem.
+// ---------------------------------------------------------------------------
+
+// Weapon_BaseMinDamage 0x4C99F0 — typeCode 28 requis (0x4C9A1E). Switch 0x4C9A98..0x4C9C97.
+inline double weaponBaseMinDamage(const GameDatabases& db, uint32_t itemId) {
+    const ItemInfo* it = itemRec(db, itemId);            // MobDb_GetEntry(mITEM, a1)
+    if (!it) return 0.0;                                 // 0x4C9A11
+    if (it->typeCode != 28) return 0.0;                  // 0x4C9A1E (*(Entry+188) != 28)
+    switch (itemId) {
+        case 2151: return 4000.0; case 2152: return 3500.0; case 2153: return 3000.0;
+        case 2154: return 3500.0;
+        case 2174: return 3800.0; case 2175: return 3600.0; case 2176: return 3400.0;
+        case 2177: return 3200.0; case 2178: return 3400.0; case 2179: return 3300.0;
+        case 2180: return 3200.0; case 2181: return 3100.0; case 2182: return 3000.0;
+        case 2183: return 3000.0; case 2184: return 3000.0; case 2185: return 3000.0;
+        case 2186: return 3400.0; case 2187: return 3300.0; case 2188: return 3200.0;
+        case 2189: return 3100.0;
+        case 2195: return 4000.0; case 2196: return 3800.0; case 2197: return 3600.0;
+        case 2198: return 3000.0; case 2199: return 3000.0; case 2200: return 3000.0;
+        case 2201: return 3500.0; case 2202: return 3400.0; case 2203: return 3300.0;
+        case 2204: return 3500.0; case 2205: return 3400.0; case 2206: return 3300.0;
+        case 2253: return 2000.0; case 2254: return 4000.0;
+        case 2261: return 2000.0; case 2262: return 4000.0;
+        case 2300: return 2000.0; case 2301: return 4000.0; case 2302: return 3500.0;
+        case 2410: return 4000.0;                        // branche `a1 == 2410` isolée
+        case 2411: return 3800.0; case 2412: return 3600.0; case 2413: return 3000.0;
+        case 2414: return 3000.0; case 2415: return 3000.0; case 2416: return 3500.0;
+        case 2417: return 3400.0; case 2418: return 3300.0; case 2419: return 3500.0;
+        case 2420: return 3400.0; case 2421: return 3300.0;
+        default:   return 0.0;                           // LABEL_60
+    }
+}
+
+// Weapon_BaseMaxDamage 0x4C9E10 — typeCode 28 requis. Mêmes ids que Min, valeurs DIFFÉRENTES.
+inline double weaponBaseMaxDamage(const GameDatabases& db, uint32_t itemId) {
+    const ItemInfo* it = itemRec(db, itemId);
+    if (!it) return 0.0;
+    if (it->typeCode != 28) return 0.0;
+    switch (itemId) {
+        case 2151: return 3500.0; case 2152: return 4000.0; case 2153: return 3500.0;
+        case 2154: return 3000.0;
+        case 2174: return 3400.0; case 2175: return 3300.0; case 2176: return 3200.0;
+        case 2177: return 3100.0; case 2178: return 3800.0; case 2179: return 3600.0;
+        case 2180: return 3400.0; case 2181: return 3200.0; case 2182: return 3400.0;
+        case 2183: return 3300.0; case 2184: return 3200.0; case 2185: return 3100.0;
+        case 2186: return 3000.0; case 2187: return 3000.0; case 2188: return 3000.0;
+        case 2189: return 3000.0;
+        case 2195: return 3500.0; case 2196: return 3400.0; case 2197: return 3300.0;
+        case 2198: return 3500.0; case 2199: return 3400.0; case 2200: return 3300.0;
+        case 2201: return 4000.0; case 2202: return 3800.0; case 2203: return 3600.0;
+        case 2204: return 3000.0; case 2205: return 3000.0; case 2206: return 3000.0;
+        case 2253: return 2000.0; case 2254: return 4000.0;
+        case 2261: return 2000.0; case 2262: return 4000.0;
+        case 2300: return 2000.0; case 2301: return 4000.0; case 2302: return 3500.0;
+        case 2410: return 3500.0;
+        case 2411: return 3400.0; case 2412: return 3300.0; case 2413: return 3500.0;
+        case 2414: return 3400.0; case 2415: return 3300.0; case 2416: return 4000.0;
+        case 2417: return 3800.0; case 2418: return 3600.0; case 2419: return 3000.0;
+        case 2420: return 3000.0; case 2421: return 3000.0;
+        default:   return 0.0;
+    }
+}
+
+// Weapon_SpecialDamageA 0x4CA230 — typeCode 31 OU 32 requis (0x4CA25E). Ids 0x4CA2E9..0x4CA32F.
+inline double weaponSpecialDamageA(const GameDatabases& db, uint32_t itemId) {
+    const ItemInfo* it = itemRec(db, itemId);
+    if (!it) return 0.0;
+    if (it->typeCode != 31 && it->typeCode != 32) return 0.0; // 0x4CA25E
+    switch (itemId) {
+        case 1838: case 1840: case 1841: case 1842:
+        case 1887: case 1889:
+        case 17202: case 17203: case 17204:
+            return 8000.0;
+        default:
+            return 0.0;
+    }
+}
+
+// Weapon_SpecialDamageB 0x4CA350 — typeCode 31 OU 32 requis. ENSEMBLE D'IDS DIFFÉRENT de A :
+// 1839 et 1890 en plus, 1838/1887/17202/17203 en moins (décompilation 0x4CA350 : branches
+// a1>1889 -> {1890, 17204} ; a1==1889 ; switch {1839,1840,1841,1842}).
+inline double weaponSpecialDamageB(const GameDatabases& db, uint32_t itemId) {
+    const ItemInfo* it = itemRec(db, itemId);
+    if (!it) return 0.0;
+    if (it->typeCode != 31 && it->typeCode != 32) return 0.0;
+    switch (itemId) {
+        case 1839: case 1840: case 1841: case 1842:
+        case 1889: case 1890:
+        case 17204:
+            return 8000.0;
+        default:
+            return 0.0;
+    }
+}
+
 inline int growth292(int gi) {           // 0x4CF030
     if (gi > 400) return pick(G292_gt400, gi);
     if (gi > 300) return pick(G292_301_400, gi);
@@ -166,6 +275,78 @@ Snapshot buildSnapshot(const SelfState& s, const GameDatabases& db) {
     //   g_SelfMorphNpcId 0x1675A98 lui-même, lu via g_Client.VarGet() dans une dizaine de
     //   modules — mais son gate g_SpecialFormActive, lui, reste absent).
     return sn;
+}
+
+// ---------------------------------------------------------------------------
+// BOUCLE DE DELTA D'ENCHANTEMENT — Item_GetEnchantStatDelta 0x553D50.
+//
+// La table EST implémentée (Game/ItemSystem.cpp:323, prototype repris par
+// Game/StatBonusContributors.h:49 — déjà inclus ici) et renvoie du NON NUL : le niveau
+// d'enchant est l'octet3 du mot de socket (Item_GetAttribByte3), lu dans le MÊME tableau
+// g_Slot0Socket 0x16731E0 (stride 16) que les gemmes, tableau écrit par le réseau
+// (Pkt_ItemActionDispatch @0x46A9E2 -> Net/ItemActionDispatch.cpp:232). L'ancienne
+// neutralisation « [hook]=0 » et la justification « table non extraite » de
+// StatFormulas.h:32 / StatEngine.h:24 étaient donc PÉRIMÉES.
+//
+// Deux motifs DISTINCTS coexistent dans le binaire — ne pas les confondre. Le compte de
+// xrefs vers 0x553D50 les sépare formellement : 17 appels pour 9 fonctions = DEUX appels
+// pour chacun des 8 canaux « motif A » (une branche classe 8 + une branche multi-slots) et
+// UN SEUL pour Char_CalcAttackRatingMin (motif B, pas de branche classe 8).
+// ---------------------------------------------------------------------------
+
+// MOTIF A — Char_CalcMaxHP 0x4D53EE (référence, clé 50) :
+//   garde i!=8 EXPLICITE @0x4D5418 ; classe 8 réservée au slot 1 @0x4D5437/0x4D543D,
+//   add @0x4D5464 + plancher 1 @0x4D546A ; slots {0,2,3,4,5,7} × classe {1,4}
+//   @0x4D5479..0x4D54A7, add @0x4D54CA + plancher 1 @0x4D54D0.
+// Le plancher est DANS le test de classe : une pièce de classe non éligible ne le déclenche
+// pas (0x4D5441 et 0x4D54A7 sautent l'add ET le plancher).
+// Structure vérifiée IDENTIQUE (seule la clé change) pour :
+//   Char_CalcMaxMP           0x4D5F6F (clé 60, push 3Ch @0x4D5FC4)
+//   Char_CalcExternalAttack  0x4D10BD (clé 10, push 0Ah @0x4D1112)
+//   Char_CalcInternalAttack  0x4D23D8 (clé 20, push 14h @0x4D23D8)
+//   Char_CalcExternalDefense 0x4D300E (clé 30, push 1Eh @0x4D300E)
+//   Char_CalcInternalDefense 0x4D3E03 (clé 40, push 28h @0x4D3E03)
+//   Char_CalcAccuracy        0x4D449E (clé 70, push 46h @0x4D44F3)
+//   Char_CalcEvasion         0x4D4A4D (clé 80, push 50h @0x4D4AA2)
+// L'accumulateur est le MÊME que celui de la base LEVEL_INFO (var_1C en 0x4D4ED0).
+inline void enchantLoopA(int& acc, const Snapshot& sn, int key) {
+    for (int i = 0; i < 13; ++i) {                       // 0x4D5400 (i < 13)
+        if (!sn.r[i]) continue;                          // 0x4D5410
+        if (i == 8) continue;                            // 0x4D5418 (garde explicite)
+        const int cls = classifyRecord(sn.r[i]);         // Item_ClassifyRecord 0x4D542F
+        if (i == 1) {                                    // 0x4D5437
+            if (cls == 8) {                              // 0x4D543D
+                acc += Item_GetEnchantStatDelta(cls, i, sn.sock[i], key); // 0x4D545F
+                if (acc < 1) acc = 1;                    // 0x4D546A
+            }
+        } else if (i == 0 || i == 2 || i == 3 || i == 4 || i == 5 || i == 7) { // 0x4D5479..0x4D549B
+            if (cls == 1 || cls == 4) {                  // 0x4D549D/0x4D54A3
+                acc += Item_GetEnchantStatDelta(cls, i, sn.sock[i], key); // 0x4D54C5
+                if (acc < 1) acc = 1;                    // 0x4D54D0
+            }
+        }
+    }
+}
+
+// MOTIF B — Char_CalcAttackRatingMin 0x4CDC63 (clé 100). QUATRE différences prouvées avec le
+// motif A (ne PAS unifier) :
+//   (1) AUCUNE branche classe 8 : un seul appel à 0x553D50 dans toute la fonction (xref
+//       unique 0x4CDCF0), contre deux pour les 8 autres canaux ;
+//   (2) plancher 0 (et non 1) : `cmp var_3C,0 / jge` @0x4CDCFB ;
+//   (3) plancher appliqué HORS du test de classe mais DANS le test d'ensemble de slots :
+//       0x4CDCD2 (cls∉{1,4}) saute à 0x4CDCFB = le plancher s'exécute quand même, alors que
+//       0x4CDCC6 (slot hors ensemble) saute à 0x4CDD08 = ni add ni plancher.
+//   (4) pas de garde i!=8 explicite — inutile, 8 ∉ {0,2,3,4,5,7}.
+inline void enchantLoopRatingMin(int& acc, const Snapshot& sn) {
+    for (int i = 0; i < 13; ++i) {                       // 0x4CDC75
+        if (!sn.r[i]) continue;                          // 0x4CDC85
+        const int cls = classifyRecord(sn.r[i]);         // 0x4CDC9C
+        if (i == 0 || i == 2 || i == 3 || i == 4 || i == 5 || i == 7) { // 0x4CDCA4..0x4CDCC6
+            if (cls == 1 || cls == 4)                    // 0x4CDCC8/0x4CDCCE
+                acc += Item_GetEnchantStatDelta(cls, i, sn.sock[i], 100); // 0x4CDCF0 (push 64h)
+            if (acc < 0) acc = 0;                        // 0x4CDCFB (hors du test de classe)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,10 +469,9 @@ int CalcMaxHP(const SelfState& s, const GameDatabases& db) {
         }
     }
 
-    // --- enchant loop (0x4D53EE) : Item_GetEnchantStatDelta 0x553D50 [hook] -> 0 ---
-    // Structure conservée : slot1(classe8) et slots {0,2,3,4,5,7}(classe1||4) ajouteraient
-    // Item_GetEnchantStatDelta(...,50) avec plancher v25>=1. Delta [hook]=0 -> aucun effet
-    // (le plancher v25>=1 ne s'applique qu'après un +=delta, ici absent). TODO 0x4D5467/0x4D54CD.
+    // --- enchant loop (0x4D53EE), clé 50 — motif A, CÂBLÉE (voir enchantLoopA ci-dessus).
+    // Accumulateur var_1C = v25, le MÊME que la base LEVEL_INFO ajoutée juste après @0x4D5523.
+    enchantLoopA(v25, sn, 50);
 
     // --- base LEVEL_INFO Stat7 (0x4D54FF) ---
     // Branche morph (g_SpecialFormActive) [runtime absent] : sinon niveau = lb+lvl.
@@ -315,7 +495,29 @@ int CalcMaxHP(const SelfState& s, const GameDatabases& db) {
     // désormais disponible via g_Client.Var(), cf. bandeau de tête skillTreeEquipBonus() ci-dessus.
     v25 += skillTreeEquipBonus(7, sn, db);
     // --- g_ElementMastery 0x1675680 [runtime absent]=0 (0x4D582F) : pas de +1000. ---
-    // --- talisman 0x1674760/0x1675664 [runtime absent] (0x4D584D) : slot∉[10,20) -> ignoré. ---
+    // --- talisman (0x4D584D) — CÂBLÉ. Motif identique à CalcAttackRatingMin/Max (voir plus bas) :
+    //   garde `10 <= g_TalismanSlot < 20`, Stat_UnpackCombined 0x54CE40 (out-param var_14 = a2),
+    //   `if (var_14 > 0)` @0x4D586F, puis Num_ToDigits8 0x54CF00 sur dword_167568C[slot]
+    //   (@0x4D589B) et `movzx var_2A / imul 32h / add var_1C` @0x4D58AD..0x4D58B4.
+    //   DIGIT : var_2A est le 8e paramètre (a8) de Num_ToDigits8 -> digit des DIZAINES (10^1),
+    //   d'où `(digits / 10) % 10`. (Mapping cohérent avec les deux sites déjà en place :
+    //   a4 = 10^5 en RatingMin, a5 = 10^4 en RatingMax.) Multiplicateur 50 propre au canal HP.
+    //   Prémisse « [runtime absent] » RÉFUTÉE : g_TalismanSlot 0x1674760 est écrit par
+    //   Net/GameHandlers_Misc.cpp:668 (référence non-const via g_Client.Var(kTalismanSlot)),
+    //   0x1675664[slot] par :692 et 0x167568C[slot] par :693/697/712/723 — et ce même fichier
+    //   lit déjà ces globals via VarGet dans CalcAttackRatingMin/Max. ---
+    {
+        const int tslot = g_Client.VarGet(0x1674760);          // g_TalismanSlot (0x4D584D)
+        if (tslot >= 10 && tslot < 20) {
+            const int combined = g_Client.VarGet(0x1675664 + 4u * static_cast<uint32_t>(tslot));
+            int a2 = 0;                                        // Stat_UnpackCombined 0x54CE40
+            if (combined >= 0) { a2 = combined / 1000000; if (a2 > 100) a2 = 0; }
+            if (a2 > 0) {                                      // 0x4D586F (`cmp var_14,0 / jle`)
+                const int digits = g_Client.VarGet(0x167568C + 4u * static_cast<uint32_t>(tslot));
+                v25 += 50 * ((digits / 10) % 10);              // 0x4D58AD/0x4D58B1/0x4D58B4
+            }
+        }
+    }
     // --- Item_SocketBonusInt/Float 0x4CA620/0x4CAC30 [hook]=0 (0x4D58CE/0x4D58EE).
     //   TODO(verif) : décompilation confirmée — ces deux appels utilisent (g_SelectedInvItemId
     //   0x1673258, dword_1673260) et NON (g_LocalPlayerWeaponId, g_Slot1Socket) : c'est un item
@@ -408,7 +610,8 @@ int CalcMaxMP(const SelfState& s, const GameDatabases& db) {
         }
     }
 
-    // enchant loop (0x4D5F6F) : Item_GetEnchantStatDelta(...,60) [hook]=0 -> aucun effet.
+    // enchant loop (0x4D5F6F), clé 60 (push 3Ch @0x4D5FC4) — motif A, CÂBLÉE.
+    enchantLoopA(v24, sn, 60);
 
     // bonus stance/morph (0x4D60CE) : dword_1675630 [runtime absent]=0 -> 10*(0%1000)=0.
 
@@ -436,9 +639,15 @@ int CalcExternalAttack(const SelfState& s, const GameDatabases& db) {
     const int lvl = s.level, lb = s.levelBonus;
     const int gi  = s.growthIndex;
     // --- attributs de base (branche non-morph 0x4D060E) ---
-    // g_CoreAttr (sub_546380) 0x167477C [runtime absent]=0.
-    int v41 = s.attrExtForce  + growth292(gi);       // 0x16731BC + croissance292
-    int v45 = s.attrOffensive + growth304(gi);       // 0x16731C0 + croissance304
+    // g_CoreAttr 0x167477C — CÂBLÉ (prémisse « [runtime absent] » RÉFUTÉE : écrit par
+    // Net/GameHandlers_Misc.cpp:459/467, ancres 0x4936AD/0x493790 ; et déjà lu via VarGet dans
+    // CalcAttackRatingMin/Max ci-dessous). Stat_AddCoreAttr 0x546380 = stub identité
+    // `return a2` (a2 = g_CoreAttr) -> l'appelant fait `add esi, eax`, d'où un simple
+    // « + g_CoreAttr ». Désassemblage 0x4D060E..0x4D0666 : v41 (var_48) et v45 (var_38)
+    // reçoivent CHACUN le terme (calls @0x4D062D et @0x4D065F).
+    const int coreAttr = g_Client.VarGet(0x167477C);
+    int v41 = s.attrExtForce  + growth292(gi) + coreAttr; // 0x16731BC + croissance292 + g_CoreAttr (0x4D062D/0x4D0632)
+    int v45 = s.attrOffensive + growth304(gi) + coreAttr; // 0x16731C0 + croissance304 + g_CoreAttr (0x4D065F/0x4D0664)
     // TODO [runtime absent] 0x4D0572 : branche morph (Level_ToTierValueB 0x54EFF0,
     //   maybe_StubReturn1A 0x54F030) — g_SpecialFormActive absent.
     // g_AttrBuffActive 0x16758A8 [runtime absent]=0 : pas de buff d'attribut (0x4D0670).
@@ -554,7 +763,8 @@ int CalcExternalAttack(const SelfState& s, const GameDatabases& db) {
             v50 += Item_SumGemStatBonus(3, sn.sock[i]);
     }
 
-    // enchant loop (0x4D10BD) : Item_GetEnchantStatDelta(...,10) [hook]=0 -> aucun effet.
+    // enchant loop (0x4D10BD), clé 10 (push 0Ah @0x4D1112) — motif A, CÂBLÉE.
+    enchantLoopA(v50, sn, 10);
 
     // --- bonus stance/compétence (0x4D11E7) ---
     // Skill_IsCurrentStanceSet/Special [hook]=false, morph [absent]=0 -> prédicat vrai.
@@ -594,7 +804,9 @@ int CalcExternalAttack(const SelfState& s, const GameDatabases& db) {
 int CalcInternalAttack(const SelfState& s, const GameDatabases& db) {
     const int lvl = s.level, lb = s.levelBonus;
     const int gi  = s.growthIndex;
-    int v44 = s.attrIntForce + growth296(gi);        // 0x16731C4 + croissance296 (+ g_CoreAttr[absent]=0)
+    // + g_CoreAttr — CÂBLÉ (cf. CalcExternalAttack) : branche non-morph, call @0x4D18D6 puis
+    // `add esi, eax` @0x4D18DB (var_10 = v44). Stat_AddCoreAttr 0x546380 = identité.
+    int v44 = s.attrIntForce + growth296(gi) + g_Client.VarGet(0x167477C); // 0x16731C4 + croissance296 + g_CoreAttr
     // TODO [runtime absent] 0x4D1864 : branche morph (maybe_StubReturn1B 0x54F070).
     // g_AttrBuffActive [absent]=0 (0x4D18E7).
 
@@ -702,7 +914,9 @@ int CalcInternalAttack(const SelfState& s, const GameDatabases& db) {
         }
     }
 
-    // enchant loop (...,20) [hook]=0. g_SpecialItem switch [absent]=0. slotGroup(0)!=30.
+    // enchant loop (0x4D23D8), clé 20 (push 14h @0x4D23D8) — motif A, CÂBLÉE.
+    enchantLoopA(v37, sn, 20);
+    // g_SpecialItem switch [absent]=0. slotGroup(0)!=30.
     // dword_16758E0 buff [absent]=0. Item_ScaleStatByTypeB 0x4C95C0 [hook]=0 (garde -> += 0) —
     //   TODO(verif) : mêmes causes que Item_ScaleStatByTypeA en CalcExternalAttack (caps
     //   dword_8E717C = mPAT au loader stubbé, undumped ; item "sélectionné" absent de SelfState).
@@ -722,7 +936,9 @@ int CalcInternalAttack(const SelfState& s, const GameDatabases& db) {
 int CalcExternalDefense(const SelfState& s, const GameDatabases& db) {
     const int lvl = s.level, lb = s.levelBonus;
     const int gi  = s.growthIndex;
-    int v21 = s.attrExtForce + growth292(gi);        // 0x16731BC + croissance292 (+ g_CoreAttr=0)
+    // + g_CoreAttr — CÂBLÉ (cf. CalcExternalAttack) : branche non-morph, call @0x4D28DD puis
+    // `add esi, eax` @0x4D28E2 (var_44 = v21).
+    int v21 = s.attrExtForce + growth292(gi) + g_Client.VarGet(0x167477C); // 0x16731BC + croissance292 + g_CoreAttr
     // TODO [runtime absent] 0x4D286B : branche morph. g_AttrBuffActive [absent]=0.
 
     const int setId = EquipSetBonusId(s, db);        // v20
@@ -786,7 +1002,9 @@ int CalcExternalDefense(const SelfState& s, const GameDatabases& db) {
         }
     }
 
-    // enchant loop (...,30) [hook]=0. bonus stance (0x4D30E3) : état de skill [absent] ->
+    // enchant loop (0x4D300E), clé 30 (push 1Eh @0x4D300E) — motif A, CÂBLÉE.
+    enchantLoopA(v29, sn, 30);
+    // bonus stance (0x4D30E3) : état de skill [absent] ->
     //   v17<=2 && dword_167566C(0)==1 faux ; combos [absent]=0 -> v29 += 2*0 = 0. TODO 0x4D30E3.
     // dword_168744C/1687450 [absent]. g_SpecialItem switch [absent]=0. slotGroup(0)!=30.
     // dword_16758E8/1675960 buffs [absent]=0. setId==14 [jamais avec réduit].
@@ -805,8 +1023,12 @@ int CalcExternalDefense(const SelfState& s, const GameDatabases& db) {
 int CalcInternalDefense(const SelfState& s, const GameDatabases& db) {
     const int lvl = s.level, lb = s.levelBonus;
     const int gi  = s.growthIndex;
-    int v39 = s.attrIntForce  + growth296(gi);       // 0x16731C4 + croissance296 (+ g_CoreAttr=0)
-    int v32 = s.attrDefensive + growth300(gi);       // 0x16731B8 + croissance300
+    // + g_CoreAttr — CÂBLÉ (cf. CalcExternalAttack) : branche non-morph, DEUX termes —
+    // call @0x4D35B1 / `add esi,eax` @0x4D35B6 (var_10 = v39) et call @0x4D35E3 /
+    // `add esi,eax` @0x4D35E8 (var_28 = v32).
+    const int coreAttr = g_Client.VarGet(0x167477C);
+    int v39 = s.attrIntForce  + growth296(gi) + coreAttr; // 0x16731C4 + croissance296 + g_CoreAttr
+    int v32 = s.attrDefensive + growth300(gi) + coreAttr; // 0x16731B8 + croissance300 + g_CoreAttr
     // TODO [runtime absent] 0x4D34F6 : branche morph (maybe_StubReturn1B 0x54F070,
     //   Level_ToTierValueA 0x54EFB0). g_AttrBuffActive [absent]=0.
 
@@ -889,7 +1111,9 @@ int CalcInternalDefense(const SelfState& s, const GameDatabases& db) {
         }
     }
 
-    // enchant loop (...,40) [hook]=0. bonus stance (0x4D3ED8) : état skill [absent] -> 0. TODO.
+    // enchant loop (0x4D3E03), clé 40 (push 28h @0x4D3E03) — motif A, CÂBLÉE.
+    enchantLoopA(v31, sn, 40);
+    // bonus stance (0x4D3ED8) : état skill [absent] -> 0. TODO.
     // dword_168744C/1687450 [absent]. g_SpecialItem switch [absent]=0. slotGroup(0)!=30.
     // dword_16758F0/1675968 buffs [absent]=0.
     // SkillTree_SumBonuses(6,..) (0x4D40FF) — CÂBLÉE (audit 2026-07-14) : cf. CalcMaxHP.
@@ -928,8 +1152,15 @@ int CalcAccuracy(const SelfState& s, const GameDatabases& db) {
         }
     }
 
-    // enchant loop (...,70) [hook]=0 (0x4D449E).
-    // dword_1674A58/1675728 [absent]=0 : pas de +5 (0x4D45A2).
+    // enchant loop (0x4D449E), clé 70 (push 46h @0x4D44F3) — motif A, CÂBLÉE.
+    enchantLoopA(v15, sn, 70);
+
+    // +5 si dword_1674A58 > 0 OU dword_1675728 > 0 (0x4D4592 : `cmp,0/jg` puis `cmp,0/jle`
+    // -> comparaisons SIGNÉES ; add 5 @0x4D45A7). Prémisse « [absent] » RÉFUTÉE : les deux
+    // globals sont réellement écrits côté C++ — 0x1674A58 par Net/GameVarDispatch.cpp:337
+    // (case 48, 0x468A87) et 0x1675728 par Net/GameVarDispatch.cpp:484 (0x469113). Le canal
+    // frère CalcAttackRatingMin lisait déjà la paire sœur dword_1674A54/0x1675728 via VarGet.
+    if (g_Client.VarGet(0x1674A58) > 0 || g_Client.VarGet(0x1675728) > 0) v15 += 5; // 0x4D45A2
     // g_SpecialItem 0x1687310 [absent]=0 : switch/gemmes -> aucun effet (0x4D45CA..0x4D472A).
     // dword_1675928 buff [absent]=0 (0x4D4734).
     // dword_16747BC [absent]=0 : 0<=6 && !=12 -> aucun ajout (0x4D4767).
@@ -939,8 +1170,22 @@ int CalcAccuracy(const SelfState& s, const GameDatabases& db) {
         case 20: case 30: case 50: v15 += 7; break;
         default: break;
     }
-    // dword_168744C/1687450 [absent] : pas de +1 (0x4D47E1).
-    // GemStat_AccuracyPct 0x54CA20 [hook]=0 -> v18 = v15 + ftol(0*v15) = v15.
+    // +1 si dword_168744C == 1 && dword_1687450 == 2 (0x4D47D1/0x4D47DA, add 1 @0x4D47E6).
+    // Prémisse « [absent] » RÉFUTÉE : 0x168744C écrit par Net/GameVarDispatch.cpp:381 et
+    // Net/GameHandlers_PartyGuild.cpp:78 ; 0x1687450 par GameHandlers_PartyGuild.cpp:77 et
+    // Net/WorldEntityDispatch.cpp:3002-3003 (paire de duel).
+    if (g_Client.VarGet(0x168744C) == 1 && g_Client.VarGet(0x1687450) == 2) ++v15; // 0x4D47E1
+    // GemStat_AccuracyPct 0x54CA20 — CÂBLÉE. Forme binaire exacte (0x4D47EC..0x4D4807) :
+    //   fild var_8 / fstp var_4C / call GemStat_AccuracyPct / fmul var_4C / call Crt_ftol
+    //   / add eax, var_8
+    // -> le ftol porte sur le PRODUIT, et le résultat est ADDITIONNÉ (pas un remplacement).
+    // Le helper vaut `(float)((double)Item_GetAttribByte2(g_Slot7Socket_Weapon 0x1673250)
+    // * 0.009999999776482582)` : le cast (float) est RÉEL (fstp/fld sur un dword @0x54CA43),
+    // il arrondit le produit AVANT la multiplication par v15 — d'où le double cast ci-dessous.
+    // g_Slot7Socket_Weapon 0x1673250 == g_Slot0Socket 0x16731E0 + 16*7 == equip[7].socket
+    // (tableau stride 16 écrit par le réseau @0x46A9E2).
+    v15 += ftol((double)(float)((double)attrByte2(s.equip[7].socket) * 0.009999999776482582)
+                * (double)v15);          // 0x4D47F7/0x4D47FC/0x4D47FF/0x4D4804
     // Char_CompareSkillLoadout [hook]=0 : pas de +2.
     // Item_SocketBonusFloat [hook]=0 — TODO(verif) : paire g_SelectedInvItemId/dword_1673260
     //   (0x4D4841), cf. CalcMaxHP. Escort [hook]=false.
@@ -973,7 +1218,9 @@ int CalcEvasion(const SelfState& s, const GameDatabases& db) {
         }
     }
 
-    // enchant loop (...,80) [hook]=0 (0x4D4A4D).
+    // enchant loop (0x4D4A4D), clé 80 (push 50h @0x4D4AA2) — motif A, CÂBLÉE.
+    enchantLoopA(v11, sn, 80);
+
     switch (setId) {                                 // 0x4D4B60
         case 15:                   v11 += 2; break;
         case 20: case 30: case 50: v11 += 7; break;
@@ -981,8 +1228,26 @@ int CalcEvasion(const SelfState& s, const GameDatabases& db) {
     }
     // dword_16747BC [absent]=0 : switch(0) -> aucun ajout (0x4D4B9D).
     // g_SpecialItem 0x1687310 [absent]=0 : slotGroup(0)!=30 -> pas de gemme (0x4D4BD8).
-    // GemStat_EvasionPct 0x54CAD0 [hook]=0 -> v13 = v11 + ftol(0*v11) = v11.
-    // g_CoreAttr 0x167477C [absent]=0 : v14 = v13 + 0/10 = v13 (0x4D4C72).
+    // GemStat_EvasionPct 0x54CAD0 — CÂBLÉE. Forme binaire (0x4D4C4D..0x4D4C68) identique à
+    // celle de CalcAccuracy : fild var_4 / fstp var_40 / call / fmul var_40 / call Crt_ftol
+    // / add eax, var_4. Helper = `(float)((double)Item_GetAttribByte2(g_Slot1Socket
+    // 0x16731F0) * 0.01600000075995922)` — cast (float) réel (0x54CAF9), donc arrondi du
+    // produit AVANT multiplication. g_Slot1Socket 0x16731F0 == 0x16731E0 + 16*1 ==
+    // equip[1].socket.
+    v11 += ftol((double)(float)((double)attrByte2(s.equip[1].socket) * 0.01600000075995922)
+                * (double)v11);          // 0x4D4C58/0x4D4C5D/0x4D4C60/0x4D4C65
+    // g_CoreAttr 0x167477C (0x4D4C6B) : `cmp g_CoreAttr,60h ; jnz` -> si == 96 alors +10
+    // (add 0Ah @0x4D4C77), SINON += g_CoreAttr/10 (cdq/idiv 10 @0x4D4C84..0x4D4C8C — division
+    // ENTIÈRE SIGNÉE, troncature vers zéro, identique au / de C++ depuis C++11).
+    // Prémisse « [absent] » RÉFUTÉE : g_CoreAttr est incrémenté/décrémenté par
+    // Net/GameHandlers_Misc.cpp:459/467 (ancres 0x4936AD/0x493790), et ce même fichier le lit
+    // déjà via VarGet dans CalcCritRate/CalcAttackRatingMax. Canal CalcEvasion = CÂBLÉ
+    // (Game/NameplateLogic.cpp:322) -> impact joueur réel.
+    {
+        const int coreAttr = g_Client.VarGet(0x167477C);
+        if (coreAttr == 0x60) v11 += 10;             // 0x4D4C6B/0x4D4C77
+        else                  v11 += coreAttr / 10;  // 0x4D4C7F..0x4D4C8C
+    }
     // Escort [hook]=false. Item_GetElementalBonus [hook]=0. dword_16756E4 [absent]=0.
     return v11;
 }
@@ -1043,14 +1308,23 @@ int CalcAttackRatingMin(const SelfState& s, const GameDatabases& db) {
             if (v33 < 0) v33 = 0;
         }
     }
-    // enchant loop {0,2,3,4,5,7} classe1||4 (...,100) [hook]=0 ; plancher v33>=0 (0x4CDC63).
+    // enchant loop (0x4CDC63), clé 100 (push 64h @0x4CDCD4) — motif B, CÂBLÉE.
+    // Accumulateur var_3C = v33, le MÊME que Item_SumGemStatBonus juste au-dessus (0x4CDC52).
+    // Canal VIVANT (37 sites d'appel C++) -> c'est le correctif d'enchantement le plus visible.
+    enchantLoopRatingMin(v33, sn);
 
     // bonus méridien/stance (0x4CDD43). Skill_IsCurrentStanceSet/Special 0x4FB0F0/0x4FC800
     // [hook]=false -> prédicat d'entrée (!set && !special || morph∈[319,323]) = true (bloc toujours
     // exécuté). Char_FindSkillSlotByName 0x55D520 [hook] -> v40 reste -1.
     {
         const int v40 = -1;                                    // 0x55D520 [hook]
-        if (v40 <= 1 && g_Client.VarGet(0x1675660) == 1) {     // dword_1675660 (0x4CDD7E)
+        // Test de slot @0x4CDD6B : `cmp var_54,0 / jz ; cmp var_54,1 / jnz` = ensemble {0,1}.
+        // var_54 est typé UNSIGNED INT dans la frame de 0x4CD970 (vérifié) : le `v40 <= 1`
+        // qu'affiche Hex-Rays est donc fidèle POUR UN NON-SIGNÉ, mais le C++ déclarait v40
+        // `int` SIGNÉ à -1 -> `-1 <= 1` était VRAI alors que le binaire (0xFFFFFFFF) rejette.
+        // Forme d'égalité explicite : littérale, et robuste à la signedness.
+        // Le test du global dword_1675660 est, lui, à 0x4CDD7E.
+        if ((v40 == 0 || v40 == 1) && g_Client.VarGet(0x1675660) == 1) { // 0x4CDD6B / 0x4CDD7E
             v33 += 4000;                                       // 0x4CDD89
         } else {
             const int mEl   = g_Client.VarGet(0x16760CC);      // g_MeridianElement (0x4CDDA5)
@@ -1100,7 +1374,13 @@ int CalcAttackRatingMin(const SelfState& s, const GameDatabases& db) {
     v33 += skillTreeEquipBonus(3, sn, db);
     if (v45 == 1) v33 += 30000;                      // 0x4CE1A3
 
-    // GemStat_AtkRatingMinFlat 0x54CA50 [hook]=0.
+    // GemStat_AtkRatingMinFlat 0x54CA50 — CÂBLÉE. Helper = `400 * Item_GetAttribByte2(
+    // g_Slot2Socket 0x1673200)` (0x54CA6B) ; g_Slot2Socket == 0x16731E0 + 16*2 ==
+    // equip[2].socket. Terme PLAT ENTIER : `call GemStat_AtkRatingMinFlat @0x4CE1B6 ;
+    // add eax,[ebp+var_3C] @0x4CE1BB` — simple addition entière, pas de ftol ni de %.
+    // Position exacte : APRÈS le `if (v45==1) v33 += 30000` (add 7530h @0x4CE1A8) et AVANT le
+    // test g_ElementMastery==6 (0x4CE1C1). Amplitude jusqu'à 400*255 sur un canal CÂBLÉ.
+    v33 += 400 * attrByte2(s.equip[2].socket);                 // 0x54CA50 (@0x4CE1B6/0x4CE1BB)
     if (g_Client.VarGet(0x1675680) == 6) v33 += 1000;          // g_ElementMastery (0x4CE1C8/0x4CE1D2)
     // talisman (0x4CE1E5) : Stat_UnpackCombined 0x54CE40 (garde a2) + Num_ToDigits8 0x54CF00 (digit 10^5).
     {
@@ -1115,9 +1395,17 @@ int CalcAttackRatingMin(const SelfState& s, const GameDatabases& db) {
             }
         }
     }
-    // Equip_ComputeGemSetBonus 0x54E420 [hook]=0. Weapon_BaseMinDamage 0x4C99F0 [hook]=0.
+    // Equip_ComputeGemSetBonus 0x54E420 [hook]=0.
+    // ORDRE BINAIRE STRICT (ftol non commutatif avec les termes %) :
+    //   BaseMinDamage 0x4CE276 -> SocketBonusInt 0x4CE29A -> SocketBonusFloat 0x4CE2B9
+    //   -> SpecialDamageA 0x4CE2D5 -> GetElementalBonus 0x4CE2F9.
+    // Les deux tables d'arme sont appelées avec g_SelectedInvItemId 0x1673258, qui EST
+    // equip[8].itemId (0x16731D8 + 16*8) — le C++ l'admet déjà pour ce même global en
+    // CalcElementResist. Chaque résultat passe par Crt_ftol puis est ADDITIONNÉ.
+    v33 += ftol(weaponBaseMinDamage(db, s.equip[8].itemId));   // 0x4C99F0 (@0x4CE276/0x4CE283)
     // Item_SocketBonusInt/Float [hook]=0 — TODO(verif) : paire g_SelectedInvItemId/dword_1673260
-    //   (0x4CE29A/0x4CE2B9), cf. CalcMaxHP. Weapon_SpecialDamageA 0x4CA230 [hook]=0.
+    //   (0x4CE29A/0x4CE2B9), cf. CalcMaxHP.
+    v33 += ftol(weaponSpecialDamageA(db, s.equip[8].itemId));  // 0x4CA230 (@0x4CE2D5/0x4CE2E2)
     // Item_GetElementalBonus (0x4CE2F9) : CÂBLÉE — (s.weaponId, s.equip[1].socket), key=3.
     v33 += ftol(Item_GetElementalBonus(db.item, s.weaponId, s.equip[1].socket, 3));
     // boucle grade slots (0x4CE31E) : Item_GetGradeStatValues 0x550B20 [hook]=false -> 0.
@@ -1161,7 +1449,13 @@ int CalcAttackRatingMax(const SelfState& s, const GameDatabases& db) {
     // v25=-1 (Char_FindSkillSlotByName 0x55D520 [hook]).
     {
         const int v25 = -1;
-        if (v25 < 4 && g_Client.VarGet(0x1675664) == 1) {      // dword_1675664[0] (index 0, PAS [slot]) ; 0x4CE728
+        // Test de slot @0x4CE709 : `cmp var_34,0/1/2/3` = ensemble {0,1,2,3} ; var_34 est typé
+        // UNSIGNED INT dans la frame de 0x4CE3F0. Même défaut de signedness qu'en RatingMin
+        // (v25 `int` signé à -1 -> `-1 < 4` vrai à tort). Forme d'égalité explicite.
+        // Le test du global dword_1675664 est à 0x4CE728, et porte bien sur l'INDEX 0
+        // (`cmp ds:dword_1675664, 1` sans index), pas sur [slot].
+        if ((v25 == 0 || v25 == 1 || v25 == 2 || v25 == 3) &&
+            g_Client.VarGet(0x1675664) == 1) {                 // 0x4CE709 / 0x4CE728
             v23 += 5000;                                       // 0x4CE732
         } else {
             const int mEl   = g_Client.VarGet(0x16760CC);      // g_MeridianElement (0x4CE74F)
@@ -1204,9 +1498,16 @@ int CalcAttackRatingMax(const SelfState& s, const GameDatabases& db) {
             }
         }
     }
-    // Weapon_BaseMaxDamage 0x4C9E10 [hook]=0. Item_SocketBonusInt [hook]=0 — TODO(verif) : paire
-    //   g_SelectedInvItemId/dword_1673260 (0x4CEBC0), cf. CalcMaxHP.
-    // Weapon_SpecialDamageB 0x4CA350 [hook]=0.
+    // ORDRE BINAIRE STRICT (désassemblage 0x4CEB90..0x4CEC08) :
+    //   BaseMaxDamage 0x4CEB9C -> SocketBonusInt 0x4CEBC0 -> SpecialDamageB 0x4CEBD7
+    //   -> GetElementalBonus 0x4CEBFB. NB : ce canal n'appelle PAS SocketBonusFloat
+    //   (contrairement à RatingMin) — confirmé par désassemblage.
+    // Les deux tables prennent g_SelectedInvItemId 0x1673258 == equip[8].itemId.
+    // ⚠ SpecialDamageB n'a PAS le même ensemble d'ids que SpecialDamageA (cf. weaponSpecialDamageB).
+    v23 += ftol(weaponBaseMaxDamage(db, s.equip[8].itemId));   // 0x4C9E10 (@0x4CEB9C/0x4CEBA1)
+    // Item_SocketBonusInt [hook]=0 — TODO(verif) : paire g_SelectedInvItemId/dword_1673260
+    //   (0x4CEBC0), cf. CalcMaxHP.
+    v23 += ftol(weaponSpecialDamageB(db, s.equip[8].itemId));  // 0x4CA350 (@0x4CEBD7/0x4CEBDC)
     // Item_GetElementalBonus (0x4CEBFB) : CÂBLÉE — (s.weaponId, s.equip[1].socket), key=4.
     v23 += ftol(Item_GetElementalBonus(db.item, s.weaponId, s.equip[1].socket, 4));
     return v23;
@@ -1266,8 +1567,23 @@ int CalcElementResist(const SelfState& s, const GameDatabases& db, int element) 
     if (v9 == 7 || v9 == 5 || v9 == 6) {
         // [hook] Item_SocketDigit 0x4CAB40 -> 0 (selon la clé 'g'/'R'/'S'/'i'/'h'/'T').
     }
-    // Item_GemSetBonusMultiplier 0x4CA440 [hook]=0. SkillGrowthTbl_GetRecord 0x4C4E90 +
-    //   dword_168744C/1687450 [absent] : pas de +1.
+    // Item_GemSetBonusMultiplier 0x4CA440 [hook]=0 (0x4D678A) : v7 += ftol(0) = v7.
+    // Terme FINAL (0x4D67A8..0x4D67D5), placé APRÈS Item_GemSetBonusMultiplier — ordre du
+    // binaire : `Record = SkillGrowthTbl_GetRecord(mSKILL, a2)` où a2 EST la clé `element`,
+    // puis `if (Record && *(Record+540)==2 && dword_168744C==1 && dword_1687450==3) ++v9;`.
+    // Offset 540 == 0x21C == skillinfo::kOffSection (idx135). SkillGrowthTbl_GetRecord 0x4C4E90
+    // ≡ Skill_GetRecord (Game/SkillSystem.cpp:81, accès 1-based, nul si record vide).
+    // Prémisse « [absent] » RÉFUTÉE (cf. CalcAccuracy) : 0x168744C et 0x1687450 sont écrits par
+    // Net/GameVarDispatch.cpp:381, Net/GameHandlers_PartyGuild.cpp:77-78 et
+    // Net/WorldEntityDispatch.cpp:3002-3003. Canal CÂBLÉ (Game/SkillCombat.cpp:512).
+    {
+        const uint8_t* rec = Skill_GetRecord(db.skill, element);      // 0x4D67A8
+        if (rec && Skill_ReadI32(rec, skillinfo::kOffSection) == 2 && // *(Record+540)==2
+            g_Client.VarGet(0x168744C) == 1 &&
+            g_Client.VarGet(0x1687450) == 3) {
+            ++v7;                                                     // 0x4D67D5
+        }
+    }
     return v7;
 }
 

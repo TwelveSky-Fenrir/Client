@@ -21,7 +21,12 @@ struct NpkEntry {
     uint32_t stored = 0;     // taille sur disque
     uint32_t raw    = 0;     // taille décompressée
     uint32_t flags  = 0;
-    uint64_t filetime = 0;   // FILETIME Windows
+    // Horodatage. ⚠ La SÉMANTIQUE bascule à la version 22 (Npk_ParseDirectory 0x6FD04C
+    // @0x6FD337) : pour version >= 22 les 28 o du record sont recopiés verbatim et le champ
+    // est DÉJÀ en secondes unix ; pour version < 22 le disque porte un FILETIME Windows que
+    // le binaire convertit via Filetime_ToUnixSeconds 0x70879E (@0x6FD384). Seul le régime
+    // >= 22 est atteignable ici : Open rejette version < 24 (cf. NpkArchive.cpp).
+    uint64_t filetime = 0;
     uint16_t nameLen = 0;
     uint16_t reserved = 0;
     std::string name;
@@ -42,12 +47,24 @@ public:
     std::vector<uint8_t> Read(const NpkEntry& e) const;
     std::vector<uint8_t> Read(const std::string& name) const;
 
-    // Hash de nom (ResMgr_HashName 0x708A2C) — pour info/lookup à buckets.
+    // Index de seau d'un nom (ResMgr_HashName 0x708A2C). APPELÉE à chaque insertion par
+    // Open (fidèle : ResMgr_AddEntry 0x708C87 @0x708CD5 hache TOUTE entrée, quel que soit
+    // l'état du drapeau de bascule), puis par Find quand les seaux sont armés.
     static uint32_t HashName(const std::string& name);
+
+    // Nombre de seaux = modulo final du hash (0x101 = 257) — ResMgr_HashName @0x708A7D.
+    static constexpr size_t kBucketCount = 0x101u;
 
 private:
     std::vector<uint8_t> data_;
     std::vector<NpkEntry> entries_;
+    // Seaux de ResMgr_AddEntry 0x708C87 : a1[hash + 20] @0x708CD5, chaîne par entrée+56.
+    // On stocke des INDEX dans entries_ (l'ordre = ordre d'insertion, comme le chaînage en
+    // queue du binaire @0x708CFC/@0x708D05), les pointeurs étant invalidés par push_back.
+    std::vector<std::vector<uint32_t>> buckets_;
+    // a1[277] @0x708D17 : le lookup à seaux ne s'ARME qu'à partir de 257 entrées ; en dessous
+    // Npk_FindEntryByName 0x6FD5E1 balaye lui-même la liste d'insertion (@0x6FD67C).
+    bool     useBuckets_ = false;
     XteaKey  key_ = kNpkKey;
     uint32_t version_ = 0;
     uint32_t entryCount_ = 0;

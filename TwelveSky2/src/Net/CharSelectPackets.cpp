@@ -9,7 +9,8 @@
 // diffère du binaire (qui n'a aucune fonction commune à cet endroit faute d'inlining
 // du compilateur d'origine).
 #include "Net/CharSelectPackets.h"
-#include "Net/Rng.h"      // DefaultRng() — flux _holdrand UNIQUE (Rng_Next 0x7603FD)
+#include "Net/Rng.h"           // DefaultRng() — flux _holdrand UNIQUE (Rng_Next 0x7603FD)
+#include "Game/ClientRuntime.h" // game::g_Client.Var — échappatoire globals (dword_1675898)
 #include <cstring>
 #include <vector>
 #include <algorithm>
@@ -87,8 +88,21 @@ bool SendAllBlocking(SOCKET s, const uint8_t* buf, int len) {
 // nc.seq (motif ++byte_8156A5 des 5 fonctions d'origine) et renvoie true. Sur échec :
 // ferme la socket (Net_CloseSocket) et renvoie false — l'appelant traduit en
 // kCharSelectErrSend (101), comme le binaire.
-bool SendFrame(NetClient& nc, uint8_t opcode, const void* payload, size_t payloadLen) {
-    std::vector<uint8_t> pkt(9 + payloadLen);
+//
+// ORDRE D'ÉCRITURE RE-VÉRIFIÉ À L'OCTET (décompilation 0x52A4A0 + 0x52BD80, cette
+// session) — identique dans les 6 builders : `Crt_Memcpy(buf, &nonce1, 4u)` [0..3] ;
+// `Crt_Memcpy(v14/*@4*/, &nonce2, 4u)` [4..7] ; `Crt_Memcpy(v15/*@7*/, seq, 1u)` [7,
+// ÉCRASE le 4e octet du nonce2) ; `v15[1] = opcode` [8]. Reproduit tel quel ci-dessous
+// (memcpy de 4 o du nonce2 en +4, PUIS pkt[7] = seq qui l'écrase).
+//
+// `extraResidualBytes` : nombre d'octets envoyés AU-DELÀ de 9+payloadLen, présents dans
+// la longueur émise mais JAMAIS écrits par le binaire (pile résiduelle). Utilisé
+// UNIQUEMENT par op27 (len=0Eh @0x52BE46 alors que le memcpy s'arrête à l'octet 12) —
+// ils sont XORés et envoyés comme les autres. Voir CharSelectPackets.h::AccountReq_op27
+// (anomalie 1) et le TODO [0x52BE46] sur leur valeur. Vaut 0 pour tous les autres.
+bool SendFrame(NetClient& nc, uint8_t opcode, const void* payload, size_t payloadLen,
+               size_t extraResidualBytes = 0) {
+    std::vector<uint8_t> pkt(9 + payloadLen + extraResidualBytes);
     uint32_t nonce1, nonce2;
     MakeNonces(nonce1, nonce2);
     std::memcpy(pkt.data() + 0, &nonce1, 4);
@@ -97,6 +111,8 @@ bool SendFrame(NetClient& nc, uint8_t opcode, const void* payload, size_t payloa
     pkt[8] = opcode;
     if (payloadLen)
         std::memcpy(pkt.data() + 9, payload, payloadLen);
+    // Les `extraResidualBytes` restent à 0 (valeur du vector) : ce sont les octets que le
+    // binaire laisse à la pile — non déterministes en statique, cf. TODO [0x52BE46].
     for (auto& b : pkt)
         b ^= nc.xorKey;
 
@@ -146,6 +162,35 @@ void ParseCharRecord(const uint8_t* rec, game::CharSlotInfo& out) {
     out.localPosZ = static_cast<float>(rawZ);
 }
 
+CharRecordListFields ReadCharRecordListFields(const uint8_t* rec) {
+    CharRecordListFields out{};
+    // Champs lus par la branche LISTE de Char_RenderModel 0x527020 (arg_4 == 0), dans
+    // l'ordre du binaire :
+    //   `mov eax, [edx+28h]` @0x527536 -> a2 de PcModel_ResolveEquipSlot = +40 (RACE).
+    //     ⚠️ La branche CRÉATION lit +36 au même rôle (`mov edx,[ecx+24h]` @0x527051) —
+    //     ce sont bien DEUX champs distincts, cf. l'ancre de kCharRecFieldRace (.h).
+    //   `mov ecx, [eax+2Ch]` @0x52752F -> a3 = +44 (GENRE 0..1).
+    //   `cmp dword ptr [ecx+24h], 3` @0x52754A -> sentinelle sur +36.
+    //   `mov edx, [ecx+0D8h]` @0x527497 + MobDb_GetEntry(mITEM) @0x5274A3 -> +216
+    //     (ID d'objet de l'arme de départ).
+    std::memcpy(&out.race,   rec + kCharRecFieldRace,    4);
+    std::memcpy(&out.gender, rec + kCharRecFieldFaction, 4); // +44, « faction » = genre
+    std::memcpy(&out.job,    rec + kCharRecFieldJob,     4);
+    std::memcpy(&out.startingWeaponItemId, rec + kCharRecFieldStartingWeaponItemId, 4);
+    out.jobSentinelIs3 = (out.job == kCharRecJobSentinelValue);
+    return out;
+}
+
+bool ReadCharRecordListFields(int32_t slot, CharRecordListFields& out) {
+    out = CharRecordListFields{};
+    // Garde de PORT : le binaire indexe `&unk_1669380 + 10088*slot` sans borne. Les
+    // appelants réels bornent déjà slot à [0..2] (this[15715], -1 = aucun) ; on refuse
+    // proprement plutôt que de lire hors des 3 fiches.
+    if (slot < 0 || slot >= kCharRecordCount) return false;
+    out = ReadCharRecordListFields(g_CharRecords[static_cast<size_t>(slot)]);
+    return true;
+}
+
 void LoadCharacterSlotsFromRecords(std::array<game::CharSlotInfo, game::kMaxCharSlots>& slots) {
     static_assert(game::kMaxCharSlots == kCharRecordCount,
                   "kMaxCharSlots doit rester synchronise avec kCharRecordCount (NetClient.h)");
@@ -162,22 +207,33 @@ int32_t AccountKeepAlive(NetClient& nc) {
 }
 
 int32_t CreateCharacter(NetClient& nc, int32_t slot, const game::CharCreateForm& form,
-                        int32_t lookPresetId) {
+                        int32_t startingWeaponItemId) {
     // Opcode 17. Payload RÉEL 10092 o = 4 o slot + 10088 o fiche personnage (confirmé
     // par décompilation fraîche de 0x52A4A0 + de l'appelant Scene_CharSelectOnMouseUp
-    // EA 0x526634-0x5267E4). La fiche est quasi entièrement zéro ; seuls les offsets
-    // suivants sont écrits avant l'envoi dans TOUS les chemins observés du binaire :
-    //   [20..32] nom (13 o) · [36] job · [44] faction · [48] face · [52] hairColor ·
-    //   [216] lookPresetId (résolu job×variant, cf. CharSelectFlow::ResolveLookPresetId).
+    // EA 0x526634-0x5267E4 ; trame totale len=10101 @0x52A582 = 9 + 4 + 10088).
+    // INVENTAIRE EXHAUSTIF des champs écrits par le formulaire (search_text "_16709|_1670A"
+    // sur [0x51B000, 0x527000) = 64 hits : le binaire n'écrit JAMAIS d'autre octet de la
+    // fiche de création) — tout le reste part à ZÉRO :
+    //   [20..32] nom (13 o, GetWindowTextA @0x526583/0x52658F) · [36] job (0x52537C
+    //   aléatoire / 0x5260B2 − / 0x526158 +) · [44] genre, dit « faction » (0x525382 /
+    //   0x5261F8 / 0x526280) · [48] face (0x52538C / 0x526305 / 0x52636B) · [52] hairColor
+    //   (0x525396 / 0x5263D1 / 0x52643A) · [104] équipement, 208 o mis à 0
+    //   (Crt_Memset(...,0,0xD0) @0x526634 — déjà couvert par le zéro-init du vector) ·
+    //   [216] startingWeaponItemId (0x52669A..0x52675B).
+    // ⚠️ [40] (race) n'est JAMAIS écrit par le client : data_refs(0x16709E0) = 0 réf.
+    // C'est le SERVEUR qui le remplit, et il revient par l'écho (recopié plus bas).
+    // ⚠️ [56] n'est JAMAIS écrit par le formulaire non plus.
+    // ⚠️ `variant` n'est PAS dans la fiche : c'est this[15716] (+0xF590), un champ de
+    // SCÈNE ; il n'atteint le réseau QUE via startingWeaponItemId (+216).
     std::vector<uint8_t> payload(4 + 10088, 0);
     std::memcpy(payload.data(), &slot, 4);
     uint8_t* rec = payload.data() + 4;
-    CopyFieldN(rec + 20, 13, form.name);
-    std::memcpy(rec + 36,  &form.job,       4);
-    std::memcpy(rec + 44,  &form.faction,   4);
-    std::memcpy(rec + 48,  &form.face,      4);
-    std::memcpy(rec + 52,  &form.hairColor, 4);
-    std::memcpy(rec + 216, &lookPresetId,   4);
+    CopyFieldN(rec + kCharRecFieldName, 13, form.name);
+    std::memcpy(rec + kCharRecFieldJob,     &form.job,       4);
+    std::memcpy(rec + kCharRecFieldFaction, &form.faction,   4); // +44 = genre (nom historique)
+    std::memcpy(rec + kCharRecFieldFace,    &form.face,      4);
+    std::memcpy(rec + kCharRecFieldHair,    &form.hairColor, 4);
+    std::memcpy(rec + kCharRecFieldStartingWeaponItemId, &startingWeaponItemId, 4);
 
     if (!SendFrame(nc, 17, payload.data(), payload.size())) return kCharSelectErrSend;
 
@@ -279,6 +335,36 @@ int32_t ReqCancelEnter(NetClient& nc) {
     // envoi réussi, sans recv().
     if (!SendFrame(nc, 23, nullptr, 0)) return kCharSelectErrSend;
     return 0;
+}
+
+int32_t AccountReq_op27(NetClient& nc, int32_t arg) {
+    // Net_AccountReq_op27 0x52BD80 (opcode 27), émis depuis Scene_CharSelectOnMouseUp
+    // @0x523E07. Voir CharSelectPackets.h::AccountReq_op27 pour les 2 anomalies fidèles.
+    //
+    // ANOMALIE 1 — trame de 14 o dont le 14e est NON INITIALISÉ : `len = 0Eh` @0x52BE46
+    // alors que `Crt_Memcpy(v15 /*offset 9*/, &a1, 4u)` @0x52BE3E n'écrit que les octets
+    // 9..12. L'octet 13 est de la pile résiduelle, XORé (boucle `i < len` -> 0..13) et
+    // envoyé. On le reproduit via extraResidualBytes=1 (émis à 0).
+    // TODO [0x52BE46] : valeur réelle de l'octet 13 non déterminable en statique
+    // (pile non initialisée) — dump runtime x32dbg requis pour la connaître.
+    if (!SendFrame(nc, 27, &arg, sizeof(arg), /*extraResidualBytes=*/1))
+        return kCharSelectErrSend;
+
+    // Réponse de 9 o = [1][code:4][valeur:4] (boucle `j != 9` @0x52BF27).
+    if (!RecvExact(nc, 9)) return kCharSelectErrRecv;
+
+    // ANOMALIE 2 — `Crt_Memcpy(&dword_1675898, &MEMORY[0x8156C5], 4u)` @0x52BFC4 est
+    // INCONDITIONNEL et précède `*a2 = v16` @0x52BFD2 : AUCUNE garde `if (!code)`,
+    // contrairement à op17 (`if (!v18)` @0x52A700). Le champ est donc écrasé même sur
+    // erreur serveur — reproduit tel quel (ne pas ajouter de garde).
+    // dword_1675898 : longue traîne de globals, même convention que les autres écrivains
+    // de cette adresse (Net/GameHandlers_Misc.cpp, Net/GameVarDispatch.cpp).
+    int32_t value = 0;
+    std::memcpy(&value, nc.recvBuf + 5, 4);
+    game::g_Client.Var(0x1675898) = value;
+
+    // Code résultat lu à rx+1 (`Crt_Memcpy(&v16, &MEMORY[0x8156C1], 4u)` @0x52BFB0).
+    return ReadResultCode(nc);
 }
 
 void BuildEnterWorldTail72(float posX, float posY, float posZ, float rotationDeg,

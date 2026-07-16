@@ -19,6 +19,9 @@
 //                                     // ex-VeryOldClient: GSOUND::Free (EnterCriticalSection + mDATA.Free)
 //   WSndBank_UpdatePositional 0x4DAC30 banque : plus proche émetteur -> Play/Update/Stop
 //                                     // ex-VeryOldClient: WSOUND_FOR_GXD::Play (S03_GWSound.cpp — CONFIRMED)
+//   AssetMgr_InitAllSlots   0x4DEB50  amorce les 410 slots de la banque SFX (type 4, index i)
+//   AssetMgr_UpdateUnloadExpired 0x4E2050  GC périodique : 6 balayages Snd3D_UnloadIfExpired
+//   App_FrameTick           0x4625D0  @0x4626AE garde 60 s -> @0x4626D7 appel du GC (TTL 300 s)
 //
 // === Indicateur VeryOldClient (build différent/altéré — NOMS/idiomes seulement) ===
 //   Niveau émetteur = classe GSOUND (S03_GSound.cpp) ; banque de zone = WSOUND_FOR_GXD +
@@ -37,6 +40,7 @@
 #include "Audio/AudioSystem.h"
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -88,10 +92,16 @@ public:
     bool EnsureLoaded(bool sync, float nowSec);
 
     // Snd3D_PlayScaledVolume 0x4DA380 : joue à (master * percent / 100). percent 0..100.
-    bool PlayScaledVolume(int percent, float nowSec);
+    // `loop` = arg_0 du binaire, RELAYÉ tel quel à Snd_Play3D (@0x4DA3D5 `mov ecx,[ebp+arg_0]`
+    //   / @0x4DA3D8 `push ecx`). Tous les sites relevés passent 0. NE PAS confondre avec le
+    //   3e argument « sync » (arg_8), qui est MORT : `mov [ebp+arg_8], 0` @0x4DA389 l'écrase
+    //   AVANT tout usage -> Snd3D_EnsureLoaded(this, 0) = toujours asynchrone.
+    bool PlayScaledVolume(int loop, int percent, float nowSec);
     // Snd3D_PlayFullVolume 0x4DA3F0 : joue à volume maître plein.
+    //   loop non paramétrable : `push 0` littéral @0x4DA438.
     bool PlayFullVolume(float nowSec);
     // Snd3D_PlayPositional 0x4DA450 : volume = (300-dist)/300 * master, muet au-delà de 300.
+    //   loop non paramétrable : `push 0` littéral @0x4DA538.
     bool PlayPositional(const Vec3& listener, const Vec3& source, float nowSec);
 
     // Snd3D_UnloadIfExpired 0x4DA340 : décharge si (nowSec - dernierPlay) > ttl.
@@ -107,11 +117,19 @@ public:
 
 private:
     bool LoadLocked(float nowSec);   // corps commun (verrou déjà pris)
+    // Snd3D_EnsureLoaded(this, 0) 0x4DA270 @0x4DA27E -> SndLoader1_Enqueue 0x4E6FB0 : enfile la
+    // demande sur le thread loader et REND LA MAIN. Variante « verrou déjà pris » (appeler
+    // EnsureLoaded(false,…) depuis un play reprendrait mutex_ -> interblocage).
+    void EnqueueAsyncLoadLocked(float nowSec);
 
     mutable std::mutex mutex_;                 // Snd3D+168 (RTL_CRITICAL_SECTION) — ex-VeryOldClient: GSOUND::mLock
     std::string path_;                          // Snd3D+4   — ex-VeryOldClient: GSOUND::mFileName
     SoundBuffer buffer_;                        // Snd3D+104 (SoundObj) — ex-VeryOldClient: GSOUND::mDATA (SOUNDDATA_FOR_GXD)
     float lastPlaySec_ = 0.0f;                  // Snd3D+164 — ex-VeryOldClient: GSOUND::mLastUsedTime
+    // Dédup d'enfilage : SndLoader1_Enqueue 0x4E6FB0 @0x4E705A teste l'appartenance à la file
+    // « en cours » (SndLoader1Q_IterNotEqual) et REFUSE d'insérer deux fois le même Snd3D.
+    // Sans ce drapeau, un son déclenché à chaque frame empilerait une tâche par frame.
+    bool  pendingLoad_ = false;
     int   poolCount_ = 2;                       // .ISN chargés en pool de 2 (Snd3D_EnsureLoaded 0x4DA270 — valeur prouvée IDA)
                                                 // ex-VeryOldClient: GSOUND::Load -> mDATA.LoadFromOGG(mFileName, 3, 4, 1) : sort=3 CONFIRMED,
                                                 //   mais dup=4 = valeur du build VeryOld, DIVERGE du 2 prouvé IDA -> NON transposée (IDA gagne).
@@ -155,5 +173,89 @@ private:
     std::vector<uint8_t> playing_;                      // WSndBank+3 (drapeaux « en lecture ») — ex-VeryOldClient: WSOUND_FOR_GXD::mCheckPlaySound
     std::vector<BankEmitter> emitters_;                 // WSndBank+5 (records 20 o) — ex-VeryOldClient: WSOUND_FOR_GXD::mSoundInfo (SOUNDINFO_FOR_GXD[mSoundInfoNum])
 };
+
+// ===========================================================================
+// Registre d'émetteurs — adressage par l'adresse ABSOLUE du Snd3D d'origine
+// ===========================================================================
+//
+// Dans le binaire, les Snd3D ne sont PAS alloués : ce sont des tableaux STATIQUES en .data,
+// tous relatifs au gestionnaire d'assets `g_ModelMotionArray` 0x8E8B30 (`this` unique, posé
+// par App_Init @0x46224B `mov ecx, offset g_ModelMotionArray`). Les ~1700 sites d'appel
+// portent donc une adresse EN DUR (`mov ecx, offset flt_1495ABC`).
+//
+// Ce registre reproduit cet adressage : chaque émetteur est identifié par l'adresse absolue
+// du Snd3D d'origine, ce qui permet de câbler un site TODO en recopiant littéralement le
+// symbole IDA qu'il cite —  ex. `audio::PlayScaledVolume(0x1495ABC, 0, 100, nowSec)`.
+//
+// Les 6 bandes Snd3D balayées par AssetMgr_UpdateUnloadExpired 0x4E2050 (base = 0x8E8B30 + off) :
+//   @0x4E378A  off 0x86D5CC -> 0x11560FC  [3][2][8][116]   (192 o/slot)
+//   @0x4E37F9  off 0xA775CC -> 0x13600FC  [66][3]
+//   @0x4E3861  off 0xA80A4C -> 0x136957C  [291][21]
+//   @0x4E38A6  off 0xB9F18C -> 0x1487CBC  [410]            <- banque SFX maîtresse
+//   @0x4E3957  off 0xBB250C -> 0x149B03C  [3][2][4][12]
+//   @0x4E3A14  off 0x9725CC -> 0x125B0FC  [3][2][8][116]
+inline constexpr uint32_t kSnd3DStride = 192u;   // prouvé : `imul edx, 0C0h` @0x4E05E4
+
+// Banque SFX maîtresse — l'émetteur de la quasi-totalité des sites (Snd3D_PlayScaledVolume
+// 0x4DA380 totalise 1624 xrefs code). Base = 0x8E8B30 + 0xB9F18C.
+// Compte 410 PROUVÉ deux fois :  `cmp [ebp+var_10], 19Ah` @0x4E05CC (AssetMgr_InitAllSlots)
+//   et `i88 < 410` @0x4E386A (AssetMgr_UpdateUnloadExpired) ; contiguïté vérifiée :
+//   0x1487CBC + 410*192 = 0x149B03C = base exacte de la bande suivante (byte_BB250C).
+inline constexpr uint32_t kSfxBankBase  = 0x1487CBCu;
+inline constexpr int      kSfxBankCount = 410;
+
+// TTL et période du GC — AssetMgr_UpdateUnloadExpired appelé par App_FrameTick 0x4625D0 :
+//   @0x4626AE garde `g_GameTimeSec - flt_81518C >= 60.0` (dbl_7EDA50 = 0x404E000000000000)
+//   @0x4626D7 appel avec a3 = flt_7A6C9C = 0x43960000 = 300.0f  (TTL)
+inline constexpr float kEmitterTtlSec      = 300.0f;
+inline constexpr float kEmitterGcPeriodSec = 60.0f;
+
+// Émetteur du registre pour l'adresse absolue `addr` (créé à la volée au 1er accès).
+// Si `addr` tombe sur un slot exact de la banque SFX, sa source .ISN est AMORCÉE
+// automatiquement — AssetMgr_InitAllSlots 0x4DEB50 @0x4E05CC..0x4E05F4 :
+//   `for (i=0; i<0x19A; ++i) Snd3D_SetISNPath(base + 0xC0*i, /*type=*/4, i, 0, 0, 0)`
+// soit BuildIsnPath(4, i) = "G03_GDATA\D06_GSOUND\004\E%03d001001.ISN" avec (i+1).
+// Hors banque SFX (les 5 autres bandes ci-dessus, amorcées par d'AUTRES boucles de
+// AssetMgr_InitAllSlots avec d'autres types — NON relevées à ce jour), la source reste VIDE :
+// les play sont alors des no-op silencieux tant que SetEmitterSource n'a pas été appelé.
+// Repli sûr : aucun crash, jamais de chemin deviné.
+//   TODO [ancre 0x4DEB50] : relever les types/index des 5 autres bandes pour les amorcer aussi.
+//
+// ATTENTION — piège vérifié : `flt_1687330` n'est PAS un émetteur. C'est le tableau des
+// POSITIONS joueur (g_PlayerArray 0x1687234 + 0xFC, stride 0x38C = 908), passé aux deux
+// paramètres `Vec3*` de Snd3D_PlayPositional, jamais à `ecx`. Site témoin Pkt_CharStatDelta
+// @0x465F1A..0x465F34 : `push offset flt_1687330` (self) / `imul edx,38Ch` + `add edx, offset
+// flt_1687330` (joueur idx) / `mov ecx, offset flt_14890FC` <- l'émetteur RÉEL, index 27 de la
+// banque SFX. Ne pas transformer une position en émetteur.
+Emitter& EmitterAt(uint32_t addr);
+
+// Émetteur d'indice `index` dans la bande basée en `tableAddr` (stride 192 prouvé).
+inline Emitter& EmitterInTable(uint32_t tableAddr, int index) {
+    return EmitterAt(tableAddr + kSnd3DStride * static_cast<uint32_t>(index));
+}
+
+// Snd3D_SetISNPath 0x4DA0C0 sur l'entrée du registre — pour les émetteurs HORS banque SFX,
+// dont la source n'est pas amorcée par AssetMgr_InitAllSlots.
+void SetEmitterSource(uint32_t addr, int type, int a = 0, int b = 0, int c = 0, int d = 0);
+
+// --- Entrées libres : miroir 1:1 des 3 fonctions du binaire (le `this` devient `addr`). ---
+// Les 3 sont NON BLOQUANTES : si le .ISN n'est pas encore chargé, elles l'enfilent sur le
+// thread loader et renvoient false SANS jouer (conception du binaire, cf. Sound3D.cpp).
+bool PlayScaledVolume(uint32_t addr, int loop, int percent, float nowSec);   // 0x4DA380
+bool PlayFullVolume(uint32_t addr, float nowSec);                            // 0x4DA3F0
+bool PlayPositional(uint32_t addr, const Vec3& listener, const Vec3& source, // 0x4DA450
+                    float nowSec);
+
+// Balaie TOUT le registre -> Snd3D_UnloadIfExpired 0x4DA340 (miroir des 6 boucles de
+// AssetMgr_UpdateUnloadExpired 0x4E2050, @0x4E378A..0x4E3A14).
+void UnloadExpiredAll(float nowSec, float ttl = kEmitterTtlSec);
+
+// GC d'émetteurs prêt à câbler : encapsule la garde de 60 s ET le TTL de 300 s.
+// Miroir exact d'App_FrameTick 0x4625D0 @0x4626AE..0x4626D7 — à appeler à CHAQUE frame
+// avec le temps de jeu (g_GameTimeSec 0x815180) ; la garde interne fait le reste.
+void TickEmitterGc(float nowSec);
+
+// Nb d'émetteurs matérialisés (diagnostic / tests).
+size_t EmitterCount();
 
 } // namespace ts2::audio
