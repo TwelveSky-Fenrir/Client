@@ -36,19 +36,27 @@
 //                          pixel-exact ici) ; ce portage expose un champ numérique borné
 //                          [0,350] (0 = non configuré), la plage RÉELLE des skillId
 //                          confirmée par Game/SkillSystem.h (SkillLevelTable, skillId 1..350).
-// Toute modification appelle Net_SendOp99(&g_AutoPlayMgr, g_InvDirtyEnable) côté binaire
-// (confirmé fin de AutoPlay_OnClickSettings) : la synchro serveur existe réellement mais
-// son point de branchement C++ (Net/SendPackets.h) reste un TODO(send) explicite ci-dessous,
-// car hors du périmètre des 2 fichiers audités (OptionsWindow/AutoPlayWindow).
+// Le basculement Start/Stop émet Net_SendOp99 (opcode 0x63, 125 o) : PROUVÉ par
+// AutoPlay_OnMouseUpMain 0x45A980 (branche START unk_9647F8 -> Net_SendOp99(1) @0x45AAD1 ;
+// branche STOP unk_964920 -> Net_SendOp99(0) @0x45AB88). L'ancien « TODO(send) : aucun
+// opcode dédié toggle » était FAUX : l'argument a2 d'Op99 EST l'interrupteur. Câblé dans
+// OnClick (relâchement) via net::GlobalNetClient() + le builder EXISTANT
+// net::Net_SendAutoHuntSync (alias de Net_SendOp99, Net/SendPackets.h:269).
 //
-// État local propre à CETTE fenêtre (PAS modélisé dans AutoPlaySystem, qui n'a
-// aucun drapeau « actif ») :
-//   - enabled_ : reflète la case à cocher « AutoPlay actif ». AutoPlaySystem ne
-//     sait pas s'arrêter tout seul — c'est à l'appelant (boucle de jeu) de lire
-//     IsEnabled() et de conditionner l'appel à AutoPlaySystem::Update(dt)
-//     dessus, exactement comme le ferait un flag g_AutoHuntMode côté binaire
-//     d'origine (0x16755F4 sert de MODE, pas d'interrupteur — aucun booléen
-//     « marche/arrêt » distinct n'a été identifié dans le cluster AutoPlay_*).
+// État local propre à CETTE fenêtre :
+//   - enabled_ : miroir C++ de g_InvDirtyEnable 0x16755AC — le DRAPEAU MAÎTRE 0/1 de
+//     l'auto-hunt du binaire (gate de AutoPlay_Update, ET argument a2 sérialisé par Op99 ;
+//     l'ancienne note « AutoPlaySystem n'a aucun drapeau actif » était erronée). Défaut
+//     false = arrêté au démarrage, fidèle : g_InvDirtyEnable est en BSS (0 au boot), valeur
+//     lue par la garde START `if (!g_InvDirtyEnable)` 0x45AA7D. ToggleAutoHunt() recopie
+//     enabled_ dans AutoPlaySystem::externalState.invDirtyEnable (write-through) pour le
+//     côté gameplay. L'appelant (boucle de jeu) lit IsEnabled() pour conditionner
+//     AutoPlaySystem::Update(dt).
+//     NB centralisation : le binaire n'a qu'UN g_InvDirtyEnable 0x16755AC ; la réécriture en
+//     a plusieurs miroirs non unifiés (externalState.invDirtyEnable défaut `true` dans
+//     Game/AutoPlaySystem.h — non possédé — et g_Client.Var(WarpAddr::InvDirtyEnable) côté
+//     Game/MapWarp.cpp). enabled_ (défaut false) reste la source d'affichage/décision fidèle
+//     au boot ; la fusion des miroirs relève des fichiers propriétaires (hors périmètre).
 //   - showSettings_ : bascule Cibles/Réglages, contrepartie simplifiée des 3 onglets
 //     Start/Stop/Réglages du panneau d'origine (unk_9647F8/964920/964A48 à
 //     AutoPlay_OnClickSettings+0x2C..+0xD1) — Start/Stop sont déjà couverts par la
@@ -121,6 +129,11 @@ private:
     // (OnMouseDown/OnClick routés entre deux frames).
     void RecomputeLayout(int screenW, int screenH);
     RowView BuildRow(int slotIndex) const;
+
+    // Bascule Start/Stop de l'auto-hunt : reproduit AutoPlay_OnMouseUpMain 0x45A980
+    // (gardes START + émission Net_SendOp99 opcode 0x63, ou STOP inconditionnel). Appelée
+    // depuis OnClick (au relâchement), jamais depuis OnMouseDown (pas d'effet optimiste).
+    void ToggleAutoHunt();
 
     game::AutoPlaySystem* system_ = nullptr;
 

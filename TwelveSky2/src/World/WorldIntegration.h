@@ -139,6 +139,57 @@ public:
     bool SlideMoveGround(const float from[3], const float to[3], float speed, float dt,
                          float outPos[3]) const;                                          // 0x697330
 
+    // -----------------------------------------------------------------------
+    // WG-02 — Collision CAMÉRA (Camera_UpdateCollision 0x538580). FOURNISSEURS des 4 requêtes du
+    // binaire (3 slots distincts, prouvé) que l'oracle Gfx/CameraThirdPersonBridge
+    // (WorldCameraCollision : game::ICameraCollisionQueries) branche par frame InGame :
+    //   SweepCameraSegment -> .WG (slot 0 = g_GameWorld, @0x5387b9) ; IsPointBlocked -> Main+WJ ;
+    //   HasGroundAt (déjà présent) -> Main ; LineOfSightBlockedByObjects -> objets .WO (TODO).
+    // -----------------------------------------------------------------------
+    // Maille de collision d'une couche quelconque (.WM/.WJ/.WM2 via AsCollision). nullptr si absente.
+    const asset::CollisionMesh* CollisionMeshOf(CollisionSlot slot) const;
+    // Maille du TERRAIN .WG (slot 0 = g_GameWorld lui-même) — un MapFaceChunk (AsFace), PAS un
+    // MapCollisionChunk. JAMAIS requêté avant ce front. Ancre : Terrain_SweepSphereSegment
+    // 0x69a1f0 opère sur this[35]=quadtree du .WG (dword_14A88C8).
+    const asset::CollisionMesh* TerrainMesh() const;
+    // Terrain_SweepSphereSegment 0x69a1f0 — sweep sphère caméra (rayon 2.5) contre le .WG.
+    // false si la zone n'a pas de terrain chargé (dégradation fidèle « zone non chargée »).
+    bool SweepCameraSegment(const float from[3], const float to[3], float radius,
+                            float outHit[3]) const;                                        // 0x69a1f0
+    // World_IsPointBlocked 0x540da0 — point bloqué (pas de sol Main, ou sol WJ au-dessus du Main).
+    bool IsPointBlocked(const float p[3]) const;                                          // 0x540da0
+    // MapColl_LineOfSightObjects 0x696fc0 — NON porté (blocage prouvé : table d'OBB par frame non
+    // décodée dans asset::WorldMeshPart::geo). Renvoie toujours false -> le repli « ground-height
+    // stepping » de Camera_UpdateCollision est désactivé (dégradation fidèle « objets ignorés »).
+    bool LineOfSightBlockedByObjects(const float from[3], const float to[3]) const;       // 0x696fc0 (TODO)
+
+    // -----------------------------------------------------------------------
+    // WG-03 — Picking écran->terrain (Terrain_PickRayScreen 0x699a80). FOURNISSEUR : l'implémenteur
+    // concret de game::ITerrainPicker (Game/SkillCombat.h:238, front skill-learn-cast / orchestrateur)
+    // dérive un collision::ScreenPickCamera de gfx::Camera + viewport et appelle ceci. Le picking
+    // du binaire vise les slots .WM(Main @0x536715) / .WJ(@0x540fc4), déjà décodés/requêtables.
+    // -----------------------------------------------------------------------
+    bool PickRayScreen(CollisionSlot slot, const collision::ScreenPickCamera& cam,
+                       int sx, int sy, uint32_t& outFaceIndex, float outHit[3],
+                       bool twoSide) const;                                                // 0x699a80
+
+    // -----------------------------------------------------------------------
+    // GX-ICON-01 — Minimap de zone (les 3 textures Tex_LoadCompressedDDS 0x6a2e80, chargées mais
+    // jamais exposées). FOURNISSEUR pour UI/MinimapWidget (autre vague) : je produis/expose, je ne
+    // câble PAS le consommateur UI. Les 3 minimaps SONT consommées par le binaire (accès indexé
+    // @0x681aab, PAS mortes) ; la sélection 0/1/2 vient de widget+0x268, gardée par widget+0x264==1
+    // (@0x6818b4/@0x6818c7) — état UI, hors périmètre monde.
+    // -----------------------------------------------------------------------
+    // Texture de minimap par index 0..2 (0=_MINIMAP01, 1=_MINIMAP02, 2=_MINIMAP03). nullptr sinon.
+    const asset::Texture* Minimap(int index) const;                                       // 0x6a2e80
+    // Bornes monde de la minimap = bbox de la RACINE du quadtree .WG (dword_14A88C8 = TerrainMesh()
+    // ->nodes[0]). Ancre IDA : UI_GameHud_Render @0x681513/@0x681527/@0x681535/@0x681546 (noter les
+    // DEUX négations sur Z). Projection self->pixel côté UI (hors périmètre) :
+    //   px = (int)( logicalW * ( self.x  - minX)    / (maxX    - minX) )
+    //   py = (int)( logicalH * (-self.z  - negMaxZ) / (negMinZ - negMaxZ) )
+    struct MinimapBounds { float minX; float maxX; float negMaxZ; float negMinZ; bool valid; };
+    MinimapBounds MinimapWorldBounds() const;
+
 private:
     // --- Implémentations des hooks (signatures WorldLoadHooks, `user` = this*). ---
     static void* AllocAtmosphere(void* user, unsigned size);

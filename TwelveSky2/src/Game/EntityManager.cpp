@@ -40,6 +40,8 @@
 #include "Game/GameDatabase.h"        // GetMonsterInfo / MonsterInfo (resolution 1-based)
 #include "Game/StaticNpcLoader.h"
 #include "Game/EntityLifecycleTick.h" // ResetMonsterTickExt/ResetNpcTickExt (cf. TODO ci-dessous)
+#include "Game/ClientRuntime.h"       // g_Client : miroirs self (dword_1675884/1675B00) + longue traine Var/VarF
+#include "Net/SendPackets.h"          // Net_SendVaultReq_207/Op23 + GlobalNetClient (Pkt_EnterWorld @0x4643d1..)
 
 #include <cstring>
 #include <cmath>
@@ -237,6 +239,45 @@ void Char_ApplyActionAnimParams(CharAnimState& a) {
     }
 }
 
+// ---- helpers op 0x10 (Pkt_CharStateUpdate 0x464c10) : miroirs SELF + resets de combo.
+//
+// Le bloc dword_16758D8 (288 o) est modelise par g_World.self.zoneState. Le binaire l'adresse
+// toujours (tableau BSS de 288 o) ; on garantit donc la taille avant ecriture (EnterWorld le
+// remplit normalement d'abord). dword_16758D8[2*i] = zoneState[8*i], dword_16758DC[2*i] =
+// zoneState[8*i+4]. // 0x46530c / 0x465326
+inline void WrZoneU32(size_t off, uint32_t v) {
+    auto& zs = g_World.self.zoneState;
+    if (zs.size() < off + 4) zs.resize(288, 0); // dword_16758D8 = 0x120 o dans le binaire
+    std::memcpy(zs.data() + off, &v, 4);
+}
+
+// Slots « compteurs de combo » = indices 9 et 29..34 du tableau d'etat dword_168737C
+// (dword_16873A0 = 168737C+4*9 ; dword_16873F0..1687404 = 168737C+4*29..+4*34), cf. la
+// decouverte transverse : ce ne sont PAS des globales distinctes mais des slots du meme tableau.
+constexpr int kComboSlots[7] = { 9, 29, 30, 31, 32, 33, 34 };
+
+// NON-SELF : remet a zero le seul slot d'etat (dword_168737C[227*v7+j]).
+inline void ZeroStateSlot(uint8_t* b, int j) {
+    WrU32(b, kPStateArr + 4 * j, 0);
+}
+// SELF (branche v7==0) : zeroe AUSSI la paire miroir dword_16758D8[2*j]/DC[2*j] (zoneState
+// 8*j / 8*j+4) et l'horodatage flt_16759F8[j] (VarF 0x16759F8+4*j), cf. branche @0x465469..
+inline void ZeroSelfSlot(uint8_t* b, int j) {
+    WrZoneU32(8 * j, 0);                       // dword_16758D8[2*j]=0
+    WrZoneU32(8 * j + 4, 0);                   // dword_16758DC[2*j]=0
+    g_Client.VarF(0x16759F8 + 4 * j) = 0.0f;   // flt_16759F8[j]=0.0
+    WrU32(b, kPStateArr + 4 * j, 0);           // dword_168737C[227*v7+j]=0
+}
+// Reinitialise tous les slots de kComboSlots SAUF skipA/skipB (cas 9/29..34). self=true
+// reproduit la branche self (@0x465469..) avec miroir+horodatage, sinon l'etat seul (@0x464eb0..).
+inline void ResetComboSlots(uint8_t* b, bool self, int skipA, int skipB) {
+    for (int j : kComboSlots) {
+        if (j == skipA || j == skipB) continue;
+        if (self) ZeroSelfSlot(b, j);
+        else      ZeroStateSlot(b, j);
+    }
+}
+
 } // namespace (anonyme)
 
 // ---------------------------------------------------------------------------
@@ -265,16 +306,63 @@ void EntityManager::OnEnterWorld(const net::EnterWorld& p) {
     // sceneEnterWorldPending et Docs/TS2_ENTERWORLD_WIRING_TODO.md.
     g_World.sceneEnterWorldPending = true;
 
-    // NB : le reste du handler d'origine (palier de growth dword_1675D90, requetes de
-    // suivi GM en attente dword_1675A8C==5/8/9) releve du systeme morph/teleport et de
-    // Pkt_EnterWorld lui-meme au-dela de la bascule de scene : hors perimetre "entites"
-    // (documente aussi dans Game/EnterWorldFlow.h, section "Ecart connu / TODO").
-    //
-    // Palier de croissance dword_1675D90 = f(g_GrowthIndex 0x1674774) (@0x464329-0x464394,
-    // decompilation verifiee) : growthIndex <1->0, >=1->1, >=100->2, >=200->3, >=300->4,
-    // >=400->5. Aucun champ dedie ni consommateur dans les fichiers editables (GameState.h
-    // read-only ; SelfState::growthIndex est l'entree, pas le palier derive) -> TODO ancre,
-    // a modeliser par le proprietaire de SelfState si un consommateur apparait. // 0x464160
+    // TODO(scene) ancre : Pkt_EnterWorld pose aussi g_SceneSubState=0 (@0x46430e) et
+    // dword_1676188=0 (@0x464318). g_SceneSubState est prive dans SceneManager (Scene/*, non
+    // possede par ce front) -> laisse au proprietaire (cf. App/PlayerInputController.cpp:21). // 0x464160
+
+    // Palier de croissance dword_1675D90 = f(g_GrowthIndex) @0x464329-0x464394. L'ENTREE
+    // g_GrowthIndex 0x1674774 est modelisee par g_World.self.growthIndex (GameState.h:396 ;
+    // la cle Var 0x1674774 est MORTE, cf. Net/GameHandlers_Misc.cpp:422). Le palier derive a
+    // des consommateurs reels (UI_WishA_Open 0x600059, Pkt_ItemActionDispatch 0x477abc). // 0x464160
+    {
+        const int gi = g_World.self.growthIndex;
+        int32_t tier;
+        if      (gi < 1)   tier = 0; // @0x46432b
+        else if (gi < 100) tier = 1; // @0x464340
+        else if (gi < 200) tier = 2; // @0x464358
+        else if (gi < 300) tier = 3; // @0x464370
+        else if (gi < 400) tier = 4; // @0x464388
+        else               tier = 5; // @0x464394
+        g_Client.Var(0x1675D90) = tier;
+    }
+
+    // Resets @0x46439e/0x4643a8/0x4643b8 (consommateurs reels : Pkt_SetGameVar,
+    // Char_CalcExternalAttack, famille UI_ShareBox_*).
+    g_Client.Var(0x16760D8) = 0;                          // dword_16760D8 @0x46439e
+    g_Client.Var(0x16760DC) = 0;                          // dword_16760DC @0x4643a8
+    g_Client.Var(0x16760E0) = g_Client.VarGet(0x1675800); // dword_16760E0 = dword_1675800 @0x4643b8
+
+    // Requetes de suivi emises par Pkt_EnterWorld selon dword_1675A8C (@0x4643d1/0x4643da/
+    // 0x4644ad). Le binaire adresse g_NetClient en GLOBAL -> emission via le singleton, meme
+    // motif que MapWarp/ArmFullWarp. Builders (code mort jusqu'ici) : Net_SendVaultReq_207
+    // 0x590480, Net_SendPacket_Op23 0x4b5490. Verrou anti-spam g_GmCmdCooldownLatch 0x1675B08.
+    if (auto* c = ts2::net::GlobalNetClient()) {
+        const int32_t warpMode = g_Client.VarGet(0x1675A8C);        // dword_1675A8C
+        if (warpMode == 5) {                                        // @0x4643d1
+            const int32_t tgtZone = g_Client.VarGet(0x1675A9C);     // g_TargetZoneId
+            const int32_t a0      = g_Client.VarGet(0x16692A0);     // dword_16692A0
+            const int32_t b0      = g_Client.VarGet(0x167588C);     // dword_167588C
+            if ((tgtZone == 84 || (a0 != 2 && b0 <= 0 && a0 != 3))
+                && g_Client.VarGet(0x1675B08) == 0) {               // @0x464436
+                ts2::net::Net_SendVaultReq_207(*c, g_Client.VarGet(0x1675A90)); // dword_1675A90 @0x464448
+                g_Client.Var(0x1675B08) = 1;                        // @0x46444d
+                g_Client.VarF(0x1675B0C) = g_World.gameTimeSec;     // flt_1675B0C @0x46445d
+            }
+        } else if (warpMode == 8 || warpMode == 9) {               // @0x4643da / @0x4644ad
+            if (g_Client.VarGet(0x1675B08) == 0) {
+                ts2::net::Net_SendPacket_Op23(*c,
+                    static_cast<int8_t>(g_Client.VarGet(0x1675D88)), // dword_1675D88
+                    static_cast<int8_t>(g_Client.VarGet(0x1675D8C)), // dword_1675D8C
+                    static_cast<int8_t>(warpMode));                  // 8 @0x464489 / 9 @0x4644c5
+                g_Client.Var(0x1675B08) = 1;
+                g_Client.VarF(0x1675B0C) = g_World.gameTimeSec;
+            }
+        }
+    }
+
+    // TODO(state) ancre : le binaire finit par Player_CheckStateDigit(&g_PlayerCmdController)
+    // @0x4644ea (valeur de retour du handler). g_PlayerCmdController (module PlayerCmdController)
+    // n'est ni modelise ni possede par ce front -> non porte. // 0x464160
 }
 
 // ---------------------------------------------------------------------------
@@ -365,14 +453,33 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
                 }
             }
 
-            // Duree de stun selon l'id d'anim (body+272).
-            if ((newAnimId >= 139 && newAnimId <= 145) || (newAnimId >= 147 && newAnimId <= 149))
+            // Char_SetActionAnimParams 0x570E70 REJOUE sur le slot EXISTANT (mode==1) — @0x464b15,
+            // apres l'application du nouveau move-state et du bloc actionState==2, juste avant le
+            // switch de stun. Lit l'action-state COURANT du body (a1[61]=body+220) : pour
+            // self+actionState==2 le move-state a ete restaure a l'ancien ci-dessus, donc l'ancien
+            // action-state — fidele au binaire. Miroir de la sequence du slot neuf (lignes 299-301,
+            // sans Char_RefreshStatusEffectVisuals qui n'est PAS appele sur cette branche).
+            e->anim.state = RdI32(b, kPActionState);
+            Char_ApplyActionAnimParams(e->anim);
+
+            // Duree de stun selon l'id d'anim (body+272), DOUBLEE du miroir self dword_1675884
+            // (@0x464b69/0x464ba0/0x464bd7) — lu par UI_GameHud_Render 0x67a3c0 (3 sites).
+            if ((newAnimId >= 139 && newAnimId <= 145) || (newAnimId >= 147 && newAnimId <= 149)) {
                 WrI32(b, kPStunDur, 90);
-            else if (newAnimId == 146) WrI32(b, kPStunDur, 60);
-            else if (newAnimId == 150) WrI32(b, kPStunDur, 30);
+                if (IsSelf(e)) g_Client.Var(0x1675884) = 90; // dword_1675884 @0x464b69
+            } else if (newAnimId == 146) {
+                WrI32(b, kPStunDur, 60);
+                if (IsSelf(e)) g_Client.Var(0x1675884) = 60; // @0x464ba0
+            } else if (newAnimId == 150) {
+                WrI32(b, kPStunDur, 30);
+                if (IsSelf(e)) g_Client.Var(0x1675884) = 30; // @0x464bd7
+            }
         }
     } else if (p.mode == 3 && IsSelf(e)) {
-        // self, spawn local : l'original remet dword_1675B00=0 (latch local, hors perimetre).
+        // self, spawn local : dword_1675B00=0 @0x464bf0 (latch consomme par ~20 sites —
+        // Scene_InGameUpdate/UI_GameHud_ProcNet/Player_CastSkill…). Meme motif que
+        // Net/GameHandlers_Entity.cpp:48 (opcode 0x15).
+        g_Client.Var(0x1675B00) = 0;
     }
     // mode==2 : aucun effet sur le slot existant (fidele au handler d'origine).
 
@@ -488,23 +595,76 @@ NpcEntity* EntityManager::OnSpawnNpc(const net::SpawnNpc& p) {
 // op 0x10 — Pkt_CharStateUpdate : pose/efface 36 bitfields d'etat d'un personnage.
 // ---------------------------------------------------------------------------
 void EntityManager::OnCharStateUpdate(const net::CharStateUpdate& p) {
+    // Pkt_CharStateUpdate 0x464c10. Layout: [op][idHi@8156C1][idLo@8156C5]
+    //   [stateValues 288o = 36 paires @8156C9][stateFlags 144o = 36 @8157E9] = 441 o.
     PlayerEntity* e = FindPlayer({ p.entityIdHi, p.entityIdLo });
-    if (!e) return; // n'agit que sur une entite existante.
+    if (!e) return; // v7 == -1 : le binaire ne fait rien si l'entite n'existe pas.
 
     uint8_t* b = e->body.data();
-    for (size_t i = 0; i < kPStateCount; ++i) {
-        const uint32_t flag = p.stateFlags[i];
+    const bool self = IsSelf(e); // branchement if(v7)/else @0x464d1a : v7==0 => SELF.
+
+    for (int i = 0; i < static_cast<int>(kPStateCount); ++i) {
+        const uint32_t flag  = p.stateFlags[i];          // v8[i]
+        const uint32_t val   = p.stateValues[2 * i];     // v3[2*i]
+        const uint32_t extra = p.stateValues[2 * i + 1]; // v3[2*i+1]
+
         if (flag == 1) {
-            // Pose l'etat i = valeur (paire [valeur, extra], on retient la valeur).
-            WrU32(b, kPStateArr + 4 * i, p.stateValues[2 * i]);
+            if (self) {
+                // Branche SELF @0x46529e : miroir dword_16758D8/DC + horodatage AVANT le switch.
+                WrZoneU32(8 * i, val);                                   // dword_16758D8[2*i] @0x46530c
+                WrZoneU32(8 * i + 4, extra);                             // dword_16758DC[2*i] @0x465326
+                g_Client.VarF(0x16759F8 + 4 * i) = g_World.gameTimeSec;  // flt_16759F8[i]     @0x465339
+                WrU32(b, kPStateArr + 4 * i, val);                       // dword_168737C[i]   @0x46535f
+                switch (i) {
+                    // Cas 15/16/17/18 : le binaire joue un son (Snd3D_PlayScaledVolume, dernier
+                    //   arg=1 en self @0x46537a/0x4653c2/0x46540a/0x465452) et pose des drapeaux/
+                    //   timers d'effet (dword_1687598 @0x46538b, unk_168759C @0x4653a3,
+                    //   dword_16875AC @0x4653e1, unk_16875B0 @0x4653f9, dword_16875B4 @0x465429,
+                    //   flt_16875B8 @0x465441). Ces drapeaux sont ECRITURE SEULE (xrefs_to = 2 refs,
+                    //   toutes dans Pkt_CharStateUpdate ; unk_168759C = 0 ref) et vivent a
+                    //   record+868..900, HORS du body de 600 o modelise -> non portables sans effet
+                    //   observable ; audio non branche ici. TODO ancre (0x464c10).
+                    case 15: case 16: case 17: case 18: break;
+                    case 9:  ResetComboSlots(b, true, 9, -1);  break; // @0x465469 (skip slot 9)
+                    case 29: ResetComboSlots(b, true, 29, -1); break; // @0x4655a7
+                    case 30: ResetComboSlots(b, true, 30, -1); break; // @0x4656e5
+                    case 31: ResetComboSlots(b, true, 31, -1); break; // @0x465823
+                    case 32: ResetComboSlots(b, true, 32, -1); break; // @0x465961
+                    case 33: ResetComboSlots(b, true, 33, -1); break; // @0x465a9f (self: saute 33 seul, 6 resets)
+                    case 34: ResetComboSlots(b, true, 34, -1); break; // @0x465bdd (self: saute 34 seul, 6 resets)
+                    case 35: ZeroSelfSlot(b, 35);              break; // @0x465d14 (auto-annulant : ecrit puis efface)
+                    default: break;
+                }
+            } else {
+                // Branche NON-SELF @0x464d1a.
+                WrU32(b, kPStateArr + 4 * i, val); // dword_168737C[227*v7+i] @0x464d9a
+                switch (i) {
+                    // Sons @0x464db5/0x464dfd/0x464e1b/0x464e63 (arg=0) + memes drapeaux morts —
+                    //   voir la branche SELF ci-dessus (non portes, TODO ancre 0x464c10).
+                    case 15: case 16: case 17: case 18: break;
+                    case 9:  ResetComboSlots(b, false, 9, -1);  break; // @0x464eb0 (skip slot 9)
+                    case 29: ResetComboSlots(b, false, 29, -1); break; // @0x464f46
+                    case 30: ResetComboSlots(b, false, 30, -1); break; // @0x464fdc
+                    case 31: ResetComboSlots(b, false, 31, -1); break; // @0x465072
+                    case 32: ResetComboSlots(b, false, 32, -1); break; // @0x465108
+                    // ASYMETRIE PROUVEE (bug d'origine reproduit) : en NON-SELF les cas 33 et 34
+                    //   sautent A LA FOIS 33 ET 34 (5 resets @0x46519a / @0x465213), alors que la
+                    //   branche SELF saute seulement le slot propre (6 resets). Ne PAS corriger.
+                    case 33: ResetComboSlots(b, false, 33, 34); break; // @0x46519a
+                    case 34: ResetComboSlots(b, false, 33, 34); break; // @0x465213
+                    default: break; // pas de cas 35 en non-self.
+                }
+            }
         } else if (flag == 2) {
-            WrU32(b, kPStateArr + 4 * i, 0); // efface l'etat i.
+            if (self) {
+                WrZoneU32(8 * i, 0);             // dword_16758D8[2*i]=0 @0x465d4e
+                WrZoneU32(8 * i + 4, 0);         // dword_16758DC[2*i]=0 @0x465d5f
+                WrU32(b, kPStateArr + 4 * i, 0); // dword_168737C[227*v7+i]=0 @0x465d7c
+            } else {
+                WrU32(b, kPStateArr + 4 * i, 0); // @0x465289
+            }
         }
     }
-    // NB : les cas speciaux d'origine (i=15..18 sons, i=9/29..35 remise a zero des
-    // compteurs de combo, i=35 stun global, et pour self les tableaux globaux
-    // dword_16758D8/DC + horodatage flt_16759F8) relevent de l'audio/du combo/self
-    // et sont a brancher via leurs sous-systemes dedies.
 }
 
 // ---------------------------------------------------------------------------
@@ -580,14 +740,23 @@ void EntityManager::OnPartyMemberPosition(const net::PartyMemberPosition& p) {
 // op 0x19 — Pkt_GroundItemRemove : decrement/retrait d'une pile de ramassage.
 // ---------------------------------------------------------------------------
 void EntityManager::OnGroundItemRemove(const net::GroundItemRemove& p) {
-    if (p.status != 0)
-        return; // status==1 : simple liberation du latch (aucun etat de grille ici).
+    // Pkt_GroundItemRemove 0x46a200. Le verrou anti-spam GM g_GmCmdCooldownLatch 0x1675B08 est
+    // libere pour status 0 (@0x46a25a) ET status 1 (@0x46a30c) ; status>=2 = no-op total.
+    if (p.status == 0 || p.status == 1)
+        g_Client.Var(0x1675B08) = 0;
 
+    if (p.status != 0)
+        return; // status>=1 : pas de retrait de grille (le latch a deja ete traite ci-dessus).
+
+    // status==0 : le binaire joue aussi un son (Snd3D_PlayScaledVolume flt_14891BC @0x46a26f,
+    // audio non branche ici -> TODO ancre), puis decremente/purge la pile.
     GroundPickupSlot* s = PickupSlot(p.containerIndex, p.slotIndex);
     if (!s) return;
 
+    // --dword_1674400[...] @0x46a29c : la garde count>0 est OBLIGATOIRE (count unsigned cote
+    // C++, int signe cote binaire -> meme etat final 0 sans underflow, via le clamp <1 ci-dessous).
     if (s->count > 0) --s->count;
-    if (s->count < 1) { // pile epuisee -> vide la cellule.
+    if (s->count < 1) { // pile epuisee -> vide la cellule (@0x46a2cb/e5/ff).
         s->itemId = 0;
         s->count  = 0;
         s->aux    = 0;

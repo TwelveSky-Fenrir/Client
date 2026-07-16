@@ -627,6 +627,108 @@ SkillCastAttemptResult Skill_CastStoredAtTarget(SelfState& self, const GameDatab
     return out;
 }
 
+// ===================== Prérequis du cast principal ==========================
+// Transcription 1:1 de la chaîne de prérequis de Player_CastSkill 0x53BC40
+// (EA 0x53BD12..0x53BEA0) : record -> forme -> élément -> arme -> coût MP.
+// Cf. le bandeau de SkillCombat.h : NON CONSOMMÉE à ce jour (aucune des 4 entrées
+// joueur du binaire n'est portée) — dette explicite, à câbler par le front qui
+// portera Game_OnHotkey / Game_OnWorldLeftClick / Game_UseFirstReadySkill /
+// AutoPlay_Update.
+
+SkillCastAttemptResult Skill_CheckCastPrereqs(const SelfState& self, const GameDatabases& db,
+                                               const CombatMorphState& morph,
+                                               int skillId, int level, bool showErr) {
+    SkillCastAttemptResult out;
+
+    // --- (0) Record @0x53BD12 ---------------------------------------------------
+    // `call SkillGrowthTbl_GetRecord ; cmp [ebp+var_40],0 ; jnz 53BD27 ; xor eax,eax`
+    // -> échec SILENCIEUX (aucun message) si le record est introuvable.
+    const uint8_t* rec = Skill_GetRecord(db.skill, skillId);
+    if (!rec) {
+        out.reason = SkillCastFailReason::UnknownSkill;
+        return out;
+    }
+
+    // --- (1) Garde FORME @0x53BD27 ----------------------------------------------
+    // `cmp g_SelfMorphNpcId, 58h ; jz 53BD39 ; cmp g_SelfMorphNpcId, 36h ; jnz 53BD81`
+    // puis `cmp [ecx+220h],4 / ,5` et `cmp [eax],4Eh` -> msg 780h (1920) @0x53BD60.
+    // ⚠ FIDÉLITÉ : ce message n'est PAS gaté par arg_C (aucun test de arg_C entre
+    // 0x53BD39 et 0x53BD59) — il est émis même quand showErr est faux.
+    if (morph.currentActionId == 88 || morph.currentActionId == 54) {
+        const int32_t category   = Skill_ReadI32(rec, skillinfo::kOffCategory);  // +0x220
+        const int32_t recSkillId0 = Skill_ReadI32(rec, skillinfo::kOffSkillId);  // rec[0]
+        if (category == 4 || category == 5 || recSkillId0 == 78) {
+            g_Client.msg.System(Str(1920));   // push 780h @0x53BD60 — NON gaté par showErr
+            out.reason = SkillCastFailReason::IncompatibleForm;
+            return out;                        // xor eax,eax @0x53BD7A
+        }
+    }
+
+    // --- (2) Garde ÉLÉMENT @0x53BD84 -------------------------------------------
+    // `cmp dword ptr [edx+228h], 1 ; jz 53BDCF` -> 1 = neutre, passe.
+    // sinon `mov ecx,[eax+228h] ; sub ecx,2 ; cmp ecx, g_LocalElementSecondary` (0x1673198).
+    const int32_t reqElement = Skill_ReadI32(rec, skillinfo::kOffReqElement); // +0x228
+    if (reqElement != 1 && (reqElement - 2) != self.elementSecondary) {
+        if (showErr) g_Client.msg.System(Str(145));  // push 91h @0x53BDAE, gate arg_C @0x53BDA1
+        out.reason = SkillCastFailReason::ElementMismatch;
+        return out;                                   // xor eax,eax @0x53BDC8
+    }
+
+    // --- (3) Garde ARME @0x53BDD2 ----------------------------------------------
+    // `cmp dword ptr [eax+22Ch], 1 ; jz 53BE41` -> 1 = neutre, passe.
+    const int32_t reqWeaponType = Skill_ReadI32(rec, skillinfo::kOffReqWeaponType); // +0x22C
+    if (reqWeaponType != 1) {
+        // MobDb_GetEntry(&mITEM, dword_1673248) @0x53BDE7 — dword_1673248 == g_EquipMain
+        // (0x16731D8) + 7*16 = l'itemId de l'arme équipée (self.equip[7].itemId).
+        const uint8_t* weaponRec = Skill_ItemRecord(db.item, self.equip[7].itemId);
+        if (!weaponRec) {
+            // @0x53BDEF-0x53BDF7 : `cmp [ebp+var_48],0 ; jnz 53BDFC ; xor eax,eax` —
+            // sortie SILENCIEUSE, AUCUN message (ne pas confondre avec le msg 146).
+            out.reason = SkillCastFailReason::WeaponRecordMissing;
+            return out;
+        }
+        // `mov eax,[edx+0BCh] ; sub eax,0Bh ; cmp [ecx+22Ch],eax` @0x53BDFF-0x53BE0B.
+        const int32_t weaponClass = Skill_ReadI32(weaponRec, iteminfo::kOffTypeCode) - 0x0B;
+        if (reqWeaponType != weaponClass) {
+            if (showErr) g_Client.msg.System(Str(146)); // push 92h @0x53BE20, gate arg_C @0x53BE13
+            out.reason = SkillCastFailReason::WeaponMismatch;
+            return out;                                 // xor eax,eax @0x53BE3A
+        }
+    }
+
+    // --- (4) Coût MP @0x53BE41 --------------------------------------------------
+    // Ordre exact : InterpStat(mSKILL, rec[0], level, 1) @0x53BE52 -> Crt_ftol @0x53BE57
+    // -> Char_CalcRegen @0x53BE64 -> si régén>0 : cost -= cost*régén/100 (idiv, division
+    // ENTIÈRE @0x53BE72-0x53BE86). Skill_CalcRealMpCost (SkillSystem.cpp) reproduit déjà
+    // exactement cette chaîne (ftol + réduction entière) : on la réutilise, pas de copie.
+    // ⚠ `mov edx,[ecx]` @0x53BE4A : le skillId passé à InterpStat vient du RECORD, pas de
+    // l'argument (identiques en pratique — le validateur impose rec[0] == index+1 — mais on
+    // reste sur la source du binaire).
+    const int32_t recSkillId = Skill_ReadI32(rec, skillinfo::kOffSkillId);
+    const int regenPct = Skill_CalcRegenPct(self, db.item);   // Char_CalcRegen 0x4D67F0
+    out.mpCost = Skill_CalcRealMpCost(db.skill, recSkillId, level, regenPct);
+
+    // `mov eax, ds:dword_1687378 ; cmp eax,[ebp+var_28] ; jge 53BEEB` @0x53BE89 :
+    // échec si self.mp < coût (dword_1687378 == self.mp).
+    if (self.mp < out.mpCost) {
+        if (showErr) g_Client.msg.System(Str(147));  // push 93h @0x53BEA0, gate arg_C @0x53BE93
+        // SECONDE émission du msg 147 @0x53BEBA : `cmp ds:g_InvDirtyEnable(0x16755AC),1 ;
+        // jnz 0x53BEE4` -> push 93h @0x53BECA. NON gatée par showErr : pendant l'auto-hunt
+        // (où showErr est le plus souvent faux) c'est CE site qui fait surfacer « PM
+        // insuffisant ». Même global et même lecture que Net/GameVarDispatch.cpp:351/392
+        // (VarGet(0x16755AC)==1). Les deux émissions peuvent se déclencher (showErr ET
+        // auto-hunt -> 2 lignes). Détail omis par l'audit initial (la chaîne prouvée ne
+        // s'arrête pas à 0x53BEA0) — re-vérifié au désassemblage 0x53BEBA-0x53BEDF.
+        if (g_Client.VarGet(0x16755ACu) == 1) g_Client.msg.System(Str(147));
+        out.reason = SkillCastFailReason::NotEnoughMp;
+        return out;
+    }
+
+    // Succès : le binaire poursuit @0x53BEEB (suite du cast). Le MP n'est PAS débité ici.
+    out.ok = true;
+    return out;
+}
+
 // ===================== Disponibilité par carte ==============================
 
 int SkillLoadoutTable::Compare(const char currentTag[13], int branch) const {

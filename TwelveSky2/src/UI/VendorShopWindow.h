@@ -15,8 +15,18 @@
 // puisque le catalogue est déjà entièrement dans ces adresses.
 //
 // La fenêtre elle-même ne fait qu'AFFICHER/PAGINER ce catalogue et piloter la
-// sélection LOCALE (Var(0x1826130)) ; l'achat effectif reste un aller-retour
-// serveur non simulé ici — voir TODO(send) dans le .cpp.
+// sélection LOCALE (Var(0x1826130)).
+//
+// ACHAT (mise à jour 2026-07-16, vague W6 — preuve IDA fraîche) : le vrai handler
+// d'achat est UI_NpcShop_OnRDown_Buy 0x5e5000 (clic DROIT sur une case marchande),
+// SEULE émission de la famille UI_NpcShop_* (Enter 0x5e43f0 / OnLDown 0x5e44a0 /
+// OnLUp 0x5e4760 sont 100 % locales). Sa chaîne de gardes est désormais reproduite
+// à l'identique dans HandleBuyClick (voir le .cpp), mais l'ÉMISSION reste bloquée :
+// 4 des 7 champs du paquet (page/freeSlot/col/row) proviennent de
+// Inventory_FindFreeGridSlot 0x54DDE0 + Inventory_FindFreePageSlot 0x54E1D0, qui
+// n'ont aucun équivalent C++ (logique d'allocation d'inventaire relevant de Game/).
+// Le transport lui-même est CONNU et DISPONIBLE (Net_SendPacket_Op19, sous-code 215,
+// bloc 100 o) — cf. TODO [ancre 0x5e562a] dans le .cpp et le rapport de vague.
 //
 // Icône + nom d'une entrée : PAS reversés depuis le paquet réseau lui-même — le nom
 // brut serveur (p.name, 13 o, VendorItemEntry 0x25) est un TODO(state) non stocké
@@ -111,6 +121,12 @@ private:
     void HandleRowClick(int rowInPage);
     void HandleBuyClick();
     void ClampPage();
+
+    // Refus d'achat : reproduit `Msg_AppendSystemLine(g_ChatManager,
+    // StrTable005_Get(g_LangId, id), g_SysMsgColor)` — l'idiome de refus de
+    // UI_NpcShop_OnRDown_Buy 0x5e5000 (11 sites, EA 0x5e5243..0x5e566c).
+    // `strTableId` = id StrTable005 EXACT relevé au désassemblage.
+    void Refuse(int strTableId);
 
     static constexpr int kRowsPerPage = 10;   // fidèle : "10 entrées/page"
     static constexpr int kGridPad     = 12;

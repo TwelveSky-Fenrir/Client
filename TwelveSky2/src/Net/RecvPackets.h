@@ -375,13 +375,26 @@ struct ItemDropResult {
 };
 
 // Pkt_SystemMessageBox 0x464650 (opcode 0x0e / 14 déc) — chargement d'IMAGE serveur
-// (Billboard_ValidateImageViaTempFile -> TEMP.IMG -> Tex_LoadCompressedDDS ; ex-nom trompeur "SystemMessageBox").
-// Payload : [param:u32][image:char[1000]] = 1004 octets.
+// (Billboard_ValidateImageViaTempFile 0x5AEA60 -> TEMP.IMG -> Tex_LoadCompressedDDS ; ex-nom
+//  trompeur "SystemMessageBox").
+// Payload : [byteLen:u32][image:1000 o binaires] = 1004 octets.
+// SÉMANTIQUE PROUVÉE (Billboard_ValidateImageViaTempFile 0x5AEA60) : le handler @0x464650 lit
+//   param(u32)@0x8156C1 puis 1000 o@0x8156C5, puis appelle la fonction qui fait
+//   WriteFile(hFile, lpBuffer=image, nNumberOfBytesToWrite=param, ..) @0x5AEACD. DONC payload+0
+//   = LONGUEUR EN OCTETS de l'image (<=1000) et payload+4 = BLOB DDS BINAIRE brut — ce N'EST PAS
+//   un chemin/chaîne C (un octet nul peut apparaître dès l'index 0).
 struct ServerBillboardImage {
-    uint32_t param;        // payload+0 : id/type transmis à Billboard_ValidateImageViaTempFile
-    char     image[1000];  // payload+4 : chemin/nom du fichier image (chaîne C)
-    // TODO(state): appeler Billboard_ValidateImageViaTempFile(param, image) —
-    //   valide l'image via un fichier temporaire puis l'affiche dans la boîte de dialogue.
+    uint32_t param;        // payload+0 : LONGUEUR en octets à écrire dans TEMP.IMG (nNumberOfBytesToWrite)
+    char     image[1000];  // payload+4 : BLOB DDS BINAIRE (PAS une chaîne C ; NUL possible dès l'octet 0)
+    // TODO(type) [ancre 0x5AEA60] : retyper param->byteLen et image->uint8_t[1000] serait plus
+    //   fidèle, MAIS le consommateur Net/GameHandlers_Misc.cpp (op 0x0e) fait strnlen(p.image,..)
+    //   -> un retype casserait cette TU (hors périmètre de ce front, non compilable ici). Le
+    //   retype ET son consommateur doivent être corrigés ENSEMBLE par le propriétaire de
+    //   GameHandlers_Misc.cpp : écrire les `param` premiers octets de image[] via
+    //   Billboard_ValidateImageViaTempFile (CreateFileA "TEMP.IMG" -> WriteFile param octets ->
+    //   Tex_LoadCompressedDDS -> DeleteFileA, puis *(obj+40)=1 / *(obj+44)=g_GameTimeSec sur
+    //   dword_1822350). Le strnlen actuel TRONQUE le blob binaire au 1er octet nul (sémantique
+    //   inversée : le champ n'est pas un nom de fichier).
     static ServerBillboardImage Parse(const uint8_t* payload, size_t len);
 };
 
@@ -495,9 +508,10 @@ struct CultivationDispatch {
 // Payload : [flags:u32[4]] = 16 octets.
 struct ZoneBuffStatus {
     uint32_t flags[4];  // payload+0 : 4 drapeaux on(1)/off, indexés par faction (str 75..78)
-    // ÉTAT : implémenté — Net/GameHandlers_BossWorld.cpp (0x60) : ligne agrégée str75..78+ON/OFF
-    //   (flags[3] inconditionnel — la garde g_SelfMorphNpcId>153 n'est PAS reproduite, cf. commentaire
-    //   du handler) ; si flags[g_LocalElement]==0 -> BeginWarpToFactionTown (Game/MapWarp.h).
+    // ÉTAT : implémenté — Net/GameHandlers_BossWorld.cpp (0x60) : ligne agrégée "[str75..78] ON/OFF"
+    //   (test `== 1` @0x4A52E4/0x4A5367/0x4A53EA ; 4e bloc "[%s] %s" gardé par g_SelfMorphNpcId>153
+    //   @0x4A5470 — fidèlement reproduit) ; si flags[g_LocalElement]==0 -> BeginWarpToFactionTown
+    //   (Game/MapWarp.h). (L'ancienne note « garde >153 non reproduite » est CADUQUE.)
     static ZoneBuffStatus Parse(const uint8_t* payload, size_t len);
 };
 

@@ -16,11 +16,11 @@
 // coordonnées si un résolveur est fourni, code de warp) et les GARDES (mort/cooldown/
 // morph déjà en cours), et pose l'INTENTION de warp dans les globals "longue traîne"
 // (g_Client.Var, mêmes adresses que le binaire). Quand un NetClient est fourni, il émet
-// désormais le paquet de warp réel (Net_SendWarpRequest = Op20 0x4B5000). RESTENT HORS
-// PÉRIMÈTRE (TODO précis à chaque point d'usage, EA citée) : le rendu monde (World_LoadMap,
-// déjà écrit dans World/WorldMap.*), l'Op99 apparence/auto-hunt (blobs possédés par le front
-// autoplay/apparence, non modélisés) et les émetteurs op0/op1 Net_QueueMoveTo/RespawnMove
-// (module PlayerCmdController non implémenté).
+// désormais le paquet de warp réel (Net_SendWarpRequest = Op20 0x4B5000) ET l'Op99 auto-hunt
+// (Net_SendAutoHuntSync = 0x4BD140, blobs à zéro tant que la config auto-hunt n'est pas
+// modélisée — cf. MapWarp.cpp EmitAutoHuntSync). RESTENT HORS PÉRIMÈTRE (TODO précis à chaque
+// point d'usage, EA citée) : le rendu monde (World_LoadMap, déjà écrit dans World/WorldMap.*)
+// et les émetteurs op0/op1 Net_QueueMoveTo/RespawnMove (module PlayerCmdController non implémenté).
 //
 // ---------------------------------------------------------------------------------------
 // Dérivation de "*(this+1784)" (this=g_LocalPlayerSheet 0x1685748, index DWORD) :

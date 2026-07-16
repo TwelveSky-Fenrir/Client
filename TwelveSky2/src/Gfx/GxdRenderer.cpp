@@ -137,6 +137,17 @@ bool GxdRenderer::DeviceReinit(IDirect3D9* d3d, IDirect3DDevice9* device,
 
 // ---------------------------------------------------------------------------
 // GXD_BeginScene 0x404640
+//
+// TODO [ancre 0x404640] : NON CÂBLÉE — aucun appelant côté ClientSource. Le chemin
+// runtime réel est App.cpp (boucle de frame) -> Renderer::BeginFrame() -> SceneManager::
+// Render(), qui reproduit déjà Gfx_BeginFrame 0x6A2280 (Object A : Clear + BeginScene) et
+// appelle GXD_ConfigSamplerStates 0x403B50 à la bonne position. Câbler SetupFrame() en
+// l'état produirait un DOUBLON de Clear/BeginScene avec Renderer::BeginFrame (et un
+// BeginScene imbriqué => D3DERR_INVALIDCALL). Dans le binaire les deux coexistent bien,
+// mais GXD_BeginScene n'est PAS sur le chemin des Scene_*Render (ses 6 sites d'appel de
+// ConfigSamplerStates sont dans les scènes ; le 7e, 0x4047C7, est ici) : GXD_BeginScene
+// sert aux passes de rendu d'Object B. Gap distinct, hors du périmètre de ce front —
+// la répartition Object A / Object B des débuts de frame doit être tranchée globalement.
 // ---------------------------------------------------------------------------
 bool GxdRenderer::SetupFrame() {
     if (!m_device) return false;
@@ -185,6 +196,24 @@ bool GxdRenderer::SetupFrame() {
 // GXD_ConfigSamplerStates 0x403B50
 // ex-VeryOldClient: TW2AddIn::GXD::SetDefaultTextureSamplerState
 //   (ANISOTROPIC vs LINEAR selon mSamplerOptionValue = champ +8 / m_useLinearFilter).
+//
+// CÂBLAGE (gap GX-DEV-02) : appelée PAR FRAME depuis ts2::gfx::Renderer::BeginFrame(),
+// juste après Clear+BeginScene — position fidèle aux 6 sites d'appel des Scene_*Render
+// (0x518916, 0x5192F6, 0x51B0C6, 0x51CF76, 0x52C306, 0x52D24A), qui appellent tous
+// GXD_ConfigSamplerStates(&g_GxdRenderer) juste après Gfx_BeginFrame(g_GfxRenderer).
+// Elle est ATTEINTE par le chemin runtime réel App.cpp -> Renderer::BeginFrame().
+// (Auparavant son seul appelant C++ était SetupFrame(), elle-même sans appelant : le
+//  filtrage anisotrope n'était donc JAMAIS actif et le device restait sur le LINEAR posé
+//  à l'init par Object A / Gfx_InitDevice 0x69C470.)
+//
+// La branche exécutée est l'ANISOTROPE : le champ +8 (dword_18C4F00) n'a qu'un seul
+// writer absolu dans le binaire, GXD_InitGlobalState 0x40139C, qui le met à 0 — la branche
+// linéaire (+8 != 0) est morte en pratique mais reproduite ici par fidélité.
+//
+// ÉCART ASSUMÉ (bénin, état final identique) : le binaire ordonne les SetSamplerState par
+// étage (avec une queue commune stage 2 ADDRESSU/V @0x403E1B/0x403E34), ici on fait deux
+// boucles s=0..2. Chaque couple (étage, type) est écrit UNE SEULE FOIS avec la MÊME valeur
+// dans les deux formes : l'état résultant du device est strictement identique.
 // ---------------------------------------------------------------------------
 void GxdRenderer::ConfigSamplerStates() {
     if (!m_device) return;

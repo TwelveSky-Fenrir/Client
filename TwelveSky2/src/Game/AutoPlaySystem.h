@@ -30,14 +30,20 @@
 //   AutoPlay_UpdateTargeting        0x45D080 -> UpdateTargeting()
 //   AutoPlay_ClearTargetSlot        0x4587E0 -> ClearTargetSlot()
 //   AutoPlay_ResetTargetList        0x458AB0 -> ResetTargetList()
+//   AutoPlay_Start                  0x45D580 -> Start()  (reset+armement+chargement des listes)
+//   AutoPlay_LoadFriendList         0x45D730 -> LoadFriendList()  (G02_GINFO\011.BIN)
+//   AutoPlay_LoadEnemyList          0x45DAF0 -> LoadEnemyList()   (G02_GINFO\012.BIN)
+//   AutoPlay_SaveFriendList         0x45DE50 -> SaveFriendList()
+//   AutoPlay_SaveEnemyList          0x45E140 -> SaveEnemyList()
+//   AutoPlay_Update                 0x45E770 -> Update()  (tick principal : spine loot/liste)
 // + petits utilitaires appelés par le cluster (traduits car indispensables) :
 //   Player_IsCharClass  0x45C550, Player_IsInStance 0x45C480, sub_45C590 (affinité élément),
 //   AutoPlay_IsFriend 0x45FAA0, AutoPlay_IsEnemy 0x45FBE0, Stat_UnpackCombined 0x54CE40.
 //
 // PÉRIMÈTRE : la machine d'état de ciblage/farming, PAS le rendu des panneaux UI autoplay
 // (hors périmètre, cf. TODO ci-dessous). Les sous-systèmes tiers (collision de déplacement,
-// réseau, placement d'objet en sac, listes ami/ennemi de la vraie UI sociale, classe/stance
-// du joueur local au sens large) ne sont PAS modélisés dans Game/GameState.h ni les autres
+// réseau, placement d'objet en sac, classe/stance du joueur local au sens large) ne sont PAS
+// modélisés dans Game/GameState.h ni les autres
 // en-têtes partagés : ils sont exposés via des points d'intégration explicites (host/
 // externalState ci-dessous), documentés avec leur EA d'origine, à brancher par l'appelant.
 //
@@ -93,10 +99,29 @@ struct AutoPlayConfig {
 // ---------------------------------------------------------------------------
 struct AutoPlayExternalState {
     bool worldReady = true;               // dword_14A88E8 (monde/collision prêt)
-    bool sceneTransitionBlocking = false; // sub_53B9E0 0x53B9E0 : true ssi dword_1822390==1 ET dword_1822388==1
+    // = !Game_IsSceneNotReady() 0x53B9E0 : VRAI ssi dword_1822390==1 ET dword_1822388==1 (scène
+    // PRÊTE). ATTENTION POLARITÉ : Game_IsSceneNotReady() renvoie l'INVERSE (vrai = scène NON
+    // prête, `dword_1822390!=1 || dword_1822388!=1`) ; ce champ stocke SA NÉGATION. Lu tel quel
+    // par MoveToNpc 0x45C608 (`if (!Game_IsSceneNotReady()) return 1;`, cf. .cpp:453) ET par
+    // host.CanAutoInteractNpc (SceneManager.cpp). PRODUCTEUR À CÂBLER (hors périmètre) : un tick
+    // doit écrire `sceneTransitionBlocking = !Game_IsSceneNotReady()` — aujourd'hui JAMAIS écrit
+    // (=false à vie), donc MoveToNpc traite la scène comme jamais prête (branche interaction
+    // toujours prise). Cf. rapport : câblage requis dès que MoveToNpc devient atteint par Update.
+    bool sceneTransitionBlocking = false;
     bool warpSuppressed = false;          // dword_1675B00
     bool morphInProgress = false;         // dword_1675A88 (nom IDB : g_MorphInProgress)
-    bool invDirtyEnable = true;           // g_InvDirtyEnable 0x16755AC (argument de Net_SendOp99)
+    bool invDirtyEnable = true;           // g_InvDirtyEnable 0x16755AC (argument de Net_SendOp99).
+    // NB : ré-armé (=1) en permanence par les op. d'inventaire (Inv_Add/RemoveItemQuantity, 82
+    // xrefs sur 0x16755AC) ; requis =true pour que la garde d'entrée d'AutoPlay_Update @0x45e792
+    // laisse passer. Le latch de Start le remet à 0 une fois (flush serveur) — cf. Update().
+
+    // g_AutoHuntFuelA/B 0x16755A4 / 0x16755A8 : compteurs de "carburant" d'auto-hunt (durée/charges
+    // restantes). Garde d'entrée d'AutoPlay_Update 0x45E770 @0x45e792 : le tick ne fait RIEN tant
+    // que les DEUX valent <= 0. Mis > 0 par l'UI d'activation d'autoplay (AutoPlay_OnMouseUpMain
+    // 0x45A980, hors périmètre — front UI voisin). SANS cet armement, la chaîne d'auto-hunt (donc
+    // l'interrogation des listes ami/ennemi via MoveToNpc) ne s'exécute pas — fidèle au binaire.
+    int32_t autoHuntFuelA = 0;
+    int32_t autoHuntFuelB = 0;
 
     uint32_t selectedInvItemId = 0;   // g_SelectedInvItemId 0x1673258 (sélection UI inventaire)
     int32_t  selectedInvCounter = 0;  // dword_167325C (compteur associé, sémantique non prouvée ici)
@@ -193,13 +218,42 @@ public:
     AutoPlayExternalState  externalState;
     AutoPlayHost           host;
 
-    // Listes de noms ami/ennemi (List_Construct(this+296)/(this+324) de l'original —
-    // AutoPlay_IsFriend 0x45FAA0 / AutoPlay_IsEnemy 0x45FBE0 en faisaient une recherche
-    // linéaire par égalité de chaîne ; std::vector<std::string> reproduit fidèlement).
+    // Listes ami/ennemi = FILTRES DE BUTIN PAR NOM D'OBJET (ce ne sont PAS des noms de joueurs,
+    // PAS l'UI sociale). Chargées de G02_GINFO\011.BIN (amis) / 012.BIN (ennemis) — this+296 /
+    // this+324 de l'original —, chaque nom VALIDÉ à la lecture contre la table ITEM (MobDb_FindByName
+    // mITEM 0x4C3C50 : stride 436, nom @+4 = ItemInfo::name) ; un nom inexistant est silencieusement
+    // rejeté. Interrogées par AutoPlay_FindNpcTarget 0x458E90 sur le nom (def+4) de l'entrée de
+    // butin/NPC :
+    //   - friendNames (IsFriendName @0x458FEB) = LISTE BLANCHE : objet TOUJOURS sélectionné,
+    //     court-circuitant le masque de catégorie config.pkFactionMask.
+    //   - enemyNames  (IsEnemyName  @0x4590D1) = LISTE NOIRE  : objet JAMAIS sélectionné par la
+    //     voie catégorie, même si sa catégorie est cochée.
+    // AutoPlay_IsFriend 0x45FAA0 / AutoPlay_IsEnemy 0x45FBE0 = recherche linéaire par égalité de
+    // chaîne (Crt_Strcmp) — std::vector<std::string> reproduit fidèlement.
     std::vector<std::string> friendNames;
     std::vector<std::string> enemyNames;
     bool IsFriendName(const char* name) const; // AutoPlay_IsFriend  0x45FAA0
     bool IsEnemyName(const char* name)  const; // AutoPlay_IsEnemy   0x45FBE0
+
+    // ---- Chargement/sauvegarde des listes (G02_GINFO\011.BIN / 012.BIN) ---------------------
+    // Fichier = 1200 o = 48 x 25 (sans en-tête), bourrage '@' (0x40). Load exige EXACTEMENT
+    // 1200 o lus (sinon vide la liste + renvoie false, comme les 4 chemins d'échec du binaire) ;
+    // le nom d'un slot = ses octets jusqu'au 1er '@' ou NUL. Save : garde taille (Friend : > 48 =>
+    // vide + false SANS écrire ; Enemy : > 48 => vide PUIS écrit — asymétrie fidèle 0x45DEC0 /
+    // 0x45E1A3), buffer pré-rempli '@', écrit 1200 o. Save requis par l'UI d'édition
+    // (AutoPlay_OnMouseUpNameList 0x45B000, front UI voisin) — exposé même si pas encore câblé.
+    bool LoadFriendList(); // AutoPlay_LoadFriendList 0x45D730
+    bool LoadEnemyList();  // AutoPlay_LoadEnemyList  0x45DAF0
+    bool SaveFriendList(); // AutoPlay_SaveFriendList 0x45DE50
+    bool SaveEnemyList();  // AutoPlay_SaveEnemyList  0x45E140
+
+    // Reset des cibles + armement de l'auto-hunt + CHARGEMENT des listes ami/ennemi. Miroir
+    // d'AutoPlay_Start 0x45D580, dont l'UNIQUE appelant binaire est UI_InitAllDialogs 0x5ABF50
+    // @0x5AC193. À CÂBLER (hors périmètre) : appeler UNE FOIS à l'init du HUD — cf.
+    // SceneManager.cpp:346 juste après `windows_->Init(...)` réussi (équivalent ClientSource de
+    // UI_InitAllDialogs). SANS cet appel, LoadFriendList/LoadEnemyList ne tournent jamais et les
+    // listes restent vides (c'est le défaut D1 corrigé par ce front).
+    bool Start(); // AutoPlay_Start 0x45D580
 
     // ---- Machine de ciblage --------------------------------------------------
     bool    BuildTargetList();                                    // 0x458280
@@ -235,11 +289,14 @@ public:
     bool CheckTownScroll();       // 0x45C9B0 (item 563)
     bool HasRequiredItems() const; // 0x45CC10
 
-    // ---- Orchestration --------------------------------------------------------
-    // Absent du cluster d'origine tel quel : enchaîne un pas de farming complet par
-    // frame (ciblage puis auto-consommables), comme le ferait la boucle de jeu appelant
-    // ces fonctions séparément. dt en secondes (remplace GetTickCount() par un
-    // accumulateur — mêmes seuils : 1000 ms -> 1.0f, 50 ms -> 0.05f, cf. .cpp).
+    // ---- Tick principal -------------------------------------------------------
+    // Portage fidèle d'AutoPlay_Update 0x45E770 (la « spine » atteignable : gardes -> latch
+    // inv-dirty -> throttle matériaux -> chaîne OR loot/NPC/consommables dont MoveToNpc ->
+    // ciblage monstre). C'EST ce tick qui interroge les listes ami/ennemi (via MoveToNpc ->
+    // FindNpcTarget), correctif du défaut « listes chargées mais jamais consultées ». Le tail
+    // de combat (Player_CastSkill/Net_QueueRunTo) est DÉFÉRÉ (cf. .cpp, TODO 0x45E91D). dt en
+    // secondes (remplace GetTickCount() par des accumulateurs — seuils 2000 ms / 50 ms, cf. .cpp).
+    // Déjà câblé chaque frame InGame : GameWindows::UpdateAutoPlay -> SceneManager.cpp:1258.
     void Update(float dt);
 
     // Accès lecture (diagnostic / UI — le rendu du panneau autoplay reste hors périmètre,
@@ -257,9 +314,19 @@ private:
     int32_t  currentTargetIndex_ = -1;  // +220, -1 = aucune cible verrouillée
     std::vector<MonsterAutoplayExt> ext_;
 
-    // Timers dt-driven (remplacent GetTickCount() — cf. commentaire Update()).
+    // Timers dt-driven (remplacent GetTickCount() — cf. commentaire Update()). npcInteractCooldownSec_
+    // modélise this[60] (byte +240) : timestamp partagé « dernière action » lu à la fois pour le
+    // cooldown 50 ms (MoveToNpc 0x45C5F7) et le throttle 2000 ms (Update 0x45E827).
     float rebuildTimerSec_ = 0.0f;          // +228 (rebuild toutes les 1000 ms)
-    float npcInteractCooldownSec_ = 0.0f;   // +240 (cooldown interaction NPC 50 ms)
+    float npcInteractCooldownSec_ = 0.0f;   // +240 (cooldown NPC 50 ms / throttle matériaux 2000 ms)
+
+    // this+288 : armé (=1) par Start 0x45D641 ; garde la chaîne OR d'auto-hunt d'AutoPlay_Update
+    // (rien ne l'efface dans le cluster étudié -> reste vrai après l'init HUD, le carburant
+    // g_AutoHuntFuelA/B faisant office de gate d'activité réelle).
+    bool huntArmed_ = false;
+    // this+284 : armé (=1) par Start 0x45D634 ; latch one-shot -> flush inv-dirty au serveur
+    // (Net_SendOp99) au 1er tick armé puis désarmé, cf. Update() @0x45e79e.
+    bool invDirtyStartLatch_ = false;
 
     // État partagé entre CheckReturnScroll et CheckTownScroll (dword_1675B08/1675B1C/
     // 1675B20/flt_1675B0C de l'original — UN SEUL parchemin en vol à la fois, quel que

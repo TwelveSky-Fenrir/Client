@@ -29,9 +29,20 @@ static std::vector<uint8_t> ReadEntity(ByteReader& r, uint32_t& raw, uint32_t& p
 //  .SOBJECT
 // =====================================================================
 
-// Bloc texture d'un mesh (Tex_ReadFromMemory 0x417D20). Le flux zlib n'est
-// PAS décompressé ici (fidèle au walker) : on conserve les octets bruts.
+// Bloc texture d'un mesh (Tex_ReadFromMemory 0x417D20). Le flux zlib brut est CONSERVÉ tel quel
+// (le walker n'en a pas besoin, et MeshRenderer::createDiffuse le ré-inflate à l'upload GPU).
 // ex-VeryOldClient: TEXTURE_FOR_GXD.Load (2 u32 finaux = processMode/alphaMode).
+//
+// SOBJ-02 (Passe 4 / W7, front sobject-material) : le trailer 8 o était JETÉ -> blendMode figé à 0
+// (opaque) pour tous les meshes. Tex_ReadPacked 0x417740 décompresse le bloc PUIS lit les 8 octets
+// de queue (a1[10]/a1[11] @0x4178d6/@0x4178dd, cf. bandeau de SObjectTexture dans Model.h). On
+// reproduit ce décodage ici : c'est le SEUL endroit où l'asset voit le bloc décompressé, et c'est
+// la struct texture elle-même que le binaire remplit — remplir le champ ailleurs (au moment de
+// l'upload GPU) laisserait ces champs Asset morts.
+//
+// COÛT ASSUMÉ : un inflate par texture au parse (le binaire inflate lui aussi au load, @0x417872),
+// puis un second à l'upload GPU (createDiffuse). Les modèles sont chargés une fois et mis en cache
+// (Gfx/ModelCache), donc ce doublon reste hors du chemin de frame.
 static void WalkTexture(ByteReader& b, SObjectTexture& t) {
     t.ddsSize = b.U32();          // a2[1] : 0 => absente
     if (t.ddsSize == 0) {
@@ -43,6 +54,22 @@ static void WalkTexture(ByteReader& b, SObjectTexture& t) {
     t.packedSize = b.U32();       // octets zlib
     t.compressed.resize(t.packedSize);
     if (t.packedSize) b.Read(t.compressed.data(), t.packedSize);
+
+    // Trailer : bloc décompressé = [DDS: ddsSize][u32 processMode][u32 alphaMode], rawSize==ddsSize+8
+    // (Tex_ReadPacked 0x417740 : lpMema = a1[1] = ddsSize @0x41788e, lectures @0x4178d6/@0x4178dd).
+    // Inflate dans un tampon TEMPORAIRE (non retenu : seuls les 8 o de queue nous intéressent ici).
+    // Non fatal : sans trailer lisible, on laisse trailerDecoded=false et alphaMode=0 (opaque) —
+    // c'est-à-dire exactement le comportement d'avant ce correctif, jamais pire.
+    // Bornes calculées PAR SOUSTRACTION (jamais `ddsSize + 8`, qui déborderait sur un u32
+    // corrompu et laisserait passer une lecture hors tampon quelques lignes plus bas).
+    if (t.packedSize == 0 || t.ddsSize > t.rawSize || t.rawSize - t.ddsSize < 8u) return;
+    Zlib& zlib = Zlib::Instance();
+    if (!zlib.Available()) return;
+    std::vector<uint8_t> block(t.rawSize);
+    if (!zlib.Inflate(t.compressed.data(), t.compressed.size(), block.data(), t.rawSize)) return;
+    std::memcpy(&t.processMode, block.data() + t.ddsSize,     4); // a1[10] -> matériau +40
+    std::memcpy(&t.alphaMode,   block.data() + t.ddsSize + 4, 4); // a1[11] -> matériau +44
+    t.trailerDecoded = true;
 }
 
 // Lecteur d'un mesh (Mesh_ReadFromMemory 0x40C380).

@@ -79,17 +79,24 @@ enum class ChatChannel : int {
     Normal   = 6, // -> Net_SendOp80(msg61)            (dire local, canal par defaut)
 };
 
-// Couleurs par canal (defaut). L'original lit une table de 8 dwords
-// 0x84DFD8..0x84DFF4 (system/whisper/party/shout/guild/faction/trade/gm) ; on
-// fournit des valeurs lisibles a defaut de la table localisee.
-inline constexpr Color kColorSystem   = 0xFFC8C8C8u; // gris clair
-inline constexpr Color kColorNormal    = 0xFFFFFFFFu; // blanc (dire / cri)
-inline constexpr Color kColorWhisper   = 0xFFFF80FFu; // rose
-inline constexpr Color kColorParty     = 0xFF80C0FFu; // bleu clair
-inline constexpr Color kColorAlliance  = 0xFF80FFFFu; // cyan
-inline constexpr Color kColorGuild     = 0xFF80FF80u; // vert
-inline constexpr Color kColorFaction   = 0xFFFFA030u; // orange
-inline constexpr Color kColorTrade     = 0xFFFFFF60u; // jaune
+// Couleurs de canal : l'original resout a l'affichage la table de 8 index
+// mFONTCOLOR (ColorTable_InitPalette 0x4C1D60 ; +184 = 0x84DFD8..0x84DFF4 =
+// system/whisper/party/shout/guild/faction/trade/gm) via ColorTable_GetColor
+// 0x4C1FE0. ChatWindow::ChannelColor() (voir ChatWindow.cpp) lit DESORMAIS ces
+// couleurs REELLES depuis game::g_Strings.colors (Game/StringTables.h), au lieu des
+// valeurs inventees precedentes (whisper/party/guild/faction/trade supprimees).
+//
+// Deux canaux N'ONT PAS d'index prouve dans la table (0x4C1D60 n'en definit que 8)
+// et gardent donc un repli LOCAL documente :
+//   - Normal : le "dire" local (Op80, Chat_SubmitTypedMessage 0x5C3CF0) n'est PAS le
+//     "cri" (Shout = idx39, Pkt_ShoutMessage 0x48F640 = opcode 0x43) -> pas d'index.
+//   - Alliance : aucun des 8 index de 0x4C1D60 ne correspond a l'alliance.
+// kColorSystem reste un repli LOCAL pour les lignes systeme purement cosmetiques de ce
+// widget (ex. "Message bloque") ; les VRAIES lignes systeme arrivent deja colorees
+// (g_SysMsgColor 0x84DFD8 idx15) via game::g_Client.msg -> SyncFromMessageLog.
+inline constexpr Color kColorSystem   = 0xFFC8C8C8u; // repli local (lignes systeme cosmetiques du widget)
+inline constexpr Color kColorNormal   = 0xFFFFFFFFu; // repli : Op80 "dire" local, aucun index de palette prouve (0x4C1D60)
+inline constexpr Color kColorAlliance = 0xFF80FFFFu; // repli : aucun index de canal alliance prouve (0x4C1D60)
 
 // -----------------------------------------------------------------------------
 // ChatWindow : deux journaux en anneau (chat + systeme), un canal courant, une

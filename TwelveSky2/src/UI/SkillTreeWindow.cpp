@@ -44,6 +44,11 @@
 #include "UI/SkillTreeWindow.h"
 #include "UI/PanelSkin.h"
 #include "Asset/ImgFile.h"
+// Verrous consultés par la confirmation d'apprentissage (UI_MsgBox_OnLButtonUp case 3,
+// 0x5C0C23/0x5C0C36) : net::g_MorphInProgress 0x1675A88, net::g_GmCmdCooldownLatch
+// 0x1675B08. Cf. AttemptLearn(). L'émission 202 elle-même reste NON câblée (npcId
+// indisponible) : aucun include de Net/SendPackets.h ici, ce serait un include mort.
+#include "Net/ClientState.h"
 
 #include <cstdio> // snprintf
 
@@ -339,6 +344,57 @@ void SkillTreeWindow::HandleCandidateClick(int rowOnPage) {
     statusIsError_ = false;
 }
 
+// AttemptLearn — confirmation de l'apprentissage d'une compétence.
+//
+// ANCRE RÉELLE : UI_MsgBox_OnLButtonUp 0x5C0A90, case 3 (loc_5C0C23, via la table de
+// saut jpt_5C0BE5) — c'est le bouton « OK » de la boîte de confirmation ouverte par
+// UI_SkillLearn_OnLDown 0x5E1C40 (UI_MsgBox_Open(..., /*kind*/3, ...) 0x5E20C0).
+// Ce que le binaire fait, EXACTEMENT (désassemblage relu cette passe) :
+//     cmp g_MorphInProgress, 1   -> si ==1 : return 1            // 0x5C0C23 refus MUET
+//     cmp g_GmCmdCooldownLatch,0 -> si !=0 : return 1            // 0x5C0C36 refus MUET
+//     mov ecx, dword_18231D0                                     // 0x5C0C49 skillId  -> a2
+//     mov edx, dword_1822ED0 ; mov eax, [edx]                    // 0x5C0C50 npcId    -> a1
+//     call Net_SendVaultReq_202                                  // 0x5C0C5E
+//     mov g_GmCmdCooldownLatch, 1                                // 0x5C0C63
+//     fld g_GameTimeSec ; fstp flt_1675B0C                       // 0x5C0C6D..0x5C0C73
+//     mov dword_18231D0, 0                                       // 0x5C0C79 vide la sélection
+// -> AUCUN effet local : le case 3 n'écrit NI g_LearnedSkills NI g_SkillPointPool. Le
+//    binaire ATTEND la réponse du serveur (qui remet aussi le latch à 0).
+//
+// CORRECTION DE FIDÉLITÉ (Passe 4 / W6) : l'appel game::Skill_Learn(...) qui figurait
+// ici est SUPPRIMÉ. Il débitait self_->skillPoints ET plaçait la compétence dans la
+// barre localement — un effet optimiste que le binaire ne fait PAS (même défaut que
+// celui relevé sur EnchantWindow en Passe 3). De plus Skill_Learn est ancrée sur
+// Pkt_ItemAction G0 0x46A456 (cf. Game/SkillSystem.h:23), un handler ENTRANT :
+// c'est l'apprentissage par LIVRE de compétence, donc un TOUT AUTRE FLUX, réutilisé
+// à tort comme action UI locale.
+//
+// TODO [ancre 0x5C0C5E] émission NON câblée — un SEUL blocage RESTANT (le npcId,
+// point 1), non contournable sans inventer une donnée (règle « ne jamais deviner ») ;
+// le point 2 (builder) a été RÉSOLU depuis l'extraction et n'est conservé que pour
+// mémoire :
+//   1) npcId INDISPONIBLE. payload[0..3] = *dword_1822ED0 = l'id du PNJ formateur dont
+//      la grille 3x8 est ouverte (le vrai widget est PROPRE au PNJ). Cette fenêtre-ci
+//      est un arbre GÉNÉRIQUE paginé ouvert au raccourci 'K' (UI/GameWindows.cpp:129,
+//      hotkeys::kSkillTree) ; Bind() ne porte AUCUNE liaison PNJ et il n'existe ici
+//      aucun npcId prouvé. Émettre npcId=0 — ou détourner le var PNJ du marchand
+//      (dword_1837E6C, cf. UI/VendorShopWindow.cpp:329, autre global, autre flux) —
+//      serait une invention. Le vrai correctif est de porter la fenêtre PNJ
+//      (UI_SkillLearn_* 0x5E1BA0..0x5E2450 + MsgBox kind 3), hors périmètre de ce front.
+//   2) builder — RÉSOLU depuis l'extraction (ne bloque PLUS). Net_SendVaultReq_202 a
+//      été corrigé en la signature fidèle au fil :
+//        void Net_SendVaultReq_202(NetClient& nc, int32_t npcId, int32_t skillId);
+//      (Net/SendPackets.h:242 / SendPackets.cpp:2320 — copie f[2]={npcId,skillId} sur
+//      8 octets). Conforme au binaire (revérifié cette passe) : Net_SendVaultReq_202
+//      0x590280 fait Crt_Memcpy(v3, &a1, 4u) @0x5902A4 puis Crt_Memcpy(v4, &a2, 4u)
+//      @0x5902B6 (v4 contigu à v3), soit payload[0..3]=npcId i32 LE,
+//      payload[4..7]=skillId i32 LE (le `char a2` du prototype IDA était une inférence,
+//      PAS la réalité du fil). Le builder n'est donc plus un empêchement ; seul le
+//      npcId (point 1) l'est. On NE câble toujours PAS l'appel : un npcId inventé
+//      (0, ou le var PNJ d'un autre flux) violerait la règle « ne jamais deviner », et
+//      un appel gardé par un `if (npcId != 0)` toujours faux serait du CODE MORT (piège
+//      prouvé). L'émission reste donc à porter par le flux PNJ (UI_SkillLearn_* +
+//      MsgBox kind 3), hors périmètre de ce front.
 void SkillTreeWindow::AttemptLearn() {
     if (!bound_) return;
 
@@ -350,6 +406,12 @@ void SkillTreeWindow::AttemptLearn() {
         return;
     }
 
+    // Garde SP — UI_SkillLearn_OnLDown 0x5E1DC4 : g_SkillPointPool >= Record[140]
+    // (offset 560 = 0x230 == game::skillinfo::kOffSpCost), sinon message
+    // StrTable005_Get(133+2=135) (0x5E1DD6). Dans le binaire ce test est à la SÉLECTION
+    // du nœud (avant l'ouverture de la boîte de confirmation), pas à la confirmation ;
+    // il est conservé ici — où cette fenêtre matérialise la confirmation — pour ne pas
+    // perdre la garde.
     const int spCost = game::Skill_ReadI32(rec, game::skillinfo::kOffSpCost);
     if (self_->skillPoints < spCost) {
         statusText_ = "Points de compétence insuffisants.";
@@ -357,32 +419,17 @@ void SkillTreeWindow::AttemptLearn() {
         return; // on garde la sélection : l'utilisateur peut réessayer après avoir gagné des points
     }
 
-    // Skill_Learn débite self.skillPoints et place la compétence dans la barre selon sa
-    // section (indépendant de l'emplacement effectivement cliqué, fidèle à l'original).
-    const int slot = game::Skill_Learn(*bar_, *self_, *skillTbl_, selectedSkillId_);
-    if (slot >= 0) {
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), "Compétence #%u apprise (emplacement %d).",
-                      selectedSkillId_, slot);
-        statusText_ = buf;
-        statusIsError_ = false;
-        selectedSkillId_ = 0;
-        // TODO(send): notifier le serveur de l'apprentissage — builder non identifié avec
-        // certitude dans Net/SendPackets.h à la date d'écriture (candidat probable : groupe
-        // d'opcode « item action » G0, cf. Pkt_ItemAction 0x46A456 côté handler entrant ;
-        // aucun Net_SendItemActionG0(...) confirmé ici).
-        // PISTE (ré-audit W4-F3, NON PROUVÉE) : cGameHud_OnMouseDown 0x62B080 route
-        // l'apprentissage via SkillTrain_RowCount 0x5F1930 / SkillTrain_SkillIdAt
-        // 0x5F1B70 / Game_MapSkillRowToId 0x6121A0 puis appelle Net_SendGuarded_12
-        // (0x593670) / Net_SendGuarded_13 (0x5936F0) = Net_SendOp75(container, 12|13,
-        // payload) -> opcode sortant 0x4B, sous-op 12/13, gardés cooldown/morph. Payload
-        // vide observé -> rôle « apprendre skill » NON confirmé : NE PAS câbler (et pas
-        // de net_ joignable ici de toute façon). Ne PAS inventer l'appel : l'état local
-        // (bar_/self_->skillPoints) est déjà à jour pour l'UI.
-    } else {
-        statusText_ = "Échec de l'apprentissage (section incompatible ou barre pleine).";
-        statusIsError_ = true;
-    }
+    // Refus MUETS du binaire, dans l'ordre du case 3 (0x5C0C23 puis 0x5C0C36) : morph en
+    // cours / requête déjà en vol. Aucun message, aucune trace — comme le binaire.
+    if (net::g_MorphInProgress == 1) return; // 0x5C0C23
+    if (net::g_GmCmdCooldownLatch)  return; // 0x5C0C36
+
+    // [cf. TODO ci-dessus] Émission 202 impossible (npcId absent) : on n'invente pas
+    // l'appel. AUCUN effet local non plus — le binaire n'écrit ni g_LearnedSkills ni
+    // g_SkillPointPool ici, il attend le serveur. La sélection est donc CONSERVÉE (le
+    // binaire ne la vide qu'après un envoi réussi, 0x5C0C79).
+    statusText_ = "Apprentissage indisponible : requiert un PNJ formateur (non câblé).";
+    statusIsError_ = true;
 }
 
 bool SkillTreeWindow::OnClick(int x, int y) {

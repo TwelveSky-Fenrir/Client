@@ -9,6 +9,7 @@
 #include "Gfx/Font.h"
 #include "UI/ChatWindow.h"
 #include "Game/ClientRuntime.h"   // game::MessageLog/MsgKind (SyncFromMessageLog) : pas de windows.h, inclusion sure ici
+#include "Game/StringTables.h"    // game::g_Strings.colors (palette mFONTCOLOR) : std lib seulement, sur apres Net/
 
 #include <algorithm>
 #include <cstring>
@@ -31,16 +32,21 @@ ChatWindow::~ChatWindow() {
 }
 
 // -----------------------------------------------------------------------------
-// Correspondances canal -> couleur / libelle (defaut, cf. table 0x84DFD8).
+// Correspondances canal -> couleur. Lit la palette REELLE mFONTCOLOR
+// (ColorTable_InitPalette 0x4C1D60) via game::g_Strings.colors : le binaire stocke
+// l'index de canal dans la ligne de chat (Msg_AppendChatLine 0x68DB50) et le resout
+// au DESSIN via ColorTable_GetColor 0x4C1FE0 ; on resout ici a l'emission (meme pixel).
+// Normal/Alliance n'ont aucun index prouve dans 0x4C1D60 -> repli local documente.
 Color ChatWindow::ChannelColor(ChatChannel ch) {
+    const game::ColorPalette& pal = game::g_Strings.colors; // instance mFONTCOLOR 0x84DF20
     switch (ch) {
-        case ChatChannel::Whisper:  return kColorWhisper;
-        case ChatChannel::Party:    return kColorParty;
-        case ChatChannel::Alliance: return kColorAlliance;
-        case ChatChannel::Guild:    return kColorGuild;
-        case ChatChannel::Trade:    return kColorTrade;
-        case ChatChannel::Faction:  return kColorFaction;
-        case ChatChannel::Normal:   return kColorNormal;
+        case ChatChannel::Whisper:  return pal.WhisperColor(); // g_ChatColor_Whisper 0x84DFDC idx1  (0x4C1FE0)
+        case ChatChannel::Party:    return pal.PartyColor();   // g_ChatColor_Party   0x84DFE0 idx40 (0x4C1FE0)
+        case ChatChannel::Guild:    return pal.GuildColor();   // g_ChatColor_Guild   0x84DFE8 idx36 (0x4C1FE0)
+        case ChatChannel::Faction:  return pal.FactionColor(); // g_ChatColor_Faction 0x84DFEC idx37 (0x4C1FE0)
+        case ChatChannel::Trade:    return pal.TradeColor();   // g_ChatColor_Trade   0x84DFF0 idx38 (0x4C1FE0)
+        case ChatChannel::Alliance: return kColorAlliance;     // repli : aucun index prouve (0x4C1D60)
+        case ChatChannel::Normal:   return kColorNormal;       // repli : Op80 "dire" local sans index (0x4C1D60)
     }
     return kColorNormal;
 }

@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstring>
 #include <utility>
+#include <fstream>   // LoadFriendList/LoadEnemyList/Save* : I/O binaire des fichiers 011/012.BIN
+#include <algorithm> // std::min (bornage du nom au slot 25 o)
 
 namespace ts2::game {
 
@@ -30,15 +32,19 @@ float ReadF32(const void* base, std::size_t offset) {
     return v;
 }
 
-// Offsets dans le record MONSTER_INFO/NPC_INFO (944 o, table 005_00004.IMG, stride
-// partagé monstres+NPC dans cette réécriture — cf. Game/EntityManager.cpp ResolveMobDef).
-// Suit la convention prouvée sur ITEM_INFO (nom en clair à +4, cf. GameDatabase.h) :
-// on suppose la même convention pour le nom ici (utilisé par IsFriend/IsEnemy ci-dessous).
-constexpr std::size_t kDefOffName       = 4;   // nom / propriétaire (chaîne, convention ITEM_INFO)
-constexpr std::size_t kDefOffFaction    = 184; // dword_17AB598[i]+184 (AutoPlay_FindNpcTarget)
-constexpr std::size_t kDefOffNpcKind    = 188; // dword_17AB598[i]+188 == 1 (NPC "vendeur/interactable")
-constexpr std::size_t kDefOffMonCat232  = 232; // v13+232 <= 3 (AutoPlay_Build/SelectTarget/Count)
-constexpr std::size_t kDefOffMonCat236  = 236; // v13+236 <= 1
+// Offsets dans le record pointé par dword_17AB598[i] pour les ENTRÉES butin/NPC : c'est un
+// ITEM_INFO (436 o, PAS un MONSTER_INFO 944 o — corrigé), cf. MobDb_FindByName 0x4C3C50 (stride
+// 436) et doc IDB de Pkt_SpawnNpc 0x467EC0 (« le tableau dword_17AB534 mélange PNJ interactifs et
+// sacs de butin au sol, def-ptr ITEM_INFO* »). Noms d'identifiants conservés stables (référencés
+// par Game/NpcInteraction.h:88-89) — seules les DESCRIPTIONS sont corrigées ici :
+constexpr std::size_t kDefOffName       = 4;   // ItemInfo::name (@+4, cf. GameDatabase.h:60)
+constexpr std::size_t kDefOffFaction    = 184; // ItemInfo::category (@+184, 1..4 -> bits 1/2/4/8) [AutoPlay_FindNpcTarget @0x459053]
+constexpr std::size_t kDefOffNpcKind    = 188; // ItemInfo::typeCode (@+188 ; ==1 -> NPC "vendeur/interactable direct")
+// Les records MONSTER (BuildTargetList/SelectTarget/Count, base dword_1766F74) sont, eux, des
+// MONSTER_INFO ; ces deux offsets s'appliquent à mon.def (ITEM_INFO résolu par ResolveNpcDef,
+// cf. EntityManager) via ReadI32 — bornes 232<=3 / 236<=1 prouvées v13+232/+236 :
+constexpr std::size_t kDefOffMonCat232  = 232; // mon.def+232 <= 3 (AutoPlay_Build/SelectTarget/Count)
+constexpr std::size_t kDefOffMonCat236  = 236; // mon.def+236 <= 1
 
 // Offsets dans NpcEntity::body (84 o, wire payload+8..91) — cf. commentaire RecvPackets.h
 // "body[0..3] = id modele mob-db". Les champs suivants sont déduits de l'arithmétique de
@@ -56,6 +62,91 @@ constexpr float kNpcInteractRange = 50.0f; // seuil de distance NPC en mode "por
 constexpr float kRebuildIntervalSec = 1.0f;      // 0x3E8 ms
 constexpr float kNpcInteractCooldownSec = 0.05f; // 0x32 ms
 constexpr float kInitialElapsedSec = 1000.0f;    // >> aux deux seuils ci-dessus : action immédiate au 1er tick
+
+// ---------------------------------------------------------------------------
+// Format des fichiers de listes G02_GINFO\011.BIN (amis) / 012.BIN (ennemis) — prouvé sur
+// AutoPlay_LoadFriendList 0x45D730 / AutoPlay_SaveFriendList 0x45DE50 : 48 entrées x 25 o,
+// sans en-tête, bourrage '@' (0x40 @0x45DE9F). Taille exacte 1200 o (0x4B0) exigée à la lecture.
+// ---------------------------------------------------------------------------
+constexpr std::size_t kNameSlotSize  = 25;    // largeur d'un slot (== ItemInfo::name[25])
+constexpr std::size_t kNameSlotCount = 48;    // 0x30 slots (garde de taille Save @0x45DEC0)
+constexpr std::size_t kListFileSize  = 1200;  // 0x4B0 = 48 * 25 (ReadFile/WriteFile exact)
+constexpr char        kNamePadChar   = '@';   // 0x40 : bourrage inter-nom (Crt_Memset 64 @0x45DE9F)
+constexpr const char* kFriendListPath = "G02_GINFO\\011.BIN"; // @0x7A66E8
+constexpr const char* kEnemyListPath  = "G02_GINFO\\012.BIN"; // @0x7A66FC
+
+// MobDb_FindByName 0x4C3C50 — balaye la table ITEM (g_World.db.item, stride 436) et compare le
+// nom @+4 (ItemInfo::name) par égalité de chaîne exacte (Crt_Strcmp, sensible à la casse).
+// Renvoie vrai au 1er match. Reproduit tel quel : validation des noms de liste à la lecture.
+bool ItemNameInItemDb(const char* name) {
+    const DataTable& db = g_World.db.item;
+    for (uint32_t i = 0; i < db.count; ++i) {
+        const uint8_t* rec = db.record(i);
+        if (rec && std::strcmp(reinterpret_cast<const char*>(rec + kDefOffName), name) == 0)
+            return true;
+    }
+    return false;
+}
+
+// Extrait le nom d'un slot de 25 o : octets jusqu'au 1er '@' ou NUL, borné au slot. NB fidélité :
+// le binaire fait Crt_Strlen(&Buffer[25*i]) (qui DÉBORDE le slot, le fichier étant bourré de '@'
+// non nuls) PUIS Str_Find('@')+Str_Erase pour retronquer — le résultat OBSERVABLE est identique
+// à ce bornage (le 1er '@' d'un nom < 25 o tombe dans son propre slot). L'UB de débordement de
+// Crt_Strlen N'EST PAS reproduit (bornage sûr), conformément à la consigne.
+std::string ExtractSlotName(const std::uint8_t* buf, std::size_t slotIndex) {
+    const char* slot = reinterpret_cast<const char*>(buf + kNameSlotSize * slotIndex);
+    std::size_t len = 0;
+    while (len < kNameSlotSize && slot[len] != kNamePadChar && slot[len] != '\0')
+        ++len;
+    return std::string(slot, len);
+}
+
+// Corps commun aux deux lecteurs (AutoPlay_LoadFriendList 0x45D730 / AutoPlay_LoadEnemyList
+// 0x45DAF0 : strictement identiques, seuls le chemin et la liste cible diffèrent). Fidélité : le
+// binaire ne List_Clear QUE sur les chemins d'échec (fichier absent / taille != 1200) ; le chemin
+// SUCCÈS append SANS vider au préalable (List_PushBackNode seul). Reproduit tel quel.
+bool LoadNameListFile(const char* path, std::vector<std::string>& outList) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { outList.clear(); return false; } // CreateFileA == -1 @0x45D7D7 -> List_Clear + return 0
+    std::uint8_t buf[kListFileSize] = {0};     // Crt_Memset(Buffer, 0, 0x4B0) @0x45D7A5
+    f.read(reinterpret_cast<char*>(buf), static_cast<std::streamsize>(kListFileSize));
+    if (static_cast<std::size_t>(f.gcount()) != kListFileSize) {
+        outList.clear(); return false;         // NumberOfBytesRead != 1200 @0x45D88E -> List_Clear + return 0
+    }
+    // Succès @0x45D926 : append, SANS List_Clear préalable (fidèle).
+    for (std::size_t i = 0; i < kNameSlotCount; ++i) { // for (i=0; i<48; ++i)
+        std::string name = ExtractSlotName(buf, i);
+        if (name.empty()) continue;              // if (v26) @0x45D9E9 : nom vide ignoré
+        if (ItemNameInItemDb(name.c_str()))      // MobDb_FindByName(mITEM, ...) @0x45DA1F
+            outList.push_back(std::move(name));  // List_PushBackNode @0x45DA99
+    }
+    return true; // @0x45DAA3
+}
+
+// Corps commun aux deux enregistreurs. `clampMode` : Friend -> vide + false SANS écrire si > 48
+// (@0x45DEC0) ; Enemy -> vide PUIS écrit si > 48 (@0x45E1A3, PAS de return). Asymétrie fidèle.
+enum class SaveClamp { FriendReturnOnOverflow, EnemyClearAndContinue };
+bool SaveNameListFile(const char* path, std::vector<std::string>& list, SaveClamp clampMode) {
+    std::uint8_t buf[kListFileSize];
+    std::memset(buf, kNamePadChar, kListFileSize); // Crt_Memset(Buffer, 64, 0x4B0) @0x45DE9F / @0x45E182
+    if (list.size() > kNameSlotCount) {
+        list.clear(); // List_Clear @0x45DECE / @0x45E1B1
+        if (clampMode == SaveClamp::FriendReturnOnOverflow)
+            return false; // Friend : return 0 SANS écrire @0x45DED3
+        // Enemy : continue et écrit un fichier tout-'@' (liste désormais vide).
+    }
+    std::size_t i = 0;
+    for (const std::string& name : list) { // itère la liste (<= 48 entrées) — @0x45DFC1 / @0x45E294
+        if (i >= kNameSlotCount) break;
+        const std::size_t n = std::min<std::size_t>(name.size(), kNameSlotSize);
+        std::memcpy(buf + kNameSlotSize * i, name.data(), n); // reste du slot laissé à '@'
+        ++i;
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc); // CreateFileA CREATE_ALWAYS @0x45E0AD
+    if (!out) return false;                                       // hFile == -1 @0x45E0BA -> return 0
+    out.write(reinterpret_cast<const char*>(buf), static_cast<std::streamsize>(kListFileSize));
+    return static_cast<bool>(out); // WriteFile OK && written==1200 @0x45E101 -> return CloseHandle
+}
 
 // Stat_UnpackCombined 0x54CE40 — utilitaire pur, traduit tel quel (nécessaire à
 // CheckTownScroll pour la lecture du talisman).
@@ -578,6 +669,61 @@ bool AutoPlaySystem::IsEnemyName(const char* name) const {
 }
 
 // ===========================================================================
+// AutoPlay_LoadFriendList 0x45D730 / AutoPlay_LoadEnemyList 0x45DAF0 — lecture + validation.
+// (corps commun LoadNameListFile ci-dessus, ancré slot par slot).
+// ===========================================================================
+bool AutoPlaySystem::LoadFriendList() {
+    return LoadNameListFile(kFriendListPath, friendNames); // this+296
+}
+bool AutoPlaySystem::LoadEnemyList() {
+    return LoadNameListFile(kEnemyListPath, enemyNames);   // this+324
+}
+
+// ===========================================================================
+// AutoPlay_SaveFriendList 0x45DE50 / AutoPlay_SaveEnemyList 0x45E140 — écriture 1200 o.
+// ===========================================================================
+bool AutoPlaySystem::SaveFriendList() {
+    // this+320 = taille : > 48 => List_Clear + return 0 SANS écrire (@0x45DEC0).
+    return SaveNameListFile(kFriendListPath, friendNames, SaveClamp::FriendReturnOnOverflow);
+}
+bool AutoPlaySystem::SaveEnemyList() {
+    // this+348 = taille : > 48 => List_Clear PUIS écrit (@0x45E1A3, pas de return — asymétrie fidèle).
+    return SaveNameListFile(kEnemyListPath, enemyNames, SaveClamp::EnemyClearAndContinue);
+}
+
+// ===========================================================================
+// AutoPlay_Start 0x45D580 — reset des cibles, armement de l'auto-hunt, CHARGEMENT des listes.
+// UNIQUE appelant binaire : UI_InitAllDialogs 0x5ABF50 @0x5AC193 (= GameWindows::Init côté
+// ClientSource) -> à câbler à l'init du HUD (cf. AutoPlaySystem.h::Start, rapport de front).
+// ===========================================================================
+bool AutoPlaySystem::Start() {
+    targetCount_ = 0;                 // this+216 = 0            @0x45d58c
+    currentTargetIndex_ = -1;         // this+220 = -1           @0x45d596
+    rebuildTimerSec_ = 0.0f;          // this+228 = GetTickCount @0x45d5d3 (accumulateur dt -> 0)
+    npcInteractCooldownSec_ = 0.0f;   // this+240 = GetTickCount @0x45d600 (idem : delta ~0 au start)
+    // this+24/28/32/224 + timers this+232/236/244/248 (état déambulation/action + 4 horloges)
+    // @0x45d5a5-0x45d61e : état de déambulation/tail de combat NON modélisé (cf. Update TODO).
+    huntArmed_ = true;                // this+288 = 1            @0x45d641 (arme la chaîne OR)
+    invDirtyStartLatch_ = true;       // this+284 = 1            @0x45d634 (latch flush inv-dirty)
+    // this+280 = 1 @0x45d627 (actionStateLatch, alimente le tail de combat déféré) ; this+292(w)=0
+    // / this+294(w)=1 @0x45d650/@0x45d65f : état UI/déambulation non modélisé.
+    ResetTargetList();                //                          @0x45d669
+    // this+252/256/260 = snapshot pos joueur (flt_1687330/34/38) + memset this+264..275 (cible de
+    // déambulation) @0x45d677-0x45d6b3 : état de déambulation, non modélisé (UpdateWander 0x45D200
+    // non porté, cf. Update TODO).
+    config.aoeThreshold = 3;          // g_AutoHuntAoEThreshold = 3   @0x45d6bd
+    // g_AutoHuntSettingsDirty = 1 @0x45d6c7 : drapeau UI « réglages modifiés » (panneau autoplay),
+    // sans consommateur dans ce périmètre — non modélisé.
+    if (!config.pkFactionMask)        //                              @0x45d6d8
+        config.pkFactionMask = 2;     // g_AutoHuntPkFactionMask = 2  @0x45d6da (catégorie par défaut)
+    config.useTownItem = false;       // g_AutoHuntUseTownItem = 0    @0x45d6e4
+    LoadFriendList();                 // AutoPlay_LoadFriendList      @0x45d6f1  <-- PEUPLEMENT (D1)
+    LoadEnemyList();                  // AutoPlay_LoadEnemyList       @0x45d6f9  <-- PEUPLEMENT (D1)
+    // cQuickSlotWin_Close + focus edit-box @0x45d703-0x45d71f : UI (hors périmètre).
+    return true;                      //                              @0x45d729
+}
+
+// ===========================================================================
 // AutoPlay_HasRequiredItems 0x45CC10 — cherche dans la grille de ramassage (3 conteneurs
 // x 14 slots, g_EntityManager.PickupSlot) PUIS dans l'inventaire principal (g_Client.inv)
 // deux catégories de matériaux ; s'arrête dès que les deux sont trouvées.
@@ -694,15 +840,82 @@ MonsterAutoplayExt& AutoPlaySystem::Ext(std::size_t monsterIndex) {
 }
 
 // ===========================================================================
-// Update(dt) — orchestration absente du cluster d'origine (les fonctions ci-dessus sont
-// appelées séparément par la boucle de jeu d'origine) : enchaîne un pas de farming
-// complet par frame, dans l'ordre logique ciblage -> consommables auto.
+// AutoPlay_Update 0x45E770 — tick principal d'auto-hunt (remplace l'ancienne orchestration
+// fabriquée : c'était la cause racine du défaut D2, MoveToNpc n'y était jamais appelé donc les
+// listes ami/ennemi jamais interrogées). Ce portage couvre la COLONNE VERTÉBRALE atteignable :
+// gardes d'entrée -> latch inv-dirty -> throttle matériaux -> chaîne OR (loot/NPC/consommables,
+// dont MoveToNpc qui interroge les listes) -> ciblage monstre (UpdateTargeting). Le « tail de
+// combat » (Player_CastSkill / Net_QueueRunTo), non transcrits dans ClientSource, est DÉFÉRÉ.
 // ===========================================================================
 void AutoPlaySystem::Update(float dt) {
+    // this[60] (byte +240) est un timestamp GetTickCount dans le binaire ; modélisé par un
+    // accumulateur dt avancé chaque frame (même delta wall-clock depuis le dernier reset).
     npcInteractCooldownSec_ += dt;
-    UpdateTargeting(dt);
-    CheckReturnScroll();
-    CheckTownScroll();
+
+    // Garde d'entrée @0x45e792 : suivi inv-dirty actif ET au moins un carburant d'auto-hunt.
+    // g_InvDirtyEnable est ré-armé en permanence par les op. d'inventaire (0x16755AC, 82 xrefs)
+    // -> passe en jeu normal. autoHuntFuelA/B <= 0 par défaut => tick inerte tant que l'UI
+    // d'activation ne les a pas armés (cf. AutoPlayExternalState + rapport de front).
+    if (!externalState.invDirtyEnable
+        || (externalState.autoHuntFuelA <= 0 && externalState.autoHuntFuelB <= 0))
+        return;
+
+    // Latch one-shot armé par Start (this+284) @0x45e79e : flush inv-dirty au serveur puis
+    // désarme le suivi (g_InvDirtyEnable=0 + Net_SendOp99(&g_AutoPlayMgr, 0)). Le ré-armement de
+    // invDirtyEnable=true = responsabilité du sous-système inventaire (hors périmètre), sinon la
+    // suite ne re-tourne pas — fidèle au binaire (cf. rapport de front).
+    if (invDirtyStartLatch_) {
+        externalState.invDirtyEnable = false;                            // g_InvDirtyEnable = 0 @0x45e7a7
+        if (host.NotifyInventoryDirty) host.NotifyInventoryDirty(false); // Net_SendOp99(...,0) @0x45e7bd
+        invDirtyStartLatch_ = false;                                     // this+284 = 0 @0x45e7c5
+        return;                                                          // @0x45e7cf
+    }
+
+    // Purge des quick-skills 2..7 si slots non débloqués @0x45e7db-0x45e806 (g_AutoHuntSkillSlotUnlocks
+    // / g_AutoHuntQuickSkills / dword_16755B8) : état UI quick-slot NON modélisé dans ClientSource.
+    // TODO [ancre AutoPlay_Update 0x45E7DB] : purge des raccourcis de compétence auto (front UI).
+
+    // Throttle 2000 ms @0x45e827 (GetTickCount() - this[60] > 0x7D0) : au-delà, exige les matériaux
+    // requis ; à défaut, warp vers la ville de faction et sort du tick.
+    if (npcInteractCooldownSec_ > 2.0f) {
+        // this[62] = GetTickCount() @0x45e832 : horloge secondaire sans consommateur -> non modélisée.
+        if (!HasRequiredItems()) {                                       // AutoPlay_HasRequiredItems @0x45e83b
+            if (host.WarpToFactionTown) host.WarpToFactionTown();        // Map_BeginWarpToFactionTownEx @0x45e84b
+            return;                                                      // @0x45e850
+        }
+    }
+
+    // Chaîne OR @0x45e8b5 (gardée par huntArmed_ = this+288). MoveToNpc appelle FindNpcTarget
+    // 0x458E90, qui INTERROGE friendNames/enemyNames (IsFriendName @0x458FEB / IsEnemyName
+    // @0x4590D1) : c'est LE point runtime qui rend les listes 011/012.BIN effectivement consultées
+    // à chaque tick armé (correctif du défaut D2). Court-circuit || fidèle.
+    // Deux membres de la chaîne binaire ne sont PAS portés (sous-features hors périmètre du front
+    // « autoplay-lists » ; leur non-déclenchement == défaut « absent » == false, neutre dans le ||) :
+    //   - AutoPlay_ScanGroundItems 0x45E4E0 (auto-loot grille inventaire + Net_SendPacket_Op23),
+    //     entre MoveToNpc et CheckReturnScroll dans le binaire.  TODO [ancre 0x45E4E0].
+    //   - AutoPlay_ValidateChatName 0x45E670 (validation nom d'alliance + Net_SendOp71), idem.
+    //     TODO [ancre 0x45E670].
+    if (huntArmed_ && (MoveToNpc()          // 0x45C5C0 -> FindNpcTarget -> IsFriendName/IsEnemyName
+                       || CheckReturnScroll()  // 0x45C750
+                       || CheckTownScroll()))  // 0x45C9B0
+        return;                                 // @0x45e8bc
+
+    // Ciblage monstre @0x45e8c9 (mode==1) / @0x45ea95 (mode!=1). Les DEUX branches convergent sur
+    // UpdateTargeting 0x45D080 (porté : écrit l'ordre d'attaque dword_1687354/58, lu par le tick de
+    // combat). En mode!=1 uniquement, AutoPlay_UpdateWander 0x45D200 (déambulation, NON porté)
+    // précède et peut court-circuiter (`if (UpdateWander() || !UpdateTargeting()) return;`) : traité
+    // ici comme « absent » (false) -> se réduit au seul UpdateTargeting, comme le mode==1.
+    // TODO [ancre AutoPlay_UpdateWander 0x45D200] : déambulation aléatoire (front mouvement).
+    if (!UpdateTargeting(dt))                   // @0x45e913 (mode==1) / @0x45ead7 (mode!=1)
+        return;
+
+    // TODO [ancre AutoPlay_Update 0x45E91D-0x45ED54] : « tail de combat » — CountTargetsInRange
+    // 0x458C10 + Player_CastSkill 0x53BC40 (AoE param 1 / simple param 2) + Net_QueueRunTo 0x511B00
+    // (approche). HORS PÉRIMÈTRE du front « autoplay-lists » : Player_CastSkill / Net_QueueRunTo ne
+    // sont pas transcrits dans ClientSource (cf. SkillCombat.h:388, « Player_CastSkill écrite mais
+    // appelée par personne ») — les porter ici serait du code mort. Appartient au front combat/skill.
+    // Le latch g_SelfActionState[0] (this+280/236 @0x45e8db/@0x45ea95) qui alimente ce tail n'est
+    // donc pas reproduit non plus.
 }
 
 } // namespace ts2::game

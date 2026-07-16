@@ -336,10 +336,24 @@
 #include "Gfx/ModelCache.h"
 #include "Game/EntityDrawLogic.h"
 #include "Game/ExtraDatabases.h" // game::NpcDefRecord (PNJ de decor, cf. DrawableEntity::npcDef)
+#include "Game/AnimationTick.h"  // game::IMotionFrameCountOracle (oracle expose ci-dessous) — W7
 
 namespace ts2 {
 
 namespace gfx { class Renderer; }
+
+// Oracle de nombre de frames d'animation (Passe 4 / vague W7, front motion-anim) — miroir de
+// Model_GetMotionFrameCount 0x4E5A70 (monstre) / Model_GetWeaponEffectFrameCount 0x4E5A40 (PNJ
+// de decor). Les deux resolvent le MEME slot que le dessin, donc le count doit venir du MEME
+// cache que la palette dessinee : ce cache (gfx::MotionCache) est un statique de fichier de
+// Scene/WorldRenderer.cpp (WorldRenderer.h ne pouvant recevoir de membre a l'epoque de son
+// introduction, cf. WorldRenderer.cpp::Motions()) -- d'ou cet accesseur libre, seul point
+// d'entree legitime pour les ticks de Game/AnimationTick.h qui vivent hors de la couche gfx.
+// Reference vers un singleton a duree de vie process : ne jamais la stocker au-dela.
+// A CABLER (hors de mes fichiers) : Scene/SceneManager.cpp doit le passer a
+// game::Monster_DispatchMotionTick et game::ZoneNpc_TickAnim -- sans quoi les curseurs
+// avancent sans jamais reboucler (degradation propre, cf. Game/AnimationTick.h).
+const game::IMotionFrameCountOracle& WorldMotionFrameCountOracle();
 
 // WorldRenderer — dessine chaque frame InGame le contenu de game::g_World
 // (joueurs + monstres + npcs, cf. bandeau) : corps (modèle ou placeholder)
@@ -457,6 +471,23 @@ private:
         int  bodyGender      = 0;
         int  bodyCostumeSlot0 = 0;
         int  bodyCostumeSlot1 = 0;
+
+        // ANIMATION PAR ENTITÉ (Passe 4 / vague W7, front motion-anim — gaps as-motion-01
+        // « animType figé à idle » et as-motion-02 « curseur par entité jamais consommé »).
+        // Avant : `GetForMonster(defId, /*idle*/0)` + une horloge GLOBALE partagée -> aucune
+        // entité ne changeait jamais d'animation, et toutes étaient animées EN PHASE.
+        //   animType   = slot monstre +24 (Char_Draw 0x5805C0 @0x580770, arg 3 de
+        //                Model_GetNpcMotionSlot) / slot PNJ +12 (Npc_DrawMesh 0x57FF00
+        //                @0x57ffa0, arg 3 de Model_GetNpcMeshSlot).
+        //   animCursor = slot monstre +28 (Char_Draw @0x580828, animTime de SObject_DrawEx) /
+        //                slot PNJ +16 (Npc_DrawMesh @0x57fff1, idem).
+        // hasAnimCursor=false -> repli SampleByGameTime (JOUEURS : leur curseur réel dépend du
+        // switch terminal 0x5727BF non porté, cf. Gfx/MotionCache.h). Sources C++ :
+        // game::g_MonsterTickExt[i] (monstres, .motionState/.animFrame) / g_World.npcRenderEntries[i]
+        // (PNJ de décor, champs natifs .mode/.frameAcc -- pool unique W7, cf. Game/AnimationTick.h §6).
+        int   animType      = 0;
+        float animCursor    = 0.0f;
+        bool  hasAnimCursor = false;
 
         // Éligibilité au reflet (mission "EXTENSION OMBRE/REFLET", 2026-07-14, cf.
         // bandeau de tête § Ombre/reflet) : true UNIQUEMENT pour les monstres.

@@ -4,6 +4,7 @@
 #include "WorldMap.h"
 #include "Asset/WorldChunk.h" // vues terrain typées (CollisionMesh/Face/QuadNode/TerrainVertex) — Gaps G4/G5/G7
 
+#include <algorithm> // std::min/std::max — bornes AABB des sweeps (namespace collision, WG-02/WG-03)
 #include <cmath>   // sqrt/fabs — requêtes de collision (namespace collision, Gaps G02/G03/G04)
 #include <cstdint>
 #include <cstdio>
@@ -906,20 +907,279 @@ bool SlideMoveGround(const asset::CollisionMesh& mesh, const float from[3],
     return found;
 }
 
-// ---------------------------------------------------------------------------
-// TODO(G04) — MapColl_SweepSphereNearest 0x696ad0 (sweep sphère/rayon épais vs quadtree,
-// impact le plus proche). NON porté cette passe (build-safe : sol/raycast/slide couvrent le
-// socle mouvement/picking). Dépendances à porter d'abord, toutes @EA :
-//   - Collide_AABBOverlap_0 0x6a0600 (recouvrement AABB/AABB min-max) — trivial.
-//   - Collide_TriAABB 0x6a00e0 (SAT triangle vs AABB, 13 axes) ->
-//         Collide_ProjectTriOnAxis 0x69f9c0 + Collide_ProjectBoxOnAxis 0x69fa80.
-//     NB : 0x696ad0 passe g_GfxRenderer 0x7ffe18 comme 1er arg de Collide_TriAABB (scratch/
-//     contexte NON utilisé pour la géométrie ; a3=face base, a4=AABBmin, a5=AABBmax).
-//   - Sphère : AABB de [start,end] gonflée de ±rayon (a5), puis marche le long du segment
-//     normalisé en re-testant Collide_TriAABB (0x696e08/0x696eea) jusqu'au 1er recouvrement ;
-//     distance² retenue = plus proche (0x696f32). Récursion 4 enfants identique à RaycastNearest.
-// À implémenter au jalon collision-mouvement dédié.
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// WG-02 — Chaîne de collision CAMÉRA (Camera_UpdateCollision 0x538580) : sweep de sphère vs
+// quadtree du terrain .WG. Portage byte-fidèle (ancre @EA sur chaque bloc). Le sweep opère sur
+// le slot 0 (= g_GameWorld lui-même, prouvé @0x5387b9 `mov ecx, offset g_GameWorld`) = .WG.
+// ===========================================================================
+
+// Collide_AABBOverlap_0 0x6a0600 — boxA=[amin,amax] recouvre boxB=[bmin,bmax] ?
+bool AABBOverlap(const float amin[3], const float amax[3],
+                 const float bmin[3], const float bmax[3]) {
+    return amin[0] <= bmax[0] && amin[1] <= bmax[1] && amin[2] <= bmax[2]      // 0x6a065f
+        && amax[0] >= bmin[0] && amax[1] >= bmin[1] && amax[2] >= bmin[2];
+}
+
+// Collide_ProjectTriOnAxis 0x69f9c0 — min/max de {v0·axis, v1·axis, v2·axis}. tri9 = {v0,v1,v2}.
+void ProjectTriOnAxis(const float axis[3], const float tri9[9], float& outMin, float& outMax) {
+    const float d0 = tri9[1] * axis[1] + tri9[2] * axis[2] + tri9[0] * axis[0]; // v0·axis 0x69f9e3
+    const float d1 = tri9[4] * axis[1] + tri9[3] * axis[0] + tri9[5] * axis[2]; // v1·axis 0x69f9f9
+    const float d2 = tri9[7] * axis[1] + tri9[6] * axis[0] + tri9[8] * axis[2]; // v2·axis 0x69fa14
+    outMin = d0; outMax = d0;                                                   // 0x69fa1b/0x69fa20
+    if (d1 >= outMin) { if (d1 > d0) outMax = d1; }                             // 0x69fa29/0x69fa37
+    else outMin = d1;                                                           // 0x69fa2b
+    if (d2 >= outMin) { if (d2 > outMax) outMax = d2; }                         // 0x69fa4a/0x69fa63
+    else outMin = d2;                                                           // 0x69fa50
+}
+
+// Collide_ProjectBoxOnAxis 0x69fa80 — projette l'OBB (center, axes9=3 lignes 3x3, half) sur axis.
+void ProjectBoxOnAxis(const float axis[3], const float center[3], const float axes9[9],
+                      const float half[3], float& outMin, float& outMax) {
+    const float c = center[1] * axis[1] + center[2] * axis[2] + center[0] * axis[0]; // 0x69faa2
+    const float r = std::fabs((axes9[3] * axis[0] + axes9[4] * axis[1] + axes9[5] * axis[2]) * half[1])
+                  + std::fabs((axes9[6] * axis[0] + axes9[7] * axis[1] + axes9[8] * axis[2]) * half[2])
+                  + std::fabs((axes9[1] * axis[1] + axes9[2] * axis[2] + axes9[0] * axis[0]) * half[0]); // 0x69fb02
+    outMin = c - r;                                                            // 0x69fb08
+    outMax = c + r;                                                            // 0x69fb0c
+}
+
+// Collide_TriAABB 0x6a00e0 — SAT triangle vs AABB (1 normale + 3 faces AABB + 9 arête×axe).
+// Sommets lus @+4/+44/+84 (face.v0/v1/v2.position, cf. asset::CollisionFace).
+bool TriAABB(const asset::CollisionFace& face, const float aabbMin[3], const float aabbMax[3]) {
+    const float* v0 = face.v0.position;
+    const float* v1 = face.v1.position;
+    const float* v2 = face.v2.position;
+    // Court-circuit : un sommet dans l'AABB -> recouvrement (0x6a0150/0x6a01a2/0x6a01f4).
+    if (v0[0] >= aabbMin[0] && v0[0] <= aabbMax[0] && v0[1] >= aabbMin[1] && v0[1] <= aabbMax[1] &&
+        v0[2] >= aabbMin[2] && v0[2] <= aabbMax[2]) return true;
+    if (v1[0] >= aabbMin[0] && v1[0] <= aabbMax[0] && v1[1] >= aabbMin[1] && v1[1] <= aabbMax[1] &&
+        v1[2] >= aabbMin[2] && v1[2] <= aabbMax[2]) return true;
+    if (v2[0] >= aabbMin[0] && v2[0] <= aabbMax[0] && v2[1] >= aabbMin[1] && v2[1] <= aabbMax[1] &&
+        v2[2] >= aabbMin[2] && v2[2] <= aabbMax[2]) return true;
+
+    // Tri à plat + centre/demi-extents de l'AABB + axes identité (0x6a01ff..0x6a02f2).
+    const float tri9[9]   = { v0[0], v0[1], v0[2], v1[0], v1[1], v1[2], v2[0], v2[1], v2[2] };
+    const float center[3] = { (aabbMin[0] + aabbMax[0]) * 0.5f,
+                              (aabbMin[1] + aabbMax[1]) * 0.5f,
+                              (aabbMin[2] + aabbMax[2]) * 0.5f };
+    const float half[3]   = { (aabbMax[0] - aabbMin[0]) * 0.5f,
+                              (aabbMax[1] - aabbMin[1]) * 0.5f,
+                              (aabbMax[2] - aabbMin[2]) * 0.5f };
+    const float axes9[9]  = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f }; // v58
+
+    // Arêtes (0x6a02fe..0x6a0374).
+    const float e0[3] = { v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2] };
+    const float e1[3] = { v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2] };
+    const float e2[3] = { v0[0] - v2[0], v0[1] - v2[1], v0[2] - v2[2] };
+
+    float triMin, triMax, boxMin, boxMax;
+    // Axe 0 : normale du triangle = cross(e0, e1) (0x6a03a3..0x6a03e1).
+    {
+        const float n[3] = { e1[2] * e0[1] - e1[1] * e0[2],
+                             e1[0] * e0[2] - e1[2] * e0[0],
+                             e1[1] * e0[0] - e1[0] * e0[1] };
+        ProjectTriOnAxis(n, tri9, triMin, triMax);                    // 0x6a03e5
+        ProjectBoxOnAxis(n, center, axes9, half, boxMin, boxMax);     // 0x6a040d
+        if (!(triMin <= boxMax && triMax >= boxMin)) return false;    // 0x6a0432 (sinon return 0)
+    }
+    // Axes 1-3 : les 3 faces de l'AABB (0x6a0438..0x6a04a9).
+    for (int a = 0; a < 3; ++a) {
+        ProjectTriOnAxis(&axes9[3 * a], tri9, triMin, triMax);
+        ProjectBoxOnAxis(&axes9[3 * a], center, axes9, half, boxMin, boxMax);
+        if (triMin > boxMax || triMax < boxMin) return false;         // 0x6a049c
+    }
+    // Axes 4-12 : 9 produits croisés arête_i × axeBoîte_j. Projection boîte INLINE (axes
+    // identité -> termes *0.0 élidés, cf. 0x6a052d..0x6a0595 — même politique que SegmentAABB).
+    const float* edges[3] = { e0, e1, e2 };
+    for (int j = 0; j < 3; ++j) {                                     // axe de la boîte (v17)
+        const float* bax = &axes9[3 * j];
+        for (int i = 0; i < 3; ++i) {                                 // arête du triangle (v19)
+            const float* e = edges[i];
+            const float ax[3] = { e[2] * bax[1] - e[1] * bax[2],      // 0x6a04e9
+                                  e[0] * bax[2] - e[2] * bax[0],      // 0x6a04fa
+                                  bax[0] * e[1] - e[0] * bax[1] };     // 0x6a050a
+            ProjectTriOnAxis(ax, tri9, triMin, triMax);               // 0x6a050e
+            const float c = ax[2] * center[2] + ax[1] * center[1] + ax[0] * center[0]; // 0x6a052d
+            const float r = std::fabs(ax[0] * half[0]) + std::fabs(ax[1] * half[1])
+                          + std::fabs(ax[2] * half[2]);               // 0x6a0577/0x6a0589
+            if (triMin > c + r || triMax < c - r) return false;       // 0x6a05b7
+        }
+    }
+    return true;                                                      // 0x6a05d5
+}
+
+// MapColl_SweepSphereNearest 0x696ad0 — sweep sphère/rayon épais vs quadtree, impact le plus proche.
+bool SweepSphereNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
+                        const float from[3], const float to[3], float radius, float outHit[3]) {
+    if (nodeIndex >= mesh.nodes.size()) return false;                 // enfant == -1 (0xFFFFFFFF)
+    const asset::CollisionQuadNode& node = mesh.nodes[nodeIndex];
+    if (node.trisNum == 0) return false;                              // 0x696ae7 : *(nodes+48*a2+24)==0
+    // AABB du segment [from,to] gonflée de ±radius (0x696b0c..0x696ba5).
+    const float segMin[3] = { std::min(from[0], to[0]) - radius,
+                              std::min(from[1], to[1]) - radius,
+                              std::min(from[2], to[2]) - radius };
+    const float segMax[3] = { std::max(from[0], to[0]) + radius,
+                              std::max(from[1], to[1]) + radius,
+                              std::max(from[2], to[2]) + radius };
+    if (!AABBOverlap(segMin, segMax, node.bboxMin, node.bboxMax)) return false; // 0x696bcd
+    float best = -1.0f;                                               // v56
+    if (node.child[0] == -1) {                                        // 0x696be3 : feuille
+        const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+        const float len = std::sqrt(dx * dx + dy * dy + dz * dz);     // 0x696cf2 : v76
+        if (radius + 1.0f > len) return false;                        // 0x696d09
+        const float inv = 1.0f / len;                                 // 0x696d24
+        const float dir[3] = { dx * inv, dy * inv, dz * inv };        // 0x696d34..0x696d48
+        const float lenSq = len * len;                               // 0x696e15 : v76*v76 (borne de marche)
+        for (uint32_t i = 0; i < node.trisNum; ++i) {                 // 0x696f93
+            const size_t idx = static_cast<size_t>(node.trisIndex) + i;
+            if (idx >= mesh.triIndices.size()) break;                 // guard
+            const uint32_t faceIdx = mesh.triIndices[idx];            // triIndices[node.trisIndex+i]
+            if (faceIdx >= mesh.tris.size()) continue;                // guard
+            const asset::CollisionFace& face = mesh.tris[faceIdx];
+            if (!TriAABB(face, segMin, segMax)) continue;             // 0x696d73 : coarse (tri vs segAABB)
+            // Boîte de demi-côté radius centrée sur `from` (0x696d80..0x696dec).
+            float boxMin[3] = { from[0] - radius, from[1] - radius, from[2] - radius };
+            float boxMax[3] = { from[0] + radius, from[1] + radius, from[2] + radius };
+            float center[3] = { from[0], from[1], from[2] };          // v57/v59/v60 (traceur d'impact)
+            bool hit = false;
+            if (TriAABB(face, boxMin, boxMax)) {                      // 0x696e08 : boîte à `from`
+                hit = true;                                           // impact = from (dist²=0)
+            } else {
+                for (;;) {                                            // marche par pas `dir` (0x696e21)
+                    boxMin[0] += dir[0]; boxMin[1] += dir[1]; boxMin[2] += dir[2];
+                    boxMax[0] += dir[0]; boxMax[1] += dir[1]; boxMax[2] += dir[2];
+                    center[0] += dir[0]; center[1] += dir[1]; center[2] += dir[2];
+                    const float cdx = center[0] - from[0], cdy = center[1] - from[1],
+                                cdz = center[2] - from[2];
+                    if (cdx * cdx + cdy * cdy + cdz * cdz > lenSq) break; // 0x696ead : au-delà du segment
+                    if (TriAABB(face, boxMin, boxMax)) { hit = true; break; } // 0x696eea
+                }
+            }
+            if (hit) {                                               // LABEL_38 (0x696ef7)
+                const float hdx = center[0] - from[0], hdy = center[1] - from[1],
+                            hdz = center[2] - from[2];
+                const float dist2 = hdx * hdx + hdy * hdy + hdz * hdz;
+                if (best == -1.0f || dist2 < best) {                 // 0x696f32/0x696f5e
+                    best = dist2;
+                    outHit[0] = center[0]; outHit[1] = center[1]; outHit[2] = center[2];
+                }
+            }
+        }
+    } else {                                                         // nœud interne : 4 enfants (0x696bf1)
+        for (int c = 0; c < 4; ++c) {
+            float childHit[3];
+            if (SweepSphereNearest(mesh, static_cast<uint32_t>(node.child[c]),
+                                   from, to, radius, childHit)) {    // 0x696c18
+                const float dx2 = childHit[0] - from[0], dy2 = childHit[1] - from[1],
+                            dz2 = childHit[2] - from[2];
+                const float dist2 = dx2 * dx2 + dy2 * dy2 + dz2 * dz2;
+                if (best == -1.0f || dist2 < best) {                 // 0x696c60/0x696c8c
+                    best = dist2;
+                    outHit[0] = childHit[0]; outHit[1] = childHit[1]; outHit[2] = childHit[2];
+                }
+            }
+        }
+    }
+    return best != -1.0f;                                            // 0x696faa
+}
+
+// Terrain_SweepSphereSegment 0x69a1f0 — descend les 4 enfants de la racine, impact le plus proche.
+bool SweepSphereSegment(const asset::CollisionMesh& mesh, const float from[3], const float to[3],
+                        float radius, float outHit[3]) {
+    if (!MeshActive(mesh)) return false;                             // 0x69a1f3 : if (!this[1])
+    if (from[0] == to[0] && from[1] == to[1] && from[2] == to[2]) return false; // 0x69a238
+    const float segMin[3] = { std::min(from[0], to[0]) - radius,
+                              std::min(from[1], to[1]) - radius,
+                              std::min(from[2], to[2]) - radius };
+    const float segMax[3] = { std::max(from[0], to[0]) + radius,
+                              std::max(from[1], to[1]) + radius,
+                              std::max(from[2], to[2]) + radius };
+    // Gate sur la bbox de la RACINE (0x69a2fe) — la racine n'est JAMAIS testée comme feuille.
+    if (!AABBOverlap(segMin, segMax, mesh.nodes[0].bboxMin, mesh.nodes[0].bboxMax)) return false;
+    float best = -1.0f;                                              // v36
+    for (int c = 0; c < 4; ++c) {                                    // 4 enfants de la racine (0x69a319)
+        float childHit[3];
+        if (SweepSphereNearest(mesh, static_cast<uint32_t>(mesh.nodes[0].child[c]),
+                               from, to, radius, childHit)) {        // 0x69a336
+            const float dx = childHit[0] - from[0], dy = childHit[1] - from[1],
+                        dz = childHit[2] - from[2];
+            const float dist2 = dx * dx + dy * dy + dz * dz;
+            if (best == -1.0f || dist2 < best) {                     // 0x69a37e/0x69a3a7
+                best = dist2;
+                outHit[0] = childHit[0]; outHit[1] = childHit[1]; outHit[2] = childHit[2];
+            }
+        }
+    }
+    return best != -1.0f;                                           // 0x69a3e8
+}
+
+// World_IsPointBlocked 0x540da0 — bloqué si (a) pas de sol Main sous plafond p.y+20, OU (b) un
+// sol WJ existe au-dessus du sol Main (couche « eau/interdit »). GetGroundHeight en forme
+// (a5=1, a6=ceiling, a7=0, a8=1) — exactement les args des DEUX sites (0x540de1/0x540e43).
+bool IsPointBlocked(const asset::CollisionMesh& main, const asset::CollisionMesh* wj,
+                    const float p[3]) {
+    const float ceiling = p[1] + 20.0f;                             // 0x540db9
+    float groundMain = 0.0f;
+    if (!GetGroundHeight(main, p[0], p[2], groundMain, true, ceiling, false, true)) // 0x540de1
+        return true;                                                // 0x540dea : pas de sol -> bloqué
+    if (!wj) return false;                                          // couche WJ absente -> 2e test faux
+    float groundWJ = 0.0f;
+    const float ceiling2 = p[1] + 20.0f;                            // 0x540e01
+    return GetGroundHeight(*wj, p[0], p[2], groundWJ, true, ceiling2, false, true) // 0x540e43
+        && groundMain < groundWJ;
+}
+
+// ===========================================================================
+// WG-03 — Picking écran->terrain (Terrain_PickRayScreen 0x699a80).
+// ===========================================================================
+
+// Unprojection écran->rayon monde (0x699ae7..0x699b40). Dénominateurs W-1/H-1 (PAS W/H) ;
+// z=1 AVANT transform ; direction NON renormalisée après TransformNormal. Divisions en double
+// (v17/v18 rejoués vers float — fidèle au calcul FPU d'origine).
+bool BuildScreenRay(const ScreenPickCamera& cam, int sx, int sy, float outOrigin[3],
+                    float outDir[3]) {
+    outOrigin[0] = cam.eye[0];                                      // g_CameraPos (0x699aa6)
+    outOrigin[1] = cam.eye[1];                                      // flt_800134
+    outOrigin[2] = cam.eye[2];                                      // flt_800138
+    const double w1 = static_cast<double>(static_cast<unsigned>(cam.screenW - 1)); // dword_8000A0-1
+    const double h1 = static_cast<double>(static_cast<unsigned>(cam.screenH - 1)); // dword_8000A4-1
+    float d[3];
+    d[0] = static_cast<float>((2.0 * static_cast<double>(sx) / w1 - 1.0)
+                              / static_cast<double>(cam.proj11));    // /proj._11 (0x699ae7)
+    d[1] = static_cast<float>((static_cast<double>(sy) * -2.0 / h1 + 1.0)
+                              / static_cast<double>(cam.proj22));    // /proj._22 (0x699b31)
+    d[2] = 1.0f;                                                     // 0x699b21 (espace vue LH)
+    // D3DXVec3TransformNormal(d, d, invView) — rotation 3x3 (row-vector), translation ignorée.
+    outDir[0] = d[0] * cam.invView[0] + d[1] * cam.invView[4] + d[2] * cam.invView[8];  // 0x699b40
+    outDir[1] = d[0] * cam.invView[1] + d[1] * cam.invView[5] + d[2] * cam.invView[9];
+    outDir[2] = d[0] * cam.invView[2] + d[1] * cam.invView[6] + d[2] * cam.invView[10];
+    return true;
+}
+
+// Terrain_PickRayScreen 0x699a80.
+bool PickRayScreen(const asset::CollisionMesh& mesh, const ScreenPickCamera& cam,
+                   int sx, int sy, uint32_t& outFaceIndex, float outHit[3], bool twoSide) {
+    if (!MeshActive(mesh)) return false;                            // 0x699a86 : if (!this[1])
+    float origin[3], dir[3];
+    BuildScreenRay(cam, sx, sy, origin, dir);
+    if (!SegmentAABB(origin, dir, mesh.nodes[0].bboxMin, mesh.nodes[0].bboxMax)) return false; // 0x699b5f
+    float best = -1.0f;                                             // v16
+    for (int c = 0; c < 4; ++c) {                                   // 4 enfants de la racine (0x699b7f)
+        uint32_t faceIdx = 0;
+        float hit[3];
+        if (RaycastNearest(mesh, static_cast<uint32_t>(mesh.nodes[0].child[c]),
+                           origin, dir, faceIdx, hit, twoSide)) {   // 0x699ba9
+            const float dx = hit[0] - origin[0], dy = hit[1] - origin[1], dz = hit[2] - origin[2];
+            const float d = std::sqrt(dx * dx + dy * dy + dz * dz); // 0x699bde : distance euclidienne
+            if (best == -1.0f || d < best) {                        // 0x699c25
+                best = d;
+                outFaceIndex = faceIdx;
+                outHit[0] = hit[0]; outHit[1] = hit[1]; outHit[2] = hit[2];
+            }
+        }
+    }
+    return best != -1.0f;                                          // 0x699c77
+}
 
 } // namespace collision
 

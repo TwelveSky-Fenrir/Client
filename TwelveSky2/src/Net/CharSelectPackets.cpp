@@ -182,11 +182,53 @@ int32_t CreateCharacter(NetClient& nc, int32_t slot, const game::CharCreateForm&
     if (!SendFrame(nc, 17, payload.data(), payload.size())) return kCharSelectErrSend;
 
     // Réponse RÉELLE 10093 o : [1][code:4][fiche-écho:10088] — le serveur renvoie la
-    // fiche créée (le binaire la recopie dans son miroir liste-de-personnages
-    // unk_1669380+10088*slot, non modélisé côté port). On consomme intégralement le
-    // flux pour ne pas désynchroniser les lectures suivantes ; seul le code est
-    // exploité ici (TODO si un miroir client de la liste des personnages est ajouté).
+    // fiche créée. On consomme intégralement le flux pour ne pas désynchroniser les
+    // lectures suivantes.
     if (!RecvExact(nc, 10093)) return kCharSelectErrRecv;
+
+    // MIROIR LISTE-DE-PERSONNAGES — Net_CreateCharacter 0x52A4A0, EA 0x52a71e :
+    //   if (!v18) Crt_Memcpy((unsigned int)&unk_1669380 + 10088 * a1,
+    //                        &MEMORY[0x8156C5], 0x2768u);
+    // Garde `if (!v18)` à l'EA 0x52a700 : la recopie n'a lieu QUE sur code 0. La source
+    // &MEMORY[0x8156C5] = recvBuf(0x8156C0) + 5, donc la fiche écho commence à
+    // recvBuf+5 (juste après [1][code:4]) et fait 0x2768 = 10088 o = kCharRecordSize.
+    // La destination unk_1669380 + 10088*slot est EXACTEMENT le miroir que
+    // Net_LoginRequest 0x51B8E0 remplit au login (EA 0x51bc56/0x51bc6d/0x51bc84) —
+    // porté ici par net::g_CharRecords (NetClient.h).
+    // SANS cette recopie, le personnage créé DISPARAÎT : LoadCharacterSlotsFromRecords
+    // relit g_CharRecords[slot] resté à zéro au prochain passage en sous-état Init
+    // (Game/CharSelectFlow.cpp), et ParseCharRecord repasse occupied=false (critère
+    // `!out.name.empty()`).
+    const int32_t code = ReadResultCode(nc);
+    if (code == 0 && slot >= 0 && slot < kCharRecordCount) {
+        // Bornes : garde de sûreté du PORT (le binaire n'en a pas — il indexe un
+        // tableau de 3 fiches noyé dans .data). `slot` vient toujours de
+        // FindFirstFreeSlot() (0..2) : aucune divergence de comportement observable.
+        std::memcpy(g_CharRecords[static_cast<size_t>(slot)], nc.recvBuf + 5, kCharRecordSize);
+    }
+    return code;
+}
+
+int32_t VerifyCharName(NetClient& nc, int32_t slotEnc, const std::string& name) {
+    // Net_ReqVerifyCharName 0x52B4C0 (opcode 24) — suppression de personnage confirmée
+    // par saisie du nom. Trame de 62 o (len=62, EA 0x52b59b) = en-tête 9 o + payload
+    // 53 o. Offsets prouvés par les positions de pile (buf@esp+0x24 -> offset 0) :
+    //   [nonce1:4@0] (EA 0x52b534) · [nonce2:3@4] (EA 0x52b54c) · [seq:1@7] (EA
+    //   0x52b562) · [opcode=24:1@8] (v15[1]=24, EA 0x52b56a) · [slotEnc:4@9]
+    //   (Crt_Memcpy(v16,&a1,4), v16@esp+0x2D, EA 0x52b57e) · [name:49@13]
+    //   (Crt_Memcpy(v17,a2,0x31u), v17@esp+0x31, EA 0x52b593).
+    // -> payload = [slotEnc:i32@0][name:49@4], 4+49 = 53 ; 9+53 = 62. ✓
+    // Le champ nom est zéro-rempli (le binaire memcpy 0x31=49 o depuis un tampon local
+    // `String` alimenté par GetWindowTextA(dword_166900C, String, 49), EA 0x529273).
+    uint8_t payload[4 + 49];
+    std::memcpy(payload, &slotEnc, 4);
+    CopyFieldN(payload + 4, 49, name);
+
+    if (!SendFrame(nc, 24, payload, sizeof(payload))) return kCharSelectErrSend;
+    // Réponse bloquante de 5 o = [1][code:4] (boucle `j != 5` EA 0x52b67a ; code lu à
+    // recvBuf+1 = &MEMORY[0x8156C1], EA 0x52b702). XOR clé + ++seq après envoi réussi
+    // (EA 0x52b5eb / 0x52b675) : assurés par SendFrame.
+    if (!RecvExact(nc, 5)) return kCharSelectErrRecv;
     return ReadResultCode(nc);
 }
 

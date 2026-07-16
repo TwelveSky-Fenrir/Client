@@ -33,22 +33,35 @@ constexpr uint32_t kTradePartnerVal1 = 0x1687420; // dword_1687420      (partena
 // code d'action par Pkt_TradeActionResult 0x48FEA0 (@0x48FEFE 'if(dword_1687424==v7)').
 // PAS un drapeau d'accord local (interprétation W4-F3 réfutée).
 constexpr uint32_t kTradePartnerWord2 = 0x1687424; // dword_1687424 (partenaire mot 2)
-// CORRECTIF W4-F3 (data_refs sur 0x1675B24) : l'ancien kTradeState=0x1675B24 était FAUX.
-// Ce global est g_PendingOrderKind (type d'ordre monde / ciblage : AutoPlay_UpdateTargeting
-// 0x45D080, Game_OnWorldLeftClick 0x536690, Player_InteractWithPlayer 0x5392E0,
-// Player_CastSkill 0x53BC40) — RIEN à voir avec l'échange. Il n'est mis à 0 par
-// Pkt_TradeRequestPrompt 0x48FD20 / Pkt_TradeActionResult 0x48FEA0 que comme effet de bord
-// (reset du ciblage à l'arrivée d'un prompt d'échange). Supprimé -> ne plus l'afficher
-// comme « état d'échange ». kTradeExtra=0x1675D84 (jamais prouvé) supprimé également.
+// CORRECTIF W4-F3 (data_refs sur 0x1675B24), RE-CONFIRMÉ W6 par décompilation fraîche :
+// l'ancien kTradeState=0x1675B24 était FAUX. Ce global est g_PendingOrderKind (type
+// d'ordre monde / ciblage : AutoPlay_UpdateTargeting 0x45D080, Game_OnWorldLeftClick
+// 0x536690, Player_InteractWithPlayer 0x5392E0, Player_CastSkill 0x53BC40) — RIEN à voir
+// avec l'échange. Il n'est mis à 0 par Pkt_TradeRequestPrompt 0x48FD20 (@0x48fd82) /
+// Pkt_TradeActionResult 0x48FEA0 (@0x48ff66) que comme effet de bord (reset du ciblage à
+// l'arrivée d'un prompt d'échange). Supprimé -> ne plus l'afficher comme « état d'échange ».
+//
+// kTradeExtra=0x1675D84 : également retiré de l'affichage, mais PAS pour la raison
+// notée en W4-F3 (« jamais prouvé ») — formulation inexacte, corrigée ici. Son ÉCRITURE
+// est bel et bien prouvée : Pkt_TradeRequestPrompt le charge depuis 0x8156D1
+// (`dword_1675D84 = v5` @0x48fdac) et Pkt_TradeActionResult le force à 1 (@0x48ff8e).
+// C'est sa SÉMANTIQUE qui reste indéterminée -> on ne l'affiche pas plutôt que de lui
+// prêter un rôle inventé (règle « ne jamais deviner »).
 
 // ===========================================================================
-// Modèle d'état d'échange — POSSÉDÉ par ce .cpp (PlayerTradeWindow.h non éditable,
-// rules #5/#6). Objets offerts par soi / le partenaire + verrous de moitié.
-// Les tableaux d'objets offerts n'ont PAS été localisés en statique cette passe :
-// les handlers 0x31/0x32/0x33 (Pkt_TradeRequestPrompt/RequestResult/ActionResult)
-// ne peuplent AUCUNE grille. g_tradeModel reste donc vide tant qu'un futur hook
-// (// TODO [handler 0x48FD20/0x48FEA0], à relever en dynamique x32dbg) ne le
-// remplit pas — mais le RENDU des cellules est réel (plus de placeholder).
+// Modèle d'échange — POSSÉDÉ par ce .cpp (PlayerTradeWindow.h ne peut pas porter de
+// membre cache/état sans divergence de layout). Objets offerts par soi / le partenaire
+// + verrous de moitié.
+//
+// ⚠️ CE MODÈLE EST UNE RÉINVENTION, ET IL RESTERA VIDE POUR TOUJOURS. Ce n'est pas un
+// câblage en attente : le binaire n'a AUCUNE table d'échange, donc aucun handler ne
+// peuplera jamais ces tableaux (preuves exhaustives en tête de UI/PlayerTradeWindow.h).
+// L'ancien « TODO [handler 0x48FD20/0x48FEA0] à relever en dynamique x32dbg » posé en
+// W4-F3 laissait croire à une grille d'origine à retrouver : SUPPRIMÉ, il était sans
+// objet. Les 3 handlers d'échange ne peuplent aucune grille PARCE QU'AUCUNE GRILLE
+// N'EXISTE. Le rendu ci-dessous est donc structurellement une coquille vide, conservée
+// uniquement parce que la fenêtre est instanciée par UI/GameWindows.h:190 (header non
+// possédé par ce front). Sa suppression relève d'une décision d'architecture.
 struct TradeCell { uint32_t itemId = 0, count = 0, color = 0, durability = 0; };
 constexpr int kTradeCols  = 5;                     // == PlayerTradeWindow::kGridCols
 constexpr int kTradeRows  = 5;                     // == PlayerTradeWindow::kGridRows
@@ -199,8 +212,12 @@ void PlayerTradeWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     Rect box, closeBtn, acceptBtn, cancelBtn, selfGrid, partnerGrid;
     Layout(ctx.screenW, ctx.screenH, box, closeBtn, acceptBtn, cancelBtn, selfGrid, partnerGrid);
 
-    // Lecture LIVE de l'état d'échange (jamais mise en cache : ces globals
-    // peuvent changer entre deux frames via les handlers réseau).
+    // Lecture LIVE des 2 premiers mots d'IDENTITÉ DU PARTENAIRE (jamais mise en cache :
+    // ces globals changent entre deux frames via les handlers réseau). Ce n'est PAS un
+    // « état d'échange » : aucun état de ce genre n'existe dans le binaire (cf. en-tête
+    // de UI/PlayerTradeWindow.h). Écrits par Pkt_TradeRequestPrompt 0x48FD20
+    // (@0x48fd8f/0x48fd97) et remis à 0 par Pkt_TradeActionResult 0x48FEA0
+    // (@0x48ff70/0x48ff7a).
     const int32_t partnerIdLo = game::g_Client.VarGet(kTradePartnerIdLo);
     const int32_t partnerVal1 = game::g_Client.VarGet(kTradePartnerVal1);
     const bool    hasPartner  = (partnerIdLo != 0) || (partnerVal1 != 0);
@@ -268,25 +285,28 @@ void PlayerTradeWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
 // ===========================================================================
 // Actions boutons
 // ===========================================================================
+// ===========================================================================
+// PAS D'ÉMISSION ICI — ET C'EST LA RÉPONSE FIDÈLE, PAS UN TROU.
+// ===========================================================================
+// L'ancien « TODO(send) : builder lock/accept non trouvé » est SUPPRIMÉ : il posait
+// une question sans objet. Il n'existe AUCUN paquet « verrouiller / accepter /
+// annuler un échange » dans TwelveSky2.exe — pas parce qu'on ne l'a pas trouvé, mais
+// parce que le binaire n'a pas de table d'échange du tout (preuves exhaustives en tête
+// de UI/PlayerTradeWindow.h : UI_InitAllDialogs 0x5ABF50 + UI_StorageWin_Open 0x5D27A0
+// + les 3 handlers purement textuels 0x48FD20/0x48FE10/0x48FEA0).
+// Le SEUL sortant du domaine « échange » est Net_SendOp43 (op 0x2B, [nom13@9][flag
+// i32@22], len 26 — Net/SendPackets.h:75), et ses 2 uniques xrefs sont les deux boutons
+// de UI_ClanWin_OnLUp 0x5D92A0 page 2 (@0x5D9F8A flag=2, @0x5DA0F1 flag=1) : c'est le
+// MENU CONTEXTUEL JOUEUR qui l'émet, pas cette fenêtre. Ce front ne possède pas ce
+// fichier -> reporté à la vague (cf. rapport W6, section « à câbler ailleurs »).
+// Net_SendOp49/50/51 (sortants 0x31/0x32/0x33) restent ÉCARTÉS : coïncidence numérique
+// seule — Net_SendOp49 est le flux confirmé « réponse d'invitation d'ALLIANCE »
+// (UI_MsgBox_OnLButtonUp @0x5c109d). Ne pas les rebrancher ici.
 void PlayerTradeWindow::HandleAccept() {
-    // TODO(send): valider/verrouiller sa moitié de l'échange. AUCUN builder outbound
-    // « lock/accept d'échange » n'a été prouvé cette passe (W4-F3). Les anciens
-    // candidats Net_SendOp49/50/51 (0x31/0x32/0x33) sont ÉCARTÉS : coïncidence
-    // numérique seule, Net_SendOp49 étant déjà le flux confirmé « réponse d'invitation
-    // d'ALLIANCE ». Symétriques ENTRANTS connus à tracer pour retrouver le sortant :
-    // Pkt_TradeRequestPrompt 0x48FD20 (écrit g_TradePartnerIdLo) et
-    // Pkt_TradeActionResult 0x48FEA0 (remet g_TradePartnerIdLo=0). Relever le vrai
-    // Net_SendOpNN en dynamique (x32dbg, breakpoint sur le clic « Accepter »). Pas de
-    // NetClient joignable ici de toute façon (cf. §0.B : PlayerTradeWindow n'a pas
-    // de net_ ; l'ajouter exigerait d'éditer le .h, hors périmètre).
     Close();
 }
 
 void PlayerTradeWindow::HandleCancel() {
-    // TODO(send): annuler l'échange en cours côté serveur. Même statut que
-    // HandleAccept() : aucun builder outbound confirmé, mêmes handlers entrants
-    // symétriques (Pkt_TradeRequestPrompt 0x48FD20 / Pkt_TradeActionResult 0x48FEA0)
-    // à tracer en dynamique. Ne rien inventer.
     Close();
 }
 

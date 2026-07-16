@@ -4,14 +4,26 @@
 
 namespace ts2::net {
 
-void Net_SendPacket_Op12(NetClient& nc, const void* head128, const void* name13, const void* tail72) {
-    // opcode 12 (0x0C) : 3 blocs bruts concatenes (128 + 13 + 72 = 213 octets de payload)
+bool Net_SendPacket_Op12(NetClient& nc, const void* head128, const void* name13, const void* tail72) {
+    // Net_SendPacket_Op12 0x4B43C0 — opcode 12 (0x0C) : 3 blocs bruts (128 + 13 + 72).
+    //   *(this+8)=12                  EA 0x4b444e
+    //   Crt_Memcpy(this+9,   a2, 80h) EA 0x4b4462  -> bloc de 128 octets
+    //   Crt_Memcpy(this+137, a3, 0Dh) EA 0x4b447a  -> bloc de 13 octets
+    //   Crt_Memcpy(this+150, a4, 48h) EA 0x4b4492  -> bloc de 72 octets
+    //   *(this+15000)=222             EA 0x4b449d  -> longueur fil 9+213
+    // RETOUR : le binaire renvoie 1 apres un send() integral (EA 0x4b4564) et 0 si send()
+    // echoue avec une erreur != 10035/WSAEWOULDBLOCK, apres Net_CloseSocket (EA 0x4b4531/
+    // 0x4b4538) ; 10035 n'est PAS un echec (le binaire re-boucle sur le fragment,
+    // EA 0x4b452a). NetSend() reproduit exactement cette semantique -> on la propage.
+    // L'appelant Scene_EnterWorldUpdate 0x52BFF0 en depend : `if (result)` EA 0x52c194
+    // -> etat 3 (+ g_GuardAuthTokenPending=0 EA 0x52c1ca) ; sinon notice 67 (EA 0x52c1a2)
+    // + etat 4 (EA 0x52c1b7). Volet appelant = Scene/SceneManager.cpp (hors de ce front).
     PacketWriter w;
     w.WriteBytes(head128, 128); // this+9  : bloc de 128 octets
     w.WriteBytes(name13, 13);   // this+137 : bloc de 13 octets
     w.WriteBytes(tail72, 72);   // this+150 : bloc de 72 octets
     w.Finalize(0x0C, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    return NetSend(nc, w.Data(), (int)w.Size()); // 1 = EA 0x4b4564 / 0 = EA 0x4b4538
 }
 
 void Net_SendPacket_Op20(NetClient& nc, int8_t arg1, int8_t arg2) {
@@ -169,122 +181,124 @@ void Net_SendOp138(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t 
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_203(NetClient& nc, int8_t arg1) {
-    // opcode 203 (0xCB) : requete coffre, 1 champ octet
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.Finalize(0xCB, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_203(NetClient& nc, int32_t arg1) {
+    // Net_SendVaultReq_203 0x5902E0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590319) : opcode FIL 0x13,
+    //   sous-code 203 = mov dword ptr [ebp+var_74], 0CBh (EA 0x5902f3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (203 & 0xFF = 203) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 203, block);   // EA 0x590319 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_211(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // opcode 211 (0xD3) : requete coffre, 7 champs octet (chacun emis sur 4 octets LE)
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);
-    w.Finalize(0xD3, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_211(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_211 0x590710 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5907b5) : opcode FIL 0x13,
+    //   sous-code 211 = mov dword ptr [ebp+var_74], 0D3h (EA 0x590723) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (211 & 0xFF = 211) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 211, block);   // EA 0x5907b5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_219(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // opcode 219 (0xDB) : requete coffre, 7 champs octet (chacun emis sur 4 octets LE)
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);
-    w.Finalize(0xDB, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_219(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_219 0x590D10 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590db5) : opcode FIL 0x13,
+    //   sous-code 219 = mov dword ptr [ebp+var_74], 0DBh (EA 0x590d23) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (219 & 0xFF = 219) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 219, block);   // EA 0x590db5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_227(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // opcode 227 (0xE3) : requete coffre, 7 champs octet (chacun emis sur 4 octets LE)
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);
-    w.Finalize(0xE3, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_227(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_227 0x591310 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5913b5) : opcode FIL 0x13,
+    //   sous-code 227 = mov dword ptr [ebp+var_74], 0E3h (EA 0x591323) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (227 & 0xFF = 227) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 227, block);   // EA 0x5913b5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_235(NetClient& nc, int8_t arg1) {
-    // opcode 235 (0xEB) : requete coffre (gain points/monnaie), 1 champ octet
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.Finalize(0xEB, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_235(NetClient& nc, int32_t arg1) {
+    // Net_SendVaultReq_235 0x591840 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591879) : opcode FIL 0x13,
+    //   sous-code 235 = mov dword ptr [ebp+var_74], 0EBh (EA 0x591853) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (235 & 0xFF = 235) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 235, block);   // EA 0x591879 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_243(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // opcode 243 (0xF3) : requete coffre, 7 champs octet (chacun emis sur 4 octets LE)
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);
-    w.Finalize(0xF3, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_243(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_243 0x591C50 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591cf5) : opcode FIL 0x13,
+    //   sous-code 243 = mov dword ptr [ebp+var_74], 0F3h (EA 0x591c63) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (243 & 0xFF = 243) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 243, block);   // EA 0x591cf5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_251(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // opcode 251 (0xFB) : requete coffre, 7 champs octet (chacun emis sur 4 octets LE)
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);
-    w.Finalize(0xFB, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_251(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_251 0x592250 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5922f5) : opcode FIL 0x13,
+    //   sous-code 251 = mov dword ptr [ebp+var_74], 0FBh (EA 0x592263) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (251 & 0xFF = 251) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 251, block);   // EA 0x5922f5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_247(NetClient& nc, int8_t arg1, int8_t arg2) {
-    // opcode 247 (0xF7) : requete action, 2 champs octet
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.Finalize(0xF7, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_247(NetClient& nc, int32_t arg1, int32_t arg2) {
+    // Net_SendCmd_247 0x592720 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x59276b) : opcode FIL 0x13,
+    //   sous-code 503 = mov dword ptr [ebp+var_74], 1F7h (EA 0x592733) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (503 & 0xFF = 247) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[2] = { arg1, arg2 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..7 : Crt_Memcpy(vN,&aN,4u) x2 (a1 a2)
+    Net_SendPacket_Op19(nc, 503, block);   // EA 0x59276b -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_255(NetClient& nc) {
-    // opcode 255 (0xFF) : requete action, payload vide (aucun champ initialise dans l'original)
-    PacketWriter w;
-    w.Finalize(0xFF, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_255 0x5929A0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5929c7) : opcode FIL 0x13,
+    //   sous-code 511 = mov dword ptr [ebp+var_74], 1FFh (EA 0x5929b3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (511 & 0xFF = 255) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 511, block);   // EA 0x5929c7 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_7(NetClient& nc, const void* name13) {
-    // opcode 7 (0x07) : requete action, bloc/chaine de 13 octets
-    PacketWriter w;
-    w.WriteBytes(name13, 13);
-    w.Finalize(0x07, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_7 0x592C00 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592c39) : opcode FIL 0x13,
+    //   sous-code 519 = mov dword ptr [ebp+var_74], 207h (EA 0x592c13) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (519 & 0xFF = 7) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, name13, 13);      // bloc+0..12 : Crt_Memcpy(v2,a1,0xDu)
+    Net_SendPacket_Op19(nc, 519, block);   // EA 0x592c39 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_15(NetClient& nc, int8_t arg1) {
-    // opcode 15 (0x0F) : requete action, 1 champ octet
-    PacketWriter w;
-    w.WriteChar4LE(arg1);
-    w.Finalize(0x0F, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_15(NetClient& nc, int32_t arg1) {
+    // Net_SendCmd_15 0x592EA0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592ed9) : opcode FIL 0x13,
+    //   sous-code 527 = mov dword ptr [ebp+var_74], 20Fh (EA 0x592eb3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (527 & 0xFF = 15) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 527, block);   // EA 0x592ed9 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_3(NetClient& nc) {
@@ -476,166 +490,124 @@ void Net_SendOp139(NetClient& nc, int8_t arg) {
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_204(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13.
-    // Payload = [sous-commande 204 (char4LE)] + bloc fixe de 100 octets.
-    // Le bloc porte les champs en tete (chaque octet sur 4 o. LE), reste a zero.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)204);   // this+9  : sous-commande 0xCC
-    w.WriteChar4LE(a1);            // bloc+0
-    w.WriteChar4LE(a2);            // bloc+4
-    w.WriteChar4LE(a3);            // bloc+8
-    w.WriteChar4LE(a4);            // bloc+12
-    w.WriteChar4LE(a5);            // bloc+16
-    uint8_t pad[80] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_204(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
+    // Net_SendVaultReq_204 0x590330 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5903b1) : opcode FIL 0x13,
+    //   sous-code 204 = mov dword ptr [ebp+var_74], 0CCh (EA 0x590343) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (204 & 0xFF = 204) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[5] = { a1, a2, a3, a4, a5 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..19 : Crt_Memcpy(vN,&aN,4u) x5 (a1 a2 a3 a4 a5)
+    Net_SendPacket_Op19(nc, 204, block);   // EA 0x5903b1 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_212(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 212 (0xD4).
-    // Payload = sous-cmd (char4LE) + bloc fixe de 100 octets (7 champs en tete).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)212);   // this+9 : sous-commande
-    w.WriteChar4LE(a1);            // bloc+0
-    w.WriteChar4LE(a2);            // bloc+4
-    w.WriteChar4LE(a3);            // bloc+8
-    w.WriteChar4LE(a4);            // bloc+12
-    w.WriteChar4LE(a5);            // bloc+16
-    w.WriteChar4LE(a6);            // bloc+20
-    w.WriteChar4LE(a7);            // bloc+24
-    uint8_t pad[72] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_212(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_212 0x5907D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590875) : opcode FIL 0x13,
+    //   sous-code 212 = mov dword ptr [ebp+var_74], 0D4h (EA 0x5907e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (212 & 0xFF = 212) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 212, block);   // EA 0x590875 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_220(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 220 (0xDC).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)220);   // this+9 : sous-commande
-    w.WriteChar4LE(a1);            // bloc+0
-    w.WriteChar4LE(a2);            // bloc+4
-    w.WriteChar4LE(a3);            // bloc+8
-    w.WriteChar4LE(a4);            // bloc+12
-    w.WriteChar4LE(a5);            // bloc+16
-    w.WriteChar4LE(a6);            // bloc+20
-    w.WriteChar4LE(a7);            // bloc+24
-    uint8_t pad[72] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_220(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_220 0x590DD0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590e75) : opcode FIL 0x13,
+    //   sous-code 220 = mov dword ptr [ebp+var_74], 0DCh (EA 0x590de3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (220 & 0xFF = 220) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 220, block);   // EA 0x590e75 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_228(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 228 (0xE4).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)228);   // this+9 : sous-commande
-    w.WriteChar4LE(a1);            // bloc+0
-    w.WriteChar4LE(a2);            // bloc+4
-    w.WriteChar4LE(a3);            // bloc+8
-    w.WriteChar4LE(a4);            // bloc+12
-    w.WriteChar4LE(a5);            // bloc+16
-    w.WriteChar4LE(a6);            // bloc+20
-    w.WriteChar4LE(a7);            // bloc+24
-    uint8_t pad[72] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_228(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_228 0x5913D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591475) : opcode FIL 0x13,
+    //   sous-code 228 = mov dword ptr [ebp+var_74], 0E4h (EA 0x5913e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (228 & 0xFF = 228) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 228, block);   // EA 0x591475 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendVaultReq_236(NetClient& nc) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 236 (0xEC).
-    // Aucun champ : bloc de 100 octets entierement a zero (orig. : pile non init.).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)236);   // this+9 : sous-commande
-    uint8_t block[100] = {0};      // bloc fixe de 100 octets
-    w.WriteBytes(block, sizeof(block));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendVaultReq_236 0x591890 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5918b7) : opcode FIL 0x13,
+    //   sous-code 236 = mov dword ptr [ebp+var_74], 0ECh (EA 0x5918a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (236 & 0xFF = 236) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 236, block);   // EA 0x5918b7 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_244(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 244 (0xF4).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)244);   // this+9 : sous-commande
-    w.WriteChar4LE(a1);            // bloc+0
-    w.WriteChar4LE(a2);            // bloc+4
-    w.WriteChar4LE(a3);            // bloc+8
-    w.WriteChar4LE(a4);            // bloc+12
-    w.WriteChar4LE(a5);            // bloc+16
-    w.WriteChar4LE(a6);            // bloc+20
-    w.WriteChar4LE(a7);            // bloc+24
-    uint8_t pad[72] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_244(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_244 0x591D10 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591db5) : opcode FIL 0x13,
+    //   sous-code 244 = mov dword ptr [ebp+var_74], 0F4h (EA 0x591d23) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (244 & 0xFF = 244) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 244, block);   // EA 0x591db5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_252(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 252 (0xFC).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)252);   // this+9 : sous-commande
-    w.WriteChar4LE(a1);            // bloc+0
-    w.WriteChar4LE(a2);            // bloc+4
-    w.WriteChar4LE(a3);            // bloc+8
-    w.WriteChar4LE(a4);            // bloc+12
-    w.WriteChar4LE(a5);            // bloc+16
-    w.WriteChar4LE(a6);            // bloc+20
-    w.WriteChar4LE(a7);            // bloc+24
-    uint8_t pad[72] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_252(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_252 0x592310 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5923b5) : opcode FIL 0x13,
+    //   sous-code 252 = mov dword ptr [ebp+var_74], 0FCh (EA 0x592323) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (252 & 0xFF = 252) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 252, block);   // EA 0x5923b5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_248(NetClient& nc, int8_t a1) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 248 (0xF8).
-    // Un seul champ octet en tete du bloc de 100 o.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)248);   // this+9 : sous-commande
-    w.WriteChar4LE(a1);            // bloc+0
-    uint8_t pad[96] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_248(NetClient& nc, int32_t a1) {
+    // Net_SendCmd_248 0x592780 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5927b9) : opcode FIL 0x13,
+    //   sous-code 504 = mov dword ptr [ebp+var_74], 1F8h (EA 0x592793) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (504 & 0xFF = 248) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { a1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 504, block);   // EA 0x5927b9 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_0(NetClient& nc) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 0.
-    // Aucun champ : bloc de 100 octets a zero.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)0);     // this+9 : sous-commande
-    uint8_t block[100] = {0};      // bloc fixe de 100 octets
-    w.WriteBytes(block, sizeof(block));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_0 0x5929E0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592a07) : opcode FIL 0x13,
+    //   sous-code 512 = mov dword ptr [ebp+var_74], 200h (EA 0x5929f3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (512 & 0xFF = 0) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 512, block);   // EA 0x592a07 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_8(NetClient& nc, int8_t a1, int8_t a2) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 8.
-    // Deux champs octet en tete du bloc de 100 o. (v3@0, v4@4).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)8);     // this+9 : sous-commande
-    w.WriteChar4LE(a1);            // bloc+0
-    w.WriteChar4LE(a2);            // bloc+4
-    uint8_t pad[92] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_8(NetClient& nc, int32_t a1, int32_t a2) {
+    // Net_SendCmd_8 0x592C50 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592c9b) : opcode FIL 0x13,
+    //   sous-code 520 = mov dword ptr [ebp+var_74], 208h (EA 0x592c63) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (520 & 0xFF = 8) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[2] = { a1, a2 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..7 : Crt_Memcpy(vN,&aN,4u) x2 (a1 a2)
+    Net_SendPacket_Op19(nc, 520, block);   // EA 0x592c9b -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_16(NetClient& nc, const void* buf12) {
-    // [net] enveloppe Net_SendPacket_Op19 -> opcode 0x13, sous-commande 16.
-    // Tampon de 12 octets copie en tete du bloc de 100 o.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)16);    // this+9 : sous-commande
-    w.WriteBytes(buf12, 12);       // bloc+0 : tampon 12 octets
-    uint8_t pad[88] = {0};         // complement du bloc a 100 octets
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_16 0x592EF0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592f29) : opcode FIL 0x13,
+    //   sous-code 528 = mov dword ptr [ebp+var_74], 210h (EA 0x592f03) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (528 & 0xFF = 16) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, buf12, 12);       // bloc+0..11 : Crt_Memcpy(v2,a1,0xCu)
+    Net_SendPacket_Op19(nc, 528, block);   // EA 0x592f29 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_4(NetClient& nc) {
@@ -683,8 +655,10 @@ bool Net_SendUdpReport(uint8_t* self, const char* cp) {
     sockaddr to;
     memset(&to, 0, sizeof(to));
     to.sa_family = AF_INET;
-    // Port : depuis la config ASCII byte_1860E1C si presente, sinon 15000 (0x3A98).
-    // Port : 15000 (0x3A98) par défaut (config ASCII byte_1860E1C non réimplémentée).
+    // Net_SendUdpReport 0x6D8173 : port = byte_1860E1C ? ntohs(Crt_Atoi(&byte_1860E1C))
+    //   : ntohs(0x3A98) [15000]. ÉCART ASSUMÉ : la config ASCII byte_1860E1C n'est PAS
+    //   relue ici (constante 15000 en dur) — fonction de la bande anticheat structurelle
+    //   [0x6D7234, 0x6FD04C), exclue par consigne de projet (CLAUDE.md).
     u_short port = ntohs((u_short)0x3A98);
     *reinterpret_cast<uint16_t*>(to.sa_data) = port;
     *reinterpret_cast<uint32_t*>(&to.sa_data[2]) = inet_addr(cp);
@@ -849,162 +823,124 @@ void Net_SendOp140(NetClient& nc) {
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_205(NetClient& nc, int8_t arg0, int8_t arg1) {
-    // Wrapper vault : opcode fil 0x13 (builder Op19), sous-commande 205.
-    // Op19 emet [sous-cmd:4 LE][bloc payload de 100 o]. Les args occupent la tete du bloc.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)205);   // sous-commande vault (this+9)
-    w.WriteChar4LE(arg0);          // bloc +0
-    w.WriteChar4LE(arg1);          // bloc +4
-    uint8_t pad[92] = {0};         // reste du bloc de 100 o (8 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_205(NetClient& nc, int32_t arg0, int32_t arg1) {
+    // Net_SendVaultReq_205 0x5903D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x59041b) : opcode FIL 0x13,
+    //   sous-code 205 = mov dword ptr [ebp+var_74], 0CDh (EA 0x5903e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (205 & 0xFF = 205) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[2] = { arg0, arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..7 : Crt_Memcpy(vN,&aN,4u) x2 (a1 a2)
+    Net_SendPacket_Op19(nc, 205, block);   // EA 0x59041b -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_213(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // Wrapper vault : opcode fil 0x13 (builder Op19), sous-commande 213.
-    // Op19 emet [sous-cmd:4 LE][bloc payload de 100 o]. 7 champs octet en tete du bloc.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)213);   // sous-commande vault
-    w.WriteChar4LE(arg0);          // bloc +0
-    w.WriteChar4LE(arg1);          // bloc +4
-    w.WriteChar4LE(arg2);          // bloc +8
-    w.WriteChar4LE(arg3);          // bloc +12
-    w.WriteChar4LE(arg4);          // bloc +16
-    w.WriteChar4LE(arg5);          // bloc +20
-    w.WriteChar4LE(arg6);          // bloc +24
-    uint8_t pad[72] = {0};         // reste du bloc de 100 o (28 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_213(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_213 0x590890 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590935) : opcode FIL 0x13,
+    //   sous-code 213 = mov dword ptr [ebp+var_74], 0D5h (EA 0x5908a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (213 & 0xFF = 213) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 213, block);   // EA 0x590935 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_221(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // Wrapper vault : opcode fil 0x13 (builder Op19), sous-commande 221.
-    // Op19 emet [sous-cmd:4 LE][bloc payload de 100 o]. 7 champs octet en tete du bloc.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)221);   // sous-commande vault
-    w.WriteChar4LE(arg0);          // bloc +0
-    w.WriteChar4LE(arg1);          // bloc +4
-    w.WriteChar4LE(arg2);          // bloc +8
-    w.WriteChar4LE(arg3);          // bloc +12
-    w.WriteChar4LE(arg4);          // bloc +16
-    w.WriteChar4LE(arg5);          // bloc +20
-    w.WriteChar4LE(arg6);          // bloc +24
-    uint8_t pad[72] = {0};         // reste du bloc de 100 o (28 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_221(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_221 0x590E90 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590f35) : opcode FIL 0x13,
+    //   sous-code 221 = mov dword ptr [ebp+var_74], 0DDh (EA 0x590ea3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (221 & 0xFF = 221) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 221, block);   // EA 0x590f35 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_229(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // Wrapper vault : opcode fil 0x13 (builder Op19), sous-commande 229.
-    // Op19 emet [sous-cmd:4 LE][bloc payload de 100 o]. 7 champs octet en tete du bloc.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)229);   // sous-commande vault
-    w.WriteChar4LE(arg0);          // bloc +0
-    w.WriteChar4LE(arg1);          // bloc +4
-    w.WriteChar4LE(arg2);          // bloc +8
-    w.WriteChar4LE(arg3);          // bloc +12
-    w.WriteChar4LE(arg4);          // bloc +16
-    w.WriteChar4LE(arg5);          // bloc +20
-    w.WriteChar4LE(arg6);          // bloc +24
-    uint8_t pad[72] = {0};         // reste du bloc de 100 o (28 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_229(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_229 0x591490 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591535) : opcode FIL 0x13,
+    //   sous-code 229 = mov dword ptr [ebp+var_74], 0E5h (EA 0x5914a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (229 & 0xFF = 229) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 229, block);   // EA 0x591535 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendVaultReq_237(NetClient& nc) {
-    // Wrapper vault : opcode fil 0x13 (builder Op19), sous-commande 237 (convertir junk en argent).
-    // Aucun argument : le bloc de 100 o est entierement nul.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)237);   // sous-commande vault
-    uint8_t pad[100] = {0};        // bloc payload de 100 o
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendVaultReq_237 0x5918D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5918f7) : opcode FIL 0x13,
+    //   sous-code 237 = mov dword ptr [ebp+var_74], 0EDh (EA 0x5918e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (237 & 0xFF = 237) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 237, block);   // EA 0x5918f7 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_245(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // Wrapper vault : opcode fil 0x13 (builder Op19), sous-commande 245.
-    // Op19 emet [sous-cmd:4 LE][bloc payload de 100 o]. 7 champs octet en tete du bloc.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)245);   // sous-commande vault
-    w.WriteChar4LE(arg0);          // bloc +0
-    w.WriteChar4LE(arg1);          // bloc +4
-    w.WriteChar4LE(arg2);          // bloc +8
-    w.WriteChar4LE(arg3);          // bloc +12
-    w.WriteChar4LE(arg4);          // bloc +16
-    w.WriteChar4LE(arg5);          // bloc +20
-    w.WriteChar4LE(arg6);          // bloc +24
-    uint8_t pad[72] = {0};         // reste du bloc de 100 o (28 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_245(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_245 0x591DD0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591e75) : opcode FIL 0x13,
+    //   sous-code 245 = mov dword ptr [ebp+var_74], 0F5h (EA 0x591de3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (245 & 0xFF = 245) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 245, block);   // EA 0x591e75 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_253(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // Wrapper vault : opcode fil 0x13 (builder Op19), sous-commande 253.
-    // Op19 emet [sous-cmd:4 LE][bloc payload de 100 o]. 7 champs octet en tete du bloc.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)253);   // sous-commande vault
-    w.WriteChar4LE(arg0);          // bloc +0
-    w.WriteChar4LE(arg1);          // bloc +4
-    w.WriteChar4LE(arg2);          // bloc +8
-    w.WriteChar4LE(arg3);          // bloc +12
-    w.WriteChar4LE(arg4);          // bloc +16
-    w.WriteChar4LE(arg5);          // bloc +20
-    w.WriteChar4LE(arg6);          // bloc +24
-    uint8_t pad[72] = {0};         // reste du bloc de 100 o (28 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_253(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_253 0x5923D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592475) : opcode FIL 0x13,
+    //   sous-code 253 = mov dword ptr [ebp+var_74], 0FDh (EA 0x5923e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (253 & 0xFF = 253) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 253, block);   // EA 0x592475 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_249(NetClient& nc, int8_t arg0) {
-    // Wrapper action : opcode fil 0x13 (builder Op19), sous-commande 249.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)249);   // sous-commande
-    w.WriteChar4LE(arg0);          // bloc +0
-    uint8_t pad[96] = {0};         // reste du bloc de 100 o (4 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_249(NetClient& nc, int32_t arg0) {
+    // Net_SendCmd_249 0x5927D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592809) : opcode FIL 0x13,
+    //   sous-code 505 = mov dword ptr [ebp+var_74], 1F9h (EA 0x5927e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (505 & 0xFF = 249) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg0 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 505, block);   // EA 0x592809 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_1(NetClient& nc, const void* payload13) {
-    // Wrapper action : opcode fil 0x13 (builder Op19), sous-commande 1 (payload de 13 octets).
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)1);     // sous-commande
-    w.WriteBytes(payload13, 13);   // bloc +0 (memcpy 13 o)
-    uint8_t pad[87] = {0};         // reste du bloc de 100 o (13 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_1 0x592A20 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592a59) : opcode FIL 0x13,
+    //   sous-code 513 = mov dword ptr [ebp+var_74], 201h (EA 0x592a33) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (513 & 0xFF = 1) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, payload13, 13);   // bloc+0..12 : Crt_Memcpy(v2,a1,0xDu)
+    Net_SendPacket_Op19(nc, 513, block);   // EA 0x592a59 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_9(NetClient& nc, int8_t arg0) {
-    // Wrapper action : opcode fil 0x13 (builder Op19), sous-commande 9.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)9);     // sous-commande
-    w.WriteChar4LE(arg0);          // bloc +0
-    uint8_t pad[96] = {0};         // reste du bloc de 100 o (4 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_9(NetClient& nc, int32_t arg0) {
+    // Net_SendCmd_9 0x592CB0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592ce9) : opcode FIL 0x13,
+    //   sous-code 521 = mov dword ptr [ebp+var_74], 209h (EA 0x592cc3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (521 & 0xFF = 9) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg0 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 521, block);   // EA 0x592ce9 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_17(NetClient& nc, int8_t arg0) {
-    // Wrapper action : opcode fil 0x13 (builder Op19), sous-commande 17.
-    PacketWriter w;
-    w.WriteChar4LE((int8_t)17);    // sous-commande
-    w.WriteChar4LE(arg0);          // bloc +0
-    uint8_t pad[96] = {0};         // reste du bloc de 100 o (4 utilises)
-    w.WriteBytes(pad, sizeof(pad));
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_17(NetClient& nc, int32_t arg0) {
+    // Net_SendCmd_17 0x592F40 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592f79) : opcode FIL 0x13,
+    //   sous-code 529 = mov dword ptr [ebp+var_74], 211h (EA 0x592f53) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (529 & 0xFF = 17) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg0 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 529, block);   // EA 0x592f79 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_5(NetClient& nc, const void* payload204) {
@@ -1177,145 +1113,124 @@ void Net_SendOp141(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, const v
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_206(NetClient& nc, int8_t arg1) {
-    // [net] requete coffre : opcode 0x13 (19) via Net_SendPacket_Op19, sous-op 206.
-    // Op19 emet toujours [sous-op:4][bloc fixe 100] -> on complete a zero le bloc.
-    PacketWriter w;
-    w.WriteU32(206);                                // sous-opcode (int32, this+9)
-    w.WriteChar4LE(arg1);                           // bloc[0..3]
-    for (int k = 0; k < 96; ++k) w.WriteU8(0);      // reste du bloc de 100 octets
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_206(NetClient& nc, int32_t arg1) {
+    // Net_SendVaultReq_206 0x590430 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590469) : opcode FIL 0x13,
+    //   sous-code 206 = mov dword ptr [ebp+var_74], 0CEh (EA 0x590443) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (206 & 0xFF = 206) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 206, block);   // EA 0x590469 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_214(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // [net] requete coffre : opcode 0x13 (19) via Op19, sous-op 214 ; 7 champs octet.
-    PacketWriter w;
-    w.WriteU32(214);                                // sous-opcode
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);                           // 28 octets ecrits
-    for (int k = 0; k < 72; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_214(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_214 0x590950 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5909f5) : opcode FIL 0x13,
+    //   sous-code 214 = mov dword ptr [ebp+var_74], 0D6h (EA 0x590963) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (214 & 0xFF = 214) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 214, block);   // EA 0x5909f5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_222(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // [net] requete coffre : opcode 0x13 (19) via Op19, sous-op 222 ; 7 champs octet.
-    PacketWriter w;
-    w.WriteU32(222);                                // sous-opcode
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);                           // 28 octets ecrits
-    for (int k = 0; k < 72; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_222(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_222 0x590F50 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590ff5) : opcode FIL 0x13,
+    //   sous-code 222 = mov dword ptr [ebp+var_74], 0DEh (EA 0x590f63) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (222 & 0xFF = 222) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 222, block);   // EA 0x590ff5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_230(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // [net] requete coffre : opcode 0x13 (19) via Op19, sous-op 230 ; 7 champs octet.
-    PacketWriter w;
-    w.WriteU32(230);                                // sous-opcode
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);                           // 28 octets ecrits
-    for (int k = 0; k < 72; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_230(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_230 0x591550 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5915f5) : opcode FIL 0x13,
+    //   sous-code 230 = mov dword ptr [ebp+var_74], 0E6h (EA 0x591563) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (230 & 0xFF = 230) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 230, block);   // EA 0x5915f5 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendVaultReq_238(NetClient& nc) {
-    // [net] requete coffre : opcode 0x13 (19) via Op19, sous-op 238 ; sans arguments.
-    // Le bloc de 100 octets est envoye entierement a zero.
-    PacketWriter w;
-    w.WriteU32(238);                                // sous-opcode
-    for (int k = 0; k < 100; ++k) w.WriteU8(0);     // bloc 100 octets
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendVaultReq_238 0x591910 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591937) : opcode FIL 0x13,
+    //   sous-code 238 = mov dword ptr [ebp+var_74], 0EEh (EA 0x591923) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (238 & 0xFF = 238) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 238, block);   // EA 0x591937 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_246(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6, int8_t arg7) {
-    // [net] requete coffre : opcode 0x13 (19) via Op19, sous-op 246 ; 7 champs octet.
-    PacketWriter w;
-    w.WriteU32(246);                                // sous-opcode
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);
-    w.WriteChar4LE(arg7);                           // 28 octets ecrits
-    for (int k = 0; k < 72; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_246(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6, int32_t arg7) {
+    // Net_SendVaultReq_246 0x591E90 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591f35) : opcode FIL 0x13,
+    //   sous-code 246 = mov dword ptr [ebp+var_74], 0F6h (EA 0x591ea3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (246 & 0xFF = 246) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg1, arg2, arg3, arg4, arg5, arg6, arg7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 246, block);   // EA 0x591f35 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_254(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // [net] requete coffre : opcode 0x13 (19) via Op19, sous-op 254 ; 6 champs octet.
-    PacketWriter w;
-    w.WriteU32(254);                                // sous-opcode
-    w.WriteChar4LE(arg1);
-    w.WriteChar4LE(arg2);
-    w.WriteChar4LE(arg3);
-    w.WriteChar4LE(arg4);
-    w.WriteChar4LE(arg5);
-    w.WriteChar4LE(arg6);                           // 24 octets ecrits
-    for (int k = 0; k < 76; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_254(NetClient& nc, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_254 0x592490 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592523) : opcode FIL 0x13,
+    //   sous-code 254 = mov dword ptr [ebp+var_74], 0FEh (EA 0x5924a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (254 & 0xFF = 254) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[6] = { arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..23 : Crt_Memcpy(vN,&aN,4u) x6 (a1 a2 a3 a4 a5 a6)
+    Net_SendPacket_Op19(nc, 254, block);   // EA 0x592523 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_250(NetClient& nc, int8_t arg1) {
-    // [net] requete action : opcode 0x13 (19) via Op19, sous-op 250 ; 1 champ octet.
-    PacketWriter w;
-    w.WriteU32(250);                                // sous-opcode
-    w.WriteChar4LE(arg1);                           // bloc[0..3]
-    for (int k = 0; k < 96; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_250(NetClient& nc, int32_t arg1) {
+    // Net_SendCmd_250 0x592820 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592859) : opcode FIL 0x13,
+    //   sous-code 506 = mov dword ptr [ebp+var_74], 1FAh (EA 0x592833) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (506 & 0xFF = 250) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 506, block);   // EA 0x592859 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_2(NetClient& nc, const void* data13) {
-    // [net] requete action : opcode 0x13 (19) via Op19, sous-op 2 ; bloc source de 13 octets.
-    PacketWriter w;
-    w.WriteU32(2);                                  // sous-opcode
-    w.WriteBytes(data13, 13);                       // bloc[0..12]
-    for (int k = 0; k < 87; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_2 0x592A70 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592aa9) : opcode FIL 0x13,
+    //   sous-code 514 = mov dword ptr [ebp+var_74], 202h (EA 0x592a83) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (514 & 0xFF = 2) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, data13, 13);      // bloc+0..12 : Crt_Memcpy(v2,a1,0xDu)
+    Net_SendPacket_Op19(nc, 514, block);   // EA 0x592aa9 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_10(NetClient& nc, int8_t arg1, int8_t arg2) {
-    // [net] requete action : opcode 0x13 (19) via Op19, sous-op 10 ; 2 champs octet.
-    PacketWriter w;
-    w.WriteU32(10);                                 // sous-opcode
-    w.WriteChar4LE(arg1);                           // bloc[0..3]
-    w.WriteChar4LE(arg2);                           // bloc[4..7]
-    for (int k = 0; k < 92; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_10(NetClient& nc, int32_t arg1, int32_t arg2) {
+    // Net_SendCmd_10 0x592D00 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592d4b) : opcode FIL 0x13,
+    //   sous-code 522 = mov dword ptr [ebp+var_74], 20Ah (EA 0x592d13) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (522 & 0xFF = 10) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[2] = { arg1, arg2 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..7 : Crt_Memcpy(vN,&aN,4u) x2 (a1 a2)
+    Net_SendPacket_Op19(nc, 522, block);   // EA 0x592d4b -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_18(NetClient& nc, int8_t arg1) {
-    // [net] requete action : opcode 0x13 (19) via Op19, sous-op 18 ; 1 champ octet.
-    PacketWriter w;
-    w.WriteU32(18);                                 // sous-opcode
-    w.WriteChar4LE(arg1);                           // bloc[0..3]
-    for (int k = 0; k < 96; ++k) w.WriteU8(0);      // padding bloc 100
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_18(NetClient& nc, int32_t arg1) {
+    // Net_SendCmd_18 0x592F90 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592fc9) : opcode FIL 0x13,
+    //   sous-code 530 = mov dword ptr [ebp+var_74], 212h (EA 0x592fa3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (530 & 0xFF = 18) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 530, block);   // EA 0x592fc9 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_6(NetClient& nc) {
@@ -1494,138 +1409,123 @@ void Net_SendOp142(NetClient& nc, int8_t a, int8_t b, int8_t c, int8_t d) {
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_207(NetClient& nc, int8_t amount) {
-    // opcode 0xCF (207) — requete coffre : retrait/soustraction d'argent (1 champ char, 4 LE)
-    PacketWriter w;
-    w.WriteChar4LE(amount);
-    w.Finalize(0xCF, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_207(NetClient& nc, int32_t amount) {
+    // Net_SendVaultReq_207 0x590480 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5904b9) : opcode FIL 0x13,
+    //   sous-code 207 = mov dword ptr [ebp+var_74], 0CFh (EA 0x590493) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (207 & 0xFF = 207) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { amount };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 207, block);   // EA 0x5904b9 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_215(NetClient& nc, int8_t npcId, int8_t itemId, int8_t qty, int8_t page, int8_t slot, int8_t col, int8_t row) {
-    // opcode 0xD7 (215) — achat boutique PNJ : 7 champs char (npcId,itemId,qty,page,slot,col,row), 4 LE chacun
-    PacketWriter w;
-    w.WriteChar4LE(npcId);
-    w.WriteChar4LE(itemId);
-    w.WriteChar4LE(qty);
-    w.WriteChar4LE(page);
-    w.WriteChar4LE(slot);
-    w.WriteChar4LE(col);
-    w.WriteChar4LE(row);
-    w.Finalize(0xD7, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_215(NetClient& nc, int32_t npcId, int32_t itemId, int32_t qty, int32_t page, int32_t slot, int32_t col, int32_t row) {
+    // Net_SendVaultReq_215 0x590A10 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590ab5) : opcode FIL 0x13,
+    //   sous-code 215 = mov dword ptr [ebp+var_74], 0D7h (EA 0x590a23) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (215 & 0xFF = 215) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { npcId, itemId, qty, page, slot, col, row };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 215, block);   // EA 0x590ab5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_223(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // opcode 0xDF (223) — requete coffre : 7 champs char, 4 LE chacun
-    PacketWriter w;
-    w.WriteChar4LE(a1);
-    w.WriteChar4LE(a2);
-    w.WriteChar4LE(a3);
-    w.WriteChar4LE(a4);
-    w.WriteChar4LE(a5);
-    w.WriteChar4LE(a6);
-    w.WriteChar4LE(a7);
-    w.Finalize(0xDF, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_223(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_223 0x591010 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5910b5) : opcode FIL 0x13,
+    //   sous-code 223 = mov dword ptr [ebp+var_74], 0DFh (EA 0x591023) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (223 & 0xFF = 223) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 223, block);   // EA 0x5910b5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_231(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // opcode 0xE7 (231) — requete coffre : 7 champs char, 4 LE chacun
-    PacketWriter w;
-    w.WriteChar4LE(a1);
-    w.WriteChar4LE(a2);
-    w.WriteChar4LE(a3);
-    w.WriteChar4LE(a4);
-    w.WriteChar4LE(a5);
-    w.WriteChar4LE(a6);
-    w.WriteChar4LE(a7);
-    w.Finalize(0xE7, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_231(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_231 0x591610 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5916b5) : opcode FIL 0x13,
+    //   sous-code 231 = mov dword ptr [ebp+var_74], 0E7h (EA 0x591623) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (231 & 0xFF = 231) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 231, block);   // EA 0x5916b5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_239(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // opcode 0xEF (239) — requete coffre : 7 champs char, 4 LE chacun
-    PacketWriter w;
-    w.WriteChar4LE(a1);
-    w.WriteChar4LE(a2);
-    w.WriteChar4LE(a3);
-    w.WriteChar4LE(a4);
-    w.WriteChar4LE(a5);
-    w.WriteChar4LE(a6);
-    w.WriteChar4LE(a7);
-    w.Finalize(0xEF, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_239(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_239 0x591950 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5919f5) : opcode FIL 0x13,
+    //   sous-code 239 = mov dword ptr [ebp+var_74], 0EFh (EA 0x591963) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (239 & 0xFF = 239) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 239, block);   // EA 0x5919f5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_247(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // opcode 0xF7 (247) — requete coffre : 7 champs char, 4 LE chacun
-    PacketWriter w;
-    w.WriteChar4LE(a1);
-    w.WriteChar4LE(a2);
-    w.WriteChar4LE(a3);
-    w.WriteChar4LE(a4);
-    w.WriteChar4LE(a5);
-    w.WriteChar4LE(a6);
-    w.WriteChar4LE(a7);
-    w.Finalize(0xF7, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_247(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_247 0x591F50 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591ff5) : opcode FIL 0x13,
+    //   sous-code 247 = mov dword ptr [ebp+var_74], 0F7h (EA 0x591f63) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (247 & 0xFF = 247) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 247, block);   // EA 0x591ff5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_255(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6) {
-    // opcode 0xFF (255) — requete coffre : 6 champs char, 4 LE chacun
-    PacketWriter w;
-    w.WriteChar4LE(a1);
-    w.WriteChar4LE(a2);
-    w.WriteChar4LE(a3);
-    w.WriteChar4LE(a4);
-    w.WriteChar4LE(a5);
-    w.WriteChar4LE(a6);
-    w.Finalize(0xFF, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_255(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6) {
+    // Net_SendVaultReq_255 0x592540 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5925d3) : opcode FIL 0x13,
+    //   sous-code 255 = mov dword ptr [ebp+var_74], 0FFh (EA 0x592553) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (255 & 0xFF = 255) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[6] = { a1, a2, a3, a4, a5, a6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..23 : Crt_Memcpy(vN,&aN,4u) x6 (a1 a2 a3 a4 a5 a6)
+    Net_SendPacket_Op19(nc, 255, block);   // EA 0x5925d3 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_251(NetClient& nc, const void* data) {
-    // Net_SendCmd_251 0x592870 -> Net_SendPacket_Op19 0x4B4E70 (opcode 0x13), PAS un
-    // opcode 251 à plat. Binaire : _BYTE v2[108]; Crt_Memcpy(v2, data, 12) (EA 0x592894) ;
-    // Net_SendPacket_Op19(&g_AutoPlayMgr, 507, v2) (EA 0x5928ae).
-    // Op19 (0x4B4E70) : opcode 0x13 @+8 ; sous-code 507=0x1FB int32 LE @+9 (Crt_Memcpy(this+9,
-    //   &a2,4) EA 0x4b4f0f) ; charge 100 o @+13 (Crt_Memcpy(this+13,a3,0x64) EA 0x4b4f24) ;
-    //   *(this+15000)=113 (longueur fil 9+4+100) ; XOR clé complet ; ++seq.
-    // Les 12 premiers octets du bloc de 100 = data ; les 88 restants = pile v2 NON initialisée
-    //   côté binaire (fidèlement remplacés par des zéros ici, aucune fuite de pile reproduite).
-    PacketWriter w;
-    w.WriteI32(507);                 // this+9 : sous-code 0x1FB (i32, PAS char4LE ni u8 -> 507 intact)
-    uint8_t block[100] = {0};        // bloc payload 100 o (v2, 12 utiles + 88 à 0)
-    std::memcpy(block, data, 12);    // Crt_Memcpy(v2, data, 12) EA 0x592894
-    w.WriteBytes(block, 100);        // this+13 : 100 octets
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq); // opcode 19, longueur totale 113
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_251 0x592870 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5928a9) : opcode FIL 0x13,
+    //   sous-code 507 = mov dword ptr [ebp+var_74], 1FBh (EA 0x592883) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (507 & 0xFF = 251) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, data, 12);        // bloc+0..11 : Crt_Memcpy(v2,a1,0xCu)
+    Net_SendPacket_Op19(nc, 507, block);   // EA 0x5928a9 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_3(NetClient& nc, const void* data) {
-    // opcode 0x03 (3) — requete d'action : charge utile brute de 13 octets
-    PacketWriter w;
-    w.WriteBytes(data, 13);
-    w.Finalize(0x03, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_3 0x592AC0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592af9) : opcode FIL 0x13,
+    //   sous-code 515 = mov dword ptr [ebp+var_74], 203h (EA 0x592ad3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (515 & 0xFF = 3) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, data, 13);        // bloc+0..12 : Crt_Memcpy(v2,a1,0xDu)
+    Net_SendPacket_Op19(nc, 515, block);   // EA 0x592af9 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_11(NetClient& nc, int8_t a, int8_t b) {
-    // opcode 0x0B (11) — requete d'action : 2 champs char, 4 LE chacun
-    PacketWriter w;
-    w.WriteChar4LE(a);
-    w.WriteChar4LE(b);
-    w.Finalize(0x0B, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_11(NetClient& nc, int32_t a, int32_t b) {
+    // Net_SendCmd_11 0x592D60 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592dab) : opcode FIL 0x13,
+    //   sous-code 523 = mov dword ptr [ebp+var_74], 20Bh (EA 0x592d73) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (523 & 0xFF = 11) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[2] = { a, b };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..7 : Crt_Memcpy(vN,&aN,4u) x2 (a1 a2)
+    Net_SendPacket_Op19(nc, 523, block);   // EA 0x592dab -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_19(NetClient& nc, int8_t a) {
-    // opcode 0x13 (19) — requete d'action : 1 champ char, 4 LE
-    PacketWriter w;
-    w.WriteChar4LE(a);
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_19(NetClient& nc, int32_t a) {
+    // Net_SendCmd_19 0x592FE0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x593019) : opcode FIL 0x13,
+    //   sous-code 531 = mov dword ptr [ebp+var_74], 213h (EA 0x592ff3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (531 & 0xFF = 19) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { a };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 531, block);   // EA 0x593019 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_7(NetClient& nc) {
@@ -1797,159 +1697,124 @@ void Net_SendOp143(NetClient& nc, int8_t a, int8_t b, int8_t c) {
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_208(NetClient& nc, int8_t p1, int8_t p2, int8_t p3, int8_t p4, int8_t p5, int8_t p6, int8_t p7) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande coffre = 208 (0xD0)
-    // Payload = [sous-cmd u32][bloc fixe 100 o : 7 champs char (4 o LE) + bourrage].
-    PacketWriter w;
-    w.WriteU32(208);            // sous-commande poussee en 32 bits (D0 00 00 00)
-    w.WriteChar4LE(p1);
-    w.WriteChar4LE(p2);
-    w.WriteChar4LE(p3);
-    w.WriteChar4LE(p4);
-    w.WriteChar4LE(p5);
-    w.WriteChar4LE(p6);
-    w.WriteChar4LE(p7);
-    for (int i = 0; i < 72; ++i) w.WriteU8(0);   // 100 - 7*4 : complete le bloc fixe
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_208(NetClient& nc, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7) {
+    // Net_SendVaultReq_208 0x5904D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590575) : opcode FIL 0x13,
+    //   sous-code 208 = mov dword ptr [ebp+var_74], 0D0h (EA 0x5904e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (208 & 0xFF = 208) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { p1, p2, p3, p4, p5, p6, p7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 208, block);   // EA 0x590575 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_216(NetClient& nc, int8_t p1, int8_t p2, int8_t p3, int8_t p4, int8_t p5, int8_t p6, int8_t p7) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande coffre = 216 (0xD8)
-    PacketWriter w;
-    w.WriteU32(216);
-    w.WriteChar4LE(p1);
-    w.WriteChar4LE(p2);
-    w.WriteChar4LE(p3);
-    w.WriteChar4LE(p4);
-    w.WriteChar4LE(p5);
-    w.WriteChar4LE(p6);
-    w.WriteChar4LE(p7);
-    for (int i = 0; i < 72; ++i) w.WriteU8(0);
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_216(NetClient& nc, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7) {
+    // Net_SendVaultReq_216 0x590AD0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590b75) : opcode FIL 0x13,
+    //   sous-code 216 = mov dword ptr [ebp+var_74], 0D8h (EA 0x590ae3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (216 & 0xFF = 216) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { p1, p2, p3, p4, p5, p6, p7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 216, block);   // EA 0x590b75 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_224(NetClient& nc, int8_t p1, int8_t p2, int8_t p3, int8_t p4, int8_t p5, int8_t p6, int8_t p7) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande coffre = 224 (0xE0)
-    PacketWriter w;
-    w.WriteU32(224);
-    w.WriteChar4LE(p1);
-    w.WriteChar4LE(p2);
-    w.WriteChar4LE(p3);
-    w.WriteChar4LE(p4);
-    w.WriteChar4LE(p5);
-    w.WriteChar4LE(p6);
-    w.WriteChar4LE(p7);
-    for (int i = 0; i < 72; ++i) w.WriteU8(0);
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_224(NetClient& nc, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7) {
+    // Net_SendVaultReq_224 0x5910D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591175) : opcode FIL 0x13,
+    //   sous-code 224 = mov dword ptr [ebp+var_74], 0E0h (EA 0x5910e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (224 & 0xFF = 224) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { p1, p2, p3, p4, p5, p6, p7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 224, block);   // EA 0x591175 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_232(NetClient& nc, int8_t p1, int8_t p2, int8_t p3, int8_t p4, int8_t p5, int8_t p6, int8_t p7) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande coffre = 232 (0xE8)
-    PacketWriter w;
-    w.WriteU32(232);
-    w.WriteChar4LE(p1);
-    w.WriteChar4LE(p2);
-    w.WriteChar4LE(p3);
-    w.WriteChar4LE(p4);
-    w.WriteChar4LE(p5);
-    w.WriteChar4LE(p6);
-    w.WriteChar4LE(p7);
-    for (int i = 0; i < 72; ++i) w.WriteU8(0);
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_232(NetClient& nc, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7) {
+    // Net_SendVaultReq_232 0x5916D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591775) : opcode FIL 0x13,
+    //   sous-code 232 = mov dword ptr [ebp+var_74], 0E8h (EA 0x5916e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (232 & 0xFF = 232) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { p1, p2, p3, p4, p5, p6, p7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 232, block);   // EA 0x591775 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_240(NetClient& nc, int8_t p1, int8_t p2, int8_t p3, int8_t p4, int8_t p5, int8_t p6, int8_t p7) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande coffre = 240 (0xF0)
-    PacketWriter w;
-    w.WriteU32(240);
-    w.WriteChar4LE(p1);
-    w.WriteChar4LE(p2);
-    w.WriteChar4LE(p3);
-    w.WriteChar4LE(p4);
-    w.WriteChar4LE(p5);
-    w.WriteChar4LE(p6);
-    w.WriteChar4LE(p7);
-    for (int i = 0; i < 72; ++i) w.WriteU8(0);
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_240(NetClient& nc, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7) {
+    // Net_SendVaultReq_240 0x591A10 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591ab5) : opcode FIL 0x13,
+    //   sous-code 240 = mov dword ptr [ebp+var_74], 0F0h (EA 0x591a23) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (240 & 0xFF = 240) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { p1, p2, p3, p4, p5, p6, p7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 240, block);   // EA 0x591ab5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_248(NetClient& nc, int8_t p1, int8_t p2, int8_t p3, int8_t p4, int8_t p5, int8_t p6, int8_t p7) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande coffre = 248 (0xF8)
-    PacketWriter w;
-    w.WriteU32(248);
-    w.WriteChar4LE(p1);
-    w.WriteChar4LE(p2);
-    w.WriteChar4LE(p3);
-    w.WriteChar4LE(p4);
-    w.WriteChar4LE(p5);
-    w.WriteChar4LE(p6);
-    w.WriteChar4LE(p7);
-    for (int i = 0; i < 72; ++i) w.WriteU8(0);
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_248(NetClient& nc, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6, int32_t p7) {
+    // Net_SendVaultReq_248 0x592010 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5920b5) : opcode FIL 0x13,
+    //   sous-code 248 = mov dword ptr [ebp+var_74], 0F8h (EA 0x592023) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (248 & 0xFF = 248) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { p1, p2, p3, p4, p5, p6, p7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 248, block);   // EA 0x5920b5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_0(NetClient& nc, int8_t p1, int8_t p2, int8_t p3, int8_t p4, int8_t p5, int8_t p6) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande coffre = 0
-    // Payload = [sous-cmd u32][bloc fixe 100 o : 6 champs char (4 o LE) + bourrage].
-    PacketWriter w;
-    w.WriteU32(0);
-    w.WriteChar4LE(p1);
-    w.WriteChar4LE(p2);
-    w.WriteChar4LE(p3);
-    w.WriteChar4LE(p4);
-    w.WriteChar4LE(p5);
-    w.WriteChar4LE(p6);
-    for (int i = 0; i < 76; ++i) w.WriteU8(0);   // 100 - 6*4
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendVaultReq_0(NetClient& nc, int32_t p1, int32_t p2, int32_t p3, int32_t p4, int32_t p5, int32_t p6) {
+    // Net_SendVaultReq_0 0x5925F0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592683) : opcode FIL 0x13,
+    //   sous-code 256 = mov dword ptr [ebp+var_74], 100h (EA 0x592603) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (256 & 0xFF = 0) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[6] = { p1, p2, p3, p4, p5, p6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..23 : Crt_Memcpy(vN,&aN,4u) x6 (a1 a2 a3 a4 a5 a6)
+    Net_SendPacket_Op19(nc, 256, block);   // EA 0x592683 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_252(NetClient& nc, int8_t a1) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande 252 (0xFC)
-    // Payload = [sous-cmd u32][bloc fixe 100 o : 1 champ char + bourrage].
-    PacketWriter w;
-    w.WriteU32(252);
-    w.WriteChar4LE(a1);
-    for (int i = 0; i < 96; ++i) w.WriteU8(0);   // 100 - 4
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_252(NetClient& nc, int32_t a1) {
+    // Net_SendCmd_252 0x5928C0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5928f9) : opcode FIL 0x13,
+    //   sous-code 508 = mov dword ptr [ebp+var_74], 1FCh (EA 0x5928d3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (508 & 0xFF = 252) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { a1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 508, block);   // EA 0x5928f9 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_4(NetClient& nc, const void* payload13) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande 4
-    // Payload = [sous-cmd u32][bloc fixe 100 o : 13 octets copies + bourrage].
-    PacketWriter w;
-    w.WriteU32(4);
-    w.WriteBytes(payload13, 13);
-    for (int i = 0; i < 87; ++i) w.WriteU8(0);   // 100 - 13
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+    // Net_SendCmd_4 0x592B10 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592b49) : opcode FIL 0x13,
+    //   sous-code 516 = mov dword ptr [ebp+var_74], 204h (EA 0x592b23) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (516 & 0xFF = 4) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, payload13, 13);   // bloc+0..12 : Crt_Memcpy(v2,a1,0xDu)
+    Net_SendPacket_Op19(nc, 516, block);   // EA 0x592b49 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_12(NetClient& nc, int8_t a1) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande 12
-    PacketWriter w;
-    w.WriteU32(12);
-    w.WriteChar4LE(a1);
-    for (int i = 0; i < 96; ++i) w.WriteU8(0);   // 100 - 4
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_12(NetClient& nc, int32_t a1) {
+    // Net_SendCmd_12 0x592DC0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592df9) : opcode FIL 0x13,
+    //   sous-code 524 = mov dword ptr [ebp+var_74], 20Ch (EA 0x592dd3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (524 & 0xFF = 12) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { a1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 524, block);   // EA 0x592df9 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_22(NetClient& nc, int8_t a1) {
-    // [net] opcode reseau 0x13 (Net_SendPacket_Op19) ; sous-commande 22
-    PacketWriter w;
-    w.WriteU32(22);
-    w.WriteChar4LE(a1);
-    for (int i = 0; i < 96; ++i) w.WriteU8(0);   // 100 - 4
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
-    NetSend(nc, w.Data(), (int)w.Size());
+void Net_SendCmd_22(NetClient& nc, int32_t a1) {
+    // Net_SendCmd_22 0x593030 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x593069) : opcode FIL 0x13,
+    //   sous-code 534 = mov dword ptr [ebp+var_74], 216h (EA 0x593043) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (534 & 0xFF = 22) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { a1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 534, block);   // EA 0x593069 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_8(NetClient& nc, const void* payload13) {
@@ -1990,14 +1855,24 @@ void Net_SendPacket_Op18(NetClient& nc, const void* payload76) {
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendPacket_Op26(NetClient& nc, int8_t f0, int8_t f1, int8_t f2, int8_t f3, int8_t f4) {
-    // [net] opcode 26 (0x1A) : 5 champs octet (chacun promu sur 4 o LE)
+void Net_SendPacket_Op26(NetClient& nc, int32_t f0, int32_t f1, int32_t f2, int32_t f3, int32_t f4) {
+    // Net_SendPacket_Op26 0x4B59C0 : opcode 26 (0x1A), 5 champs int32 LE, longueur 29.
+    //   *(this+8)=26 (EA 0x4b5a4e) ; Crt_Memcpy(this+9,&a2,4u)  EA 0x4b5a5f
+    //   Crt_Memcpy(this+13,&a3,4u) EA 0x4b5a74 ; Crt_Memcpy(this+17,&a4,4u) EA 0x4b5a89
+    //   Crt_Memcpy(this+21,&a5,4u) EA 0x4b5a9e ; Crt_Memcpy(this+25,&a6,4u) EA 0x4b5ab3
+    //   *(this+15000)=29 (EA 0x4b5abe).
+    // Les 5 emplacements sont memcpy'es sur 4 OCTETS : ce sont des int32, pas des char.
+    // Le `char a6` du prototype Hex-Rays est un artefact de dimensionnement du DERNIER
+    // argument __stdcall (rien ne borne la taille de son emplacement de pile) : les
+    // appelants y poussent des DWORD pleins — UI_MsgBox_OnLButtonUp 0x5C0A90 @0x5c25d0
+    // passe dword_1839288/dword_1822EF4, UI_Enchant_Click 0x5FBA20 @0x5fbf46 passe
+    // *(this+22768)/*(this+11). D'ou int32_t + WriteI32 sur les 5 champs.
     PacketWriter w;
-    w.WriteChar4LE(f0);   // +9
-    w.WriteChar4LE(f1);   // +13
-    w.WriteChar4LE(f2);   // +17
-    w.WriteChar4LE(f3);   // +21
-    w.WriteChar4LE(f4);   // +25
+    w.WriteI32(f0);   // +9
+    w.WriteI32(f1);   // +13
+    w.WriteI32(f2);   // +17
+    w.WriteI32(f3);   // +21
+    w.WriteI32(f4);   // +25
     w.Finalize(0x1A, DefaultRng(), nc.xorKey, nc.seq);  // len = 9 + 20 = 29
     NetSend(nc, w.Data(), (int)w.Size());
 }
@@ -2127,119 +2002,124 @@ void Net_SendOp135(NetClient& nc, int8_t f0, int8_t f1, int8_t f2, int8_t f3, in
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_201(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 201 (ramassage loot / depot entrepot).
-    // Net_SendPacket_Op19 (defini dans un autre lot) ecrit le sous-type (+9) puis copie
-    // 100 octets du bloc a +13. Les 7 champs occupent les 28 premiers octets du bloc.
-    uint8_t payload[108] = {};                       // tampon partage (Op19 en copie 100)
-    reinterpret_cast<int32_t*>(payload)[0] = a1;     // +0  (char promu sur 4 o LE)
-    reinterpret_cast<int32_t*>(payload)[1] = a2;     // +4
-    reinterpret_cast<int32_t*>(payload)[2] = a3;     // +8
-    reinterpret_cast<int32_t*>(payload)[3] = a4;     // +12
-    reinterpret_cast<int32_t*>(payload)[4] = a5;     // +16
-    reinterpret_cast<int32_t*>(payload)[5] = a6;     // +20
-    reinterpret_cast<int32_t*>(payload)[6] = a7;     // +24
-    Net_SendPacket_Op19(nc, 201, payload);
+void Net_SendVaultReq_201(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_201 0x5901C0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590265) : opcode FIL 0x13,
+    //   sous-code 201 = mov dword ptr [ebp+var_74], 0C9h (EA 0x5901d3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (201 & 0xFF = 201) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 201, block);   // EA 0x590265 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_209(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 209 (requete entrepot). 7 champs octet.
-    uint8_t payload[108] = {};
-    reinterpret_cast<int32_t*>(payload)[0] = a1;
-    reinterpret_cast<int32_t*>(payload)[1] = a2;
-    reinterpret_cast<int32_t*>(payload)[2] = a3;
-    reinterpret_cast<int32_t*>(payload)[3] = a4;
-    reinterpret_cast<int32_t*>(payload)[4] = a5;
-    reinterpret_cast<int32_t*>(payload)[5] = a6;
-    reinterpret_cast<int32_t*>(payload)[6] = a7;
-    Net_SendPacket_Op19(nc, 209, payload);
+void Net_SendVaultReq_209(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_209 0x590590 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590635) : opcode FIL 0x13,
+    //   sous-code 209 = mov dword ptr [ebp+var_74], 0D1h (EA 0x5905a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (209 & 0xFF = 209) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 209, block);   // EA 0x590635 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_217(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 217 (requete entrepot). 7 champs octet.
-    uint8_t payload[108] = {};
-    reinterpret_cast<int32_t*>(payload)[0] = a1;
-    reinterpret_cast<int32_t*>(payload)[1] = a2;
-    reinterpret_cast<int32_t*>(payload)[2] = a3;
-    reinterpret_cast<int32_t*>(payload)[3] = a4;
-    reinterpret_cast<int32_t*>(payload)[4] = a5;
-    reinterpret_cast<int32_t*>(payload)[5] = a6;
-    reinterpret_cast<int32_t*>(payload)[6] = a7;
-    Net_SendPacket_Op19(nc, 217, payload);
+void Net_SendVaultReq_217(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_217 0x590B90 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590c35) : opcode FIL 0x13,
+    //   sous-code 217 = mov dword ptr [ebp+var_74], 0D9h (EA 0x590ba3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (217 & 0xFF = 217) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 217, block);   // EA 0x590c35 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_225(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 225 (requete entrepot). 7 champs octet.
-    uint8_t payload[108] = {};
-    reinterpret_cast<int32_t*>(payload)[0] = a1;
-    reinterpret_cast<int32_t*>(payload)[1] = a2;
-    reinterpret_cast<int32_t*>(payload)[2] = a3;
-    reinterpret_cast<int32_t*>(payload)[3] = a4;
-    reinterpret_cast<int32_t*>(payload)[4] = a5;
-    reinterpret_cast<int32_t*>(payload)[5] = a6;
-    reinterpret_cast<int32_t*>(payload)[6] = a7;
-    Net_SendPacket_Op19(nc, 225, payload);
+void Net_SendVaultReq_225(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_225 0x591190 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591235) : opcode FIL 0x13,
+    //   sous-code 225 = mov dword ptr [ebp+var_74], 0E1h (EA 0x5911a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (225 & 0xFF = 225) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 225, block);   // EA 0x591235 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_233(NetClient& nc, int8_t a1, int8_t a2) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 233 (creation page entrepot). 2 champs octet.
-    uint8_t payload[108] = {};
-    reinterpret_cast<int32_t*>(payload)[0] = a1;   // +0
-    reinterpret_cast<int32_t*>(payload)[1] = a2;   // +4 (tampon contigu dans l'original)
-    Net_SendPacket_Op19(nc, 233, payload);
+void Net_SendVaultReq_233(NetClient& nc, int32_t a1, int32_t a2) {
+    // Net_SendVaultReq_233 0x591790 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5917db) : opcode FIL 0x13,
+    //   sous-code 233 = mov dword ptr [ebp+var_74], 0E9h (EA 0x5917a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (233 & 0xFF = 233) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[2] = { a1, a2 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..7 : Crt_Memcpy(vN,&aN,4u) x2 (a1 a2)
+    Net_SendPacket_Op19(nc, 233, block);   // EA 0x5917db -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_241(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 241 (requete entrepot). 7 champs octet.
-    uint8_t payload[108] = {};
-    reinterpret_cast<int32_t*>(payload)[0] = a1;
-    reinterpret_cast<int32_t*>(payload)[1] = a2;
-    reinterpret_cast<int32_t*>(payload)[2] = a3;
-    reinterpret_cast<int32_t*>(payload)[3] = a4;
-    reinterpret_cast<int32_t*>(payload)[4] = a5;
-    reinterpret_cast<int32_t*>(payload)[5] = a6;
-    reinterpret_cast<int32_t*>(payload)[6] = a7;
-    Net_SendPacket_Op19(nc, 241, payload);
+void Net_SendVaultReq_241(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_241 0x591AD0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591b75) : opcode FIL 0x13,
+    //   sous-code 241 = mov dword ptr [ebp+var_74], 0F1h (EA 0x591ae3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (241 & 0xFF = 241) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 241, block);   // EA 0x591b75 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_249(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t a4, int8_t a5, int8_t a6, int8_t a7) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 249 (requete entrepot). 7 champs octet.
-    uint8_t payload[108] = {};
-    reinterpret_cast<int32_t*>(payload)[0] = a1;
-    reinterpret_cast<int32_t*>(payload)[1] = a2;
-    reinterpret_cast<int32_t*>(payload)[2] = a3;
-    reinterpret_cast<int32_t*>(payload)[3] = a4;
-    reinterpret_cast<int32_t*>(payload)[4] = a5;
-    reinterpret_cast<int32_t*>(payload)[5] = a6;
-    reinterpret_cast<int32_t*>(payload)[6] = a7;
-    Net_SendPacket_Op19(nc, 249, payload);
+void Net_SendVaultReq_249(NetClient& nc, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+    // Net_SendVaultReq_249 0x5920D0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592175) : opcode FIL 0x13,
+    //   sous-code 249 = mov dword ptr [ebp+var_74], 0F9h (EA 0x5920e3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (249 & 0xFF = 249) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { a1, a2, a3, a4, a5, a6, a7 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 249, block);   // EA 0x592175 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendVaultReq_245b(NetClient& nc) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 245 (variante sans argument).
-    // Le bloc de 100 o copie par Op19 n'est pas initialise dans l'original -> zeros ici.
-    uint8_t payload[108] = {};
-    Net_SendPacket_Op19(nc, 245, payload);
+    // Net_SendVaultReq_245b 0x5926A0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5926c7) : opcode FIL 0x13,
+    //   sous-code 501 = mov dword ptr [ebp+var_74], 1F5h (EA 0x5926b3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (501 & 0xFF = 245) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 501, block);   // EA 0x5926c7 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_253(NetClient& nc) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 253 (requete d'action sans argument).
-    uint8_t payload[108] = {};
-    Net_SendPacket_Op19(nc, 253, payload);
+    // Net_SendCmd_253 0x592910 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592937) : opcode FIL 0x13,
+    //   sous-code 509 = mov dword ptr [ebp+var_74], 1FDh (EA 0x592923) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (509 & 0xFF = 253) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 509, block);   // EA 0x592937 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_5(NetClient& nc, const void* payload13) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 5. Payload = bloc de 13 octets.
-    uint8_t payload[108] = {};
-    std::memcpy(payload, payload13, 13);
-    Net_SendPacket_Op19(nc, 5, payload);
+    // Net_SendCmd_5 0x592B60 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592b99) : opcode FIL 0x13,
+    //   sous-code 517 = mov dword ptr [ebp+var_74], 205h (EA 0x592b73) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (517 & 0xFF = 5) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, payload13, 13);   // bloc+0..12 : Crt_Memcpy(v2,a1,0xDu)
+    Net_SendPacket_Op19(nc, 517, block);   // EA 0x592b99 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_13(NetClient& nc, int8_t value) {
-    // Wrapper : opcode FIL 19 (0x13), sous-type 13. Payload = 1 champ octet.
-    uint8_t payload[108] = {};
-    reinterpret_cast<int32_t*>(payload)[0] = value;   // +0 (char promu sur 4 o LE)
-    Net_SendPacket_Op19(nc, 13, payload);
+void Net_SendCmd_13(NetClient& nc, int32_t value) {
+    // Net_SendCmd_13 0x592E10 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592e49) : opcode FIL 0x13,
+    //   sous-code 525 = mov dword ptr [ebp+var_74], 20Dh (EA 0x592e23) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (525 & 0xFF = 13) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { value };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 525, block);   // EA 0x592e49 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_1(NetClient& nc, const void* payload13) {
@@ -2280,15 +2160,23 @@ void Net_SendMenu_2(NetClient& nc, const void* payload13) {
     }
 }
 
-void Net_SendPacket_Op19(NetClient& nc, uint8_t subCmd, const void* payload) {
-    // [net] Builder generique du canal 0x13 (coffre/commande).
-    // Le 1er champ payload (u32) porte la sous-commande (202, 210, 6, 14, ...),
-    // pousee en litteral entier -> etendue en zero sur 4 octets LE (PAS un char4LE).
-    // Suivi d'un payload fixe de 100 octets. Longueur fil totale = 113 octets.
+void Net_SendPacket_Op19(NetClient& nc, uint32_t subCmd, const void* payload) {
+    // Net_SendPacket_Op19 0x4B4E70 — builder UNIQUE du canal 0x13 (coffre/commande).
+    // Signature IDA : int __thiscall Net_SendPacket_Op19(unsigned int this, int a2, _BYTE *a3).
+    //   *(this+8) = 19               EA 0x4b4efe  -> opcode fil 0x13
+    //   Crt_Memcpy(this+9, &a2, 4u)  EA 0x4b4f0f  -> sous-code INT32 LE @+9 (a2 = int)
+    //   Crt_Memcpy(this+13, a3, 64h) EA 0x4b4f24  -> bloc de 100 octets @+13
+    //   *(this+15000) = 113          EA 0x4b4f2f  -> longueur fil 9+4+100
+    // subCmd est un uint32_t et NON un uint8_t : les 88 enveloppes appelantes couvrent
+    // 201..256 ET 501..531/534 (verifie par xrefs_to 0x4B4E70, 1 site chacune, toutes a
+    // immediat constant `mov dword ptr [ebp+var_74], imm32` ZERO-etendu). Un uint8_t
+    // tronquerait mod 256 (501->245, 534->22, 256->0) — c'est l'origine historique du
+    // mauvais nommage IDA : le suffixe des noms Net_SendCmd_*/Net_SendVaultReq_* vaut
+    // (sous-code & 0xFF), PAS le sous-code. Ne JAMAIS deduire le sous-code d'un nom.
     PacketWriter w;
-    w.WriteU32(subCmd);          // this+9 : sous-commande (u32 LE)
-    w.WriteBytes(payload, 100);  // this+13 : 100 octets de payload
-    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq);
+    w.WriteU32(subCmd);          // this+9  : sous-code (u32 LE, zero-etendu) EA 0x4b4f0f
+    w.WriteBytes(payload, 100);  // this+13 : bloc de 100 octets              EA 0x4b4f24
+    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq); // opcode 0x13, longueur 113
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
@@ -2429,104 +2317,124 @@ void Net_SendOp137(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t 
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
-void Net_SendVaultReq_202(NetClient& nc, int8_t arg0, int8_t arg1) {
-    // [net] Requete coffre sous-commande 202 sur le canal 0x13.
-    // Construit un payload local de 100 octets (deux champs char4LE) puis le confie a Op19.
-    uint8_t buf[100] = {0};
-    int32_t f0 = arg0, f1 = arg1;    // char promu en int32 LE (extension de signe)
-    std::memcpy(buf + 0, &f0, 4);    // champ 0
-    std::memcpy(buf + 4, &f1, 4);    // champ 1
-    Net_SendPacket_Op19(nc, 202, buf);
+void Net_SendVaultReq_202(NetClient& nc, int32_t arg0, int32_t arg1) {
+    // Net_SendVaultReq_202 0x590280 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5902cb) : opcode FIL 0x13,
+    //   sous-code 202 = mov dword ptr [ebp+var_74], 0CAh (EA 0x590293) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (202 & 0xFF = 202) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[2] = { arg0, arg1 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..7 : Crt_Memcpy(vN,&aN,4u) x2 (a1 a2)
+    Net_SendPacket_Op19(nc, 202, block);   // EA 0x5902cb -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_210(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // [net] Requete coffre sous-commande 210 : sept champs char4LE consecutifs.
-    uint8_t buf[100] = {0};
-    const int8_t vals[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
-    for (int i = 0; i < 7; ++i) {
-        int32_t f = vals[i];               // char promu en int32 LE
-        std::memcpy(buf + i * 4, &f, 4);   // champ i (offset 0,4,8,...,24)
-    }
-    Net_SendPacket_Op19(nc, 210, buf);
+void Net_SendVaultReq_210(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_210 0x590650 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5906f5) : opcode FIL 0x13,
+    //   sous-code 210 = mov dword ptr [ebp+var_74], 0D2h (EA 0x590663) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (210 & 0xFF = 210) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 210, block);   // EA 0x5906f5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_218(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // [net] Requete coffre sous-commande 218 : sept champs char4LE consecutifs.
-    uint8_t buf[100] = {0};
-    const int8_t vals[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
-    for (int i = 0; i < 7; ++i) {
-        int32_t f = vals[i];
-        std::memcpy(buf + i * 4, &f, 4);
-    }
-    Net_SendPacket_Op19(nc, 218, buf);
+void Net_SendVaultReq_218(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_218 0x590C50 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x590cf5) : opcode FIL 0x13,
+    //   sous-code 218 = mov dword ptr [ebp+var_74], 0DAh (EA 0x590c63) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (218 & 0xFF = 218) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 218, block);   // EA 0x590cf5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_226(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // [net] Requete coffre sous-commande 226 : sept champs char4LE consecutifs.
-    uint8_t buf[100] = {0};
-    const int8_t vals[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
-    for (int i = 0; i < 7; ++i) {
-        int32_t f = vals[i];
-        std::memcpy(buf + i * 4, &f, 4);
-    }
-    Net_SendPacket_Op19(nc, 226, buf);
+void Net_SendVaultReq_226(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_226 0x591250 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x5912f5) : opcode FIL 0x13,
+    //   sous-code 226 = mov dword ptr [ebp+var_74], 0E2h (EA 0x591263) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (226 & 0xFF = 226) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 226, block);   // EA 0x5912f5 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_234(NetClient& nc, int8_t arg0) {
-    // [net] Requete coffre sous-commande 234 : un seul champ char4LE.
-    uint8_t buf[100] = {0};
-    int32_t f = arg0;               // char promu en int32 LE
-    std::memcpy(buf, &f, 4);        // champ 0
-    Net_SendPacket_Op19(nc, 234, buf);
+void Net_SendVaultReq_234(NetClient& nc, int32_t arg0) {
+    // Net_SendVaultReq_234 0x5917F0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591829) : opcode FIL 0x13,
+    //   sous-code 234 = mov dword ptr [ebp+var_74], 0EAh (EA 0x591803) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (234 & 0xFF = 234) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg0 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 234, block);   // EA 0x591829 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_242(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // [net] Requete coffre sous-commande 242 : sept champs char4LE consecutifs.
-    uint8_t buf[100] = {0};
-    const int8_t vals[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
-    for (int i = 0; i < 7; ++i) {
-        int32_t f = vals[i];
-        std::memcpy(buf + i * 4, &f, 4);
-    }
-    Net_SendPacket_Op19(nc, 242, buf);
+void Net_SendVaultReq_242(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_242 0x591B90 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x591c35) : opcode FIL 0x13,
+    //   sous-code 242 = mov dword ptr [ebp+var_74], 0F2h (EA 0x591ba3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (242 & 0xFF = 242) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 242, block);   // EA 0x591c35 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendVaultReq_250(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6) {
-    // [net] Requete coffre sous-commande 250 : sept champs char4LE consecutifs.
-    uint8_t buf[100] = {0};
-    const int8_t vals[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
-    for (int i = 0; i < 7; ++i) {
-        int32_t f = vals[i];
-        std::memcpy(buf + i * 4, &f, 4);
-    }
-    Net_SendPacket_Op19(nc, 250, buf);
+void Net_SendVaultReq_250(NetClient& nc, int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4, int32_t arg5, int32_t arg6) {
+    // Net_SendVaultReq_250 0x592190 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592235) : opcode FIL 0x13,
+    //   sous-code 250 = mov dword ptr [ebp+var_74], 0FAh (EA 0x5921a3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (250 & 0xFF = 250) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[7] = { arg0, arg1, arg2, arg3, arg4, arg5, arg6 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..27 : Crt_Memcpy(vN,&aN,4u) x7 (a1 a2 a3 a4 a5 a6 a7)
+    Net_SendPacket_Op19(nc, 250, block);   // EA 0x592235 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_246(NetClient& nc) {
-    // [net] Requete d'action sous-commande 246, sans champ (payload de 100 octets a zero).
-    uint8_t buf[100] = {0};
-    Net_SendPacket_Op19(nc, 246, buf);
+    // Net_SendCmd_246 0x5926E0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592707) : opcode FIL 0x13,
+    //   sous-code 502 = mov dword ptr [ebp+var_74], 1F6h (EA 0x5926f3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (502 & 0xFF = 246) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 502, block);   // EA 0x592707 -> trame 9+4+100 = 113 o
 }
 
-void Net_SendCmd_254(NetClient& nc, int8_t arg0) {
-    // [net] Requete d'action sous-commande 254 : un champ char4LE.
-    uint8_t buf[100] = {0};
-    int32_t f = arg0;               // char promu en int32 LE
-    std::memcpy(buf, &f, 4);        // champ 0
-    Net_SendPacket_Op19(nc, 254, buf);
+void Net_SendCmd_254(NetClient& nc, int32_t arg0) {
+    // Net_SendCmd_254 0x592950 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592989) : opcode FIL 0x13,
+    //   sous-code 510 = mov dword ptr [ebp+var_74], 1FEh (EA 0x592963) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (510 & 0xFF = 254) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    const int32_t f[1] = { arg0 };
+    std::memcpy(block, f, sizeof(f));  // bloc+0..3 : Crt_Memcpy(vN,&aN,4u) x1 (a1)
+    Net_SendPacket_Op19(nc, 510, block);   // EA 0x592989 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_6(NetClient& nc, const void* data13) {
-    // [net] Requete d'action sous-commande 6 : 13 octets copies en tete du payload.
-    uint8_t buf[100] = {0};
-    std::memcpy(buf, data13, 13);   // 13 octets bruts
-    Net_SendPacket_Op19(nc, 6, buf);
+    // Net_SendCmd_6 0x592BB0 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592be9) : opcode FIL 0x13,
+    //   sous-code 518 = mov dword ptr [ebp+var_74], 206h (EA 0x592bc3) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (518 & 0xFF = 6) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    std::memcpy(block, data13, 13);      // bloc+0..12 : Crt_Memcpy(v2,a1,0xDu)
+    Net_SendPacket_Op19(nc, 518, block);   // EA 0x592be9 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendCmd_14(NetClient& nc) {
-    // [net] Requete d'action sous-commande 14, sans champ (payload de 100 octets a zero).
-    uint8_t buf[100] = {0};
-    Net_SendPacket_Op19(nc, 14, buf);
+    // Net_SendCmd_14 0x592E60 -> Net_SendPacket_Op19 0x4B4E70 (appel EA 0x592e87) : opcode FIL 0x13,
+    //   sous-code 526 = mov dword ptr [ebp+var_74], 20Eh (EA 0x592e73) -> int32 ZERO-etendu.
+    // PIEGE : le suffixe du nom vaut sous-code & 0xFF (526 & 0xFF = 14) — ne JAMAIS
+    //   deduire le sous-code du nom, il vient du `mov` ci-dessus.
+    // Bloc de 100 o NON initialise cote binaire (pile) -> zeros ici : on ne
+    //   reproduit pas la fuite de pile.
+    uint8_t block[100] = {0};   // bloc copie par Op19 a +13 (Crt_Memcpy(this+13,a3,0x64u))
+    Net_SendPacket_Op19(nc, 526, block);   // EA 0x592e87 -> trame 9+4+100 = 113 o
 }
 
 void Net_SendGuarded_2(NetClient& nc, int32_t ctxId) {

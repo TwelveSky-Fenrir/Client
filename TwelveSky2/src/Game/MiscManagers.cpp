@@ -4,6 +4,7 @@
 #include "Game/GameState.h"
 #include "Core/Log.h"
 #include <cmath>
+#include <cstddef> // std::size_t (dimensionnement des pools)
 #include <limits>
 
 namespace ts2::game {
@@ -147,7 +148,7 @@ void Player_ResetAnimState(float* playerCmdController, float gameTimeSec) {
 // pools sont EXACTEMENT les tableaux d'entités documentés dans
 // Game/GameState.h (calcul : base + index_dword*4) :
 //   pool A  this+1723    -> 0x1687234  == dword_1687234 (joueurs,      stride 908 o / 227 dw) [DataTable: g_World.players,     N=1000]
-//   pool B  this+228723  -> 0x1764D14  == dword_1764D14 (objets sol,   stride  88 o /  22 dw) [DataTable: g_World.groundItems, N=100]
+//   pool B  this+228723  -> 0x1764D14  == dword_1764D14 (PNJ rendu,    stride  88 o /  22 dw) [DataTable: g_World.npcRenderEntries, N=100]
 //   pool C  this+230923  -> 0x1766F74  == dword_1766F74 (monstres,     stride 280 o /  70 dw) [DataTable: g_World.monsters,    N=1000]
 //   pool D  this+300923  -> 0x17AB534  == dword_17AB534 (PNJ,          stride 152 o /  38 dw) [DataTable: g_World.npcs,        N=1000]
 //   pool E  this+338923  -> 0x17D06F4  == dword_17D06F4 (projectiles,  stride 256 o /  64 dw), N=1000 (=g_FxAuraCount 0x168722C)
@@ -182,23 +183,41 @@ void Player_ResetAnimState(float* playerCmdController, float gameTimeSec) {
 // 5841F0+sub_6A6FE0/583F50) ne font QUE zéro-initialiser 1 à 4 champs par
 // emplacement (PAS un memset intégral du slot) — l'équivalent fonctionnel est
 // un emplacement "vide/inactif" par défaut, ce que fournissent déjà les
-// constructeurs par défaut de PlayerEntity/GroundItem/MonsterEntity/NpcEntity/
+// constructeurs par défaut de PlayerEntity/NpcRenderEntry/MonsterEntity/NpcEntity/
 // ZoneObjectEntity (active=false, id={0,0}, ...) dans GameState.h. On reproduit
 // donc l'effet net (capacité fixe + slots vides) en redimensionnant g_World,
 // plutôt qu'en dupliquant un layout mémoire brut que GameState.h a
 // délibérément remplacé par des types propres.
+//
+// CORRECTIF Passe 4 / vague W7 (front « npc-array-unify ») : le pool B (0x1764D14) était
+// commenté ici « objets sol » et modélisé par `g_World.groundItems` — c'était FAUX. Ce pool
+// est le tableau de RENDU/CIBLAGE DES PNJ (g_NpcRenderArray) : son écrivain unique
+// cGameData_LoadZoneNpcInfo 0x5578E0 y copie la table de PNJ statiques par zone mZONENPCINFO,
+// et TOUS ses lecteurs le traitent en PNJ (Npc_DrawMesh 0x57FF00, Npc_RenderSlotTick 0x5803A0,
+// Scene_RayHitNpcBox 0x541680, World_PickEntityAtCursor 0x538AB0 catégorie de clic 4 ->
+// Npc_ApproachAndInteract, UI_NpcWin_Open 0x5DB530). Les sacs de butin vivent dans le pool D
+// (dword_17AB534, catégorie de clic 6). Renommé `g_World.npcRenderEntries` ; son ctor de slot
+// d'origine `sub_57FE50` (== maybe_cGameData_ListField1Reset 0x57FE50) ne met QUE `*(this+1)`
+// (= +4, flag occupé) à 0 — exactement ce que fait `NpcRenderEntry{}` (active=false), le reste
+// des 88 o n'étant pas touché par ce ctor.
 //
 // Pool E : toujours SANS conteneur ici (cf. identification ci-dessus — le
 // pool est déjà modélisé/documenté côté FX, le câblage runtime reste une
 // mission séparée). Pool F : conteneur ajouté (g_World.zoneObjects).
 bool GameData_InitPools() {
     g_World.players.assign(1000, PlayerEntity{});
-    g_World.groundItems.assign(100, GroundItem{});
+    // Pool B — g_NpcRenderArray 0x1764D14, PNJ de rendu/ciblage (cf. correctif W7 ci-dessus).
+    // `*(this+1718) = 100` @0x5575E9 -> g_NpcCount 0x1687220 : capacité FIXE (jamais réécrite
+    // par le chargeur ; c'est aussi la BORNE des lecteurs, cf. World_PickEntityAtCursor
+    // `j < g_NpcCount`). Ce site est le PROPRIÉTAIRE UNIQUE de cette capacité côté C++ —
+    // StaticNpcLoader::LoadZoneNpcs() ne redimensionne jamais le pool, il n'écrit qu'en place.
+    g_World.npcRenderEntries.assign(static_cast<std::size_t>(kNpcRenderPoolCapacity),
+                                    NpcRenderEntry{}); // @0x5575E9
     g_World.monsters.assign(1000, MonsterEntity{});
     g_World.npcs.assign(1000, NpcEntity{});
     g_World.zoneObjects.assign(500, ZoneObjectEntity{});
 
-    TS2_LOG("GameData_InitPools : pools joueurs=1000 objets_sol=100 monstres=1000 "
+    TS2_LOG("GameData_InitPools : pools joueurs=1000 pnj_rendu=100 monstres=1000 "
             "pnj=1000 objets_zone=500 (pool projectiles 17D06F4/g_FxAuraCount N=1000 "
             "deja catalogue Docs/TS2_FX_CATALOG.md, non modelise ici, cf. commentaire)");
     return true;
@@ -211,12 +230,13 @@ bool GameData_InitPools() {
 // like), plutôt qu'un simple clear() qui garderait la capacité réservée.
 bool GameData_DestroyPools() {
     g_World.players.clear();     g_World.players.shrink_to_fit();
-    g_World.groundItems.clear(); g_World.groundItems.shrink_to_fit();
+    // Pool B — ex-`groundItems`, renommé par W7 (cf. correctif d'InitPools ci-dessus).
+    g_World.npcRenderEntries.clear(); g_World.npcRenderEntries.shrink_to_fit();
     g_World.monsters.clear();    g_World.monsters.shrink_to_fit();
     g_World.npcs.clear();        g_World.npcs.shrink_to_fit();
     g_World.zoneObjects.clear(); g_World.zoneObjects.shrink_to_fit();
 
-    TS2_LOG("GameData_DestroyPools : pools joueurs/objets_sol/monstres/pnj/objets_zone vides.");
+    TS2_LOG("GameData_DestroyPools : pools joueurs/pnj_rendu/monstres/pnj/objets_zone vides.");
     return true;
 }
 

@@ -133,4 +133,38 @@ const QuestDefRecord* GetQuestDefRecord(uint32_t questId) {
     return (rec && rec->name[0] != '\0') ? rec : nullptr;
 }
 
+// NpcTbl_FindByTypeAndId 0x4C8340 — transcription litterale (cf. ExtraDatabases.h pour la
+// preuve complete). `this` = mQUEST 0x8E71E4 {count @+0, records @+4} == g_ExtraDb.quest.
+//
+// FIDELITE — points a NE PAS « ameliorer » :
+//   * l'ordre des 3 conditions est celui du binaire (nom, puis +56, puis +60) ;
+//   * le `+1` porte sur l'ARGUMENT (`add edx, 1` @0x4C839E), jamais sur le champ ;
+//   * AUCUNE garde de nullite/table-chargee : le binaire n'en a pas. Sur une table vide
+//     (count == 0) la boucle `i < *this` @0x4C8361 ne s'execute pas et la fonction renvoie 0
+//     (`xor eax, eax` @0x4C83D2) — c'est deja le comportement naturel ici, inutile d'ajouter
+//     un test que l'original ne fait pas.
+const QuestDefRecord* FindQuestDefByElementAndId(int element0, int questId) {
+    const DataTable& t = g_ExtraDb.quest;
+    for (uint32_t i = 0; i < t.count; ++i) {                       // cmp edx,[ecx] @0x4C8361
+        // imul eax, 20FCh @0x4C836D -> stride 8444 (== sizeof(QuestDefRecord), static_assert).
+        const uint8_t* raw = t.record(i);
+        if (!raw) break;
+        const QuestDefRecord* rec = reinterpret_cast<const QuestDefRecord*>(raw);
+
+        // (a) Crt_Strcmp(rec+4, "") != 0 @0x4C837E : nom NON vide. La chaine poussee
+        //     @0x4C8365 est String 0x7EC95F = le 2e NUL de "re.DAT\0\0" (0x7EC958), donc "".
+        //     strcmp(x, "") != 0 <=> x[0] != '\0'.
+        if (rec->name[0] == '\0') continue;                        // jnz/jmp @0x4C8388-0x4C838A
+
+        // (b) rec[56] == element0 + 1 @0x4C83A1 (le +1 est sur l'argument @0x4C839E).
+        if (rec->fieldA != static_cast<uint32_t>(element0 + 1)) continue;  // jnz @0x4C83A5
+
+        // (c) rec[60] == questId @0x4C83BA.
+        if (rec->fieldB != static_cast<uint32_t>(questId)) continue;       // jnz @0x4C83BD
+
+        return rec;                                               // base + 8444*i @0x4C83CE
+    }
+    return nullptr;                                               // xor eax,eax @0x4C83D2
+}
+
 } // namespace ts2::game

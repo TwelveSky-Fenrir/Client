@@ -5,6 +5,8 @@
 #include "Game/GameDatabase.h"
 #include "Game/NameplateLogic.h"
 #include "Game/StaticNpcLoader.h" // PNJ de decor (mission "PNJ DECOR VISIBLES A L'ECRAN", cf. Render())
+#include "Game/AnimationTick.h"       // ZoneNpc_AnimTickIsWired() / Monster_MotionTickIsWired() / IMotionFrameCountOracle — W7
+#include "Game/EntityLifecycleTick.h" // g_MonsterTickExt (motionState/animFrame par monstre) — W7
 #include "Gfx/MotionCache.h"      // palette d'os animee (miroir g_ModelMotionArray 0x8E8B30) — W3-F1
 #include "Gfx/PlayerPaperdoll.h"  // paperdoll joueur (calque Char_RenderModel 0x527020) — W3-F1
 #include "Core/Log.h"
@@ -29,6 +31,28 @@ gfx::MotionCache& Motions() {
     static gfx::MotionCache m(".");
     return m;
 }
+
+// Implementation de game::IMotionFrameCountOracle (Passe 4 / W7, front motion-anim) adossee au
+// MEME MotionCache que le dessin -- c'est le point CRUCIAL de fidelite : dans le binaire, le
+// tick (Model_GetMotionFrameCount 0x4E5A70 @0x582d6a et consorts) et le dessin (Char_Draw
+// @0x580770) resolvent le slot par le MEME accesseur sur le MEME g_ModelMotionArray, donc
+// frameCount du tick == frameCount de la palette dessinee. Faire diverger ces deux sources
+// (p.ex. une table de durees separee) desynchroniserait wrap et echantillonnage.
+class MotionFrameCountOracle final : public game::IMotionFrameCountOracle {
+public:
+    // Model_GetMotionFrameCount 0x4E5A70 (monstre).
+    int GetMonsterMotionFrameCount(uint32_t monsterDefId, int animType) const override {
+        return Motions().GetMonsterMotionFrameCount(monsterDefId, animType);
+    }
+    // Model_GetWeaponEffectFrameCount 0x4E5A40 (PNJ de decor), indexe comme game::ZoneNpcs().
+    int GetZoneNpcMotionFrameCount(int zoneNpcIndex, int animType) const override {
+        const std::vector<game::StaticNpcSlot>& slots = game::ZoneNpcs();
+        if (zoneNpcIndex < 0 || static_cast<size_t>(zoneNpcIndex) >= slots.size()) return 0;
+        const game::NpcDefRecord* def = slots[static_cast<size_t>(zoneNpcIndex)].def;
+        if (!def) return 0; // jamais nul en pratique (garde du chargeur), defensif
+        return Motions().GetNpcMotionFrameCount(*def, animType);
+    }
+};
 
 // Palette approximative des codes couleur de NameplateLogic (game::kNameColor*).
 // HORS PÉRIMÈTRE : la vraie palette vit côté assets UI (littéraux passés à
@@ -103,6 +127,13 @@ uint32_t ReadBodyU32LE(const std::array<uint8_t, 600>& body, size_t offset) {
 }
 
 } // namespace
+
+// Accesseur public de l'oracle (cf. Scene/WorldRenderer.h pour la justification du placement).
+// Singleton a duree de vie process, adosse au MotionCache de dessin.
+const game::IMotionFrameCountOracle& WorldMotionFrameCountOracle() {
+    static const MotionFrameCountOracle s_oracle;
+    return s_oracle;
+}
 
 // ===========================================================================
 //  Init / Shutdown
@@ -376,23 +407,46 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
     const D3DXVECTOR3 rotDeg(0.0f, placement.angle, 0.0f);
     const D3DXVECTOR3 scaleVec(scale, scale, scale);
 
-    // Palette d'os ANIMÉE (remplace l'ancienne palette IDENTITÉ) — échantillonnée par
-    // g_World.gameTimeSec. Reprend la séquence Char_Draw 0x5805C0 -> SObject_DrawEx 0x4D9330
+    // Palette d'os ANIMÉE — Char_Draw 0x5805C0 / Npc_DrawMesh 0x57FF00 -> SObject_DrawEx 0x4D9330
     // (Motion_GetData 0x4D78C0 = motionSlot+136) -> Model_Render 0x40EBB0 (frame = ftol(animTime),
-    // borné 0..frameCount-1). animType idle=0 : pose de base de Char_Draw ; la vraie horloge
-    // (entity+7) est pilotée par la FSM Char_UpdateAnimationFrame 0x571880, JAMAIS câblée sur les
-    // entités de rendu (cf. GameState.h) -> échantillonnage 30 fps par g_World.gameTimeSec (idiome
-    // Char_RenderModel 0x528d38). TODO [ancre 0x571880] : animType réel depuis la FSM d'action.
+    // borné 0..frameCount-1).
+    //
+    // ///// CORRIGÉ — Passe 4 / vague W7, front motion-anim (gaps as-motion-01 + as-motion-02) /////
+    // AVANT : `GetFor*(defId, /*anim idle*/0)` + `SampleByGameTime(g_World.gameTimeSec)`, avec un
+    // `TODO [ancre 0x571880]`. DEUX défauts, tous deux corrigés ici :
+    //   1. animType FIGÉ à 0 -> monstres et PNJ ne changeaient JAMAIS d'animation. Le binaire lit
+    //      un animType PAR ENTITÉ : slot monstre +24 (@0x580770, arg 3 de Model_GetNpcMotionSlot)
+    //      / slot PNJ +12 (@0x57ffa0, arg 3 de Model_GetNpcMeshSlot).
+    //   2. horloge GLOBALE -> toutes les entités animées EN PHASE. Le binaire lit un curseur PAR
+    //      ENTITÉ : slot monstre +28 (@0x580828) / slot PNJ +16 (@0x57fff1), accumulé par le tick
+    //      de l'entité (`+= dt*30`), jamais par g_GameTimeSec.
+    // L'ancien `TODO [ancre 0x571880]` pointait de surcroît la MAUVAISE fonction : aucun monstre ne
+    // passe par Char_UpdateAnimationFrame 0x571880 (réservée à g_EntityArray = les joueurs). Le
+    // désassemblage de Scene_InGameUpdate 0x52C600 prouve 4 familles disjointes — @0x52c96d/
+    // @0x52c9fd joueurs (0x571880), @0x52ca4c PNJ décor (Npc_RenderSlotTick 0x5803A0), @0x52cad6
+    // MONSTRES (Char_Update 0x581E10). Portages : Game/AnimationTick.h §5 (monstres) / §6 (PNJ).
+    //
+    // hasAnimCursor=false (JOUEURS) -> repli SampleByGameTime, inchangé : leur curseur réel dépend
+    // du switch terminal 0x5727BF (55 handlers) non porté, le brancher le figerait à 0.
     gfx::BonePalette palette; // repli identité si aucune MOTION ne résout
     if (ent.monsterDefId != 0) {
-        // Model_GetNpcMotionSlot 0x4E5960 (monstre, stride 3276).
-        if (const gfx::MotionPalette* mp = Motions().GetForMonster(ent.monsterDefId, /*anim idle*/0))
-            palette = gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
+        // Model_GetNpcMotionSlot 0x4E5960 (monstre, stride 3276) — arg 3 = animType par entité.
+        if (const gfx::MotionPalette* mp = Motions().GetForMonster(ent.monsterDefId, ent.animType))
+            palette = ent.hasAnimCursor
+                        ? gfx::MotionCache::SampleByCursor(*mp, ent.animCursor)      // @0x580828
+                        : gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
     } else if (ent.npcDef) {
-        // Model_GetNpcMeshSlot 0x4E5910 (PNJ de décor, stride 468).
-        if (const gfx::MotionPalette* mp = Motions().GetForNpc(*ent.npcDef, /*anim idle*/0))
-            palette = gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
+        // Model_GetNpcMeshSlot 0x4E5910 (PNJ de décor, stride 468) — arg 3 = animType par entité.
+        if (const gfx::MotionPalette* mp = Motions().GetForNpc(*ent.npcDef, ent.animType))
+            palette = ent.hasAnimCursor
+                        ? gfx::MotionCache::SampleByCursor(*mp, ent.animCursor)      // @0x57fff1
+                        : gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
     }
+    // TODO [ancre Char_Draw 0x5805C0 @0x580776] : cas `*((_DWORD*)this + 53)` (slot+212 =
+    // MonsterTickExt::fallActive) NON implémenté — quand un monstre est en chute/knockback, le
+    // binaire dessine avec animTime = 0.0 (pose figée) et lit pos/rot en slot+240/+252
+    // (fallOffX/Y/Z, @0x5807d1) au lieu de slot+32/+56. Hors des 2 gaps de ce front, et la
+    // physique de recul elle-même n'est pas portée (cf. Game/AnimationTick.cpp, TODO knockback).
 
     // PNJ GAMEPLAY : bodyMeshEligible=false -> AUCUN corps ni cube (l'original ne dessine
     // jamais de mesh pour dword_17AB534, cf. DrawableEntity::bodyMeshEligible). Seule la
@@ -609,6 +663,28 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         uint32_t defId = 0;
         std::memcpy(&defId, m.body.data(), sizeof(defId));
         ent.monsterDefId = defId;
+
+        // ANIMATION PAR MONSTRE (Passe 4 / W7, gaps as-motion-01 + as-motion-02) — Char_Draw
+        // 0x5805C0 : animType = slot+24 (@0x580770), curseur = slot+28 (@0x580828). Source C++
+        // autoritaire = game::g_MonsterTickExt[i] (Game/EntityLifecycleTick.h), dont
+        // `.motionState`/`.animFrame` portent EXACTEMENT ces deux offsets et sont désormais
+        // alimentés par game::Monster_DispatchMotionTick (Game/AnimationTick.h §5, les 9
+        // Char_MotionTick_* + leur dispatch @0x5822D3).
+        // PAS `m.anim` (GameState.h:225) : ce CharAnimState est calqué sur des offsets JOUEUR
+        // (entity+244/+248) et est MORT pour les monstres — cf. Game/AutoTargetCombatGate.h:106-112.
+        //
+        // GARDE DE NON-RÉGRESSION (cf. game::Monster_MotionTickIsWired) : tant que le hook
+        // EntityLifecycleTickHost::DispatchMotionTick n'est pas assigné (Scene/SceneManager.cpp),
+        // le tick ne tourne pas et animFrame resterait bloqué à 0 -> monstres TOTALEMENT FIGÉS,
+        // strictement pire que l'horloge globale d'avant. On ne consomme donc le curseur par
+        // entité QUE s'il est réellement alimenté ; sinon on conserve l'ancien repli animé.
+        // Ce garde n'est PAS un comportement du binaire : à retirer une fois le câblage verrouillé.
+        if (i < game::g_MonsterTickExt.size()) {
+            const game::MonsterTickExt& mext = game::g_MonsterTickExt[i];
+            ent.animType      = mext.motionState; // slot+24 @0x580770
+            ent.animCursor    = mext.animFrame;   // slot+28 @0x580828
+            ent.hasAnimCursor = game::Monster_MotionTickIsWired();
+        }
         // Char_DrawReflection 0x581090 (= ombre planaire du MONSTRE, cf. bandeau WorldRenderer.h
         // §Ombre/reflet [B] -- le nom « reflet » de l'IDB est trompeur) : appelant unique dans
         // tout le binaire, à l'intérieur de CETTE boucle (`&dword_1766F74[280*i]` @0x52DB09 dans
@@ -688,7 +764,14 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
     // n'ajoute un slot à ZoneNpcs() QUE si GetNpcDefRecord(kindId) a réussi (cf.
     // StaticNpcLoader.cpp).
     for (size_t i = 0; i < game::ZoneNpcs().size(); ++i) {
-        const game::StaticNpcSlot& n = game::ZoneNpcs()[i];
+        const game::StaticNpcSlot& n = game::ZoneNpcs()[i]; // = NpcRenderEntry (pool unique W7)
+
+        // W7 « npc-array-unify » : ZoneNpcs() renvoie 100 slots FIXES, dont des TROUS inactifs
+        // (def==nullptr, pos 0,0,0). Le contrat impose de tester `active` avant tout usage (cf.
+        // Game/StaticNpcLoader.h / GameState.h) -- fidèle au garde `*(this+1)` de Npc_DrawMesh
+        // 0x57FF00 / Npc_RenderSlotTick 0x5803A0. AVANT W7, ZoneNpcs() était compacté (que des
+        // slots occupés) : sans cette garde on dessinerait désormais des cubes fantômes à l'origine.
+        if (!n.active) continue;
 
         // Même far-cull PNJ que la boucle gameplay ci-dessus (Npc_DrawMesh 0x57FF00, cf.
         // kNpcFarCullDistanceSq en tête de fichier) : ce garde s'applique à TOUT PNJ
@@ -703,10 +786,27 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         DrawableEntity ent{};
         ent.renderState.active = true;
         ent.renderState.pos    = { n.x, n.y, n.z };
-        // Angle affiché initial (mZONENPCINFO+0x644, cf. StaticNpcLoader.h) -- consommé
-        // par ComputeBodyMeshPlacement -> rotDeg.y dans renderOne, même canal que
-        // PlayerEntity::heading/MonsterEntity::heading.
-        ent.renderState.facingOrAnimTimer = n.angle;
+        // ANIMATION PAR PNJ (gaps as-motion-01 + as-motion-02) — Npc_DrawMesh 0x57FF00 :
+        // animType = slot+12 (@0x57ffa0, arg 3 de Model_GetNpcMeshSlot), curseur = slot+16
+        // (@0x57fff1, animTime de SObject_DrawEx), angle affiché = slot+44. ADAPTATION W7 : ces
+        // trois valeurs sont les champs NATIFS du pool unifié NpcRenderEntry (mode/frameAcc/angle),
+        // alimentés par game::ZoneNpc_TickAnim (Game/AnimationTick.h §6, portage de
+        // Npc_RenderSlotTick 0x5803A0 / _Loop 0x580400 / _Once 0x5804A0) qui tick DIRECTEMENT le
+        // pool -- plus de vecteur parallèle. L'angle (+44) est le SEUL mutable : tour vers le
+        // joueur à l'ouverture du dialogue (@0x5dc0a2), reset sur la baseline au-delà de 400 u
+        // (@0x58048e). Consommé par ComputeBodyMeshPlacement -> rotDeg.y (renderOne), même canal
+        // que PlayerEntity::heading/MonsterEntity::heading.
+        ent.renderState.facingOrAnimTimer = n.angle;    // slot+44
+        ent.animType   = n.mode;                        // slot+12
+        ent.animCursor = n.frameAcc;                    // slot+16
+        // MÊME garde de non-régression que la boucle monstre (cf. game::Monster_MotionTickIsWired) :
+        // game::ZoneNpc_TickAnim n'est à ce jour appelé NULLE PART (câblage à poser par
+        // l'orchestrateur dans Scene/SceneManager.cpp après InGameTickFlow_Update, cf.
+        // Game/AnimationTick.h §6). Tant qu'il ne tourne pas, frameAcc reste 0 -> consommer le
+        // curseur figerait les PNJ sur la 1re frame, alors que l'ancien repli SampleByGameTime les
+        // animait (en phase). On ne consomme donc le curseur par-entité QUE s'il est réellement
+        // alimenté. Se résorbe dès le câblage posé.
+        ent.hasAnimCursor = game::ZoneNpc_AnimTickIsWired();
         ent.renderState.hp = 0; // TODO(fidélité) : pas de barre de vie pour un PNJ de décor.
         ent.notSelf = true;
         // Nom réel (NpcDefRecord::name, 25 o cstring) si disponible ; repli "ZoneNpc#i"

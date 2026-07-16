@@ -55,10 +55,16 @@ public:
     // (GXD_BeginScene) Prépare la frame : Clear(cible+z+stencil), recalcul de la vue,
     // viewport, SetTransform proj/vue/monde, SetMaterial, LightEnable+SetLight, états
     // d'échantillonnage, dithering, BeginScene, puis remise du pipeline à fonction fixe.
+    // TODO [ancre 0x404640] : SANS APPELANT à ce jour — le début de frame passe par
+    // ts2::gfx::Renderer::BeginFrame (Gfx_BeginFrame 0x6A2280, Object A). Voir le pavé
+    // détaillé au-dessus de la définition dans GxdRenderer.cpp.
     bool SetupFrame();
 
     // (GXD_ConfigSamplerStates) Filtres min/mag/mip (anisotrope par défaut, linéaire si
     // m_useLinearFilter) + adressage WRAP (U,V) sur les étages 0..2.
+    // Appelée PAR FRAME par ts2::gfx::Renderer::BeginFrame(), juste après Clear+BeginScene :
+    // même position que les 6 sites d'appel des Scene_*Render (0x518916, 0x51B0C6, ...).
+    // Écrase délibérément, chaque frame, les filtres LINEAR posés à l'init par Object A.
     void ConfigSamplerStates();
 
     // (GXD_SetDirectionalLight) Remplit un D3DLIGHT9 directionnel local (diffuse/specular

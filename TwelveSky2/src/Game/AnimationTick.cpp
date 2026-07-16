@@ -4,6 +4,9 @@
 #include "Game/ClientRuntime.h"   // g_Client.Var/VarF (échappatoire globals "longue traîne")
 #include "Game/MapWarp.h"         // BeginWarpToFactionTown, WarpAddr::SelfMorphNpcId
 #include "Game/CameraWarpTick.h"  // Cam_SetLookAt (déjà écrit, réutilisé tel quel)
+#include "Game/EntityLifecycleTick.h" // g_MonsterTickExt (motionState/animFrame/attackWindupMode) — §5
+#include "Game/ExtraDatabases.h"      // NpcDefRecord::id (kind du PNJ de décor, ZoneNpc_OnDialogueOpen) — §6
+                                       // (le pool PNJ lui-même = g_World.npcRenderEntries, via GameState.h)
 #include <cmath>
 #include <cstring>
 
@@ -615,6 +618,289 @@ void MapColl_UpdateObjectAnim(MapCollisionObjectAnimState& obj, float dt,
             oracle->InitParticle(p.particleDefIndex); // le binaire n'écrit PAS `initialized`
                                                         // ici (positionné ailleurs, hors périmètre)
     }
+}
+
+// =====================================================================================
+// 5. FSM d'animation MONSTRE — Char_Update 0x581E10, switch @0x5822D3 (9 handlers)
+//    Voir Game/AnimationTick.h §5 pour la table complète état -> EA -> sémantique.
+// =====================================================================================
+namespace {
+
+constexpr float kFrameRate30 = 30.0f; // `frame += a3 * 30.0` — commun aux 9 handlers
+
+// Valeurs du switch @0x5822D3 (= set valide de Model_GetNpcMotionSlot 0x4E5960 @0x4e59a4).
+enum : int32_t {
+    kMonsterMotionToIdle    = 0,
+    kMonsterMotionLoop      = 1,
+    kMonsterMotionMoveA     = 3,
+    kMonsterMotionMoveB     = 4,
+    kMonsterMotionAttackA   = 5,
+    kMonsterMotionAttackB   = 7,
+    kMonsterMotionHit       = 8,
+    kMonsterMotionKnockback = 0xC,
+    kMonsterMotionDeath     = 0x13,
+};
+
+// monsterDefId = MonsterEntity::body[0] (u32 LE) — MÊME lecture que
+// Game/EntityManager.cpp::ResolveMobDef et Scene/WorldRenderer.cpp::Render (id brut, sans -1).
+uint32_t MonsterDefIdOf(const MonsterEntity& m) {
+    uint32_t defId = 0;
+    std::memcpy(&defId, m.body.data(), sizeof(defId));
+    return defId;
+}
+
+// Latch de câblage — cf. Monster_MotionTickIsWired() dans Game/AnimationTick.h (garde de
+// non-régression, PAS un comportement du binaire).
+bool g_MonsterMotionTickRan = false;
+
+} // namespace (helpers FSM monstre)
+
+bool Monster_MotionTickIsWired() { return g_MonsterMotionTickRan; }
+
+void Monster_DispatchMotionTick(GameWorld& world, int monsterIndex, float dt,
+                                 const IMotionFrameCountOracle* oracle,
+                                 const MonsterMotionTickHost& host) {
+    if (monsterIndex < 0 || static_cast<size_t>(monsterIndex) >= world.monsters.size()) return;
+    const MonsterEntity& mon = world.monsters[static_cast<size_t>(monsterIndex)];
+    if (!mon.active) return; // garde `if (*(_DWORD*)this)` de Char_Update @0x581e1c
+
+    // g_MonsterTickExt est dimensionné par UpdateMonster (EnsureMonsterExtCapacity) AVANT
+    // d'appeler host.DispatchMotionTick ; garde défensive au cas où un autre appelant l'invoque.
+    if (static_cast<size_t>(monsterIndex) >= g_MonsterTickExt.size()) return;
+    MonsterTickExt& ext = g_MonsterTickExt[static_cast<size_t>(monsterIndex)];
+
+    // Le switch @0x5822d3 a un `default: return` : un état hors des 9 cas ne tick PAS du tout
+    // (pas même l'avance de frame) — fidèle.
+    const int32_t state = ext.motionState;
+    switch (state) {
+        case kMonsterMotionToIdle:  case kMonsterMotionLoop:
+        case kMonsterMotionMoveA:   case kMonsterMotionMoveB:
+        case kMonsterMotionAttackA: case kMonsterMotionAttackB:
+        case kMonsterMotionHit:     case kMonsterMotionKnockback:
+        case kMonsterMotionDeath:
+            break;
+        default:
+            return; // @0x5822d3 default
+    }
+    g_MonsterMotionTickRan = true; // le tick est réellement atteint (cf. Monster_MotionTickIsWired)
+
+    // frameCount = Model_GetMotionFrameCount 0x4E5A70(kindIdx, animType) — MÊME slot que le
+    // dessin (Char_Draw @0x580770) donc identique à palette.frameCount. Les 9 handlers le
+    // calculent EN TÊTE, avant l'avance de frame : reproduit tel quel.
+    // oracle nul / count<=0 -> durée inconnue : on avance le curseur mais on n'émet AUCUNE
+    // borne ni transition (on ne fabrique pas une durée). Cf. Game/AnimationTick.h.
+    const int frameCount = oracle ? oracle->GetMonsterMotionFrameCount(MonsterDefIdOf(mon), state) : 0;
+    const bool haveCount = (frameCount > 0);
+    const float countF   = static_cast<float>(frameCount);
+
+    // Avance commune aux 9 handlers : `*(this+28) = a3 * 30.0 + *(this+28)`
+    // (@0x582d7f / @0x582def / @0x582e5f / @0x582f2f / @0x582fff / @0x58307f / @0x5830ff /
+    //  @0x58316f / @0x58331f) — slot+28 = MonsterTickExt::animFrame.
+    ext.animFrame += dt * kFrameRate30;
+
+    // Transition « retour à Loop(1) » : state=1 + frame=0. Motif partagé par ToIdle/AttackA/
+    // AttackB/Hit et par la sortie de Move.
+    auto backToLoop = [&ext]() {
+        ext.motionState = kMonsterMotionLoop; // @0x582d99 / @0x583019 / @0x583099 / @0x583119
+        ext.animFrame   = 0.0f;               // @0x582da5 / @0x583025 / @0x5830a5 / @0x583125
+    };
+
+    switch (state) {
+        // --- 0 : Char_MotionTick_ToIdle 0x582D40 ------------------------------------------
+        case kMonsterMotionToIdle:
+            if (haveCount && ext.animFrame >= countF) backToLoop(); // @0x582d92
+            break;
+
+        // --- 1 : Char_MotionTick_Loop 0x582DB0 — wrap par SOUSTRACTION (jamais un modulo) --
+        case kMonsterMotionLoop:
+            if (haveCount && ext.animFrame >= countF) ext.animFrame -= countF; // @0x582e02/@0x582e10
+            break;
+
+        // --- 3/4 : Char_MotionTick_MoveA 0x582E20 / MoveB 0x582EF0 -------------------------
+        // Wrap identique à Loop (@0x582e72/@0x582e80 ; @0x582f42/@0x582f50) PUIS
+        // MapColl_StepTowardTarget(&dword_14A88E4, this+32, this+44, speed, a3, &arrived) avec
+        // speed = MONSTER_INFO+384 (MoveA @0x582e9b) / +388 (MoveB @0x582f6b).
+        //   échec (result==0) -> state=1, frame=0   (@0x582ebd/@0x582ec9 ; @0x582f8d/@0x582f99)
+        //   arrivé (arrived!=0) -> state=1, frame=0 (@0x582ed7/@0x582ee3 ; @0x582fa7/@0x582fb3)
+        case kMonsterMotionMoveA:
+        case kMonsterMotionMoveB: {
+            if (haveCount && ext.animFrame >= countF) ext.animFrame -= countF;
+            // Hook nul -> on saute le déplacement ET la transition. NE PAS assimiler "pas de
+            // hook" à "result==0 -> state=1" : cela ferait sortir de Move dès la 1re frame et
+            // le monstre ne marcherait jamais (cf. Game/AnimationTick.h, note de dégradation).
+            if (!host.StepTowardTarget) break;
+            bool arrived = false;
+            const bool stepped = host.StepTowardTarget(monsterIndex, state == kMonsterMotionMoveB,
+                                                        dt, arrived);
+            if (!stepped || arrived) backToLoop();
+            break;
+        }
+
+        // --- 5/7 : Char_MotionTick_AttackA 0x582FC0 / AttackB 0x583040 ---------------------
+        // Identiques à ToIdle + clear du windup slot+108 (@0x58302b / @0x5830ab).
+        case kMonsterMotionAttackA:
+        case kMonsterMotionAttackB:
+            if (haveCount && ext.animFrame >= countF) { // @0x583012 / @0x583092
+                backToLoop();
+                ext.attackWindupMode = 0; // slot+108 = MonsterTickExt::attackWindupMode
+            }
+            break;
+
+        // --- 8 : Char_MotionTick_Hit 0x5830C0 ----------------------------------------------
+        case kMonsterMotionHit:
+            if (haveCount && ext.animFrame >= countF) backToLoop(); // @0x583112
+            break;
+
+        // --- 0xC : Char_MotionTick_Knockback 0x583130 — PARTIEL, cf. TODO ------------------
+        // Gel sur la dernière frame (@0x583271/@0x583284), reproduit fidèlement.
+        // TODO [ancre Char_MotionTick_Knockback 0x583130 @0x583189..0x5832d0] : le bloc de
+        // PHYSIQUE de recul n'est PAS porté — décélération -100*dt du scalaire slot+204
+        // (@0x5831a4), intégration de la position par la direction slot+44/+52 (@0x5831e3/
+        // @0x583207), clamp sur MapColl_GetGroundHeight 0x697130 (@0x58323d), puis à la fin de
+        // l'anim : slot+200=0 + horodatage slot+208 (@0x583296/@0x5832a9) et, au-delà de 3 s,
+        // Char_RespawnAfterKnockback 0x580550 (@0x5832d0). Raison : les champs porteurs
+        // (slot+76, +200, +204, +208) N'EXISTENT PAS dans MonsterTickExt, et
+        // Game/EntityLifecycleTick.h n'appartient pas à ce front — les ajouter unilatéralement
+        // entrerait en conflit avec son propriétaire. Rien n'est inventé : seule l'avance/le
+        // gel de frame est émis. À noter que la branche « périmé > 3 s » a déjà un équivalent
+        // câblé côté appelant (Scene_InGameUpdate @0x52cab5 -> host.RespawnMonsterAfterKnockback,
+        // Scene/SceneManager.cpp) — la perte fonctionnelle réelle se limite au déplacement de
+        // recul lui-même.
+        case kMonsterMotionKnockback:
+            if (haveCount && ext.animFrame >= countF) ext.animFrame = countF - 1.0f; // @0x583284
+            break;
+
+        // --- 0x13 : Char_MotionTick_Death 0x5832E0 — gel sur la dernière frame -------------
+        case kMonsterMotionDeath:
+            if (haveCount && ext.animFrame >= countF) ext.animFrame = countF - 1.0f; // @0x583332/@0x583345
+            break;
+
+        default:
+            break; // inatteignable (filtré ci-dessus)
+    }
+}
+
+// =====================================================================================
+// 6. Animation des PNJ DE DÉCOR — Npc_RenderSlotTick 0x5803A0 / _Loop 0x580400 / _Once 0x5804A0
+//    Voir Game/AnimationTick.h §6. ADAPTATION W7 : on tick DIRECTEMENT les champs NATIFS du pool
+//    unique g_World.npcRenderEntries (NpcRenderEntry : mode+12 / frameAcc+16 / angle+44 /
+//    angleBase+80) -- ce SONT les offsets du slot d'origine g_NpcRenderArray, plus de vecteur
+//    parallèle (rationale caduque depuis la fusion W7, cf. header AnimationTick.h §6).
+// =====================================================================================
+namespace {
+
+// Math_Dist3D 0x53FAA0 : sqrt(dx^2+dy^2+dz^2). Copie locale — même convention que
+// Game/AutoTargetCombatGate.cpp / ComboPickupTick.cpp / GroundAuraWorldObjectTick.cpp, qui en
+// portent chacun la leur (module autonome, pas de header math partagé à ce jour).
+float Dist3D(float ax, float ay, float az, float bx, float by, float bz) {
+    const float dx = ax - bx, dy = ay - by, dz = az - bz;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Math_AngleBetween2D 0x53FB20 : cap (deg 0..360) du point (a1,a2) vers (a3,a4). Copie locale
+// (cf. note ci-dessus) — transcription identique à celle de Game/GroundAuraWorldObjectTick.cpp.
+float AngleBetween2D(float a1, float a2, float a3, float a4) {
+    if (a3 == a1 && a4 == a2) return 0.0f;                       // @0x53fb45
+    float dx = a3 - a1, dz = a4 - a2;                            // v12,v13
+    const float len = std::sqrt(dz * dz + dx * dx);              // @0x53fb82
+    if (len > 0.0f) { dx /= len; dz /= len; }                    // @0x53fb99
+    const float chordZ = dz - 1.0f;                              // v14
+    const float chord  = std::sqrt(chordZ * chordZ + dx * dx);   // @0x53fbdb
+    float half = chord * 0.5f;                                   // @0x53fbf8 (v8/2)
+    if (half > 1.0f) half = 1.0f;                                // @0x53fbf8 (branche asin(1.0))
+    float ang = std::asin(half) * 2.0f;                          // @0x53fc30/@0x53fc44 (rad)
+    if (a3 < a1) ang = 6.283185482025146f - ang;                 // @0x53fc54
+    const float deg = ang * 57.2957763671875f + 180.0f;          // @0x53fc71
+    if (deg >= 360.0f) return deg - 360.0f;                      // @0x53fc82
+    return deg;                                                  // @0x53fc93
+}
+
+constexpr float kZoneNpcBaselineResetDistance = 400.0f; // @0x580483
+
+// Latch de câblage — cf. ZoneNpc_AnimTickIsWired() dans Game/AnimationTick.h (garde de
+// non-régression, PAS un comportement du binaire).
+bool g_ZoneNpcAnimTickRan = false;
+
+// Npc_RenderSlotTick_Loop 0x580400 — opère sur les champs NATIFS du slot (NpcRenderEntry).
+void ZoneNpcTickLoop(NpcRenderEntry& e, int index, float dt,
+                     const IMotionFrameCountOracle* oracle, const PlayerEntity& self) {
+    // frameCount = Model_GetWeaponEffectFrameCount 0x4E5A40 @0x580429 — MÊME slot que le dessin
+    // (Npc_DrawMesh @0x57ffa0) donc identique à palette.frameCount. Calculé EN TÊTE, comme ici.
+    // Le 2e argument d'origine est *(this+3) = mode (double rôle animId/dispatch, cf. 0x580429).
+    const int frameCount = oracle ? oracle->GetZoneNpcMotionFrameCount(index, e.mode) : 0;
+
+    e.frameAcc += dt * kFrameRate30; // @0x58043e : *((float*)this+4) = a3*30.0 + *((float*)this+4)
+    if (frameCount > 0 && e.frameAcc >= static_cast<float>(frameCount))
+        e.frameAcc -= static_cast<float>(frameCount); // @0x580451/@0x58045f : wrap par SOUSTRACTION
+
+    // @0x580483 : Math_Dist3D(this+5 /*pos PNJ*/, flt_1687330 /*joueur local*/) > 400.0
+    //          -> *(this+11) = *(this+20), soit angle(+44) = angleBase(+80). Le chargeur écrit la
+    // même valeur aux deux offsets (@0x557a42 / @0x557a62) : le PNJ reprend son cap d'origine
+    // quand on s'éloigne.
+    if (Dist3D(e.x, e.y, e.z, self.x, self.y, self.z) > kZoneNpcBaselineResetDistance)
+        e.angle = e.angleBase; // @0x58048e
+}
+
+// Npc_RenderSlotTick_Once 0x5804A0.
+void ZoneNpcTickOnce(NpcRenderEntry& e, int index, float dt,
+                     const IMotionFrameCountOracle* oracle) {
+    const int frameCount = oracle ? oracle->GetZoneNpcMotionFrameCount(index, e.mode) : 0; // @0x5804c9
+    e.frameAcc += dt * kFrameRate30; // @0x5804de
+    if (frameCount > 0 && e.frameAcc >= static_cast<float>(frameCount)) { // @0x5804f1
+        e.mode     = 0;    // @0x5804f8 : *(this+3) = 0.0 -> retour en mode Loop
+        e.frameAcc = 0.0f; // @0x580504
+    }
+}
+
+} // namespace (helpers PNJ de décor)
+
+bool ZoneNpc_AnimTickIsWired() { return g_ZoneNpcAnimTickRan; }
+
+void ZoneNpc_TickAnim(float dt, const IMotionFrameCountOracle* oracle) {
+    g_ZoneNpcAnimTickRan = true; // le tick est réellement atteint (cf. ZoneNpc_AnimTickIsWired)
+    const PlayerEntity&            self = g_World.Self(); // flt_1687330 = position du joueur local
+    std::vector<NpcRenderEntry>&   pool = g_World.npcRenderEntries; // pool unique (W7)
+
+    for (size_t i = 0; i < pool.size(); ++i) {
+        NpcRenderEntry& e = pool[i];
+        // Garde `if (*((_DWORD*)this + 1))` (slot+4 = active, @0x5803ac) : sous W7 le pool porte
+        // 100 slots FIXES dont certains sont des TROUS inactifs (def==nullptr, pos 0,0,0) -> on
+        // saute explicitement (le binaire s'auto-garde en tête de Npc_RenderSlotTick 0x5803a0).
+        if (!e.active) continue;
+        // Dispatch @0x5803ba : mode 0 -> _Loop, 1 -> _Once, toute autre valeur -> no-op (fidèle).
+        if (e.mode == 0)
+            ZoneNpcTickLoop(e, static_cast<int>(i), dt, oracle, self); // @0x5803d9
+        else if (e.mode == 1)
+            ZoneNpcTickOnce(e, static_cast<int>(i), dt, oracle);       // @0x5803ee
+    }
+}
+
+// UI_NpcWin_Open 0x5DB530, queue @0x5dc019..0x5dc0a8 — mute le slot NATIF du pool unique.
+void ZoneNpc_OnDialogueOpen(int zoneNpcIndex, float playerX, float playerZ) {
+    std::vector<NpcRenderEntry>& pool = g_World.npcRenderEntries;
+    if (zoneNpcIndex < 0 || static_cast<size_t>(zoneNpcIndex) >= pool.size()) return;
+
+    NpcRenderEntry& e = pool[static_cast<size_t>(zoneNpcIndex)];
+    if (!e.active) return; // slot vide : on n'ouvre un dialogue que sur un PNJ réel (garde W7)
+
+    if (e.mode == 1) return; // @0x5dc019/@0x5dc01d : déjà en cours -> rien (idempotent)
+
+    e.mode     = 1;    // @0x5dc026 : mov [eax+0Ch], 1  -> mode Once ("salut")
+    e.frameAcc = 0.0f; // @0x5dc032 : fldz / fstp [ecx+10h]
+
+    // @0x5dc038..0x5dc06b : 5 kinds ne se tournent PAS vers le joueur. Le binaire teste
+    // `*(*a2)` = 1er dword du record de def pointé par le slot = NpcDefRecord::id (+0, cf.
+    // Game/ExtraDatabases.h:45) contre {63,113,213,313,7}. def est non-nul pour un slot actif
+    // (garde du chargeur) ; repli 0 défensif (kind 0 n'est dans aucun des 5 -> tour effectué).
+    const uint32_t k = e.def ? e.def->id : 0u;
+    const bool skipFacing = (k == 63 || k == 113 || k == 213 || k == 313 || k == 7);
+    if (!skipFacing) {
+        // @0x5dc09a/@0x5dc0a2 : Math_AngleBetween2D(slot+20 /*x*/, slot+28 /*z*/,
+        //                        flt_1687330 /*joueur.x*/, flt_1687338 /*joueur.z*/) -> slot+44 (angle).
+        e.angle = AngleBetween2D(e.x, e.z, playerX, playerZ);
+    }
+    // TODO [ancre 0x5dc0a8 -> Fx_MeleeSwingUpdate 0x57FE90] : son positionnel joué ici par le
+    // binaire (hors périmètre audio/FX de ce front) — non reproduit.
 }
 
 } // namespace ts2::game

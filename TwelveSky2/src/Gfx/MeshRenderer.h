@@ -100,10 +100,21 @@ struct SkinnedLod {
 };
 
 // Un mesh du modèle (SObjectMesh 888 o). Les "subsets" du parseur = niveaux de LOD.
+//
+// TROIS SLOTS DE MATÉRIAU (Model_DrawSkinnedSubset 0x40CA40, matériau = 56 o) :
+//   mat0 = mesh+712, mat1 = mesh+768, mat2 = mesh+824   (@0x40cab2 / @0x40cab6 / @0x40cabc)
+//   pTexture = mat+52 ; blendMode = mat+44 (trailer alphaMode, cf. asset::SObjectTexture)
+//   -> 712+52 = 764 = le « +764 » testé par Model_Render 0x40EBB0 @0x40ee53.
+// mat1/mat2 alimentent les passes multi-textures 3 et 4 (mTexture1/mTexture2), cf. DrawSkinnedSubset.
 struct SkinnedMesh {
     std::vector<SkinnedLod> lods;
-    IDirect3DTexture9*      diffuse   = nullptr; // matDiffuse.texture (GXD_Material +0x34)
-    uint32_t                blendMode = 0;       // GXD_Material +0x2C : 0=opaque/1=alphatest/2=additif
+    IDirect3DTexture9*      diffuse   = nullptr; // mat0.pTexture (mesh+712, +52) -> mTexture0
+    IDirect3DTexture9*      tex1      = nullptr; // mat1.pTexture (mesh+768, +52) -> mTexture1 (passes 3/4)
+    IDirect3DTexture9*      tex2      = nullptr; // mat2.pTexture (mesh+824, +52) -> mTexture2 (passe 4)
+    // mat0 +44. CORRECTION DE NOM (Passe 4 / W7) : « 2 = additif » était FAUX. Le binaire pose
+    // SRCBLEND=5 (D3DBLEND_SRCALPHA) @0x40cc1c + DESTBLEND=6 (D3DBLEND_INVSRCALPHA) @0x40cc1e/0x40cc20
+    // = ALPHA BLENDING STANDARD. Un vrai additif serait ONE/ONE — ce n'est pas ce que fait 0x40CA40.
+    uint32_t                blendMode = 0;       // 0=opaque / 1=alpha-test / 2=alpha blend
     bool                    empty     = true;    // valid==0 => mesh vide
 };
 
@@ -128,6 +139,30 @@ public:
     // 40 matrices = 160 registres + WVP + lumière). Doit égaler la taille du
     // tableau mKeyMatrix[] dans le HLSL.
     static constexpr UINT kMaxBones = 40;
+
+    // ----- PASSE DE DESSIN (Model_Render 0x40EBB0 a6 / Model_DrawSkinnedSubset 0x40CA40 a3) ------
+    // NE PAS CONFONDRE avec la « passe shader » (g_CurrentShaderPass 0x194591C ∈ {1,2,3,4,8}) :
+    // ce sont deux numérotations DIFFÉRENTES qui se croisent dans 0x40CA40. Ici : la passe de
+    // dessin, bornée `if ((unsigned)(a6-1) <= 1)` @0x40ebd5 -> a6 ∈ {1,2}, qui FILTRE les meshes
+    // sur leur blendMode :
+    //   passe 1 : `if (blendMode == 2) return;`  -> tout SAUF l'alpha blend  (0x40cb14..0x40cb20)
+    //   passe 2 : `if (blendMode != 2) return;`  -> l'alpha blend UNIQUEMENT (0x40cb2c..0x40cb32)
+    // Le binaire dessine un modèle en appelant DEUX FOIS d'affilée, passe 1 puis passe 2 : preuve
+    // aux 4 (et seuls) sites de Char_RenderModel 0x527020, groupés en deux paires adjacentes —
+    //   `push 1` @0x51d359 -> call @0x51d361 ; `push 2` @0x51d3c4 -> call @0x51d3cc
+    //   `push 1` @0x51d421 -> call @0x51d429 ; `push 2` @0x51d478 -> call @0x51d480
+    //   (Scene_CharSelectRender 0x51CED0 ; a6 transite par SObject_DrawEx 0x4D9330 a2 @0x4d946d)
+    // -> les deux passes sont ADJACENTES PAR MODÈLE, ce n'est PAS un tri global de scène.
+    static constexpr int kDrawPass_Opaque = 1; // a6=1 : meshes blendMode != 2
+    static constexpr int kDrawPass_Blend  = 2; // a6=2 : meshes blendMode == 2
+
+    // SHIM ASSUMÉ — VALEUR ABSENTE DU BINAIRE (a6 n'y vaut jamais 0). `kPassBoth` demande à
+    // DrawModel de faire LUI-MÊME les deux balayages (1 puis 2). Pour un modèle unique c'est
+    // EXACTEMENT la paire d'appels adjacents prouvée ci-dessus -> fidèle. Pour un assemblage
+    // multi-pièces (paperdoll), le binaire fait « toutes les pièces en passe 1, puis toutes les
+    // pièces en passe 2 » : là, l'appelant doit balayer explicitement (cf. DrawModel ci-dessous).
+    // Il existe pour que les appelants à 5 arguments restent corrects sans régression.
+    static constexpr int kPassBoth = 0;
 
     ~MeshRenderer() { Shutdown(); }
 
@@ -193,19 +228,46 @@ public:
 
     // Model_Render 0x40EBB0 : compose world = Scale*RotZ*RotY*RotX*Translate
     // (angles Euler en degrés) puis dessine tous les meshes au LOD demandé.
+    //
+    // `pass` (= a6) : cf. kDrawPass_Opaque/kDrawPass_Blend/kPassBoth ci-dessus.
+    // ⚠ CÂBLAGE À POSER HORS DE CE FICHIER (Scene/WorldRenderer.cpp, non possédé par ce front) —
+    //   le paperdoll joueur (WorldRenderer.cpp:412-414) boucle sur `pd.pieces` en appelant DrawModel
+    //   par pièce. Le binaire, lui, dessine TOUTES les pièces en passe 1 puis TOUTES en passe 2
+    //   (Char_RenderModel 0x527020 assemble le paperdoll pièce par pièce et reçoit la passe en
+    //   paramètre depuis 0x51d359/0x51d3c4). L'équivalent fidèle est donc DEUX boucles :
+    //       for (piece : pd.pieces) DrawModel(*piece, pos, rotDeg, scaleVec, pd.palette, 0,
+    //                                         gfx::MeshRenderer::kDrawPass_Opaque);
+    //       for (piece : pd.pieces) DrawModel(*piece, pos, rotDeg, scaleVec, pd.palette, 0,
+    //                                         gfx::MeshRenderer::kDrawPass_Blend);
+    //   Tant que ce n'est pas posé, kPassBoth (défaut) rend les deux passes par pièce : rien ne
+    //   disparaît, seul l'ORDRE inter-pièces diffère (une pièce translucide peut être recouverte
+    //   par une pièce opaque dessinée après elle, blend 2 coupant le ZWRITE @0x40cbf5).
+    //   Les modèles à une seule pièce (WorldRenderer.cpp:310 et :421, monstre/PNJ) sont DÉJÀ
+    //   exacts sous kPassBoth : rien à y changer.
     void DrawModel(const SkinnedModel& model,
                    const D3DXVECTOR3&  position,
                    const D3DXVECTOR3&  rotationDeg,
                    const D3DXVECTOR3&  scale,
                    const BonePalette&  palette,
-                   int                 lod = 0);
+                   int                 lod  = 0,
+                   int                 pass = kPassBoth);
 
     // Model_DrawSkinnedSubset 0x40CA40 (chemin skinné principal, un mesh/LOD) :
-    // états de blend selon blendMode, bind shaders, palette d'os -> mKeyMatrix,
-    // WVP/lumière, texture, SetStreamSource(76)/SetIndices, DrawIndexedPrimitive.
+    // filtre de passe, états de blend selon blendMode, sélection de passe shader (2/3/4),
+    // bind shaders, palette d'os -> mKeyMatrix, WVP/lumière, textures,
+    // SetStreamSource(76)/SetIndices, DrawIndexedPrimitive.
+    //
+    // `matSrc` (= a1, override de matériau) : si non nul, la GÉOMÉTRIE reste celle de `mesh` mais
+    //   les 3 matériaux (et donc blendMode + le choix de passe multi-textures) viennent de `matSrc`.
+    //   Réception prouvée @0x40ca96..0x40cabc : `if (a1) { v61 = a1; v62 = a7; v56 = a8; }`.
+    //   Sert à l'héritage depuis mesh[0] (cf. DrawModel / gap SOBJ-05).
+    // `pass` : kPassBoth (défaut) = AUCUN filtre — conserve le comportement des appelants directs
+    //   (Gfx/WorldGeometryRenderer.cpp:1061, géométrie de monde, appel à 4 arguments).
     void DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
                            const D3DXMATRIX&  world,
-                           const BonePalette& palette);
+                           const BonePalette& palette,
+                           const SkinnedMesh* matSrc = nullptr,
+                           int                pass   = kPassBoth);
 
     // Model_RenderWithShadow 0x40EEE0 : rendu de l'ombre d'un modèle skinné (additif, W3-F2).
     //   PROCHE (dist caméra <= fogNear) -> VOLUME D'OMBRE STENCIL (passe 8 = VS15 + PS NULL) :
@@ -257,6 +319,12 @@ private:
     bool compileSkinnedProgram();
     static IDirect3DTexture9* createDiffuse(IDirect3DDevice9* dev,
                                             const asset::SObjectTexture& tex);
+
+    // UN balayage des meshes d'un modèle pour UNE passe de dessin (== corps de la boucle
+    // `for (i = 0; i < v11[1]; ++i)` de Model_Render 0x40EBB0 @0x40ee02..0x40eebf, stride 888).
+    // Porte l'héritage de matériau depuis mesh[0] (gap SOBJ-05).
+    void drawMeshSweep(const SkinnedModel& model, const D3DXMATRIX& world,
+                       const BonePalette& palette, int lod, int pass);
 
     // États de mélange par matériau (Model_DrawSkinnedSubset : v14 = blendMode).
     void applyBlendMode(uint32_t blendMode);

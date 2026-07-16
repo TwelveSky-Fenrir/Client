@@ -243,6 +243,18 @@ bool ConsumableBarWindow::OnRightClick(int x, int y, const std::array<QuickSlot,
     return true;
 }
 
+// VÉRIFICATION ÉMISSION (W6) : ce widget N'ÉMET AUCUN paquet, et c'est FIDÈLE.
+//  - Le clic sur une case (UI_ConsumableBar_OnClick 0x68E3C0 / ProcInput 0x68E5A0 /
+//    OnRightClick 0x68E940) ne fait qu'une PRISE de drag LOCALE (Item_BeginDragTransaction,
+//    conteneur type 21) — aucun Net_Send* dans ses callees (cf. ApplyDecision, BeginItemDrag).
+//  - Le raccourci clavier de la barre-consommables DIALOG (UI_ConsumableBar_OnKeyInput
+//    0x68E6C0) est un NO-OP dans le binaire : cet OnHotkey (décision locale via
+//    TriggerSlotByHotkey, sans envoi) reste donc fidèle SUR L'AXE ÉMISSION.
+//  - Le vrai « utiliser un quickslot » émet via le builder Net_SendPacket_Op22
+//    (Net/SendPackets.h:77 ; opcode enum Net_SendUseQuickslotItem = 0x16, Net/Opcodes.h:209,
+//    CONFIRMED) depuis Game_OnHotkey 0x537330 / Game_AutoUsePotion — PAS depuis ce widget UI,
+//    et HORS de ce front. Ce builder EXISTE mais n'a AUCUN appelant réel dans ClientSource :
+//    builder MORT à câbler côté Game/ (rapporté, hors périmètre de ce front UI).
 bool ConsumableBarWindow::OnHotkey(uint8_t dikScanCode, const std::array<QuickSlot, kQuickSlotCount>& slots) {
     const game::ConsumableDecision d = game::TriggerSlotByHotkey(slots, dikScanCode);
     if (d.slotIndex < 0) return false; // scancode hors plage 0x02..0x0B

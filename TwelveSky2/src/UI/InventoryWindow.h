@@ -25,22 +25,58 @@
 // confirmé par Item_BeginDragTransaction 0x5AFDF0 — CONSERVÉ tel quel ici, ne pas
 // réécrire en press-hold-release qui trahirait la fidélité au binaire).
 //
-// Réseau (mission « drag-and-drop d'inventaire ») : Bind(NetClient*) attache
-// (optionnellement) la session réseau, pattern identique à UI/ChatWindow.cpp
-// et UI/WarehouseWindow.h (net_ nullable, no-op tant que non lié). RECHERCHE
-// MENÉE dans Net/SendPackets.h (grep "swap"/"move"/"item" sur les 234 noms de
-// builders) : AUCUN builder sortant ne porte un nom explicite de rôle — tous
-// sont nommés par opcode brut (Net_SendOpNN / Net_SendVaultReq_NNN), pas de
-// candidat "évident". Recoupement Docs/TS2_PROTOCOL_SPEC.md :
-//   - Résultats SERVEUR confirmés pour le déplacement d'objet : 0x1e/0x1f
-//     Pkt_ItemSwapResultA/B, 0x92 Net_OnItemMoveResult, 0x78 Net_OnEquipSlotUpdate.
-//   - AUCUN appelant désassemblé ne relie ces résultats à un builder sortant
-//     précis (note du doc, section [CS b06] : opcodes Vault 207..228 sont le
-//     domaine ENTREPÔT — cf. WarehouseWindow — "exact per-field semantics are
-//     not resolvable from the builders alone (callers needed)").
-// REPLI PROPRE (voir NotifyServerItemMove() dans le .cpp) : pas d'opcode deviné
-// (règle du projet : IDA = vérité unique) ; le déplacement reste 100% LOCAL,
-// avec un point d'accroche explicite et documenté pour la suite.
+// ===========================================================================
+// RÉSEAU — CORRECTIF W6 (l'ancien bandeau de ce fichier était FAUX, prouvé)
+// ===========================================================================
+// L'ancien texte affirmait « AUCUN builder sortant ... le déplacement reste 100%
+// LOCAL ... aucun opcode confirmé ». Les DEUX moitiés sont réfutées par IDA :
+//
+//  1. Le handler de POSE n'est PAS cGameHud_OnMouseUp 0x62DFA0 (ancré à tort ici) :
+//     ses call-sites ne contiennent que du skill/stat, ZÉRO émission d'objet. Le vrai
+//     handler est UI_MainInventory_OnLButtonUp 0x5B20B0 (0xBDDB o), un switch géant
+//     `switch(g_DragCtx+0x10 /*srcType*/)` (this = g_DragCtx 0x1822380).
+//  2. Les builders EXISTENT tous déjà dans Net/SendPackets.h (Net_SendVaultReq_*,
+//     56 sous-codes de l'opcode réseau 0x13/Op19). Vérifié 1:1 par xrefs_to sur
+//     chaque sous-code : chaque EA ci-dessous a été relu dans l'IDB.
+//
+// Émissions de CETTE fenêtre (sac + équipement ; le carquois/la barre rapide sont
+// d'autres widgets) — layout universel des 7 champs, tous promus sur 4 o LE :
+//   (srcPage, srcSlot, amount, dstPage, dstSlot, dstGridX, dstGridY)
+//
+//   Sac -> sac (déplacer/fusionner)  VaultReq_208  @0x5B22FC
+//        args (+0x14, +0x18, +0x28, dstPage, dstSlot, dstGridX, dstGridY)
+//   Sac -> équipement (ÉQUIPER)      VaultReq_210  @0x5B2555
+//        args (+0x14, +0x18, +0x28, 0, equipSlot, 0, 0)
+//   Équipement -> sac (DÉSÉQUIPER)   VaultReq_213  @0x5BA28C
+//        args (0, +0x18, +0x20, dstPage, dstSlot, dstGridX, dstGridY)
+//
+// ATTENTION (+0x20 vs +0x28) : le 3e champ n'est PAS le même selon la source, car
+// Item_BeginDragTransaction 0x5AFDF0 range ses arguments par TYPE (cf. DragContext) :
+//   - prise SAC   (0x62B5FB) : a6=gridX -> +0x20 ; a8=count      -> +0x28 (208 lit +0x28)
+//   - prise ÉQUIP (0x62B199) : a6=durability -> +0x20 ; a8=serial -> +0x28 (213 lit +0x20)
+//
+// MODÈLE OPTIMISTE — NON : le binaire n'écrit RIEN localement à la pose.
+// cGameHud_PlaceItemIntoBag 0x650470 (nom trompeur) est une REQUÊTE PURE : elle ne
+// lit que g_InvMain/g_InvGrid_* et n'écrit QUE ses out-params. La pose se borne donc à
+// (a) calculer la destination, (b) émettre, (c) poser g_DragCtx+0x0C = 1 (ack en
+// attente) SANS appeler Item_DragState_Clear -> l'objet RESTE sur le curseur jusqu'à
+// la réponse serveur. La case n'est vidée qu'à la PRISE (Inv_RemoveItemQuantity).
+// -> PlaceDrag() ci-dessous n'écrit donc AUCUNE cellule de destination.
+//
+// ÉCHANGE : le binaire n'échange JAMAIS. Sur case occupée, 0x650470 ne réussit que
+// pour une FUSION DE PILE (type==2 && même itemId && somme <= 99) ; sinon *a6 = -1
+// -> refus + restauration. Sur slot d'équipement occupé, cGameHud_EquipSlotAtEmpty
+// 0x64F140 renvoie -1 (`if (g_EquipMain[4*i] >= 1) return -1;`) -> pas de cible.
+// L'ancien « échange » de PlaceDrag était une INVENTION : supprimé.
+//
+// PAS DE Bind(NetClient*) : le binaire adresse g_NetClient 0x8156A0 en GLOBAL (les
+// builders ne reçoivent jamais de socket). L'ancien couple Bind()/net_ était du CODE
+// MORT prouvé — `inventory_.Bind(...)` n'existait NULLE PART dans la composition
+// (seul skillTree_.Bind(), UI/GameWindows.cpp:72) -> net_ toujours nul -> le
+// `if (!net_) return` de NotifyServerItemMove() bloquait tout envoi. On utilise
+// net::GlobalNetClient() (Net/NetClient.h:67-68), renseigné par ConnectGameServer.
+// Même correctif que UI/GuildWindow.h (W6).
+// ===========================================================================
 //
 // MODÈLE DE DONNÉES (réconciliation, mission « inventaire », 2026-07-14) : cette
 // fenêtre lisait/écrivait AUPARAVANT game::g_World.self.inventory (vector<InvCell>,
@@ -76,8 +112,6 @@
 #include "Game/GameState.h"
 #include "Game/ClientRuntime.h" // game::g_Client.inv (InventoryState) : modèle source de vérité, cf. bandeau ci-dessus
 
-namespace ts2::net { struct NetClient; }
-
 namespace ts2::ui {
 
 // Source d'un glisser-déposer (miroir de g_DragCtx.srcType, g_DragCtx 0x1822380 +0x10).
@@ -88,16 +122,35 @@ enum class DragSource : int {
     Quiver = 6,   // carquois    (g_QuiverMain 0x1673EB4)
 };
 
-// Contexte « clic pour prendre / reclic pour poser » — miroir partiel de g_DragCtx.
+// Contexte « clic pour prendre / reclic pour poser » — miroir partiel de g_DragCtx
+// 0x1822380. Offsets PROUVÉS par décompilation de Item_BeginDragTransaction 0x5AFDF0
+// (`*(this+N) = aM`, this typé int* -> offset = 4*N).
+//
+// ÉCART STRUCTUREL ASSUMÉ (remonté au rapport W6) : dans le binaire g_DragCtx est un
+// GLOBAL partagé par TOUS les widgets de pose (inventaire, entrepôt, carquois, barre
+// rapide, fusion) ET par les handlers réseau entrants, qui appellent
+// Item_DragState_Clear 0x5B02D0 à l'arrivée de l'ack. Ici le contexte est un MEMBRE de
+// InventoryWindow : Net/GameHandlers_InvCells.cpp ne peut donc pas le remettre à zéro
+// (il ne remet que net::g_GmCmdCooldownLatch). Conséquence fidèle mais incomplète :
+// après une pose émise, l'objet reste collé au curseur (pendingAck) jusqu'à ce qu'un
+// futur front recentralise g_DragCtx. Ne PAS « corriger » par un reset local optimiste :
+// le binaire ne le fait pas (cf. bandeau de tête).
 struct DragContext {
-    bool       active      = false;             // +0x08 active
-    DragSource srcType     = DragSource::None;  // +0x10 srcType
-    int        srcPage     = 0;                 // +0x14 srcPage
-    int        srcSlot     = -1;                // +0x18 srcSlot
-    uint32_t   itemId      = 0;                 // +0x1C itemId
-    int        count       = 0;                 // +0x28 count
-    int        grabOffsetX = 0;                 // +0x44 grabOffsetX
-    int        grabOffsetY = 0;                 // +0x48 grabOffsetY
+    bool       active      = false;             // +0x08 active   (garde d'entrée de 0x5AFDF0)
+    bool       pendingAck  = false;             // +0x0C ack en attente : mis à 0 à la PRISE
+                                                //       (`*(this+3) = 0` @0x5AFDF0), à 1 après
+                                                //       CHAQUE émission (ex. @0x5B2301, 0x5BA297)
+    DragSource srcType     = DragSource::None;  // +0x10 srcType (a2)
+    int        srcPage     = 0;                 // +0x14 srcPage (a3)
+    int        srcSlot     = -1;                // +0x18 srcSlot (a4)
+    uint32_t   itemId      = 0;                 // +0x1C itemId  (a5)
+    // +0x20 (a6) : champ DÉPENDANT DU TYPE DE SOURCE (cf. bandeau de tête).
+    //   srcType 1 (sac)   -> gridX      (0x62B5FB)
+    //   srcType 2 (équip) -> durability (0x62B199) — c'est CE champ que lit VaultReq_213
+    int        aux20       = 0;
+    int        count       = 0;                 // +0x28 count (a8) — lu par VaultReq_208/210/212
+    int        grabOffsetX = 0;                 // +0x44 grabOffsetX (a12)
+    int        grabOffsetY = 0;                 // +0x48 grabOffsetY (a13)
     void reset() { *this = DragContext{}; }
 };
 
@@ -130,10 +183,11 @@ public:
     void OnDeviceLost();
     void OnDeviceReset();
 
-    // Attache la session réseau (nullable — cf. commentaire de tête de fichier
-    // et NotifyServerItemMove() dans le .cpp). Pattern identique à
-    // UI/ChatWindow.cpp::Bind / UI/WarehouseWindow.h::Bind.
-    void Bind(net::NetClient* nc) { net_ = nc; }
+    // PAS de Bind(net::NetClient*) : le binaire adresse g_NetClient 0x8156A0 en GLOBAL
+    // (les 234 builders Net_Send* ne reçoivent jamais de socket). L'émission passe donc
+    // par net::GlobalNetClient() (cf. bandeau de tête + helpers Emit*). L'ancien couple
+    // Bind()/net_ était du CODE MORT prouvé (aucun `inventory_.Bind(...)` dans toute la
+    // composition — seul skillTree_.Bind() existe, UI/GameWindows.cpp:72) : supprimé.
 
     void SetIconResolver(IconPathResolver r) { iconResolver_ = r; }
 
@@ -199,10 +253,11 @@ private:
     static int ItemGridSize(uint32_t itemId);            // 1x1 (type 2/7/11) sinon 2x2
     // Slot (0..63) d'ancrage d'une cellule dans une page de game::g_Client.inv, dérivé
     // de sa position visuelle 8x8 — convention déjà établie indépendamment par
-    // Game/AutoPlaySystem.cpp (page*InventoryState::kCols + col). PAS un offset
-    // d'origine (le vrai g_PendingMove_SrcRow0/dword_1822EF0 est assigné par le
-    // serveur) : convention LOCALE cohérente puisque cette fenêtre ne dialogue pas
-    // encore réellement avec le réseau (cf. NotifyServerItemMove, no-op).
+    // Game/AutoPlaySystem.cpp (page*InventoryState::kCols + col). Sert AUSSI de dstSlot
+    // pour les émissions sac->sac / équip->sac (cf. EmitMoveBagToBag/EmitUnequipToBag) :
+    // le binaire calcule sa destination via cGameHud_PlaceItemIntoBag 0x650470 /
+    // cGameHud_FindInvPlacement 0x64FCA0 (non entièrement désassemblées) ; ce mapping
+    // cursor-cell -> slot en est l'approximation cohérente côté client (cf. rapport).
     static uint32_t StorageCol(uint32_t gridX, uint32_t gridY) {
         return gridY * static_cast<uint32_t>(kGridCols) + gridX;
     }
@@ -213,18 +268,27 @@ private:
     gfx::IconTextureCache& ActiveIconCache() { return sharedIconCache_ ? *sharedIconCache_ : ownIconCache_; }
 
     // --- Drag&drop ---
-    bool BeginPickup(int mx, int my);   // prise (retire de la source)
-    bool PlaceDrag(int mx, int my);     // pose / échange sur la cible
-    void CancelDrag();                  // retour à la source
+    bool BeginPickup(int mx, int my);   // prise (retire de la source, Item_BeginDragTransaction 0x5AFDF0)
+    bool PlaceDrag(int mx, int my);     // pose : émet le VaultReq idoine (cf. helpers ci-dessous)
+    void CancelDrag();                  // retour à la source (= Inv_AddItemQuantity + Item_DragState_Clear)
     uint32_t DragColor() const;
     uint32_t DragDurability() const;
 
-    // Point d'accroche réseau — repli propre documenté (cf. commentaire de tête
-    // de fichier) : aucun opcode confirmé pour un déplacement bac/équipement
-    // ordinaire (contrairement à l'entrepôt, cf. UI/WarehouseWindow.h). No-op
-    // aujourd'hui ; à compléter le jour où un builder sera identifié par un
-    // appelant désassemblé (net_ est déjà prêt via Bind()).
-    void NotifyServerItemMove(const DragContext& ctx) const;
+    // --- Émission réseau — miroir de UI_MainInventory_OnLButtonUp 0x5B20B0
+    // (switch(g_DragCtx+0x10 /*srcType*/)). Chaque helper adresse g_NetClient
+    // 0x8156A0 via net::GlobalNetClient() (pattern GLOBAL du binaire, cf. bandeau
+    // de tête) : PAS d'injection de socket. Ils reproduisent les gardes prouvées,
+    // émettent, posent pendingAck, MAIS n'écrivent AUCUNE cellule de destination
+    // (le binaire émet puis attend le retour serveur). Renvoient true = clic consommé.
+    bool EmitMoveBagToBag(int col, int row, int occ);   // VaultReq_208 @0x5B22FC (sac->sac)
+    bool EmitEquipFromBag(int equipSlot);               // VaultReq_210 @0x5B2555 (sac->équip)
+    bool EmitUnequipToBag(int col, int row, int occ);   // VaultReq_213 @0x5BA28C (équip->sac)
+    // Garde universelle (0x5B2297 / 0x5B23E7 / 0x5BA312) : morph en cours OU requête
+    // déjà en vol -> true (l'appelant refuse : restaure + clôt le drag).
+    bool EmissionBlockedByMorphOrLatch() const;
+    // Épilogue commun post-émission (0x5B2301.. / 0x5BA291..) : pendingAck, verrou
+    // anti-spam g_GmCmdCooldownLatch, horodatage flt_1675B0C, drapeau dirty.
+    void MarkEmissionPending();
 
     bool PointInPanel(int mx, int my) const;
 
@@ -247,7 +311,6 @@ private:
     gfx::IconTextureCache* sharedIconCache_ = nullptr;
     IconPathResolver   iconResolver_ = nullptr;
     IDirect3DTexture9* whiteTex_ = nullptr; // texture blanche 1x1 (utilitaire FillRect ci-dessus)
-    net::NetClient*    net_      = nullptr; // session réseau optionnelle (cf. Bind())
 
     bool        visible_     = false;                    // this[175] / +0x2BC
     int         activeTab_   = 1;                        // this[226] / +0x388 (1=inv/équip)

@@ -128,6 +128,49 @@ const LevelInfo* GetLevelInfo(int level) {
     return reinterpret_cast<const LevelInfo*>(r); // nullptr si hors bornes
 }
 
+// ---------------------------------------------------------------------------
+// GetRebirthExpSpan — sous-table EXP de renaissance (mLEVEL 0x8E7208 + 0x18EC).
+// Voir GameDatabase.h pour la preuve complete (int32 et non float : fidiv @0x67A64F).
+//
+// Table recopiee a l'octet depuis maybe_LevelTable_InitFloats 0x4C2380 (disasm relu cette
+// mission), immediats des 12 `mov dword ptr [reg+off], imm32` :
+//   tier  off      imm32 (hex)   valeur int32
+//    1   0x18EC    39589228h      962105896   [EA 0x4c238a]
+//    2   0x18F0    3BA3CB33h     1000590131   [EA 0x4c2397]
+//    3   0x18F4    3E068168h     1040613736   [EA 0x4c23a4]
+//    4   0x18F8    4081A54Dh     1082238285   [EA 0x4c23b1]
+//    5   0x18FC    43163108h     1125527816   [EA 0x4c23be]
+//    6   0x1900    45C528C0h     1170548928   [EA 0x4c23cb]
+//    7   0x1904    488F9B05h     1217370885   [EA 0x4c23d8]
+//    8   0x1908    4B76A138h     1266065720   [EA 0x4c23e5]
+//    9   0x190C    4E7B5FFCh     1316708348   [EA 0x4c23f2]
+//   10   0x1910    519F07A9h     1369376681   [EA 0x4c23ff]
+//   11   0x1914    54E2D4C4h     1424151748   [EA 0x4c240c]
+//   12   0x1918    58481079h     1481117817   [EA 0x4c2419]
+// ---------------------------------------------------------------------------
+int32_t GetRebirthExpSpan(int tier) {
+    // Garde de l'accesseur 0x4C2BF0 : hors [1..12] -> 0 (@0x4c2bf7 jl / @0x4c2c01 jle,
+    // branche loc_4C2C03 `xor eax, eax`).
+    if (tier < 1 || tier > 12) return 0;
+    // Indice 1-based (le binaire lit [this + 4*tier + 0x18E8], soit +0x18EC pour tier=1).
+    static const int32_t kRebirthExpSpan[13] = {
+        0,           // [0] inutilise (le binaire n'y accede jamais : garde tier>=1)
+        962105896,   // tier 1  — 39589228h
+        1000590131,  // tier 2  — 3BA3CB33h
+        1040613736,  // tier 3  — 3E068168h
+        1082238285,  // tier 4  — 4081A54Dh
+        1125527816,  // tier 5  — 43163108h
+        1170548928,  // tier 6  — 45C528C0h
+        1217370885,  // tier 7  — 488F9B05h
+        1266065720,  // tier 8  — 4B76A138h
+        1316708348,  // tier 9  — 4E7B5FFCh
+        1369376681,  // tier 10 — 519F07A9h
+        1424151748,  // tier 11 — 54E2D4C4h
+        1481117817,  // tier 12 — 58481079h
+    };
+    return kRebirthExpSpan[tier];
+}
+
 const ItemInfo* GetItemInfo(uint32_t itemId) {
     if (itemId < 1) return nullptr;
     const uint8_t* r = g_World.db.item.record(itemId - 1);

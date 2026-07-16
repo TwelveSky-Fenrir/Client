@@ -73,6 +73,35 @@ constexpr int32_t kStrConnectFail64       = 64;   // -> Locked
 constexpr int32_t kStrConnectFail65       = 65;   // -> Locked
 constexpr int32_t kStrCancelSessionExpired = 20;  // réutilisation de str 20
 
+// --- opcode 24 : suppression par saisie du nom (CharSelect_ReqDeleteCharByName 0x529230) ---
+// Ids StrTable005 EXACTS relevés au switch EA 0x5292f5-0x529535 (types de notice : 0..5
+// -> type 1 ; 101/102 -> type 2 ; le paramètre type n'est pas modélisé, cf. ShowNotice).
+constexpr int32_t kStrDeleteByNameEmpty   = 1463; // nom vide, SANS envoi (EA 0x52928c)
+constexpr int32_t kStrDeleteByNameOk      = 1464; // code 0   (EA 0x52930b)
+constexpr int32_t kStrDeleteByNameFail1   = 1465; // code 1   (EA 0x5293cc)
+constexpr int32_t kStrDeleteByNameFail2   = 1468; // code 2   (EA 0x5293f2)
+constexpr int32_t kStrDeleteByNameFail3   = 1469; // code 3   (EA 0x529418)
+constexpr int32_t kStrDeleteByNameFail4   = 1466; // code 4   (EA 0x52943e)
+constexpr int32_t kStrDeleteByNameFail5   = 1470; // code 5   (EA 0x529464)
+constexpr int32_t kStrDeleteByNameFail101 = 703;  // code 101 (EA 0x52948a) -> Lock, type 2
+constexpr int32_t kStrDeleteByNameFail102 = 704;  // code 102 (EA 0x5294c7) -> Lock, type 2
+// (default : Crt_Vsnprintf("%s%d", StrTable005(2455), code) EA 0x529503 — non modélisé)
+
+// --- opcode 18 action=2 : restauration (CharSelect_ReqRestoreChar 0x5295D0) ---
+// Ids StrTable005 EXACTS relevés au switch EA 0x529615-0x529845.
+constexpr int32_t kStrRestoreOk          = 1271; // code 0   (EA 0x52962b)
+constexpr int32_t kStrRestoreSessLost1   = 51;   // code 1   (EA 0x52967d) -> Lock, type 2
+constexpr int32_t kStrRestoreFail1272    = 1272; // code 2   (EA 0x5296b7)
+constexpr int32_t kStrRestoreFail2091    = 2091; // code 5   (EA 0x5296dd)
+constexpr int32_t kStrRestoreFail2541    = 2541; // code 11  (EA 0x52970e)
+constexpr int32_t kStrRestoreFail2542    = 2542; // code 12  (EA 0x52973f)
+constexpr int32_t kStrRestoreFail2545    = 2545; // code 13  (EA 0x529770)
+constexpr int32_t kStrRestoreFail2543    = 2543; // code 14  (EA 0x5297a1)
+constexpr int32_t kStrRestoreFail2544    = 2544; // code 15  (EA 0x5297d2)
+constexpr int32_t kStrRestoreSessLost101 = 52;   // code 101 (EA 0x5297f2) -> Lock, type 2
+constexpr int32_t kStrRestoreSessLost102 = 53;   // code 102 (EA 0x529826) -> Lock, type 2
+// (codes 11..15 : caption = StrTable005(2546), 4e arg de UI_NoticeDlg_Open — non modélisé)
+
 inline void Notice(const CharSelectHost& host, int32_t strId) {
     if (host.ShowNotice) host.ShowNotice(strId);
 }
@@ -140,6 +169,20 @@ int32_t FindFirstFreeSlot(const CharSelectState& s) {
 void FireEnterSequence(CharSelectState& s, const CharSelectHost& host) {
     s.enterSequenceFired = true;
     const int32_t slot = s.selectedSlot;
+
+    // [charsel] GAMEAUTH_Element_Zero — publie l'identité self (élément + bloc inventaire)
+    // AVANT le handshake du serveur de jeu. Miroir du memcpy UNIQUE de
+    // Scene_CharSelectUpdate EA 0x51c6e7-0x51c707 :
+    //   Crt_Memcpy(g_SelfCharInvBlock /*0x1673170*/, &unk_1669380 + 10088*selectedSlot,
+    //              0x2768u)
+    // qui pose À LA FOIS le bloc d'inventaire ET g_LocalElement (= block+0x24 = fiche[+36],
+    // le champ `job`), lequel part ensuite sur le fil à l'offset [137..140] du paquet d'auth
+    // op11 de Net_ConnectGameServer 0x462A70 (EA 0x462d5d). ORDRE PROUVÉ : 0x51c6e7 (memcpy)
+    // ≺ 0x51c81d (Net_ReqEnterCharInfo) ≺ 0x51c850 (Net_SelectServerDomain) — d'où l'appel
+    // en TÊTE, avant host.RequestEnterCharInfo. Le câblage effectif (pose de
+    // g_World.self.element/charInvBlock) vit dans UI/LoginScene.cpp (HORS périmètre) : tant
+    // que ce hook n'est pas branché, le champ [137..140] du handshake reste à 0.
+    if (host.PublishSelfFromSlot) host.PublishSelfFromSlot(slot);
 
     EnterCharInfoResult info{};
     if (host.RequestEnterCharInfo) info = host.RequestEnterCharInfo(slot);
@@ -425,6 +468,132 @@ void ConfirmDeleteCharacter(CharSelectState& state, const CharSelectHost& host) 
         case 0x65: Notice(host, kStrDeleteFail52); Lock(state); return;
         case 0x66: Notice(host, kStrDeleteFail53); Lock(state); return;
         default: return; // code inconnu : no-op fidèle
+    }
+}
+
+// --- Panneau "suppression par saisie du nom" (opcode 24, second mécanisme de
+// suppression à double confirmation — cf. tête de CharSelectFlow.h). Ces trois fonctions
+// portent enfin l'opcode 24 (Net_ReqVerifyCharName 0x52B4C0), jusqu'ici sans appelant.
+
+// Ouvre le panneau (Scene_CharSelectOnMouseUp, bloc EA 0x525fc0-0x52602d). Vide + focus
+// la zone de saisie du panneau (SetWindowTextA(dword_166900C,"") EA 0x525fe3 ;
+// UI_FocusEditBox(&g_UIEditBoxMgr,19) EA 0x525fcc/0x525fd3) puis arme CONJOINTEMENT les
+// deux drapeaux à 1 (bloc rectiligne 0x52601d/0x52602d) — c'est cet armement conjoint qui
+// fixe l'invariant listFlag==1 dont dépend slotEnc (cf. ConfirmDeleteCharByName).
+void OpenDeleteByNamePanel(CharSelectState& state, const CharSelectHost& host) {
+    if (state.subState != CharSelectSubState::Active) return;
+    if (state.screen != CharSelectScreen::List) return;
+    // TODO fidélité [ancre 0x525f62/0x525f91] : gardes UI d'éligibilité NON modélisées
+    // (drapeaux locaux var_430==0 -> notice 1797 sinon ; var_434!=0 -> notice 2248 sinon),
+    // ainsi que Util_SetClampedU8Field(dword_8E714C,0) EA 0x525fc2 et la remise à zéro des
+    // 150 dwords à this+12 (EA 0x525ff2-0x526015) — états UI globaux hors périmètre.
+
+    if (host.ClearDeleteByNameInput) host.ClearDeleteByNameInput(); // EA 0x525fe3
+    if (host.FocusEditBox) host.FocusEditBox(19);                   // push 13h, EA 0x525fcc
+
+    state.deleteByNamePanelOpen = true; // this[15711] / +0xF57C = 1 (EA 0x52601d)
+    state.deleteByNameListFlag  = 1;    // this[15712] / +0xF580 = 1 (EA 0x52602d)
+}
+
+// Ferme le panneau SANS envoi : remet les deux drapeaux à 0 (EA 0x524ff4/0x525004).
+void CancelDeleteByNamePanel(CharSelectState& state) {
+    state.deleteByNamePanelOpen = false; // +0xF57C = 0 (EA 0x524ff4)
+    state.deleteByNameListFlag  = 0;     // +0xF580 = 0 (EA 0x525004)
+}
+
+// Clic "Oui" de la MsgBox 41 (CharSelect_ReqDeleteCharByName 0x529230). Lit le nom retapé
+// dans la zone du panneau (host.GetDeleteByNameInput = GetWindowTextA(dword_166900C,
+// String,49) EA 0x529273), l'envoie via l'opcode 24 avec un slot ENCODÉ, puis route les
+// codes de retour.
+void ConfirmDeleteCharByName(CharSelectState& state, const CharSelectHost& host) {
+    const std::string name = host.GetDeleteByNameInput ? host.GetDeleteByNameInput()
+                                                       : std::string{};
+    if (name.empty()) {
+        // GetWindowTextA == 0 -> notice 1463, AUCUN envoi réseau (EA 0x52928c-0x529299).
+        Notice(host, kStrDeleteByNameEmpty);
+        return;
+    }
+
+    // slotEnc = *(_BYTE*)(this+62860) + 100 * *(_BYTE*)(this+62848) (EA 0x5292cd) :
+    // selectedSlot (+0xF58C) et listFlag (+0xF580) sont lus en OCTET (fidèle : selectedSlot
+    // = -1 -> 255, listFlag armé à 1 par OpenDeleteByNamePanel -> +100). L'invariant
+    // "panneau ouvert => listFlag == 1" est structurel (armement conjoint 0x52601d/0x52602d,
+    // seul site de mise à 1 ; cf. CharSelectState).
+    const int32_t slotEnc = static_cast<uint8_t>(state.selectedSlot)
+                          + 100 * static_cast<uint8_t>(state.deleteByNameListFlag);
+    const int32_t code = host.VerifyCharName ? host.VerifyCharName(slotEnc, name)
+                                             : 101; // hôte absent = échec transport (101), cf. convention du module
+
+    switch (code) { // EA 0x5292f5
+        case 0: // succès (EA 0x52930b-0x5293ae)
+            Notice(host, kStrDeleteByNameOk); // notice 1464
+            state.selectedSlot          = -1;    // *(this+62860) = -1 (EA 0x529348)
+            state.deleteByNamePanelOpen = false; // *(this+62844) = 0  (EA 0x52939e)
+            state.deleteByNameListFlag  = 0;     // *(this+62848) = 0  (EA 0x5293ae)
+            if (host.FocusEditBox) host.FocusEditBox(0); // UI_FocusEditBox(...,0) EA 0x529365
+            // EFFETS DE BORD UI NON MODÉLISÉS : Crt_StringInit() (EA 0x52933a),
+            // Util_SetClampedU8Field(dword_8E714C,0) (EA 0x529359), remise à zéro des 150
+            // dwords à this+12 (EA 0x52936a-0x52938e) — états UI globaux hors périmètre.
+            return;
+        case 1: Notice(host, kStrDeleteByNameFail1); return; // 1465 (EA 0x5293cc)
+        case 2: Notice(host, kStrDeleteByNameFail2); return; // 1468 (EA 0x5293f2)
+        case 3: Notice(host, kStrDeleteByNameFail3); return; // 1469 (EA 0x529418)
+        case 4: Notice(host, kStrDeleteByNameFail4); return; // 1466 (EA 0x52943e)
+        case 5: Notice(host, kStrDeleteByNameFail5); return; // 1470 (EA 0x529464)
+        case 101: // échec transport send (EA 0x52948a-0x5294b6)
+            Notice(host, kStrDeleteByNameFail101); // 703 (type 2)
+            Lock(state); // *(this+4)=2 ; *(this+8)=0 (EA 0x5294a2/0x5294af)
+            return;
+        case 102: // échec transport recv (EA 0x5294c7-0x5294f3)
+            Notice(host, kStrDeleteByNameFail102); // 704 (type 2)
+            Lock(state); // *(this+4)=2 ; *(this+8)=0 (EA 0x5294df/0x5294ec)
+            return;
+        default:
+            // TODO [ancre 0x529503] : le binaire ouvre une notice
+            // Crt_Vsnprintf("%s%d", StrTable005(2455), code) — host.ShowNotice(strId) ne
+            // transporte NI chaîne formatée NI code numérique, donc non reproduite ici.
+            return;
+    }
+}
+
+// Clic "Oui" de la confirmation de RESTAURATION (CharSelect_ReqRestoreChar 0x5295D0).
+// Envoie l'opcode 18 action=2 via host.RestoreCharacter (le builder net::CharSlotAction
+// expose déjà action et arg — rien à changer côté Net/). `arg` = restoreListIndex (champ
+// +0xF560 = *(this+15704), EA 0x5295f6), lu en DWORD (contrairement à slotEnc de l'op24).
+void ConfirmRestoreCharacter(CharSelectState& state, const CharSelectHost& host) {
+    const int32_t code = host.RestoreCharacter
+        ? host.RestoreCharacter(state.selectedSlot, state.restoreListIndex) // EA 0x5295f6
+        : 101; // hôte absent = échec transport (101), cf. convention du module
+
+    switch (code) { // EA 0x529615
+        case 0: // succès (EA 0x52962b-0x52966c)
+            Notice(host, kStrRestoreOk); // 1271
+            state.selectedSlot = -1;     // *(this+15715) = -1 (EA 0x529662)
+            // Crt_StringInit() (EA 0x529657) : état UI global non modélisé.
+            return;
+        case 1: // EA 0x52967d-0x5296a3
+            Notice(host, kStrRestoreSessLost1); // 51 (type 2)
+            Lock(state); // *(this+1)=2 ; *(this+2)=0 (EA 0x529692/0x52969c)
+            return;
+        case 2: Notice(host, kStrRestoreFail1272); return; // 1272 (EA 0x5296b7)
+        case 5: Notice(host, kStrRestoreFail2091); return; // 2091 (EA 0x5296dd)
+        // Codes 11..15 : UI_NoticeDlg_Open(_, 1, corps, CAPTION=StrTable005(2546)) — le
+        // 4e argument (caption/titre) n'est PAS transporté par host.ShowNotice ; seul le
+        // corps est reproduit (TODO rendu, cf. constantes ci-dessus).
+        case 11: Notice(host, kStrRestoreFail2541); return; // corps 2541 (EA 0x52970e)
+        case 12: Notice(host, kStrRestoreFail2542); return; // corps 2542 (EA 0x52973f)
+        case 13: Notice(host, kStrRestoreFail2545); return; // corps 2545 (EA 0x529770)
+        case 14: Notice(host, kStrRestoreFail2543); return; // corps 2543 (EA 0x5297a1)
+        case 15: Notice(host, kStrRestoreFail2544); return; // corps 2544 (EA 0x5297d2)
+        case 101: // EA 0x5297f2-0x529818
+            Notice(host, kStrRestoreSessLost101); // 52 (type 2)
+            Lock(state); // *(this+1)=2 ; *(this+2)=0 (EA 0x529807/0x529811)
+            return;
+        case 102: // EA 0x529826-0x529845
+            Notice(host, kStrRestoreSessLost102); // 53 (type 2)
+            Lock(state); // *(this+1)=2 ; *(this+2)=0 (EA 0x52983b/0x529845)
+            return;
+        default: return; // no-op fidèle (le binaire fait `default: return;`)
     }
 }
 

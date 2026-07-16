@@ -267,15 +267,22 @@ struct PendingSkillCast {
     int32_t param   = 0; // dword_1687364
 };
 
-// Motifs d'échec d'une tentative de cast (Skill_CastStoredAtTarget 0x53E740).
+// Motifs d'échec d'une tentative de cast (Skill_CastStoredAtTarget 0x53E740 et
+// Skill_CheckCastPrereqs / Player_CastSkill 0x53BC40).
 enum class SkillCastFailReason {
     None = 0,
     NotEnoughMp     = 147,  // StrTable005 id 147
     IncompatibleForm = 1920, // StrTable005 id 1920 (morph 88/54 + compétence de posture)
     StanceRequired  = 1146, // StrTable005 id 1146 (posture/spécial/niveau>=70 requis)
     MorphBlocked    = 1212, // StrTable005 id 1212 (morph transformé 234..240)
+    // --- Gardes propres à Player_CastSkill 0x53BC40 (cf. Skill_CheckCastPrereqs) ---
+    ElementMismatch = 145,  // StrTable005 id 145 (0x91) [Player_CastSkill @0x53BDAE]
+    WeaponMismatch  = 146,  // StrTable005 id 146 (0x92) [Player_CastSkill @0x53BE20]
     UnknownSkill    = -1,   // record introuvable ou groupe d'opcode non mappé
     SinkRejected    = -2,   // ISkillCastSink::QueueSkillCast a renvoyé faux
+    // Arme équipée sans record ITEM_INFO : le binaire sort en SILENCE (aucun message),
+    // à NE PAS confondre avec WeaponMismatch/msg 146 [Player_CastSkill @0x53BDEF-0x53BDF7].
+    WeaponRecordMissing = -3,
 };
 
 struct SkillCastAttemptResult {
@@ -373,6 +380,58 @@ SkillCastAttemptResult Skill_CastStoredAtTarget(SelfState& self, const GameDatab
                                                  const float pos[3], int32_t targetHi,
                                                  int32_t targetLo, int32_t targetKind,
                                                  ISkillCastSink& sink);
+
+// ---------------------------------------------------------------------------
+// Gardes de prérequis du chemin de cast PRINCIPAL — Player_CastSkill 0x53BC40.
+//
+// ⚠ ÉTAT DE CONSOMMATION (honnêteté requise, ne pas effacer sans câbler) : cette
+// fonction est écrite mais N'EST APPELÉE PAR PERSONNE aujourd'hui. Player_CastSkill
+// 0x53BC40 n'est pas porté, et AUCUN de ses 8 sites d'appel / 4 fonctions d'entrée
+// joueur ne l'est non plus (vérifié par xrefs_to 0x53BC40 + grep exhaustif de src/) :
+//   Game_OnWorldLeftClick   0x536690 (@0x536863, @0x536EFA)
+//   Game_OnHotkey           0x537330 (@0x5377F7)
+//   Game_UseFirstReadySkill 0x538190 (@0x53855F)
+//   AutoPlay_Update         0x45E770 (@0x45E953, @0x45EA46, @0x45EBD0, @0x45ED3D)
+// DETTE OUVERTE : à appeler depuis le front qui portera l'une de ces entrées, en TÊTE
+// du cast (toute la chaîne de prérequis précède tout envoi réseau dans le binaire) ;
+// un résultat `ok == false` doit interrompre le cast sans rien émettre.
+//
+// ⚠ NE PAS l'appeler depuis Skill_CastStoredAtTarget (0x53E740) : cette variante-là
+// est le chemin AUTOPLAY (appelants exclusifs Player_AutoInteractPlayer 0x5396F0 et
+// Player_AutoInteractMonster 0x53A170) et NE PORTE PAS ces gardes — le désassemblage
+// 0x53E740..0x53E7F9 va directement au coût MP. Les y ajouter serait une INFIDÉLITÉ.
+//
+// Ordre EXACT reproduit — chaîne COMPLÈTE de prérequis, EA 0x53BD12..0x53BEA0 :
+//   0. RECORD @0x53BD12 : SkillGrowthTbl_GetRecord ; NUL -> `xor eax,eax` @0x53BD20,
+//      échec SILENCIEUX (aucun message) -> UnknownSkill.
+//   1. FORME @0x53BD27 : g_SelfMorphNpcId (0x1675A98) == 0x58 (88) OU 0x36 (54), ET
+//      (category(+0x220) == 4 || == 5 || rec[0] == 0x4E (78)) -> msg 1920 @0x53BD60, échec.
+//      ⚠ CE message-là n'est PAS gaté par arg_C (aucun `cmp [ebp+arg_C],0` avant
+//      0x53BD59) — contrairement aux trois suivants. Fidèlement reproduit : émis quel
+//      que soit `showErr`.
+//   2. ÉLÉMENT @0x53BD84 : reqElement(+0x228) != 1 && (reqElement - 2) != self
+//      .elementSecondary (g_LocalElementSecondary 0x1673198) -> msg 145 @0x53BDAE, échec.
+//   3. ARME @0x53BDD2 : reqWeaponType(+0x22C) != 1 -> record ITEM_INFO de l'arme équipée
+//      (dword_1673248 == self.equip[7].itemId) ; record NUL -> échec SILENCIEUX
+//      @0x53BDEF-0x53BDF7 ; sinon reqWeaponType != (ITEM_INFO+188 - 0x0B) -> msg 146
+//      @0x53BE20, échec.
+//   4. COÛT MP @0x53BE41 : ftol(InterpStat(#1, rec[0], level)) réduit du % régén
+//      (division ENTIÈRE @0x53BE72-0x53BE86) ; self.mp < coût -> msg 147, échec. DEUX
+//      sites d'émission du msg 147 sur ce chemin d'échec : @0x53BEA0 (gaté par arg_C /
+//      showErr) PUIS @0x53BECA (gaté par g_InvDirtyEnable(0x16755AC)==1, le drapeau maître
+//      d'auto-hunt — PAS par showErr) ; les deux peuvent se déclencher.
+// `showErr` (arg_C d'origine) gate les messages 145/146 et la PREMIÈRE émission du 147
+// (@0x53BDA1, @0x53BE13, @0x53BE93) ; la SECONDE émission du 147 (@0x53BEBA) est gatée par
+// le drapeau d'auto-hunt, pas par showErr. Les échecs se produisent que showErr soit vrai
+// ou faux, seul le message est conditionné. NE DÉBITE PAS le MP (le binaire ne débite
+// qu'après succès du builder réseau, bien plus loin dans la fonction).
+//
+// NOTE : la garde 1 (FORME) est la MÊME que celle déjà portée dans
+// Skill_CastStoredAtTarget (0x53E740) — les deux fonctions la portent chacune de leur
+// côté dans le binaire ; ce n'est donc pas une duplication introduite ici.
+SkillCastAttemptResult Skill_CheckCastPrereqs(const SelfState& self, const GameDatabases& db,
+                                               const CombatMorphState& morph,
+                                               int skillId, int level, bool showErr);
 
 // La branche d'arme `mapZoneIndex` (0..3) est-elle utilisable sur la carte courante ?
 // Exige currentActionId dans le quadruplet associé (cf. implém.) ET une correspondance

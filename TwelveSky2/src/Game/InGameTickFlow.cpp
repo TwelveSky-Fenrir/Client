@@ -53,8 +53,8 @@ void RunMainTick(InGameTickFlowState& s, const InGameTickFlowHost& h, float dt) 
 
     // 7. Tableau 88 o (GroundItem au sens GameState.h — cf. écart de nommage documenté
     //    dans le header). AUCUNE péremption : tick inconditionnel si actif. @0x52CA07
-    for (size_t k = 0; k < g_World.groundItems.size(); ++k) {
-        if (g_World.groundItems[k].active && h.TickGroundItemEffect) {
+    for (size_t k = 0; k < g_World.npcRenderEntries.size(); ++k) {
+        if (g_World.npcRenderEntries[k].active && h.TickGroundItemEffect) {
             h.TickGroundItemEffect(static_cast<int>(k), dt); // @0x52CA4C
         }
     }

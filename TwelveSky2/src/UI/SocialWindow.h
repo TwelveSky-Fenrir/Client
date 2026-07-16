@@ -1,5 +1,39 @@
 // UI/SocialWindow.h — Fenêtre « Social » : amis/liste noire (AutoPlay) + succès de tribu.
 //
+// ===========================================================================
+// AUDIT RÉSEAU (Passe 4, vague W6, 2026-07-16) — VERDICT : ZÉRO ÉMISSION = FIDÈLE.
+// NE PAS « CORRIGER » CETTE ABSENCE DANS UNE VAGUE FUTURE.
+// ===========================================================================
+// Cette fenêtre n'émet AUCUN paquet, et c'est CONFORME au binaire (vérifié par
+// décompilation intégrale de AutoPlay_OnMouseUpNameList 0x45B000, le vrai code
+// amis/liste-noire — onglet de la fenêtre AutoPlay, sélecteur *((_WORD*)this+146) :
+// 0 = amis, 1 = ennemis/liste noire) :
+//   - Bouton « Ajouter » (x+74, y+303), sprite unk_9664E0, latch testé EA 0x45B5E2 :
+//       GetWindowTextA(hWnd, ·, 25) vide            -> message 1949, RETURN
+//       !MobDb_FindByName(mITEM, ·)                 -> message 1948, RETURN (EA 0x45B63F)
+//       AutoPlay_IsNameListed(·)                    -> message 1947, RETURN (EA 0x45B679)
+//       capacité >= 0x30 (48)                       -> message 1980 (EA 0x45B80F/0x45B6F1)
+//       sinon List_PushBackNode + AutoPlay_SaveFriendList (EA 0x45B7EC)
+//                                 / AutoPlay_SaveEnemyList  (EA 0x45B90A)
+//   - Bouton « Retirer » (x+144, y+303), sprite unk_966608, EA 0x45B974 :
+//       parcours de liste, List_EraseNode, puis Save*List (EA 0x45BC1C / 0x45BE2F).
+// AUCUN `Net_Send*` sur ces chemins : la persistance des listes est un ÉCRITURE
+// DISQUE (G02_GINFO\011.BIN / 012.BIN), PAS une synchronisation serveur. Les seuls
+// Net_SendOp99 de la fonction (EA 0x45B1A5 arg=1, EA 0x45B272 arg=0) sont le
+// démarrage/arrêt du BOT AutoPlay — sans aucun rapport avec le social.
+// Les paquets « amis » du protocole (0x7e Net_OnFriendStatusNotice, 0x90
+// Net_OnFriendListEvent, 0x79 Net_OnSocialListRemove) sont ENTRANTS UNIQUEMENT :
+// aucune UI sociale émettrice n'existe dans ce client (xrefs sur unk_16869C0 /
+// 0x1686AC4 / 0x1686BC8 : aucun émetteur).
+//
+// RÉSIDUEL CONNU (non traité par cette vague — hors mandat « émission réseau », et
+// sémantique ambiguë à ne pas deviner) : la validation `MobDb_FindByName(mITEM, nom)`
+// (message 1948, ancres 0x45B63F pour l'ajout et 0x45B9D8 pour le retrait) n'est PAS
+// portée dans SocialWindow::TryAdd/TryRemoveSelected. Le binaire teste un nom de
+// JOUEUR contre la base `mITEM` (0x8E71EC) — l'intention exacte de ce test reste à
+// élucider avant tout portage. La capacité (48) et « déjà listé » sont, eux, déjà
+// modélisés (Game/SocialSystem.h : SocialListOp::ListFull / AlreadyListed).
+//
 // AUDIT POSITIONS (RE-VÉRIFICATION PAR DÉCOMPILATION FRAÎCHE, 2026-07-14) : le
 // CENTRAGE écran ci-dessous (`(screenW-kPanelW)/2, (screenH-kPanelH)/2`) suit le
 // même motif EA-prouvé que UI_ClanWin_Draw 0x5DA210/UI_MemberSelectWnd_Render

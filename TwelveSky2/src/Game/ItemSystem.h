@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <cstring>
 #include "Game/GameState.h"
+#include "Game/GameDatabase.h"  // ItemInfo (Item_MeetsEquipRequirement) — pas de cycle :
+                                // GameDatabase.h n'inclut que GameState.h.
 
 namespace ts2::game {
 
@@ -32,8 +34,15 @@ namespace ItemOff {
     constexpr uint32_t kCategory     = 184;  // idx46 : 5=équip/arme, 6=classe4
     constexpr uint32_t kTypeCode     = 188;  // idx47 : 28=arme, 29=arme élém., 30=monture…
     constexpr uint32_t kItemLevel    = 204;  // seuils de scaling 45/100/113/146
+    // ATTENTION : kItemLevel (+204) n'est PAS l'exigence d'équipement — il ne sert qu'au
+    // scaling de stats. L'exigence prouvée est kReqLevel + kReqRebirth (garde @0x64ED49).
+    constexpr uint32_t kFaction      = 212;  // idx53 : faction requise ; 1 = toutes [0x64ECF5]
     constexpr uint32_t kSubtype      = 216;  // idx54
-    constexpr uint32_t kSkillFlag    = 284;  // 1=normal, 2=skill, 3=upgrade
+    constexpr uint32_t kPricePrimary = 220;  // idx55 : prix en monnaie secondaire (g_InvWeight 0x16732AC) [0x5e5497]
+    constexpr uint32_t kPriceGold    = 228;  // idx57 : prix en or (g_Currency 0x1673180) [0x5e54ce]
+    constexpr uint32_t kReqLevel     = 232;  // idx58 : niveau requis (terme 1/2) [0x64ED49]
+    constexpr uint32_t kReqRebirth   = 236;  // idx59 : palier renaissance requis (terme 2/2) [0x64ED49]
+    constexpr uint32_t kSkillFlag    = 284;  // idx71 : 1=normal, 2=skill, 3=upgrade
     constexpr uint32_t kAttrPrimaryA = 292;  // Force externe (Field292)
     constexpr uint32_t kAttrPrimaryB = 296;  // Force interne (Field296)
     constexpr uint32_t kAttrRatingMin= 300;  // base rating min / def interne ×0.9 (Field300)
@@ -72,7 +81,12 @@ struct ItemInfoView {
     uint32_t category()      const { return u32(ItemOff::kCategory); }
     uint32_t typeCode()      const { return u32(ItemOff::kTypeCode); }
     uint32_t itemLevel()     const { return u32(ItemOff::kItemLevel); }
+    uint32_t faction()       const { return u32(ItemOff::kFaction); }
     uint32_t subtype()       const { return u32(ItemOff::kSubtype); }
+    uint32_t pricePrimary()  const { return u32(ItemOff::kPricePrimary); }
+    uint32_t priceGold()     const { return u32(ItemOff::kPriceGold); }
+    uint32_t reqLevel()      const { return u32(ItemOff::kReqLevel); }
+    uint32_t reqRebirth()    const { return u32(ItemOff::kReqRebirth); }
     uint32_t skillFlag()     const { return u32(ItemOff::kSkillFlag); }
     int32_t  attrPrimaryA()  const { return i32(ItemOff::kAttrPrimaryA); }
     int32_t  attrPrimaryB()  const { return i32(ItemOff::kAttrPrimaryB); }
@@ -176,5 +190,27 @@ double Item_ScaleStatByTypeA(const int32_t caps[4], int itemId, int value, int f
 double Item_ScaleStatByTypeB(const int32_t caps[4], int itemId, int value, int flag);
 double Item_ScaleStatByTypeC(const int32_t caps[4], int itemId, int value);
 double Item_ScaleStatByTypeD(const int32_t caps[4], int itemId, int value);
+
+// =====================================================================
+// Porte d'éligibilité équipement/usage — Item_MeetsEquipRequirement 0x64ECD0.
+// Renvoie false si l'objet ne peut PAS être équipé/utilisé par le joueur local.
+//
+// 15 gardes évaluées DANS L'ORDRE du binaire (faction, slot, niveau sommé, puis 12 portes
+// par id/skillFlag/classe adossées au palier de renaissance dword_16747BC). Détail des
+// ancres dans ItemSystem.cpp.
+//
+// `equipSlot` est un int SIGNÉ, et -1 est la sentinelle « pas de slot » : le rendu Hex-Rays
+// `a3 <= 0xC` (a3 typé unsigned) est TROMPEUR — le disasm fait `cmp [ebp+arg_4], 0 / jl`
+// @0x64ecfe-0x64ed02 puis `cmp .., 0Ch / jg` @0x64ed04-0x64ed08, donc deux comparaisons
+// SIGNÉES : la garde de slot ne s'applique que pour equipSlot ∈ [0..12]. 8 des 9 appelants
+// du binaire passent -1 (survol d'icône : test d'éligibilité pur, sans slot cible).
+//
+// État lu (globals du binaire → équivalents C++) :
+//   g_LocalElementSecondary 0x1673198 -> g_World.self.elementSecondary
+//   g_SelfLevel             0x16731A8 -> g_World.self.level
+//   g_SelfLevelBonus        0x16731AC -> g_World.self.levelBonus
+//   dword_16747BC (palier de renaissance) -> g_Client.VarGet(0x16747BC)
+// =====================================================================
+bool Item_MeetsEquipRequirement(const ItemInfo& it, int equipSlot);
 
 } // namespace ts2::game

@@ -1,8 +1,14 @@
 // UI/CharacterStatsWindow.cpp — implémentation de la fiche personnage.
 // Voir UI/CharacterStatsWindow.h pour les références de RE (StatFormulas.h,
-// GameState.h, opcode 0x58 cultivation).
+// GameState.h, émission Net_SendVaultReq_206 0x590430 -> opcode 0x13 / sous-code 206).
 #include "UI/CharacterStatsWindow.h"
 #include "UI/PanelSkin.h"
+// Émission de la dépense de points d'attribut (cDrawWin_OnCommit 0x6291F0) :
+// Net_SendVaultReq_206 (Net/SendPackets.h) + singleton g_NetClient 0x8156A0 restauré
+// par net::GlobalNetClient() (Net/NetClient.h) + verrous g_GmCmdCooldownLatch
+// 0x1675B08 / g_MorphInProgress 0x1675A88 / flt_1675B0C 0x1675B0C (Net/ClientState.h).
+// NB : Net/SendPackets.h inclut déjà NetClient.h et ClientState.h.
+#include "Net/SendPackets.h"
 
 #include <cstdio>
 
@@ -109,13 +115,82 @@ void CharacterStatsWindow::ComputeLayout(int screenW, int screenH, Layout& L) co
     L.closeBtn = Rect{ L.box.x + kCloseOffX, L.box.y + kCloseOffY,
                         kCloseSize, kCloseSize };
 
-    // Boutons "+1" réels : grille 2x2 fixe (PAS une colonne), cf. bandeau du .h.
+    // Boutons "+1" et "+5" réels : deux grilles 2x2 fixes (PAS une colonne), mêmes
+    // lignes (kPlusOffY), colonnes distinctes (kPlusOffX / kPlus5OffX) — cf. bandeau
+    // du .h (cDrawWin_OnMouseDown 0x628F02.. pour "+1", 0x62904D.. pour "+5").
     for (int i = 0; i < kPrimaryAttrCount; ++i) {
         const int col = i % 2;
         const int row = i / 2;
-        L.plusBtn[i] = Rect{ L.box.x + kPlusOffX[col], L.box.y + kPlusOffY[row],
+        L.plusBtn[i]  = Rect{ L.box.x + kPlusOffX[col],  L.box.y + kPlusOffY[row],
+                              kPlusSize, kPlusSize };
+        L.plus5Btn[i] = Rect{ L.box.x + kPlus5OffX[col], L.box.y + kPlusOffY[row],
                               kPlusSize, kPlusSize };
     }
+}
+
+// ===========================================================================
+// Émission — bloc commun aux 8 boutons ("+1" args 1..4 / "+5" args 5..8).
+//
+// Reproduit à l'identique le corps de chaque branche de cDrawWin_OnCommit 0x6291F0.
+// Branche de référence (« +1 Force Externe », arg=1) :
+//     if (g_MorphInProgress == 1) return 1;        // 0x629276 — refus MUET
+//     if (g_GmCmdCooldownLatch)   return 1;        // 0x629289 — refus MUET
+//     Net_SendVaultReq_206(1);                     // 0x62929C
+//     g_GmCmdCooldownLatch = 1;                    // 0x6292A1
+//     flt_1675B0C = g_GameTimeSec;                 // 0x6292B1
+//     --g_SelfUnspentAttrPoints;                   // 0x6292C0
+// Les 7 autres branches sont identiques au couple (arg, coût) près :
+//   arg 2 -> 0x62934A/0x62936E   arg 3 -> 0x6293F8/0x62941C   arg 4 -> 0x6294A9/0x6294CD
+//   arg 5 -> 0x629554/0x629578   arg 6 -> 0x629602/0x629626   arg 7 -> 0x6296B0/0x6296D4
+//   arg 8 -> 0x629761/0x629785   (args 5..8 : g_SelfUnspentAttrPoints -= 5)
+//
+// EFFET LOCAL OPTIMISTE — VOULU ET PROUVÉ : le décrément de g_SelfUnspentAttrPoints
+// (0x16731D0 == SelfState::unspentAttr) est bien fait ICI, immédiatement, dans le même
+// bloc que l'envoi. Le commentaire de la passe précédente (« On NE décrémente PAS
+// self.unspentAttr optimistiquement ») était FAUX vis-à-vis du binaire ; il n'était
+// cohérent que tant qu'on n'émettait rien. Les VALEURS d'attribut, elles, ne sont PAS
+// touchées localement : elles reviennent du serveur (Net_OnCultivationDispatch 0x493180
+// / Pkt_CharStatDelta 0x465D90), lequel remet aussi g_GmCmdCooldownLatch à 0 (cf.
+// Net/GameHandlers_Misc.cpp, dispatch 0x58) — c'est ce qui déverrouille le bouton.
+//
+// Le binaire NE re-teste PAS g_SelfUnspentAttrPoints ici : le test (> 0 pour "+1",
+// >= 5 pour "+5") n'a lieu qu'à l'ARMEMENT (cDrawWin_OnMouseDown 0x628EDC / 0x629027).
+// On ne l'ajoute donc pas non plus, y compris dans le cas limite où le compteur
+// tomberait à 0 entre l'enfoncement et le relâchement (le binaire enverrait et
+// décrémenterait quand même).
+// ===========================================================================
+void CharacterStatsWindow::CommitAttrSpend(int arg, int cost) {
+    if (net::g_MorphInProgress == 1) return; // 0x629276 — morph en cours : refus muet
+    if (net::g_GmCmdCooldownLatch)  return; // 0x629289 — requête déjà en vol : refus muet
+
+    // g_NetClient 0x8156A0 est un GLOBAL dans le binaire : Net_SendVaultReq_206
+    // (0x590430) ne reçoit aucun socket, il appelle Net_SendPacket_Op19(&g_AutoPlayMgr,
+    // 206, &arg) qui adresse le client réseau directement. Côté C++ le singleton est
+    // restauré par net::GlobalNetClient() (Net/NetClient.h:67-68), renseigné par
+    // ConnectGameServer (Net/Login.cpp). Ce chemin est réellement atteint : la fiche
+    // personnage n'est ouvrable qu'une fois entré dans le monde, donc bien après le
+    // handshake -> le pointeur est non nul (ce n'est PAS un `if (nc)` mort).
+    net::NetClient* nc = net::GlobalNetClient();
+    if (!nc) return; // hors session : pas d'envoi -> donc pas de décrément non plus
+
+    // Sous-code 206, payload[0..3] = arg int32 LE (le builder promeut le char sur
+    // 4 octets, cf. Crt_Memcpy(v2, &a1, 4u) 0x590454).
+    net::Net_SendVaultReq_206(*nc, static_cast<int8_t>(arg)); // 0x62929C
+    net::g_GmCmdCooldownLatch = 1;                            // 0x6292A1
+    // TODO [ancre 0x815180] horodatage écrit avec net::g_GameTimeSec (Net/ClientState.h:12)
+    // par COHÉRENCE avec tous les autres émetteurs gardés (Net_SendGuarded_* utilisent ce
+    // même symbole)... mais ce symbole est un STUB jamais alimenté (toujours 0.0f). Le
+    // binaire n'a qu'UN g_GameTimeSec (flt_815180) ; la réécriture en a DEUX qui
+    // prétendent tous deux le modéliser : net::g_GameTimeSec (mort) et gfx::g_GameTimeSec
+    // (Gfx/SpriteBatch.cpp:11, VRAIMENT alimenté par App.cpp:630 = gameClockSec_).
+    // flt_1675B0C part donc à 0 au lieu de l'horloge de jeu. Sans effet sur CE front (le
+    // déverrouillage du bouton vient du latch, remis à 0 par le dispatch 0x58 entrant, pas
+    // d'un timeout), mais flt_1675B0C est LU ailleurs (AutoPlay_CheckReturnScroll 0x45C8E1,
+    // Game_OnHotkey 0x537B7E, Npc_AutoSelectNearest 0x53AD47…). Correctif = fusionner les
+    // deux symboles dans Net/ClientState.h — fichier NON possédé par ce front, remonté au
+    // rapport.
+    net::flt_1675B0C = net::g_GameTimeSec;                    // 0x6292B1
+    game::g_World.self.unspentAttr -= cost;                   // 0x6292C0 (-1) / 0x629578 (-5)
 }
 
 // ===========================================================================
@@ -124,95 +199,110 @@ void CharacterStatsWindow::ComputeLayout(int screenW, int screenH, Layout& L) co
 void CharacterStatsWindow::Open() {
     Dialog::Open();
     closeArmed_ = false;
-    for (bool& b : plusArmed_) b = false;
+    for (bool& b : plusArmed_)  b = false;
+    for (bool& b : plus5Armed_) b = false;
 }
 
 // ===========================================================================
 // Souris
 // ===========================================================================
+// Armement — ORDRE EXACT de cDrawWin_OnMouseDown 0x628EA0 : les 4 "+1" d'abord
+// (gate g_SelfUnspentAttrPoints > 0, 0x628EDC), puis les 4 "+5" (gate >= 5, 0x629027 :
+// `cmp` puis saut par-dessus les 4 tests), puis le bouton fermeture (0x629188), puis
+// le fond de panneau (0x6291D3). L'ordre importe : les rectangles "+1"/"+5" se
+// chevauchent de 3 px avec kPlusSize=18 (cf. TODO du .h) — tester "+1" en premier
+// attribue la zone commune au "+1", comme le binaire.
+// NB : le binaire joue aussi un son de clic à chaque armement (Snd3D_PlayScaledVolume
+// (flt_1487E3C, 0, 100, 1), 0x628F16 & suivants) — non reproduit ici, cette fenêtre
+// n'a aucun accès audio (hors périmètre du front, aucun paquet en jeu).
 bool CharacterStatsWindow::OnMouseDown(int x, int y) {
-    if (!bOpen_) return false;
+    if (!bOpen_) return false; // *(this+2) == 0 -> return 0 (0x628EAA)
 
     Layout L;
     ComputeLayout(lastScreenW_, lastScreenH_, L);
 
-    if (PointInRect(x, y, L.closeBtn.x, L.closeBtn.y, L.closeBtn.w, L.closeBtn.h)) {
-        closeArmed_ = true;
-        return true;
-    }
-
     const game::SelfState& self = game::g_World.self;
-    if (self.unspentAttr > 0) {
+
+    if (self.unspentAttr > 0) { // 0x628EDC
         for (int i = 0; i < kPrimaryAttrCount; ++i) {
             const Rect& r = L.plusBtn[i];
-            if (PointInRect(x, y, r.x, r.y, r.w, r.h)) {
-                plusArmed_[i] = true;
+            if (PointInRect(x, y, r.x, r.y, r.w, r.h)) { // 0x628F02..0x628FF3
+                plusArmed_[i] = true;                     // *(this+3..+6) = 1
                 return true;
             }
         }
     }
 
+    if (self.unspentAttr >= 5) { // 0x629027 (`cmp g_SelfUnspentAttrPoints, 5` / `jl`)
+        for (int i = 0; i < kPrimaryAttrCount; ++i) {
+            const Rect& r = L.plus5Btn[i];
+            if (PointInRect(x, y, r.x, r.y, r.w, r.h)) { // 0x62904D..0x62913E
+                plus5Armed_[i] = true;                    // *(this+7..+10) = 1
+                return true;
+            }
+        }
+    }
+
+    if (PointInRect(x, y, L.closeBtn.x, L.closeBtn.y, L.closeBtn.w, L.closeBtn.h)) { // 0x629188
+        closeArmed_ = true;                                                           // *(this+11) = 1
+        return true;
+    }
+
     // Clic n'importe où ailleurs dans le panneau : consommé (empêche le clic de
-    // "traverser" jusqu'au monde 3D derrière la fenêtre) mais n'arme rien.
+    // "traverser" jusqu'au monde 3D derrière la fenêtre) mais n'arme rien — le binaire
+    // renvoie ici le hit-test du sprite de fond unk_8F3704 (0x6291D3).
     if (PointInRect(x, y, L.box.x, L.box.y, L.box.w, L.box.h)) return true;
 
     return false;
 }
 
+// Validation — chaîne if/else-if de cDrawWin_OnCommit 0x6291F0, dans son ordre exact :
+// *(this+3..+6) = "+1" (args 1..4), *(this+7..+10) = "+5" (args 5..8), *(this+11) =
+// fermeture. Le binaire ne traite qu'UN seul latch par appel (chaîne else-if) et
+// désarme le latch testé AVANT de re-hit-tester ; le clic est consommé (return 1) que
+// le relâchement retombe sur le bouton ou non (0x629265 vs 0x62928B).
+// Le mapping bouton -> arg est PROUVÉ par la géométrie : cDrawWin_Draw dessine la
+// valeur de chaque attribut juste à côté de son bouton — Char_SumAttrField292/296/
+// 300/304 en (107,110)/(203,110)/(107,132)/(203,132) (0x629C76/0x629CD7/0x629D3B/
+// 0x629D9F), soit l'ordre PrimaryAttr {ExtForce=0, IntForce=1, Defensive=2,
+// Offensive=3} mappé en grille (col=i%2, row=i/2) => arg = i+1 ("+1") / i+5 ("+5").
 bool CharacterStatsWindow::OnClick(int x, int y) {
-    if (!bOpen_) return false;
+    if (!bOpen_) return false; // *(this+2) == 0 -> return 0 (0x6291FA)
 
     Layout L;
     ComputeLayout(lastScreenW_, lastScreenH_, L);
 
-    if (closeArmed_) {
-        closeArmed_ = false;
-        if (PointInRect(x, y, L.closeBtn.x, L.closeBtn.y, L.closeBtn.w, L.closeBtn.h)) {
-            Close();
-            return true;
-        }
-    }
-
-    const game::SelfState& self = game::g_World.self;
+    // "+1" : args 1..4, coût 1 (émissions 0x62929C/0x62934A/0x6293F8/0x6294A9).
     for (int i = 0; i < kPrimaryAttrCount; ++i) {
         if (!plusArmed_[i]) continue;
-        plusArmed_[i] = false;
+        plusArmed_[i] = false;                              // *(this+3..+6) = 0 (0x629235)
         const Rect& r = L.plusBtn[i];
-        if (self.unspentAttr > 0 &&
-            PointInRect(x, y, r.x, r.y, r.w, r.h)) {
-            // OPCODE PROUVÉ (ré-audit W4-F3, décompilation fraîche cDrawWin_OnCommit
-            // 0x6291F0) : la dépense d'un point d'attribut envoie
-            //   Net_SendVaultReq_206(nc, arg)   // 0x590430 = Net_SendPacket_Op19(
-            //                                    //   &g_AutoPlayMgr, 206, &arg) ->
-            //                                    //   opcode sortant 0x13, sous-op 206,
-            //                                    //   payload = arg sur 4 octets LE.
-            // Mapping bouton->attribut PROUVÉ par les hit-tests de cDrawWin_OnCommit :
-            // les 4 boutons "+1" testent (this.x+52, +109)/(+148, +109)/(+52, +131)/
-            // (+148, +131) = grille col=i%2, row=i/2 = ordre PrimaryAttr
-            // {ExtForce=0, IntForce=1, Defensive=2, Offensive=3} et appellent
-            // Net_SendVaultReq_206(1/2/3/4) -> plusBtn[i] = Net_SendVaultReq_206(nc, i+1).
-            // (Les boutons "+5" du binaire, absents de cette fenêtre, envoient 5/6/7/8
-            // et décrémentent g_SelfUnspentAttrPoints de 5.) Gardes d'origine :
-            // n'envoyer que si g_MorphInProgress(0x1675A88)!=1 && !g_GmCmdCooldownLatch
-            // (0x1675B08) ; sur envoi : latch=1, flt_1675B0C=g_GameTimeSec, décrément.
-            //
-            // NON CÂBLABLE ICI : CharacterStatsWindow n'a AUCUN accès à un NetClient
-            // (UiContext ne porte pas de `net`, OnClick ne reçoit pas de contexte
-            // réseau, cette fenêtre n'a pas de membre net_). L'ajout d'un net_/Bind()
-            // exigerait d'éditer CharacterStatsWindow.h (hors périmètre W4-F3). L'appel
-            // exact, dès qu'une session sera joignable :
-            //   // TODO [net_] Net_SendVaultReq_206(*net_, static_cast<int8_t>(i + 1));
-            // On NE décrémente PAS self.unspentAttr optimistiquement : le binaire couple
-            // décrément ET envoi (le serveur tient le compte via Pkt_CharStatDelta
-            // 0x465D90) ; décrémenter sans envoyer désynchroniserait l'UI du serveur.
-            return true;
-        }
+        if (PointInRect(x, y, r.x, r.y, r.w, r.h))          // 0x62925C — re-hit-test au relâchement
+            CommitAttrSpend(i + 1, 1);
+        return true;                                        // consommé dans les deux cas
+    }
+
+    // "+5" : args 5..8, coût 5 (émissions 0x629554/0x629602/0x6296B0/0x629761).
+    for (int i = 0; i < kPrimaryAttrCount; ++i) {
+        if (!plus5Armed_[i]) continue;
+        plus5Armed_[i] = false;                             // *(this+7..+10) = 0 (0x6294ED)
+        const Rect& r = L.plus5Btn[i];
+        if (PointInRect(x, y, r.x, r.y, r.w, r.h))          // 0x629514
+            CommitAttrSpend(i + 5, 5);
+        return true;
+    }
+
+    if (closeArmed_) {                                      // *(this+11) (0x629795)
+        closeArmed_ = false;                                // 0x62979E
+        if (PointInRect(x, y, L.closeBtn.x, L.closeBtn.y, L.closeBtn.w, L.closeBtn.h)) // 0x6297C5
+            Close();                                        // cDrawWin_Close 0x628E80
+        return true;                                        // 0x6297CE
     }
 
     // Relâché n'importe où dans le panneau : consommé.
     if (PointInRect(x, y, L.box.x, L.box.y, L.box.w, L.box.h)) return true;
 
-    return false;
+    return false;                                           // 0x6297E4
 }
 
 bool CharacterStatsWindow::OnKey(int vk) {
@@ -239,7 +329,11 @@ void CharacterStatsWindow::Render(const UiContext& ctx, int cursorX, int cursorY
     ComputeLayout(ctx.screenW, ctx.screenH, L);
 
     const game::SelfState& self = game::g_World.self;
-    const bool hasPoints = self.unspentAttr > 0;
+    // Gates de dessin des deux jeux de boutons, identiques aux gates d'armement :
+    // "+1" si g_SelfUnspentAttrPoints > 0, "+5" si >= 5 (cDrawWin_Draw 0x62A3D3,
+    // cDrawWin_OnMouseDown 0x628EDC / 0x629027).
+    const bool hasPoints  = self.unspentAttr > 0;
+    const bool hasPoints5 = self.unspentAttr >= 5;
 
     char buf[96];
 
@@ -261,12 +355,23 @@ void CharacterStatsWindow::Render(const UiContext& ctx, int cursorX, int cursorY
         const int sepY = L.box.y + kStatsStartYOff - 12;
         ctx.FillRect(L.box.x + 16, sepY, L.box.w - 32, 1, kColDivider);
 
-        // --- Boutons "+" par attribut primaire (seulement s'il reste des points) ---
+        // --- Boutons "+1" par attribut primaire (seulement s'il reste des points) ---
         if (hasPoints) {
             for (int i = 0; i < kPrimaryAttrCount; ++i) {
                 const Rect& r = L.plusBtn[i];
                 const bool hover = PointInRect(cursorX, cursorY, r.x, r.y, r.w, r.h);
                 const D3DCOLOR col = plusArmed_[i] ? kColBtnDown : (hover ? kColHover : kColBtn);
+                ctx.FillRect(r.x, r.y, r.w, r.h, col);
+                ctx.DrawFrame(r.x, r.y, r.w, r.h, kColFrame, 1);
+            }
+        }
+        // --- Boutons "+5" (sprite unk_940260) : dessinés seulement à partir de 5
+        // points non dépensés (cDrawWin_Draw 0x62A3D3) ---
+        if (hasPoints5) {
+            for (int i = 0; i < kPrimaryAttrCount; ++i) {
+                const Rect& r = L.plus5Btn[i];
+                const bool hover = PointInRect(cursorX, cursorY, r.x, r.y, r.w, r.h);
+                const D3DCOLOR col = plus5Armed_[i] ? kColBtnDown : (hover ? kColHover : kColBtn);
                 ctx.FillRect(r.x, r.y, r.w, r.h, col);
                 ctx.DrawFrame(r.x, r.y, r.w, r.h, kColFrame, 1);
             }
@@ -312,6 +417,11 @@ void CharacterStatsWindow::Render(const UiContext& ctx, int cursorX, int cursorY
             const Rect& r = L.plusBtn[i];
             const int plusW = ctx.MeasureText("+");
             ctx.Text("+", r.x + (r.w - plusW) / 2, r.y + 1, kColText);
+        }
+        if (hasPoints5) {
+            const Rect& r = L.plus5Btn[i];
+            const int plus5W = ctx.MeasureText("5");
+            ctx.Text("5", r.x + (r.w - plus5W) / 2, r.y + 1, kColText);
         }
     }
 

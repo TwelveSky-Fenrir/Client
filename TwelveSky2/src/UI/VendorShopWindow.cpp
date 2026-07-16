@@ -4,6 +4,7 @@
 #include "UI/PanelSkin.h"
 #include "Asset/ImgFile.h"
 #include "Game/GameDatabase.h"
+#include "Game/GameState.h"    // game::g_World.self.level (g_SelfLevel 0x16731A8)
 
 #include <algorithm>
 #include <cstdio>
@@ -12,6 +13,46 @@
 namespace ts2::ui {
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// Adresses d'origine consultées par la chaîne de gardes d'achat
+// (UI_NpcShop_OnRDown_Buy 0x5e5000). Accès via l'échappatoire g_Client.Var/VarGet
+// (Game/ClientRuntime.h) — même convention que Game/QuestSystem.cpp (`Var(0x1675B08)`)
+// et surtout Game/MapWarp.cpp:191-197, qui garde DÉJÀ une émission avec le MÊME
+// couple morph/verrou (EA 0x55CAF9) via WarpAddr::MorphInProgress/CooldownLatch.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kAddrMorphInProgress = 0x1675A88; // g_MorphInProgress
+constexpr uint32_t kAddrCooldownLatch   = 0x1675B08; // g_GmCmdCooldownLatch
+constexpr uint32_t kAddrSelfMorphNpcId  = 0x1675A98; // g_SelfMorphNpcId (== 291 => remise 10 %)
+constexpr uint32_t kAddrVar16747BC      = 0x16747BC; // dword_16747BC (palier de progression)
+constexpr uint32_t kAddrVar16851B8      = 0x16851B8; // dword_16851B8  (carte/faction courante)
+constexpr uint32_t kAddrVar167616C      = 0x167616C; // dword_167616C  (garde de l'objet 2314)
+
+// ids StrTable005 EXACTS relevés au désassemblage de UI_NpcShop_OnRDown_Buy 0x5e5000
+// (convention Game/CharSelectFlow.cpp:39 : l'id est la vérité, le texte vient de
+// game::Str() qui résout la vraie table 005.DAT chargée par App::Init).
+// (l'id 117 « sac plein », EA 0x5e5661, n'est pas listé : sa garde dépend de
+//  Inventory_FindFreeGridSlot, non modélisée — cf. TODO (f) dans HandleBuyClick)
+constexpr int kStrMsg214  = 214;  // ressource insuffisante vs coût (EA 0x5e54aa)
+constexpr int kStrMsg606  = 606;  // niveau 113 requis (EA 0x5e5243)
+constexpr int kStrMsg1414 = 1414; // monnaie insuffisante vs ITEM_INFO+228 (EA 0x5e54e1)
+constexpr int kStrMsg1416 = 1416; // dword_16747BC < 1 (EA 0x5e5281)
+constexpr int kStrMsg1909 = 1909; // dword_16747BC < 7 (EA 0x5e52c0)
+constexpr int kStrMsg2307 = 2307; // niveau 145 requis (EA 0x5e5302)
+constexpr int kStrMsg2385 = 2385; // dword_16851B8 == 50 (EA 0x5e5340)
+constexpr int kStrMsg2055 = 2055; // objet interdit ici (EA 0x5e556b)
+constexpr int kStrMsg2547 = 2547; // dword_167616C >= 1, objet 2314 (EA 0x5e55d3, `push 9F3h`)
+
+// itemIds testés par le `switch (*v32)` de prérequis (EA 0x5e51aa). Valeurs en hexa
+// dans le binaire, reportées telles quelles pour la traçabilité.
+constexpr uint32_t kItemPrereqLvl113A = 0x44A; // 1098
+constexpr uint32_t kItemPrereqLvl113B = 0x449; // 1097
+constexpr uint32_t kItemPrereqLvl113C = 0x417; // 1047
+constexpr uint32_t kItemPrereqStage1  = 0x59A; // 1434
+constexpr uint32_t kItemPrereqStage7  = 0x219; // 537
+constexpr uint32_t kItemPrereqLvl145  = 0x29B; // 667
+constexpr uint32_t kItemPrereqMap50   = 0x3D3; // 979
+
 // Fond de panneau réel (best effort) : gabarit (400,440) du dossier atlas UI
 // G03_GDATA/D01_GIMAGE2D/001 — candidat NON CONFIRMÉ par IDA, choisi par
 // proximité de ratio avec le panneau Marchand (340x372, ratio quasi identique ;
@@ -318,50 +359,191 @@ void VendorShopWindow::HandleRowClick(int rowInPage) {
     statusText_.clear();
 }
 
+// Refus : idiome `Msg_AppendSystemLine(g_ChatManager, StrTable005_Get(g_LangId, id),
+// g_SysMsgColor)` de UI_NpcShop_OnRDown_Buy 0x5e5000.
+// TODO fidélité [ancre 0x84DFD8] : la couleur d'origine g_SysMsgColor n'est pas
+// modélisée — MessageLog applique sa couleur blanche par défaut (même limitation
+// déjà documentée dans Game/NpcInteraction.cpp:209). L'id StrTable005, lui, est
+// résolu RÉELLEMENT par game::Str() (table 005.DAT chargée par App::Init).
+void VendorShopWindow::Refuse(int strTableId) {
+    statusText_ = game::Str(strTableId);
+    game::g_Client.msg.System(statusText_);
+}
+
+// ============================================================================
+// UI_NpcShop_OnRDown_Buy 0x5e5000 — SEULE émission de la famille UI_NpcShop_*.
+// La chaîne de gardes est reproduite dans l'ORDRE EXACT du binaire ; chaque garde
+// porte l'EA de la décompilation Hex-Rays.
+//
+// DIVERGENCE DE MODÈLE ASSUMÉE (héritée, hors périmètre de cette vague) : le binaire
+// lit l'objet dans l'ENTRÉE PNJ (`*(*(this+2) + 112*catégorie + 1740 + 4*slot)`,
+// EA 0x5e5117) ; cette fenêtre lit le catalogue dword_182613C (cf. bandeau du .h).
+// Le npcId du paquet vient lui aussi de l'entrée PNJ (`*(_DWORD *)*(this+2)`).
+// ============================================================================
 void VendorShopWindow::HandleBuyClick() {
     const int sel = Selection();
     if (sel < 0 || sel >= EntryCount()) {
         statusText_ = "Aucun objet selectionne.";
         return;
     }
+    const uint32_t catalogItemId = ItemIdAt(sel);
 
-    const uint32_t itemId = ItemIdAt(sel);
-    const uint32_t npcId  = static_cast<uint32_t>(game::g_Client.VarGet(kAddrVendorNpc)); // dword_1837E6C
+    // (d) MobDb_GetEntry(mITEM, itemId) — entrée absente => abandon SILENCIEUX,
+    //     aucun message (EA 0x5e5117, test 0x5e5123).
+    const game::ItemInfo* entry = game::GetItemInfo(catalogItemId);
+    if (!entry) return;
 
-    // TODO(send): requête d'achat marchand réelle.
-    // CORRECTIF (ré-audit 2026-07-14, preuve IDA fraîche) : l'ancien commentaire ci-dessous
-    // citait Net_SendVaultReq_215 (sous-opcode 215 du dispatcher Op19) comme candidat — CE
-    // N'EST PAS le bon builder, purement une supposition non vérifiée. La décompilation
-    // directe du VRAI handler de clic marchand (xrefs_to dword_1834F84 -> fonction 0x6050f0,
-    // mal-nommée "UI_SkillBook_OnLUp" par l'analyse IDA mais confirmée être la fenêtre
-    // marchand/boutique-joueur PNJ par son ancrage UI_ProjectSpriteToScreen(299,764,182) —
-    // même triplet d'ancrage EXACT que UI_NpcShop_Draw/OnLDown/HitTestWindow documenté dans
-    // RecomputeAnchor ci-dessus) montre un branchement en DEUX chemins selon que l'entrée
-    // appartient à un PNJ ou à une boutique-joueur (comparaison de nom vs byte_1673184,
-    // le nom du joueur local) :
-    //   - branche PNJ    (nom vendeur == soi n'a pas de sens ici -> vendeur != soi) :
-    //       Net_SendPacket_Op35(nc, flag, name13, arg0..arg6)     // opcode SORTANT 35 (0x23)
-    //     PAS de dword_1834F84/88/8C dans les arguments : le prix n'est PAS renvoyé au
-    //     serveur pour un achat PNJ (le serveur connaît déjà son propre prix catalogue).
-    //   - branche boutique-joueur (stall) :
-    //       Net_SendPacket_Op109(nc, flag, name13, arg0..arg6, blob28)  // opcode SORTANT 109
-    //     blob28 CONTIENT dword_1834F84[3*sel]/1834F88[3*sel]/1834F8C[3*sel] (le prix
-    //     affiché ici) parmi ses 7 premiers dwords — cf. EA 0x605612/0x605627/0x60563c.
-    // Les DEUX builders existent déjà (Net/SendPackets.h). Le mapping exact des arguments
-    // (this+7479/+8479/+9479/+3229 etc. dans le binaire d'origine) correspond à des champs
-    // d'un objet fenêtre partagée non modélisé dans VendorShopWindow (page/slot destination
-    // inventaire, essentiellement) — non recopiable ici sans réifier cet objet ; câblage
-    // réel du bouton Acheter donc TOUJOURS TODO, mais avec la BONNE cible désormais connue
-    // (Net_SendPacket_Op35 pour le cas PNJ couvert par cette fenêtre, PAS Op19/215).
-    // Le serveur répondrait par Pkt_TradeResult (0x26) ou Net_OnItemBuyResult (0xa4),
-    // déjà routés côté Net/GameHandlers_VendorTrade.cpp (mettent à jour g_Client.inv).
-    // On ne fabrique PAS l'écriture d'inventaire ici : elle vient du round-trip serveur.
-    (void)npcId;
+    const uint32_t itemId = entry->itemId; // `*v32` du binaire (ITEM_INFO+0)
 
+    // (e) quantité : ITEM_INFO+188 (typeCode == v32[47]) == 2 => 99, sinon 0
+    //     (EA 0x5e5134/0x5e5136/0x5e513f).
+    //     NB FIDÉLITÉ : UI_NpcShop n'a AUCUN sélecteur de quantité — qty_ (boutons
+    //     -/+ de cette fenêtre) est une construction locale héritée qui n'alimente
+    //     PAS le paquet. La quantité du fil est CELLE-CI. Cf. rapport (résiduel).
+    const int qty = (entry->typeCode == 2u) ? 99 : 0;
+
+    // (f)(g)(h) Inventory_FindFreeGridSlot 0x54DDE0 -> (page, slot2), sinon Msg 117
+    //     (EA 0x5e515e -> 0x5e5659) ; puis freeSlot = Inventory_FindFreePageSlot(page)
+    //     0x54E1D0 (EA 0x5e5172), col = slot2 % 8 (EA 0x5e5185), row = slot2 / 8
+    //     (EA 0x5e5191), et abandon SILENCIEUX si freeSlot == -1 (EA 0x5e519b).
+    //
+    // TODO [ancre 0x5e515e / 0x5e5172] : aucune de ces deux fonctions n'a d'équivalent
+    // côté C++. Elles dépendent de Inventory_BuildOccupancyGrid 0x54E010, de
+    // g_Inv_ExtraPageCount 0x16732A8 et du bloc self g_SelfCharInvBlock 0x1673170
+    // (indexé [384*page + 80 + 6*slot]) — c'est de l'ALLOCATION d'inventaire, qui
+    // relève de Game/ et non de cette fenêtre. Tant qu'elles manquent, page/freeSlot/
+    // col/row sont INCONNUS : la chaîne se poursuit pour reproduire fidèlement les
+    // refus suivants, mais l'émission finale reste bloquée (voir (p)).
+
+    // (i) prérequis par objet : `switch (*v32)` (EA 0x5e51aa).
+    const int     selfLevel   = game::g_World.self.level;                    // g_SelfLevel 0x16731A8
+    const int32_t var16747BC  = game::g_Client.VarGet(kAddrVar16747BC);
+    const int32_t var16851B8  = game::g_Client.VarGet(kAddrVar16851B8);
+    switch (itemId) {
+    case kItemPrereqLvl113A: // EA 0x5e51b3
+    case kItemPrereqLvl113B: // EA 0x5e51f1
+    case kItemPrereqLvl113C: // EA 0x5e5230
+        if (selfLevel < 113) { Refuse(kStrMsg606); return; }
+        break;
+    case kItemPrereqStage1:  // EA 0x5e526f
+        if (var16747BC < 1) { Refuse(kStrMsg1416); return; }
+        break;
+    case kItemPrereqStage7:  // EA 0x5e52ad
+        if (var16747BC < 7) { Refuse(kStrMsg1909); return; }
+        break;
+    case kItemPrereqLvl145:  // EA 0x5e52ef
+        if (selfLevel < 145) { Refuse(kStrMsg2307); return; }
+        break;
+    case kItemPrereqMap50:   // EA 0x5e532e
+        if (var16851B8 == 50) { Refuse(kStrMsg2385); return; }
+        break;
+    default:
+        // Branche par défaut (EA 0x5e53a1) : si (dword_1685E74|78|7C|80) est non nul
+        // ET itemId ∈ {1447,1448,1449}, le binaire balaie
+        // `Crt_Strcmp(&byte_1686334[130*g_LocalElement + 13*i], byte_1673184)` pour
+        // i < 10 et refuse par Msg 1506 (EA 0x5e5401) si une correspondance existe.
+        // TODO [ancre 0x5e53a1] : table de noms byte_1686334 (10 x 13 o par élément),
+        // g_LocalElement 0x1673194 et le nom du joueur local byte_1673184 ne sont pas
+        // modélisés dans cette fenêtre — garde non reproductible ici (cf. rapport).
+        break;
+    }
+
+    // (j) coût (EA 0x5e5420..0x5e548b) : prix unitaire = ITEM_INFO+220 (v32[55],
+    //     iBuyCost) ; g_SelfMorphNpcId == 291 => Crt_ftol(prix * 0.9) — troncature
+    //     vers zéro, la constante flottante est celle du binaire (double de 0.9f,
+    //     EA 0x5e543d / 0x5e5478) ; empilable (v32[47]==2) => coût = qty * prix.
+    const int32_t unitPriceRaw = static_cast<int32_t>(entry->field220);
+    const bool    morph291     = (game::g_Client.VarGet(kAddrSelfMorphNpcId) == 291);
+    const int32_t unitPrice    = morph291
+        ? static_cast<int32_t>(static_cast<double>(unitPriceRaw) * 0.8999999761581421) // Crt_ftol 0x760810
+        : unitPriceRaw;
+    const int64_t cost = (entry->typeCode == 2u)
+        ? static_cast<int64_t>(qty) * unitPrice  // EA 0x5e5446 / 0x5e5458
+        : static_cast<int64_t>(unitPrice);       // EA 0x5e547d / 0x5e548b
+
+    // (k) g_InvWeight (0x16732AC) < coût => Msg 214 (EA 0x5e5497 -> 0x5e54aa).
+    //     NB : le binaire compare bien le champ étiqueté g_InvWeight au COÛT ; le
+    //     libellé « weight » est donc à prendre avec réserve (cf. rapport). On
+    //     reproduit la comparaison telle quelle, sans réinterpréter.
+    if (game::g_Client.inv.weight < cost) { Refuse(kStrMsg214); return; }
+
+    // (l) g_Currency (0x1673180) < ITEM_INFO+228 (v32[57]) => Msg 1414 (EA 0x5e54ce -> 0x5e54e1).
+    if (game::g_Client.inv.currency < static_cast<int64_t>(entry->field228)) {
+        Refuse(kStrMsg1414);
+        return;
+    }
+
+    // (m) g_MorphInProgress != 1 && !g_GmCmdCooldownLatch (EA 0x5e5506) : sinon
+    //     abandon SILENCIEUX (aucun message). Même couple de gardes, même idiome que
+    //     Game/MapWarp.cpp:191-197 (EA 0x55CAF9) -> même représentation (Var).
+    if (game::g_Client.VarGet(kAddrMorphInProgress) == 1) return;
+    if (game::g_Client.VarGet(kAddrCooldownLatch) != 0) return;
+
+    // (n) (itemId == 2141 && dword_16851B8 != 2) || (itemId == 574 && dword_16851B8 == 40)
+    //     => Msg 2055 (EA 0x5e5559 -> LABEL_68 0x5e555b/0x5e556b).
+    if ((itemId == 2141u && var16851B8 != 2) || (itemId == 574u && var16851B8 == 40)) {
+        Refuse(kStrMsg2055);
+        return;
+    }
+
+    // (o) itemId == 2314 (EA 0x5e5589) : dword_16851B8 != 40 => Msg 2055 (EA 0x5e5592) ;
+    //     PUIS dword_167616C >= 1 => Msg 2547 (EA 0x5e55c1 : `cmp ds:dword_167616C,1 ;
+    //     jl` -> `push 9F3h` -> Msg_AppendSystemLine). Ce 2e test est bien IMBRIQUÉ
+    //     dans `itemId == 2314`, ce n'est PAS une garde de premier niveau.
+    if (itemId == 2314u) {
+        if (var16851B8 != 40) { Refuse(kStrMsg2055); return; }
+        if (game::g_Client.VarGet(kAddrVar167616C) >= 1) { Refuse(kStrMsg2547); return; }
+    }
+
+    // (p) ÉMISSION (EA 0x5e562a) — le binaire émet ICI, inconditionnellement une fois
+    //     toutes les gardes ci-dessus franchies :
+    //         Net_SendVaultReq_215(npcId, itemId, qty, page, freeSlot, col, row)  // 0x590a10
+    //     Args recoupés au désassemblage de UI_NpcShop_OnRDown_Buy (0x5e562a) :
+    //         npcId    = *(_DWORD *)*(this+2)                   (1er dword de l'entrée PNJ)
+    //         itemId   = *(*(this+2) + 112*cat + 1740 + 4*slot) (case marchande)
+    //         qty      = v38 (99 ou 0)
+    //         page     = v36 ; freeSlot = FreePageSlot ; col = v33 % 8 ; row = v33 / 8
+    //     où (v36 page, v33 slot2) sortent de Inventory_FindFreeGridSlot 0x54DDE0 (garde f :
+    //     Msg 117 si sac plein) et FreePageSlot de Inventory_FindFreePageSlot 0x54E1D0
+    //     (garde h : -1 => abandon silencieux).
+    //
+    // BUILDER (recoupage IDA de cette vague) : net::Net_SendVaultReq_215 EXISTE désormais et
+    // est BYTE-EXACT (SendPackets.cpp:1423, params int32_t ; trame opcode 0x13 | sous-code
+    // 215 (u32 @+9) | bloc 100 o = 7 int32 [npcId,itemId,qty,page,freeSlot,col,row] + 72 o à
+    // zéro | total 113) — vérifié vs Net_SendVaultReq_215 0x590a10. L'ancienne mention
+    // « wrapper CASSÉ / opcode 0xD7 / params int8_t » est PÉRIMÉE (le builder a été corrigé
+    // par la vague dédiée). Le TRANSPORT n'est donc PLUS le blocage.
+    //
+    // BLOCAGE RÉEL = l'ÉTAT (hors de ce fichier) — on N'ÉMET PAS (règle #8 : ne jamais
+    // deviner) :
+    //   1. page/freeSlot/col/row (4 des 7 champs) exigent Inventory_FindFreeGridSlot
+    //      0x54DDE0 + Inventory_FindFreePageSlot 0x54E1D0 — allocation de SAC (Game/), sans
+    //      équivalent C++ (seul WarehouseState::FindFreeSlot 0x54e240 existe, autre
+    //      sous-système). Fabriquer ces valeurs placerait l'objet dans une case arbitraire
+    //      du sac ET sauterait le refus « sac plein » (Msg 117) : STRICTEMENT PIRE que rien.
+    //   2. npcId vient de l'entrée PNJ (*(this+2)) ; cette fenêtre lit le catalogue
+    //      dword_182613C — divergence de modèle préexistante (cf. bandeau du .h).
+    // Dès que Game/ exposera ces deux allocateurs de sac, l'appel devient direct et fidèle :
+    //   if (net::NetClient* nc = net::GlobalNetClient())                    // g_NetClient 0x8156A0
+    //       net::Net_SendVaultReq_215(*nc, npcId, itemId, qty, page, freeSlot, col, row);
+    // Cf. `missingBuilders`/état manquant du rapport de vague.
+    //
+    // Effets locaux du binaire, volontairement NON reproduits : ils sont TOUS
+    // postérieurs à l'émission (g_VaultOpPending=1 EA 0x5e562f, g_GmCmdCooldownLatch=1
+    // EA 0x5e5639, flt_1675B0C=g_GameTimeSec EA 0x5e5649). Les poser sans avoir émis
+    // verrouillerait le client sur une requête qui n'est jamais partie.
+    // Aucun effet optimiste sur l'inventaire : le binaire n'en fait pas non plus, il
+    // attend la réponse (Pkt_TradeResult 0x26 / Net_OnItemBuyResult 0xa4, déjà routés
+    // par Net/GameHandlers_VendorTrade.cpp).
+    // Retour LOCAL au joueur : pied de fenêtre UNIQUEMENT. Sur son chemin d'émission
+    // (0x5e562a+), le binaire ne pousse AUCUNE ligne de chat — seules les branches de refus
+    // (Refuse) appellent Msg_AppendSystemLine. On n'écrit donc PAS dans
+    // game::g_Client.msg.System ici (règle #4 : pas d'effet que le binaire ne fait pas sur
+    // le chemin succès). Tant que l'émission reste bloquée (état de sac manquant, cf. (p)),
+    // on se contente d'un indicateur de fenêtre non intrusif.
     char line[96];
-    std::snprintf(line, sizeof(line), "Achat demande : objet #%u x%d (non envoye).", itemId, qty_);
+    std::snprintf(line, sizeof(line), "Achat : objet #%u x%d (envoi bloque : etat de sac manquant).", itemId, qty);
     statusText_ = line;
-    game::g_Client.msg.System(statusText_);
 }
 
 // ============================================================================

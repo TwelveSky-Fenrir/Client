@@ -2,6 +2,7 @@
 // Toutes les constantes flottantes reproduisent les littéraux float32 d'origine
 // (suffixe f promu en double) pour un résultat identique après troncature.
 #include "Game/ItemSystem.h"
+#include "Game/ClientRuntime.h"   // g_Client.VarGet — palier de renaissance dword_16747BC
 
 namespace ts2::game {
 
@@ -12,6 +13,43 @@ inline int Ftol(double x) { return static_cast<int>(x); }
 
 // Cast float intermédiaire des Item_ScaleStatByType* : (float)(...) puis élargi.
 inline double Fcast(double x) { return static_cast<double>(static_cast<float>(x)); }
+
+// ---------------------------------------------------------------------
+// Item_ClassifyRecord 0x5509A0 — catégorie 0..9 d'un record ITEM_INFO.
+// Décompilation relue cette mission : a1[46]=category(+184), a1[54]=subtype(+216),
+// a1[47]=typeCode(+188), *a1=itemId(+0).
+// La garde `if (!a1) return -1` @0x5509ab n'est pas portée : le paramètre est une
+// référence (jamais nulle), donc cette branche est structurellement inatteignable ici.
+// Item_MeetsEquipRequirement 0x64ECD0 — seul appelant de cette copie — ne compare jamais
+// le résultat à -1 : la neutraliser est sans effet observable.
+//
+// NB : une copie à linkage interne existe déjà dans Game/StatFormulas.cpp (fichier NON
+// possédé par ce front) — pas d'ODR en jeu (les deux sont dans un namespace anonyme).
+// Dédoublonnage à arbitrer par l'orchestrateur (cf. rapport W7 item-level-db).
+// ---------------------------------------------------------------------
+int ClassifyRecord(const ItemInfo& it) {
+    if (it.category == 5) {                          // a1[46] == 5 @0x5509bf
+        const uint32_t st = it.subtype;              // a1[54]
+        if (st == 2 || st == 4 || st == 5 || st == 6 || st == 7 || st == 9)
+            return 1;                                // @0x550a0b
+        if (st == 11 || st == 12 || st == 13 || st == 14)
+            return 2;                                // @0x550a4a
+        switch (it.typeCode) {                       // a1[47] @0x550a62
+            case 31: return 5;                       // @0x550a69
+            case 32: return 6;                       // @0x550a81
+            case 8:  return 8;                       // @0x550a99
+            case 29: return 9;                       // @0x550aae
+            default: break;
+        }
+    } else {
+        if (it.category == 6) return 4;              // @0x550abc
+        if ((it.itemId >= 201 && it.itemId <= 218) ||
+            (it.itemId >= 2303 && it.itemId <= 2305))
+            return 3;                                // @0x550af1
+        if (it.typeCode == 28) return 7;             // @0x550b06
+    }
+    return 0;                                        // @0x550b11
+}
 
 } // namespace
 
@@ -725,6 +763,98 @@ double Item_ScaleStatByTypeD(const int32_t caps[4], int itemId, int value) {
     }
     if (value < cap) return Fcast(static_cast<double>(value) * 1800.0 / static_cast<double>(cap));
     return 2000.0;
+}
+
+// ---------------------------------------------------------------------
+// Item_MeetsEquipRequirement 0x64ECD0 — porte d'éligibilité équipement/usage.
+// Décompilation + disasm relus cette mission. Les 15 gardes sont évaluées dans
+// l'ORDRE EXACT du binaire : chaque `return false` correspond à un `xor eax,eax / jmp
+// loc_64EFB4` distinct. Le succès final est le `return classify != 9 || rebirth >= 12`
+// @0x64EFA9 (le binaire ne renvoie pas un 1 constant).
+// ---------------------------------------------------------------------
+bool Item_MeetsEquipRequirement(const ItemInfo& it, int equipSlot) {
+    const SelfState& self = g_World.self;
+    // dword_16747BC : palier de renaissance (lu par 12 des 15 gardes ci-dessous).
+    const int rebirth = g_Client.VarGet(0x16747BC);
+    // *a2 (+0) : les comparaisons du binaire sont signées (a2 est un int*).
+    const int32_t id = static_cast<int32_t>(it.itemId);
+
+    // (1) FACTION — a2[53] = +212 @0x64ECDA-0x64ECF5 :
+    //     `if (a2[53] != 1 && a2[53] - 2 != g_LocalElementSecondary) return 0`.
+    //     1 = passe-partout ; sinon (faction - 2) doit égaler l'élément secondaire local.
+    const int32_t faction = static_cast<int32_t>(it.field212);
+    if (faction != 1 && faction - 2 != self.elementSecondary)
+        return false;                                            // @0x64ECF7
+
+    // (2) SLOT — a2[54] = +216 vs this[54 + slot] @0x64ECFE-0x64ED20.
+    //     Gardes SIGNÉES (`jl` @0x64ed02, `jg` @0x64ed08) : ne s'applique qu'à slot ∈ [0..12] ;
+    //     equipSlot == -1 (sentinelle « pas de slot », ex. push 0FFFFFFFFh @0x64af0b) la saute
+    //     entièrement — c'est le cas de 8 des 9 appelants du binaire.
+    //
+    //     TODO [ancre 0x64ED20] : garde NON PORTÉE (preuve manquante, règle #8).
+    //     Le terme droit est `this[54 + slot]` avec this = dword_1839568 (le singleton
+    //     gestionnaire de dialogues UI — `mov ecx, offset dword_1839568` @0x5b23b9, et
+    //     this de UI_InitAllDialogs 0x5ABF50 / UI_UpdateAllDialogs 0x5AC270), soit le tableau
+    //     de 13 dwords 0x1839640[0..12] (= 0x1839568 + 0xD8 + 4*slot). Ce tableau est en .bss
+    //     (get_bytes(0x1839640, 56) = 56 octets à zéro) et son PRODUCTEUR reste non identifié :
+    //     insn_query(op_any=0x1839640) sur les 3 segments exécutables (1 053 354 instructions)
+    //     ne rend AUCUNE écriture — tous les accès passent par base+index calculés. Tant que la
+    //     sémantique de ces 13 dwords n'est pas prouvée, on ne devine pas.
+    //     Impact : nul pour equipSlot < 0 ; pour equipSlot ∈ [0..12] (seul UI_MainInventory_
+    //     OnLButtonUp @0x5b23be passe un slot réel), la garde est actuellement permissive.
+    (void)equipSlot;
+
+    // (3) NIVEAU SOMMÉ — a2[59] + a2[58] = +236 + +232 @0x64ED29-0x64ED49 :
+    //     `if (a2[59] + a2[58] > g_SelfLevelBonus + g_SelfLevel) return 0`.
+    //     C'est la SEULE exigence de niveau prouvée (itemLevel +204 ne joue aucun rôle ici).
+    if (static_cast<int32_t>(it.field236) + static_cast<int32_t>(it.field232) >
+        self.levelBonus + self.level)
+        return false;                                            // @0x64ED4B
+
+    // (4) ids 13553/33553/53553 & renaissance < 6 @0x64ED55-0x64ED7A.
+    if ((id == 13553 || id == 33553 || id == 53553) && rebirth < 6)
+        return false;                                            // @0x64ED7C
+
+    // (5) ids 13554/33554/53554 & renaissance < 12 @0x64ED86-0x64EDAB.
+    if ((id == 13554 || id == 33554 || id == 53554) && rebirth < 12)
+        return false;                                            // @0x64EDAD
+
+    // (6) plages 87206..87213 / 87228..87235 / 87250..87257 & renaissance < 12 @0x64EDFD.
+    if (((id >= 87206 && id <= 87213) || (id >= 87228 && id <= 87235) ||
+         (id >= 87250 && id <= 87257)) && rebirth < 12)
+        return false;                                            // @0x64EDFF
+
+    // (7) ids 216/217/218 & renaissance < 7 @0x64EE2E.
+    if ((id == 216 || id == 217 || id == 218) && rebirth < 7)
+        return false;                                            // @0x64EE30
+
+    // (8) ids 86754/86756/86758 & renaissance < 6 @0x64EE5F.
+    if ((id == 86754 || id == 86756 || id == 86758) && rebirth < 6)
+        return false;                                            // @0x64EE61
+
+    // (9) ids 86755/86757/86759 & renaissance < 12 @0x64EE90.
+    if ((id == 86755 || id == 86757 || id == 86759) && rebirth < 12)
+        return false;                                            // @0x64EE92
+
+    // (10) skillFlag — a2[71] = +284 == 3 (upgrade) & renaissance < 12 @0x64EEAC.
+    if (static_cast<int32_t>(it.skillFlag) == 3 && rebirth < 12)
+        return false;                                            // @0x64EEAE
+
+    // (11) ids 2303..2305 & renaissance < 7 @0x64EEDD.
+    if ((id == 2303 || id == 2304 || id == 2305) && rebirth < 7)
+        return false;                                            // @0x64EEDF
+
+    // (12..15) portes par CLASSE (Item_ClassifyRecord 0x5509A0). Le binaire rappelle la
+    // fonction à chaque garde (aucune mise en cache) ; elle est pure, donc un seul appel
+    // C++ est numériquement équivalent.
+    const int cls = ClassifyRecord(it);
+    if ((cls == 1 || cls == 4) && rebirth < 12) return false;    // @0x64EF13 / @0x64EF15
+    if (cls == 2 && rebirth < 12)               return false;    // @0x64EF36 / @0x64EF38
+    if ((cls == 5 || cls == 6) && rebirth < 12) return false;    // @0x64EF69 / @0x64EF6B
+    if (cls == 8 && rebirth < 12)               return false;    // @0x64EF89 / @0x64EF8B
+
+    // Sortie @0x64EFA9 : `return Item_ClassifyRecord(a2) != 9 || dword_16747BC >= 12;`
+    return cls != 9 || rebirth >= 12;
 }
 
 } // namespace ts2::game

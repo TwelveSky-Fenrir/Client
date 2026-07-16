@@ -242,11 +242,12 @@ constexpr int      kMasteryMax  = 3000;        // push 0BB8h @0x67A737 ; dbl_7ED
 // champ SelfState ajouté (Game/GameState.h en lecture seule, cf. tâche W4-F2).
 void ComputeExpProgress(int level, int levelBonus, int& outProgress, int& outSpan) {
     if (levelBonus >= 1) {
-        // Renaissance (branche jge @0x67A59E->0x67A618) : span =
-        // maybe_GameHud_GetQuickSlotItemId(mLEVEL, levelBonus) = sous-table mLEVEL+1594
-        // (dwords), NON portée dans LevelInfo -> barre vide en renaissance.
+        // Renaissance (branche `cmp g_SelfLevelBonus, 1 / jge` @0x67A597-0x67A59E -> 0x67A618).
+        // span = maybe_GameHud_GetQuickSlotItemId(mLEVEL, g_SelfLevelBonus) @0x67A61F-0x67A624
+        // = sous-table EXP de renaissance (mLEVEL 0x8E7208 + 0x18EC, 12 int32 câblés en dur
+        // par 0x4C2380) -> portée par game::GetRebirthExpSpan (cf. Game/GameDatabase.cpp).
         outProgress = game::g_Client.VarGet(0x16731B4); // dword_16731B4 @0x67A62F
-        outSpan     = 0; // TODO [ancre 0x67A624] : sous-table span renaissance non modélisée
+        outSpan     = game::GetRebirthExpSpan(levelBonus); // @0x67A624 / accesseur 0x4C2BF0
     } else if (const game::LevelInfo* li = game::GetLevelInfo(level)) {
         const int expCumul = li->expCumul;                          // GetId(level) 0x4C2930 = +4
         outProgress = game::g_Client.VarGet(0x16731B0) - expCumul;  // dword_16731B0 - GetId @0x67A608
@@ -648,6 +649,10 @@ void GameHud::DrawVitalsFrame() {
     ComputeExpProgress(self.level, self.levelBonus, expProgress, expSpan);
     // Gate fidèle `cmp var_84C,0 / jle` @0x67A641 : dessiné seulement si progress > 0
     // (DrawBarFill clampe déjà le ratio [0,1], équivalent du clamp de frame 220 @0x67A66B).
+    // NB : `&& expSpan > 0` est un AJOUT au binaire (garde div/0 côté C++ — le binaire
+    // divise par var_850 sans le tester, cf. fidiv @0x67A64F). Depuis le câblage de
+    // GetRebirthExpSpan ci-dessus, span est non nul sur les deux branches (renaissance et
+    // normale) : cette garde n'altère donc plus jamais le rendu. Conservée par prudence.
     if (expProgress > 0 && expSpan > 0)
         DrawBarFill(expBar, expProgress, expSpan, kExpBg, kExpFill);
 
@@ -842,6 +847,11 @@ void GameHud::DrawTextPass(int hp, int maxHp, int mp, int maxMp, int level, int 
         const game::SelfState& s = game::g_World.self;
         int p = 0, span = 0;
         ComputeExpProgress(s.level, s.levelBonus, p, span);
+        // Le binaire dessine ce texte INCONDITIONNELLEMENT (0x67A68A-0x67A6E2 : le `jle`
+        // @0x67A641 saute la BARRE et atterrit précisément sur loc_67A68A = ce texte).
+        // `if (span > 0)` est donc une garde div/0 ajoutée côté C++, pas une garde du binaire ;
+        // span étant désormais non nul sur les deux branches (cf. GetRebirthExpSpan), elle est
+        // sans effet observable. Conservée pour ne jamais diviser par zéro.
         if (span > 0) {
             std::snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(p) * 100.0 / span);
             const int tw = font_.MeasureText(buf);

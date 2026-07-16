@@ -4,17 +4,21 @@
 #include <cstring>
 
 namespace ts2::game {
-namespace {
 
 // Resolution 1-based d'un record ITEM_INFO (mirroir MobDb_GetEntry 0x4C3C00) :
 // nul si id<1, id>count, ou record.dword0 == 0 (slot vide).
-const uint8_t* ItemRecord(const DataTable& t, uint32_t itemId) {
+// Sorti de l'espace de noms anonyme (2026-07-16) et declare dans SkillSystem.h :
+// Game/SkillCombat.cpp en a besoin pour la garde d'arme de Player_CastSkill
+// (0x53BDD2 -> MobDb_GetEntry(&mITEM, dword_1673248)). Comportement INCHANGE.
+const uint8_t* Skill_ItemRecord(const DataTable& t, uint32_t itemId) {
     if (itemId < 1 || itemId > t.count) return nullptr;
     const uint8_t* rec = t.record(itemId - 1);
     if (!rec) return nullptr;
     if (Skill_ReadI32(rec, 0) == 0) return nullptr;
     return rec;
 }
+
+namespace {
 
 // Extraction des 12 octets des 3 dwords (little-endian), commune aux fonctions
 // d'arbre Skill_UnpackTreeNodes / Skill_CountTreeNodes.
@@ -142,7 +146,7 @@ int Skill_CostById(int skillId, const SelfState& self, const DataTable& itemTbl)
         return kCost[skillId];
 
     // Defaut : classe de l'arme equipee (self.equip[7] = dword_1673248).
-    const uint8_t* rec = ItemRecord(itemTbl, self.equip[7].itemId);
+    const uint8_t* rec = Skill_ItemRecord(itemTbl, self.equip[7].itemId);
     if (rec) {
         switch (Skill_ReadI32(rec, iteminfo::kOffTypeCode)) {
             case 0xD:  return 20;
@@ -163,7 +167,7 @@ int Skill_CostById(int skillId, const SelfState& self, const DataTable& itemTbl)
 int Skill_CalcRegenPct(const SelfState& self, const DataTable& itemTbl) {
     int sum = 0;
     for (int i = 0; i < 13; ++i) {
-        const uint8_t* rec = ItemRecord(itemTbl, self.equip[i].itemId);
+        const uint8_t* rec = Skill_ItemRecord(itemTbl, self.equip[i].itemId);
         if (rec) sum += Skill_ReadI32(rec, iteminfo::kOffRegen);
     }
     return sum;
@@ -397,9 +401,21 @@ int Skill_Learn(SkillBar& bar, SelfState& self, const DataTable& skillTbl, uint3
         case 2: // -> [20,30)
             slot = bar.FindFree(20, 30);
             break;
-        case 3: // -> [0,20) puis [30,40)
+        // CORRECTIF (2026-07-16) : la borne BASSE etait 0 au lieu de 10 -> une
+        // competence de section 3/4 pouvait atterrir dans [0,10), la plage reservee
+        // a la section 1 (corruption de barre sur un chemin joueur reel : touche K
+        // -> UI/SkillTreeWindow.cpp -> Skill_Learn).
+        // Ancre : Pkt_ItemActionDispatch 0x46A4B0, case 3 @0x46A5ED et case 4
+        // @0x46A689 -> `mov [ebp+var_424], 0Ah` puis `cmp [ebp+var_424], 14h`
+        // = [10,20) ; si epuisee (`cmp ...,14h` / `jnz`), repli @0x46A62E (case 3)
+        // et @0x46A6CA (case 4) -> `mov [ebp+var_424], 1Eh` / `cmp ...,28h`
+        // = [30,40). Les cases 3 et 4 sont STRICTEMENT identiques dans le binaire
+        // (le repli [30,40) existe pour les DEUX) -> le fallthrough ci-dessous est
+        // fidele. Gate UI corroborante : UI_SkillLearn_OnLDown 0x5E1C40 case 3
+        // @0x5E1F44 + @0x5E1F73, case 4 @0x5E1FCC + @0x5E1FFB.
+        case 3: // -> [10,20) puis [30,40)
         case 4:
-            slot = bar.FindFree(0, 20);
+            slot = bar.FindFree(10, 20);
             if (slot < 0) slot = bar.FindFree(30, 40);
             break;
         default:

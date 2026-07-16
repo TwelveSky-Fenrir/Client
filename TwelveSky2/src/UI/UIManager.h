@@ -47,6 +47,29 @@ inline constexpr D3DCOLOR Argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
 // FillRect/DrawFrame ne dessinent qu'en phase Panels ; Text qu'en phase Text. Chaque
 // Dialog::Render est ainsi appelé deux fois par frame, mais l'écrit naturellement
 // (panneaux + texte dans un seul corps de méthode).
+//
+// TODO [ancres 0x69E620 / 0x69E650 / 0x6A3080 / 0x69E750] — DIVERGENCE PROUVÉE (gap GX2D-01),
+// correctif HORS DU PÉRIMÈTRE de ce front (il vit dans Gfx/Font.{h,cpp} + Gfx/SpriteBatch.{h,cpp}).
+// Le binaire n'a QU'UN SEUL ID3DXSprite pour toute la passe 2D, et blits et texte y sont
+// ENTRELACÉS dans un batch UNIQUE :
+//   - Gfx_Begin2D 0x69E620 : SetRenderState(ZENABLE=7, FALSE) @0x69E630 puis
+//     Sprite(+608)->Begin(D3DXSPRITE_ALPHABLEND=16) @0x69E644  — UN SEUL Begin par frame.
+//   - Gfx_End2D   0x69E650 : Sprite(+608)->End() @0x69E65C puis SetRenderState(7, TRUE).
+//   - UI_DrawSprite 0x6A3080 (blit) : Draw via `dword_800078` @0x6A30FC = g_GfxRenderer+608.
+//   - UI_DrawText   0x69E750 (texte) : Font(+612)->DrawTextA(Sprite(+608), ...) @0x69E800.
+//     => les deux consommateurs tapent le MÊME ID3DXSprite (0x800078).
+//   - Entrelacement prouvé dans Scene_LoginRender 0x51B020, entre Gfx_Begin2D @0x51B189 et
+//     Gfx_End2D @0x51B5A7 : blit @0x51B207, blit @0x51B28F, TEXTE @0x51B316, blit (caret)
+//     @0x51B34F, TEXTE @0x51B40C, blits @0x51B445/0x51B4C7/0x51B54A.
+// ZENABLE=FALSE + aucun tri => l'ORDRE DE SOUMISSION est l'ordre d'occlusion. Ici, les deux
+// sous-passes ci-dessous (panneaux PUIS texte, sur deux ID3DXSprite distincts —
+// SpriteBatch::sprite_ et Font::sprite_) font passer TOUT le texte au-dessus de TOUS les
+// panneaux : l'ordre diverge dès que deux dialogues qui se recouvrent sont enregistrés.
+// LATENT à ce jour : UIManager n'enregistre qu'un seul dialogue (msgBox_, cf. Init), et à
+// un dialogue les deux ordres coïncident. Correctif : partager un unique ID3DXSprite entre
+// Font et SpriteBatch (p. ex. Font::SetExternalSprite), puis effondrer UIManager::Render()
+// en une passe et supprimer UiPhase. Impacte aussi ChatWindow/BuffStatusPanel/GameHud/
+// GameWindows/WorldRenderer, qui utilisent le même idiome deux-passes.
 enum class UiPhase { Panels, Text };
 
 // ---------------------------------------------------------------------------

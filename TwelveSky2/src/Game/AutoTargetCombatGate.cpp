@@ -31,8 +31,8 @@ inline float Dist3D(float ax, float ay, float az, float bx, float by, float bz) 
 bool AutoTarget_DefaultRangeLookup(const GameWorld& world, int mode, int index, float outPos[3]) {
     if (mode == 4) { // EA 0x52cd91 : unk_1764D28 == g_World.groundItems[index].x (storage exact
                       // du pool NPC g_NpcRenderArray -- cf. correctif sémantique du .h)
-        if (index < 0 || static_cast<std::size_t>(index) >= world.groundItems.size()) return false;
-        const GroundItem& gi = world.groundItems[static_cast<std::size_t>(index)];
+        if (index < 0 || static_cast<std::size_t>(index) >= world.npcRenderEntries.size()) return false;
+        const NpcRenderEntry& gi = world.npcRenderEntries[static_cast<std::size_t>(index)];
         outPos[0] = gi.x; outPos[1] = gi.y; outPos[2] = gi.z;
         return true;
     }

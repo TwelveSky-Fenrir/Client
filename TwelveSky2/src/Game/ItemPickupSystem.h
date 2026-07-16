@@ -5,17 +5,39 @@
 //   Item_InteractGround          EA 0x539dc0 — approche + confirmation (meme garde de portee, cheminement)
 //   Item_QtyDialog_OnLButtonUp   EA 0x5b1650 — clic OK du dialogue de quantite (bornage de la saisie)
 //
-// Contexte etabli par decompilation croisee (Game_OnWorldLeftClick EA 0x536690 ->
-// World_PickEntityAtCursor EA 0x538ab0) : la categorie de clic 4 (boucle sur le tableau
-// stride 88 a 0x1764d14, count g_NpcCount 0x1687220) route vers Item_InteractGround —
-// ceci CONFIRME que g_World.groundItems (GameState.h, dword_1764D14 stride 88) est la bonne
-// table cote reecriture, malgre les noms IDA trompeurs portes par ce bloc memoire
-// ("g_NpcRenderArray", "g_NpcCount", "Scene_RayHitNpcBox" — vraisemblablement mal etiquetes
-// par une passe de renommage automatique anterieure : la boucle NPC reelle du meme switch
-// utilise en fait dword_17AB534/Npc_Interact, EA 0x536a96, qui correspond a NpcEntity/
-// dword_17AB534 stride 152 tel que documente dans EntityManager.h). Aucune correction n'est
-// apportee aux headers partages (regle du projet) ; ce commentaire sert de repere pour une
-// future passe de renommage IDA.
+// /!\ BANDEAU CORRIGE — Passe 4 / vague W7, front "npc-array-unify". CE QUI SUIVAIT ICI ETAIT
+// FAUX ET S'EST REVELE INVERSE. L'ancien texte affirmait que les noms IDA du bloc 0x1764D14
+// ("g_NpcRenderArray", "g_NpcCount", "Scene_RayHitNpcBox") etaient "mal etiquetes par une passe
+// de renommage automatique" et que ce tableau portait les objets au sol. RE-PROUVE dans IDA
+// (W7) : c'est L'INVERSE — les noms IDA sont CORRECTS et c'est l'hypothese "objets au sol" de
+// ce module qui etait erronee.
+//
+// Verite terrain (re-prouvee par decompilation fraiche, cf. Game/GameState.h::NpcRenderEntry
+// pour la table d'offsets complete) :
+//   - 0x1764D14 (stride 88, borne g_NpcCount 0x1687220 = 100) = tableau de RENDU/CIBLAGE DES
+//     PNJ. ECRIVAIN UNIQUE : cGameData_LoadZoneNpcInfo 0x5578E0, qui y copie la table de PNJ
+//     STATIQUES par zone mZONENPCINFO 0x14AA930 (def mNPC, position, angle). AUCUN objet au sol
+//     n'y est jamais ecrit -- aucun handler reseau d'objet au sol ne le touche.
+//   - TOUS ses lecteurs le traitent en PNJ : Npc_DrawMesh 0x57FF00, Npc_RenderSlotTick 0x5803A0,
+//     Scene_RayHitNpcBox 0x541680, World_PickEntityAtCursor 0x538AB0 (boucle j), et la
+//     categorie de clic 4 route vers Npc_ApproachAndInteract @0x53723F (0x539DC0) puis
+//     UI_NpcWin_Open 0x5DB530 -- une fenetre de SERVICE PNJ, ce qui est coherent avec un PNJ,
+//     pas avec un ramassage d'objet.
+//   - Les sacs de butin sont AILLEURS : categorie de clic 6 -> Npc_Interact @0x536AB9 sur
+//     dword_17AB534 (stride 152, borne dword_1687228), via Scene_RayHitItemModel 0x5418B0
+//     @0x539129.
+//
+// CONSEQUENCE — MODULE SUSPECT, A REEVALUER (signale a l'orchestrateur, NON traite ici) : la
+// premisse de `FindNearestGroundItem` (chercher un objet au sol dans le pool 0x1764D14) est
+// FAUSSE : ce pool ne contient que des PNJ. Par consigne de fidelite ("pas de refactor
+// opportuniste", "un stub du binaire reste un stub"), W7 ne fait que CORRIGER LE TYPAGE et ce
+// bandeau ; la semantique du module est laissee INCHANGEE. Les EA 0x539EC0/0x539DC0/0x5B1650
+// cites ci-dessous restent valides en eux-memes -- c'est leur RATTACHEMENT a une notion
+// d'"objet au sol" qui est a rejuger.
+// TODO [ancre 0x538AB0 / 0x539DC0] : re-decompiler Item_PickupTarget/Item_InteractGround pour
+// trancher s'ils sont en realite les fonctions d'APPROCHE/INTERACTION PNJ (leurs noms IDA
+// "Item_*" seraient alors les faux amis, symetriquement a Npc_ApproachAndInteract 0x539DC0 qui
+// porte le MEME EA que "Item_InteractGround" ci-dessus -- indice fort d'un doublon de nommage).
 //
 // Voir Docs/TS2_GAMEPLAY_LOGIC.md, memoires ts2-entity-model / ts2-gameplay-logic.
 #pragma once
@@ -56,9 +78,17 @@ inline constexpr int64_t kWeightOverflowGuard = 2000000000; // EA 0x53f660
 
 // Cible de ramassage resolue.
 struct GroundPickupTarget {
-    int         index    = -1;      // indice dans g_World.groundItems (== a1 de Item_InteractGround)
-    GroundItem* item      = nullptr; // nullptr si aucune cible active trouvee
-    float       distance  = 0.0f;    // distance 3D au joueur local (Math_Dist3D, EA 0x53faa0)
+    // Indice dans g_World.npcRenderEntries (== a1 de Item_InteractGround). C'est un index de
+    // SLOT du pool 0x1764D14, stable et aligne sur mZONENPCINFO[i] depuis W7 (le pool a 100
+    // slots fixes, plus de compaction) -- c'est exactement l'index que le binaire envoie au
+    // serveur : Net_QueueRunTo(..., 4, index, ...) @0x539E78, index resolu par
+    // World_PickEntityAtCursor (`*a4 = j` @0x538E8F).
+    int             index    = -1;
+    // nullptr si aucun slot actif trouve. Retype par W7 : GroundItem -> NpcRenderEntry
+    // (Game/GameState.h) -- meme type, nom corrige (cf. bandeau de tete : ce pool porte des
+    // PNJ, pas des objets au sol).
+    NpcRenderEntry* item     = nullptr;
+    float           distance = 0.0f; // distance 3D au joueur local (Math_Dist3D, EA 0x53faa0)
 };
 
 // Trouve l'objet au sol actif le plus proche du joueur local (g_World.Self()).
@@ -76,7 +106,7 @@ GroundPickupTarget FindNearestGroundItem(GameWorld& world);
 // Reproduit fidelement la garde de portee d'Item_PickupTarget/Item_InteractGround :
 // distance 3D au joueur local <= 20.0 (EA 0x539eef / 0x539def, kPickupRange). Renvoie false
 // si `target` n'est pas active ou si la distance depasse le seuil.
-bool IsWithinPickupRange(const GameWorld& world, const GroundItem& target);
+bool IsWithinPickupRange(const GameWorld& world, const NpcRenderEntry& target);
 
 // Reproduit le motif de garde anti-depassement (Util_SumExceeds2Billion, EA 0x53f660)
 // applique a l'ajout d'un poids d'objet au poids d'inventaire courant. Renvoie true si le
@@ -86,7 +116,7 @@ bool WouldExceedWeightCapacity(int64_t currentWeight, int64_t addedItemWeight);
 // Issue de l'evaluation d'une tentative de ramassage.
 enum class PickupOutcome {
     Ok,                 // cible en portee et poids ok : pret a emettre la requete reseau
-    NoTarget,            // aucun objet au sol actif a proximite (aucune correspondance dans g_World.groundItems)
+    NoTarget,            // aucun slot actif a proximite (aucune correspondance dans g_World.npcRenderEntries)
     OutOfRange,          // hors du rayon de 20.0 (EA 0x539eef / 0x539def)
     WouldExceedWeight,   // depasserait la garde anti-overflow (EA 0x53f660)
 };

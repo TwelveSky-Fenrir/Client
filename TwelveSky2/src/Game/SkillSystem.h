@@ -20,7 +20,11 @@
 //   Skill_GetUpgradeCostTier    0x54F4D0  -> Skill_GetUpgradeCostTier
 //   Char_CalcRegen              0x4D67F0  -> Skill_CalcRegenPct
 //   (cast MP) Skill_CastStored  0x53E740  -> Skill_CalcRealMpCost / Skill_TryConsumeMp
-//   (learn)   Pkt_ItemAction G0 0x46A456  -> Skill_Learn (barre g_LearnedSkills 0x16742BC)
+//   (learn)   Pkt_ItemActionDispatch      -> Skill_Learn (barre g_LearnedSkills 0x16742BC)
+//             switch section @0x46A4B0       (ancre reelle : le switch 4 cases sur
+//                                             rec[+0x21C] ; l'ancienne mention
+//                                             « 0x46A456 » ne designait aucun EA de ce
+//                                             chemin — corrigee 2026-07-16)
 //
 // ---------------------------------------------------------------------------
 // DISPOSITION DE L'ARBRE DE COMPETENCES — CONFIRME_FIDELE (2026-07-14, re-
@@ -108,8 +112,29 @@ inline constexpr std::size_t kOffIconIndex   = 0x224; // idx137  : index d'icone
                                                         // donc FAUSSE ; corrigee pour lire ce champ.
 inline constexpr std::size_t kOffSection     = 0x21C; // idx135  : section/element -> plage de barre
 inline constexpr std::size_t kOffCategory    = 0x220; // idx136  : categorie (4/5 = posture)
-inline constexpr std::size_t kOffReqWeapon   = 0x228; // idx138  : type d'arme requis
-inline constexpr std::size_t kOffReqBranch   = 0x22C; // idx139  : classe/branche requise
+// ---------------------------------------------------------------------------
+// PREREQUIS DE CAST (0x228 / 0x22C) — ATTENTION, MISNOMER HISTORIQUE.
+// Les deux constantes kOffReqWeapon/kOffReqBranch ci-dessous ont des NOMS
+// INVERSES par rapport a la semantique reelle du binaire. Les OFFSETS sont bons,
+// seuls les noms sont permutes. Preuve (Player_CastSkill 0x53BC40) :
+//   +0x228 @0x53BD84 : `cmp [edx+228h],1` (1 = neutre) sinon `[eax+228h] - 2`
+//                      compare a g_LocalElementSecondary (0x1673198) -> c'est
+//                      l'ELEMENT requis, PAS l'arme. (msg 145 @0x53BDAE)
+//   +0x22C @0x53BDD2 : `cmp [eax+22Ch],1` (1 = neutre) sinon compare a
+//                      ITEM_INFO[+188] - 0Bh de l'arme equipee (dword_1673248)
+//                      -> c'est le TYPE D'ARME requis. (msg 146 @0x53BE20)
+// Game/GameDatabase.h:136-137 (field552 = req_element, field556 = req_weapon_type)
+// est CORRECT et fait autorite ; c'est bien ce fichier-ci qui portait l'erreur.
+// Les anciens noms sont CONSERVES parce que UI/SkillTreeWindow.cpp:599-600 les
+// consomme (fichier non possede par ce front) : les renommer casserait sa
+// compilation. Preferer les deux alias corrects pour tout NOUVEAU code.
+// A CABLER HORS PERIMETRE : UI/SkillTreeWindow.cpp:602 affiche « arme %d,
+// branche %d » avec les deux valeurs INVERSEES (libelles a permuter).
+inline constexpr std::size_t kOffReqWeapon   = 0x228; // idx138  : MISNOMER — c'est l'ELEMENT requis (cf. bandeau)
+inline constexpr std::size_t kOffReqBranch   = 0x22C; // idx139  : MISNOMER — c'est le TYPE D'ARME requis (cf. bandeau)
+// Alias corrects (memes offsets, semantique prouvee) — a utiliser desormais.
+inline constexpr std::size_t kOffReqElement    = 0x228; // idx138 : element requis (1 = neutre) [Player_CastSkill 0x53BD84]
+inline constexpr std::size_t kOffReqWeaponType = 0x22C; // idx139 : type d'arme requis (1 = neutre) [Player_CastSkill 0x53BDD2]
 inline constexpr std::size_t kOffSpCost      = 0x230; // idx140  : cout en points de competence
 inline constexpr std::size_t kOffLevelNorm   = 0x234; // idx141  : denominateur d'interpolation
 inline constexpr std::size_t kOffStatMin     = 0x240; // idx144  : stat_min[0..24] (stat#1 = cout MP)
@@ -180,6 +205,13 @@ struct SkillCastResult {
 
 // Acces 1-based au record SKILL_INFO (nul si id hors bornes ou record vide).
 const uint8_t* Skill_GetRecord(const DataTable& skillTbl, int skillId);
+
+// Acces 1-based au record ITEM_INFO (mirroir MobDb_GetEntry 0x4C3C00 : `base+436*(id-1)`,
+// nul si id<1, id>count, ou slot vide (dword0 == 0)). Etait un helper local a
+// SkillSystem.cpp ; EXPOSE (2026-07-16) pour Game/SkillCombat.cpp (garde d'arme de
+// Player_CastSkill 0x53BDD2, qui appelle MobDb_GetEntry(&mITEM, dword_1673248)) — evite
+// d'en dupliquer une enieme copie reduite.
+const uint8_t* Skill_ItemRecord(const DataTable& itemTbl, uint32_t itemId);
 
 // Nom de la competence (skillinfo::kOffName, C-string embarque dans le record -
 // PAS une entree StrTable). Chaine vide si rec == nullptr. Le buffer pointe DANS

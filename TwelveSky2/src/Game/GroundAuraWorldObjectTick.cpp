@@ -435,9 +435,9 @@ void ResetGroundItemTickExt(int groundItemIndex) {
 
 void TickGroundItemEffect(GameWorld& world, int groundItemIndex, float dt,
                            const GroundAuraWorldObjectTickHost& host) {
-    if (groundItemIndex < 0 || static_cast<size_t>(groundItemIndex) >= world.groundItems.size())
+    if (groundItemIndex < 0 || static_cast<size_t>(groundItemIndex) >= world.npcRenderEntries.size())
         return;
-    GroundItem& item = world.groundItems[static_cast<size_t>(groundItemIndex)];
+    NpcRenderEntry& item = world.npcRenderEntries[static_cast<size_t>(groundItemIndex)];
     if (!item.active) return; // garde de tête `*(this+1)` @0x5803AC (défensive, déjà filtré
                                // par l'appelant InGameTickFlow.cpp)
 

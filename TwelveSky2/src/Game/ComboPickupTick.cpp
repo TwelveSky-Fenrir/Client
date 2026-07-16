@@ -199,9 +199,14 @@ void Quest_UpdateMarkerTimer(QuestMarkerState& marker, const QuestProgressState&
 // ===========================================================================
 void Tips_RotateUpdate(TipsTable& tips, float gameTimeSec) {
     if (tips.Advance(gameTimeSec)) { // timer/index déjà fidèle (Game/StringTables.h)
-        // EA 0x4c18c6 : Msg_AppendChatLine(texte, 3, &String) — canal littéral "3" du
-        // binaire, cf. note de fidélité dans le header.
-        g_Client.msg.Chat(tips.Current(), 3u);
+        // EA 0x4c18c6 : Msg_AppendChatLine(g_ChatManager, texte, 3, &String). Le "3" est un
+        // INDEX de palette mFONTCOLOR (ColorTable_InitPalette 0x4C1D60), PAS un ARGB : le
+        // binaire le stocke brut et le résout au DESSIN via ColorTable_GetColor 0x4C1FE0
+        // (colors[3] = -256 = 0xFFFFFF00, jaune opaque). MessageLog::Chat prend un ARGB
+        // (architecture préexistante, ~500 sites d'appel hors périmètre) : on résout donc
+        // ici, chez le producteur (déviation du point de résolution documentée, même pixel).
+        // Sans ce fix, passer 3 comme ARGB donnait 0x00000003 (alpha 0) -> bandeau invisible.
+        g_Client.msg.Chat(tips.Current(), g_Strings.colors.Get(3)); // 0x4C1FE0 : Get(3) -> 0xFFFFFF00
     }
 }
 

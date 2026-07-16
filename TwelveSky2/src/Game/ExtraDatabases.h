@@ -99,19 +99,44 @@ struct QuestDefRecord {
     uint32_t id;                 // +0    1..1000, DOIT valoir index+1 ; ex-VeryOldClient: qIndex (CONFIRMED)
     char     name[51];           // +4    titre de la quete (ex. rec[0] = "[Intro] Banker Bai & Beggar Xiao") ; ex-VeryOldClient: qSubject[51] (CONFIRMED, cle de vacuite)
     uint8_t  _pad55[1];          // +55   reserve (alignement)
-    uint32_t fieldA;              // +56   (1..4)   role inconnu — peut-etre le type de quete
-    uint32_t fieldB;              // +60   (1..1000) role inconnu
-    uint32_t levelReq;            // +64   (1..145) — correlation forte avec LEVEL_INFO : niveau requis ; ex-VeryOldClient: qLevel (PLAUSIBLE, corr. de borne ; aucun accesseur observe)
+    // +56/+60 = LA CLE COMPOSITE de la table (RESOLU — NpcTbl_FindByTypeAndId 0x4C8340) :
+    // le binaire ne cherche JAMAIS une quete par index de ligne, il scanne en comparant
+    // `rec[56] == element0 + 1` (le +1 est pose sur l'ARGUMENT, EA 0x4C839E ; cmp 0x4C83A1)
+    // ET `rec[60] == questId` (cmp 0x4C83BA). Preuve par les donnees (005_00006.IMG, 688
+    // lignes non vides) : histogramme de +56 = {1:207, 2:207, 3:207, 4:67} (= les 4 elements)
+    // et 678 lignes sur 688 ont +60 != id — l'index de ligne N'EST PAS la cle.
+    uint32_t fieldA;              // +56   (1..4)    element0 + 1 (element/faction du joueur, 0-based +1)
+    uint32_t fieldB;              // +60   (1..1000) id de quete AU SEIN de l'element (PAS l'id de ligne)
+    // +64 CONSOMME (RESOLU) : Quest_CheckObjectiveState 0x50FF10, branche « implicite »
+    // (EA 0x50FF80/0x50FF86) -> `cmp g_SelfLevel[base+0xA038], [rec+0x40]` puis `jge` : porte
+    // de NIVEAU de la quete SUIVANTE. Donnees intro coherentes (1,1,1,1,2,4,6,8,10,12).
+    uint32_t levelReq;            // +64   (1..145)  niveau requis ; ex-VeryOldClient: qLevel (CONFIRMED, consomme @0x50FF86)
     uint32_t fieldD;              // +68   (1..2)   role inconnu — drapeau (repetable ?)
-    uint32_t fieldE;              // +72   (1..8)   role inconnu — categorie/chaine de quetes ?
+    // +72 RESOLU : Pkt_SmithUpgradeResult 0x48E7D0 @0x48E929 lit `[rec+0x48]` et l'ecrit dans
+    // g_QuestObjType 0x16745FC ; Quest_CheckObjectiveState 0x50FF10 @0x50FFFC en fait le
+    // selecteur de son switch a 8 cas. Donnees : {1:227,2:57,3:38,4:69,5:127,6:7,7:88,8:75}.
+    uint32_t fieldE;              // +72   (1..8)    type d'objectif (selecteur du switch 0x50FFFC)
     uint32_t fieldF;              // +76   (0..200) role inconnu
     uint8_t  _unk80[12];          // +80   12 o NON couverts par le validateur (aucune garde observee)
-    uint32_t fieldG;              // +92   (1..500) role inconnu
-    uint32_t fieldH[5];           // +96   5x (0..500) role inconnu
-    uint32_t fieldI;              // +116  (1..500) role inconnu
-    uint8_t  _unk120[16];         // +120  16 o NON couverts par le validateur
-    // 3 paires (categorie 1..6, valeur <=1e8) : hypothese = table de recompenses (item/or/exp x montant).
-    // ex-VeryOldClient: qReward[3][2] (type 1..6 / valeur) (PLAUSIBLE, meme forme).
+    uint32_t fieldG;              // +92   (1..500) resultat/id « variante A » (v10[23], Quest_GetObjectiveResult 0x510520)
+    uint32_t fieldH[5];           // +96   5x (0..500) [0] = resultat/id « variante B » (v10[24]) ; [1..4] role inconnu
+    uint32_t fieldI;              // +116  (1..500) resultat/id « objectif rempli » (v10[29])
+    // +120/+124 RESOLUS — le commentaire « 16 o NON couverts » etait FAUX (non valide par le
+    // validateur != non consomme). Double preuve :
+    //  (a) IDA : Pkt_SmithUpgradeResult @0x48E881/0x48E884 lit `[rec+0x78]` (=+120) et l'ecrit
+    //      comme ITEM ID dans g_InvMain ; Quest_CheckObjectiveState compare +120 (cible) et
+    //      +124 (quantite requise, EA 0x51002A : `progress >= [v10+124]` -> etat 3 « rempli »).
+    //  (b) Donnees : « [Intro] Kill one Goblin! » +120=1 +124=1 ; « Kill 5 Dragon Priests! »
+    //      +120=2 +124=5 ; « Kill 10 Killer Fish! » +120=3 +124=10. Correlation parfaite avec
+    //      le switch : les types 2/3/4/8 (jamais +124 lu) ont +124==0 ; le type 7 (jamais +120
+    //      lu) a +120==0.
+    uint32_t objectiveTarget;     // +120  cible de l'objectif (id mob/item/pnj selon le type +72)
+    uint32_t objectiveRequired;   // +124  quantite requise / 2e cible (phase 2 du type 6)
+    uint8_t  _gap128[8];          // +128  NON prouve : 0 sur les 688 lignes non vides, aucun lecteur observe
+    // 3 paires (categorie 1..6, valeur <=1e8) : table de recompenses (item/or/exp x montant).
+    // CONFIRME par Quest_GetRewardItemId 0x510A10 : boucle `i<3` sur `[rec + 8*i + 0x88]`
+    // (=+136, categorie) et `[rec + 8*i + 0x8C]` (=+140, valeur) ; categorie==6 => valeur = id
+    // d'item. ex-VeryOldClient: qReward[3][2] (type 1..6 / valeur) (CONFIRMED, meme forme).
     struct { uint32_t category; uint32_t value; } rewards[3]; // +136
     uint32_t fieldK;              // +160  (0..1000) role inconnu
     // 10 blocs de dialogue (correspond au commentaire desassemblage "10 blocs de dialogue") :
@@ -149,8 +174,27 @@ bool LoadExtraDatabases(const std::string& gameDataDir);
 // Accesseur type NpcDefRecord. `npcId` 1-based (1..500) ; nullptr hors bornes OU slot vide (id==0).
 const NpcDefRecord* GetNpcDefRecord(uint32_t npcId);
 
-// Accesseur type QuestDefRecord. `questId` 1-based (1..1000) ; nullptr hors bornes OU slot vide
-// (name vide — cf. semantique differente de l'empty-check pour cette table).
+// Accesseur type QuestDefRecord PAR INDEX DE LIGNE. `questId` 1-based (1..1000) ; nullptr hors
+// bornes OU slot vide (name vide — cf. semantique differente de l'empty-check pour cette table).
+// ATTENTION — CE N'EST PAS le mode d'acces du binaire : aucune fonction de TwelveSky2.exe ne
+// resout une quete par index de ligne. Le seul resolveur du binaire est
+// NpcTbl_FindByTypeAndId 0x4C8340 = un scan composite (element, id) -> voir
+// FindQuestDefByElementAndId ci-dessous. Indexer par id est REFUTE par l'asset lui-meme : sur
+// les 688 lignes non vides de 005_00006.IMG, 678 ont +60 != id (seules les 10 premieres, celles
+// de l'element 1, coincident). Conserve pour les appelants historiques / le debogage ; tout
+// nouveau code doit utiliser FindQuestDefByElementAndId.
 const QuestDefRecord* GetQuestDefRecord(uint32_t questId);
+
+// NpcTbl_FindByTypeAndId 0x4C8340 — LE resolveur de la table mQUEST (le binaire l'appelle
+// toujours avec `ecx = offset mQUEST 0x8E71E4`). Scan lineaire composite sur g_ExtraDb.quest ;
+// retient la PREMIERE ligne verifiant, DANS CET ORDRE :
+//   (a) nom non vide        — Crt_Strcmp(rec+4, "") != 0   (push String 0x7EC95F @0x4C8365,
+//                             call Crt_Strcmp 0x75CF20 @0x4C837E)
+//   (b) rec[56] == element0 + 1                            (add edx,1 @0x4C839E ; cmp @0x4C83A1)
+//   (c) rec[60] == questId                                 (cmp @0x4C83BA ; jnz @0x4C83BD)
+// Renvoie `base + 8444*i` @0x4C83CE, ou nullptr @0x4C83D4 (aucune ligne).
+// `element0` = element local 0-based (g_LocalElement 0x1673194 == g_World.self.element) ; le
+// +1 est applique A L'ARGUMENT, pas au champ.
+const QuestDefRecord* FindQuestDefByElementAndId(int element0, int questId);
 
 } // namespace ts2::game

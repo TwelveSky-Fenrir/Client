@@ -23,33 +23,55 @@
 //   - reclic sur la MÊME cellule déjà sélectionnée
 //       -> désélection (WarehouseState::CancelPendingMove)
 //   - reclic sur une AUTRE cellule de la grille (vide ou occupée)
-//       -> WarehouseState::SwapCells (échange local, « tri ») PUIS envoi réseau
-//          RÉEL de la grille via SendGridCommit(kind=5), si Bind() a été appelé.
+//       -> WarehouseState::SwapCells (échange local, « tri »). AUCUN PAQUET.
 //   - clic sur le bouton « Retirer -> Sac » (actif seulement si une cellule est
-//     sélectionnée) -> WarehouseState::CommitCellToInventory (dépose l'objet
-//     dans l'inventaire général g_Client.inv, vide la cellule entrepôt) PUIS
-//     SendGridCommit(kind=4).
+//     sélectionnée) -> WarehouseState::CommitCellToInventory. AUCUN PAQUET.
+//   - clic sur « Valider » -> Net_SendPacket_Op32(nc, 1), INCONDITIONNEL.
+//   - fermeture -> Net_SendPacket_Op32(nc, 1) (chemin UI_StorageWin_CommitGrid).
 //
-// Réseau : Bind(NetClient*) attache (optionnellement) la session réseau, à
-// l'image de UI/ChatWindow.cpp (net_ nullable, no-op tant que non lié — AUCUN
-// crash, juste un déplacement local sans confirmation serveur). Le builder
-// câblé est Net_SendPacket_Op31 (Net/SendPackets.h) : SEUL builder sortant dont
-// la charge utile, `int8_t kind + 1232 o`, correspond EXACTEMENT à
-// sizeof(WarehouseGrid) ; opcode sortant 0x1f, cf. Net/Opcodes.h « Op31 = 0x1f,
-// // selecteur + blob de 1232 o ». kind=5 (tri, UI_StorageWin_Open case 5,
-// EA 0x5d2c32) / kind=4 (retrait, case 4) d'après le layout documenté en tête
-// de Game/WarehouseSystem.h.
-// NB intégration : Bind() n'est appelé nulle part dans la composition actuelle
-// (App/SceneManager, hors périmètre de cette mission — cf. consigne "ne pas
-// toucher Scene/SceneManager.*"). UI/GameWindows.h expose déjà l'accesseur
-// `WarehouseWindow& GameWindows::Warehouse()` : il suffira d'ajouter, côté
-// SceneManager (là où windows_->Init(...) est appelé, avec net_ déjà membre),
-// `windows_->Warehouse().Bind(&net_->Client());` pour finaliser le branchement
-// live — un seul appel, aucune modification de signature nécessaire ici.
+// ===========================================================================
+// RÉSEAU — RÉÉCRIT le 2026-07-16 (vague W6) sur preuve IDA. L'état précédent
+// était FAUX sur trois points, tous corrigés ici :
+//
+//  1. PAQUET INVENTÉ. L'ancien code émettait Net_SendPacket_Op31 avec kind=5
+//     (« tri ») / kind=4 (« retrait »). Le balayage de UI_StorageWin_OnLUp
+//     0x5d5400 ne trouve QUE DEUX sites Op31 dans tout le binaire, et aucun
+//     n'est l'entrepôt : EA 0x5d576c = case 1 (mon étal) sélecteur 1, et
+//     EA 0x5d5dd6 = case 5 (boutique-joueur) sélecteur 2. Les sélecteurs 4 et 5
+//     d'Op31 N'EXISTENT NULLE PART. L'entrepôt (mode 2) n'émet JAMAIS Op31.
+//
+//  2. ÉMISSION PAR ACTION. Le binaire n'émet RIEN pour la manipulation de la
+//     grille : UI_StorageWin_OnLDown 0x5d4240 et UI_StorageWin_OnKey 0x5d6330 ne
+//     contiennent aucun `call Net_Send*`. Glisser-déposer, échange de cellule et
+//     saisie de quantité sont du STAGING 100 % LOCAL. Seuls « Valider » et
+//     « Fermer » émettent, et ils émettent Net_SendPacket_Op32(&g_AutoPlayMgr, 1) :
+//       - Valider (verrou +24, sprite unk_901064 @ (x+167, y+411)) : EA 0x5d5947,
+//         INCONDITIONNEL — aucune garde morph/verrou, aucun verrou posé.
+//       - Fermer (verrou +12, sprite unk_8F3798 @ (x+8, y+6)) : EA 0x5d57ce ->
+//         UI_StorageWin_CommitGrid(this) 0x5d2f70, dont le case 2 (= ENTREPÔT)
+//         déverse la grille 5x5 puis émet Op32(1) à l'EA 0x5d373f.
+//     Pagination (verrous +16/+20) : purement locale (page 0..4, EA 0x5d585b /
+//     0x5d58dc) — les « onglets » d'entrepôt n'existent pas ; les onglets (+1328)
+//     et le déplacement d'or (Net_SendOp110, EA 0x5d5ea3) appartiennent au
+//     mode 5 = BOUTIQUE-JOUEUR, pas à l'entrepôt.
+//
+//  3. CODE MORT. L'ancien SendGridCommit() commençait par `if (!net_) return;`
+//     alors que Bind() n'était appelé nulle part -> net_ TOUJOURS nul -> aucune
+//     émission possible. Le binaire adresse g_NetClient 0x8156A0 en GLOBAL (les
+//     234 builders le lisent directement, jamais en paramètre). On restaure ce
+//     pattern via net::GlobalNetClient() (Net/NetClient.h:67-68), renseigné par
+//     ConnectGameServer — même idiome que Game/MapWarp.cpp:86. Bind()/net_ sont
+//     donc SUPPRIMÉS (aucun appelant : vérifié sur tout l'arbre).
+//
+// Analogue de a1[2] : le binaire garde l'entrée de UI_StorageWin_OnLUp par
+// `if (!*(this+8)) return 0;` (dword_1822998, EA 0x5d540d) et le corps de
+// UI_StorageWin_CommitGrid par `if (a1[2])` (EA 0x5d2f7e) — c'est le drapeau
+// « fenêtre active ». On prend bOpen_ (Dialog) comme analogue VIVANT de ce
+// drapeau : mêmes rôle et emplacement dans le flux.
+// ===========================================================================
 //
 // Règle du projet : ce fichier n'édite AUCUN header existant ; il inclut
-// UI/UIManager.h, Game/WarehouseSystem.h, Game/ClientRuntime.h et Net/NetClient.h
-// (forward-déclaré seulement, cf. pattern ChatWindow) en lecture seule.
+// UI/UIManager.h, Game/WarehouseSystem.h et Game/ClientRuntime.h en lecture seule.
 #pragma once
 #include "UI/UIManager.h"
 #include "Game/WarehouseSystem.h"
@@ -61,18 +83,11 @@
 #include <string>
 #include <unordered_map>
 
-namespace ts2::net { struct NetClient; }
-
 namespace ts2::ui {
 
 class WarehouseWindow : public Dialog {
 public:
     WarehouseWindow();
-
-    // Attache la session réseau (nullable — cf. commentaire de tête de fichier).
-    // Pattern identique à UI/ChatWindow.cpp::Bind : pas d'inclusion lourde
-    // Net/NetClient.h ici (forward-decl uniquement), le .cpp fait l'inclusion.
-    void Bind(net::NetClient* nc) { net_ = nc; }
 
     // Cache GPU d'icônes PARTAGÉ (mutualisation mémoire, cf. Gfx/IconTextureCache.h) :
     // injecté par UI/GameWindows.cpp, même instance que InventoryWindow/EnchantWindow/
@@ -98,6 +113,10 @@ private:
     Rect PanelRect() const;
     Rect CloseButtonRect() const;
     Rect WithdrawButtonRect() const;
+    // Bouton « Valider » = verrou +24 du binaire (sprite unk_901064 @ (x+167, y+411),
+    // UI_StorageWin_OnLUp case 2, EA 0x5d592d) : SEULE émission explicite de la
+    // fenêtre entrepôt -> Net_SendPacket_Op32(nc, 1) (EA 0x5d5947).
+    Rect ValidateButtonRect() const;
     Rect CellRect(int row, int col) const;
     bool CellAt(int mx, int my, int& outRow, int& outCol) const;
     bool PointInPanel(int mx, int my) const;
@@ -112,12 +131,15 @@ private:
 
     void HandleCellClick(int row, int col);
     void HandleWithdrawClick();
+    void HandleValidateClick();
 
-    // Envoie la grille entrepôt courante au serveur (Net_SendPacket_Op31, cf.
-    // commentaire de tête de fichier). No-op silencieux si net_ n'est pas lié
-    // (Bind() jamais appelé) — le déplacement reste alors purement local,
-    // exactement comme avant le câblage réseau.
-    void SendGridCommit(int8_t kind);
+    // Net_SendPacket_Op32(&g_AutoPlayMgr, 1) — le SEUL paquet de la fenêtre
+    // entrepôt (opcode 0x20, 1 champ char émis sur 4 octets LE, total 13).
+    // Émis par le bouton « Valider » (EA 0x5d5947) et par la fermeture via
+    // UI_StorageWin_CommitGrid case 2 (EA 0x5d373f) — INCONDITIONNEL dans les
+    // deux cas. Cible : net::GlobalNetClient() (g_NetClient 0x8156A0 global),
+    // cf. bandeau de tête de fichier.
+    void SendStorageCommit();
 
     static std::string CellLabel(const game::WarehouseItemCell& cell);
 
@@ -140,8 +162,11 @@ private:
     static constexpr int kHeaderH   = 26;
     static constexpr int kFooterH   = 58;
     static constexpr int kCloseSize = 18;
-    static constexpr int kBtnW      = 150;
+    // Deux boutons côte à côte dans le pied de fenêtre (« Retirer -> Sac » et
+    // « Valider ») : 2*122 + 8 de gouttière = 252 <= kPanelW - 2*kGridPad = 256.
+    static constexpr int kBtnW      = 122;
     static constexpr int kBtnH      = 24;
+    static constexpr int kBtnGap    = 8;
 
     static constexpr int kPanelW = kGridPad * 2
         + game::WarehouseGrid::kCols * kCellSize
@@ -167,8 +192,6 @@ private:
     static constexpr D3DCOLOR kColBtnBgOff  = 0xFF262629u; // bouton désactivé
 
     std::string statusText_; // dernier résultat d'action (échange/retrait), affiché en pied de fenêtre
-
-    net::NetClient* net_ = nullptr; // session réseau optionnelle (cf. Bind())
 };
 
 } // namespace ts2::ui

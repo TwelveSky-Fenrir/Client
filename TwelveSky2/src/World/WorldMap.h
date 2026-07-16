@@ -324,6 +324,62 @@ bool RaycastNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
 bool SlideMoveGround(const asset::CollisionMesh& mesh, const float from[3],
                      const float to[3], float speed, float dt, float outPos[3]);
 
+// ===========================================================================
+// WG-02 — Collision CAMÉRA (Camera_UpdateCollision 0x538580). Chaîne de sweep de sphère
+// contre le quadtree du TERRAIN .WG (slot 0 = g_GameWorld lui-même, prouvé
+// @0x5387b9 `mov ecx, offset g_GameWorld`). Aucune de ces briques n'existait côté C++ ;
+// ce sont des fonctions pures byte-fidèles (ancre @EA sur chaque def dans WorldMap.cpp).
+// ===========================================================================
+// Collide_AABBOverlap_0 0x6a0600 — recouvrement AABB (boxA=[amin,amax]) vs (boxB=[bmin,bmax]).
+bool AABBOverlap(const float amin[3], const float amax[3],
+                 const float bmin[3], const float bmax[3]);
+// Collide_ProjectTriOnAxis 0x69f9c0 — projette les 3 sommets du tri (9 floats v0,v1,v2) sur
+// `axis`, sort [outMin,outMax].
+void ProjectTriOnAxis(const float axis[3], const float tri9[9], float& outMin, float& outMax);
+// Collide_ProjectBoxOnAxis 0x69fa80 — projette l'OBB (centre, matrice d'axes 3x3, demi-extents)
+// sur `axis`, sort [outMin,outMax].
+void ProjectBoxOnAxis(const float axis[3], const float center[3], const float axes9[9],
+                      const float half[3], float& outMin, float& outMax);
+// Collide_TriAABB 0x6a00e0 — test SAT triangle vs AABB (13 axes). Les args a1/a2 d'origine
+// (g_GfxRenderer, tri int) sont scratch/contexte NON utilisés pour la géométrie.
+bool TriAABB(const asset::CollisionFace& face, const float aabbMin[3], const float aabbMax[3]);
+// MapColl_SweepSphereNearest 0x696ad0 — sweep sphère/rayon épais (radius) [from->to] vs le
+// sous-arbre `nodeIndex`, impact le plus proche. Récursif (4 enfants), garde `radius+1 > len`.
+bool SweepSphereNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
+                        const float from[3], const float to[3], float radius, float outHit[3]);
+// Terrain_SweepSphereSegment 0x69a1f0 — descend les 4 enfants de la racine, impact le plus
+// proche. `mesh` = maille du .WG (TerrainMesh()). true si le segment croise le terrain.
+bool SweepSphereSegment(const asset::CollisionMesh& mesh, const float from[3], const float to[3],
+                        float radius, float outHit[3]);
+// World_IsPointBlocked 0x540da0 — bloqué si (a) pas de sol Main sous plafond p.y+20, OU (b) un
+// sol WJ existe au-dessus du sol Main. `wj==nullptr` => 2e test faux (dégradation documentée).
+bool IsPointBlocked(const asset::CollisionMesh& main, const asset::CollisionMesh* wj,
+                    const float p[3]);
+
+// ===========================================================================
+// WG-03 — Picking écran->terrain (Terrain_PickRayScreen 0x699a80). Unprojection écran->rayon
+// monde + descente quadtree. Module LEAF : les paramètres caméra sont pris PAR VALEUR (aucun
+// include Gfx/d3dx9) ; l'unprojection D3DXVec3TransformNormal est écrite à la main.
+// Correspondance g_GfxRenderer (report §0.3) : eye = +792 ; invView (16 floats) = +892 ;
+// proj11 = +728 ; proj22 = +748 ; screenW = +648 ; screenH = +652.
+// ===========================================================================
+struct ScreenPickCamera {
+    float eye[3];        // g_CameraPos/flt_800134/flt_800138 (0x800130..)
+    float invView[16];   // unk_800194 = Matrix_Inverse(view) — 4x4 row-major
+    float proj11;        // flt_8000F0 = proj._11
+    float proj22;        // flt_800104 = proj._22
+    int   screenW;       // dword_8000A0
+    int   screenH;       // dword_8000A4
+};
+// Construit origine (=œil) + direction du rayon écran (dénominateurs W-1/H-1, z=1 AVANT
+// transform, NON renormalisé après). Ancre 0x699ae7..0x699b40. Renvoie toujours true.
+bool BuildScreenRay(const ScreenPickCamera& cam, int sx, int sy, float outOrigin[3],
+                    float outDir[3]);
+// Terrain_PickRayScreen 0x699a80 : gate AABB racine (Collide_SegmentAABB) puis descente des 4
+// enfants (MapColl_RaycastNearest), impact le plus proche par distance euclidienne à l'œil.
+bool PickRayScreen(const asset::CollisionMesh& mesh, const ScreenPickCamera& cam,
+                   int sx, int sy, uint32_t& outFaceIndex, float outHit[3], bool twoSide);
+
 } // namespace collision
 
 } // namespace ts2::world

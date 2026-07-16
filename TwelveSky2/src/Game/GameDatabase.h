@@ -80,13 +80,34 @@ struct ItemInfo {
     uint32_t field200;       // +200 (<= 10000) ; ex-VeryOldClient: iAddDataNumber3D (PLAUSIBLE)
     uint32_t itemLevel;      // +204 niveau item (1..145 ; seuils scaling 45/100/113/146) ; ex-VeryOldClient: iLevel (CONFIRMED)
     uint32_t field208;       // +208 (<= 12)  ; ex-VeryOldClient: iMartialLevel ? (PLAUSIBLE, non tranche Rosetta)
-    uint32_t field212;       // +212 (1..4)
+    // +212 : FACTION requise. Garde d'eligibilite @0x64ECF5 (Item_MeetsEquipRequirement
+    // 0x64ECD0) : `if (a2[53] != 1 && a2[53] - 2 != g_LocalElementSecondary) return 0` —
+    // la valeur 1 = « toutes factions » (passe-partout), sinon (valeur - 2) doit egaler
+    // g_LocalElementSecondary 0x1673198 (= g_World.self.elementSecondary).
+    uint32_t field212;       // +212 (1..4) faction requise ; 1 = toutes [0x64ECF5]
     uint32_t subtype;        // +216 sous-type (1..14 ; 2/4/5/6/7/9=classe1, 11..14=classe2 gemmes) ; ex-VeryOldClient: iEquipInfo[2] (CONFIRMED, code slot d'equip)
-    uint32_t field220;       // +220 (1..2 000 000 000) ; ex-VeryOldClient: iBuyCost (CONFIRMED, prix d'achat unitaire ; UI_NpcShop_OnRDown_Buy 0x5E5000, map==291 => x0.9)
+    // +220 : PRIX d'achat dans la monnaie secondaire, PAS en or. Prouve par
+    // UI_NpcShop_OnRDown_Buy 0x5E5000 : `mov ecx, ds:g_InvWeight / cmp ecx, [ebp+var_20] /
+    // jge` @0x5e548e-0x5e5497 -> compare a g_InvWeight 0x16732AC (misnomer IDB : ce global
+    // est une MONNAIE, cf. Net/GameHandlers_Misc.cpp:314/361 qui y ecrit `p.money` et en
+    // retire 100000000). Modificateurs prouves au meme site : x0.9 si g_SelfMorphNpcId==291
+    // (ftol(v32[55] * 0.9)), et x99 (quantite) si typeCode(+188)==2 (empilable). Echec ->
+    // StrTable005_Get(0xD6=214). ex-VeryOldClient: iBuyCost (CONFIRMED role = prix).
+    uint32_t field220;       // +220 (1..2 000 000 000) prix en monnaie secondaire [0x5e5497]
     uint32_t field224;       // +224 (<= 2 000 000 000)
-    uint32_t field228;       // +228 (<= 2 000 000 000) ; prerequis de stat (compare a dword_1673180) ; correspondant VeryOld non tranche (PLAUSIBLE)
-    uint32_t field232;       // +232 (1..145) ; ex-VeryOldClient: iLevelLimit / iMartialLevelLimit (PLAUSIBLE, 2 champs VeryOld, mapping 1:1 non prouve)
-    uint32_t field236;       // +236 (<= 12)
+    // +228 : PRIX d'achat EN OR (et non un prerequis de stat — correction W7). Prouve par
+    // UI_NpcShop_OnRDown_Buy : `mov ecx, ds:g_Currency / cmp ecx, [eax+0E4h] / jge`
+    // @0x5e54c2-0x5e54ce -> compare a g_Currency 0x1673180 (= g_World.self.currency, affiche
+    // « Or : %d » par UI/GameHud.cpp). Sans remise et sans x99, contrairement a +220.
+    // Echec -> StrTable005_Get(0x586=1414).
+    uint32_t field228;       // +228 (<= 2 000 000 000) prix en or [0x5e54ce]
+    // +232/+236 : EXIGENCE D'EQUIPEMENT SOMMEE (la seule prouvee). Garde @0x64ED49 :
+    // `if (a2[59] + a2[58] > g_SelfLevelBonus + g_SelfLevel) return 0` — soit
+    // field236 + field232 > self.levelBonus + self.level => refus. Les deux termes sont
+    // homogenes aux deux globals : +232 (1..145) = niveau, +236 (<=12) = palier de
+    // renaissance. NB : ce n'est PAS itemLevel (+204), qui ne sert qu'au scaling de stats.
+    uint32_t field232;       // +232 (1..145) niveau requis (terme 1/2) [0x64ED49]
+    uint32_t field236;       // +236 (<= 12) palier renaissance requis (terme 2/2) [0x64ED49]
     uint32_t flags[11];      // +240 11 drapeaux (chacun 1..2) ; ex-VeryOldClient: famille iCheck* (~13 flags drop/sell/trade/...) (PLAUSIBLE, corr. de FAMILLE, comptes 11 vs 13 divergents)
     uint32_t skillFlag;      // +284 1=normal, 2=skill, 3=upgrade (scalingMode ; Equip_ComputeGemSetBonus 0x54E420 ==2) ; aucun champ VeryOld aligne (PLAUSIBLE role IDA)
     uint32_t field288;       // +288 (< 366)
@@ -235,6 +256,27 @@ bool LoadGameDatabases(const std::string& gameDataDir);
 // Accesseur type LEVEL_INFO. `level` 1-based (1..145) ; nullptr hors bornes.
 // (le client indexe record[level-1].)
 const LevelInfo* GetLevelInfo(int level);
+
+// Sous-table EXP de RENAISSANCE — 12 dwords accoles au manager mLEVEL 0x8E7208, apres
+// les 145 enregistrements LEVEL_INFO (145 x 44 = 6380 o = 0x18EC : la sous-table commence
+// donc pile a mLEVEL+0x18EC, soit le dword d'indice 1595).
+//
+// Ces 12 valeurs ne sont PAS chargees depuis 005_00001.IMG : elles sont CABLEES EN DUR dans
+// le binaire par maybe_LevelTable_InitFloats 0x4C2380 (12 `mov dword ptr [reg+0x18EC..0x1918],
+// imm32`, EA 0x4c238a..0x4c2419), elle-meme appelee uniquement par l'initialiseur statique CRT
+// CrtInit_LevelTableThunk 0x7A5260 (xref unique). Les recopier en dur est donc FIDELE.
+//
+// PIEGE : le commentaire IDB « 12 float scaling constants » est FAUX — ce sont des int32.
+// Preuve dure dans UI_GameHud_Render : `fidiv [ebp+var_850]` @0x67A64F (barre) et @0x67A696
+// (texte) ; FIDIV n'accepte QUE un operande memoire entier (m32int), et var_850 recoit
+// directement le retour de l'accesseur (@0x67a624 call -> @0x67a629 mov [ebp+var_850], eax).
+// Corroboration : les 12 valeurs (962M..1481M) tombent sous le plafond d'EXP 0x77359400
+// = 2 000 000 000 utilise @0x67a5ea ; lues en float elles vaudraient 2e-4 .. 8.8e14.
+//
+// `tier` = palier de renaissance (g_SelfLevelBonus 0x16731AC). Reproduit l'accesseur
+// 0x4C2BF0 : garde `tier >= 1 && tier <= 12` (@0x4c2bf7 jl / @0x4c2c01 jle) sinon 0 ;
+// lecture `[this + 4*tier + 0x18E8]` (@0x4c2c0d) — d'ou tier=1 -> +0x18EC.
+int32_t GetRebirthExpSpan(int tier);
 
 // Accesseur type ITEM_INFO. `itemId` 1-based ; index = itemId-1 (cf. MobDb_GetEntry 0x4C3C00,
 // `base+436*(id-1)`, garde id!=0). ex-VeryOldClient: ITEM::ReturnDataAddr (CONFIRMED, logique identique).

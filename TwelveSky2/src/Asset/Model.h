@@ -30,12 +30,31 @@ namespace ts2::asset {
 // on conserve donc le flux zlib brut (exploitable à la demande via Zlib).
 // ex-VeryOldClient: TEXTURE_FOR_GXD.Load (CONFIRMED) — image + 2 u32 finaux =
 // processMode/alphaMode ; côté cible le flux zlib reste brut (aucun GXCW/Load2-DXT).
+//
+// TRAILER 8 o (Passe 4 / W7, front sobject-material — gap SOBJ-02) : le bloc décompressé vaut
+// `[DDS: ddsSize o][u32 processMode][u32 alphaMode]` (rawSize == ddsSize + 8). Tex_ReadPacked
+// 0x417740 lit CES DEUX u32 depuis la queue du bloc et les range dans la struct texture 56 o :
+//     a1[10] = *(_DWORD *)&Heap[lpMema];      // @0x4178d6 -> matériau +40  (processMode)
+//     a1[11] = *(_DWORD *)&Heap[lpMema + 4];  // @0x4178dd -> matériau +44  (alphaMode)
+//   (lpMema = a1[1] = ddsSize @0x41788e ; pTexture = a1[13] -> +52 @0x41795d)
+// Stride 56 recoupé : `v51 = 56 * *v34` @0x40c29c, `v37 += 56` @0x40c2d0, `ii += 56` @0x40c2e4,
+// `v61 = *(a2+884) + 56*v15` @0x40cb09.
+// Le champ +44 EST le blendMode consommé par le rendu : `v16 = *(_DWORD *)(v61 + 44)`
+// @0x40cb1a / @0x40cb2c (filtre de passe) et @0x40d953 (restauration des états).
 struct SObjectTexture {
     bool     present    = false; // ddsSize==0 => texture absente
     uint32_t ddsSize    = 0;     // a2[1] : taille DDS
     uint32_t rawSize    = 0;     // taille décompressée (DDS + 8)
     uint32_t packedSize = 0;     // octets zlib
     std::vector<uint8_t> compressed; // flux zlib brut (packedSize octets)
+
+    // --- Trailer 8 o (Tex_ReadPacked 0x417740) ---
+    // ATTENTION : `processMode` n'a AUCUN LECTEUR PROUVÉ dans le chemin de dessin skinné
+    // (Model_DrawSkinnedSubset 0x40CA40 ne lit que +44). Il est exposé parce que le binaire le
+    // décode et le stocke — surtout PAS parce qu'on lui connaîtrait un usage. Ne rien en déduire.
+    uint32_t processMode = 0;  // matériau +40 — a1[10] @0x4178d6
+    uint32_t alphaMode   = 0;  // matériau +44 — a1[11] @0x4178dd — == blendMode (0/1/2)
+    bool     trailerDecoded = false; // true si l'inflate du bloc a permis de lire les 8 o de queue
 };
 
 // Un "subset" de rendu d'un mesh (FVF skinné). Les tampons sont conservés

@@ -4,11 +4,13 @@
 // Ordre d'inclusion : Net/ EN PREMIER (NetClient.h tire <winsock2.h> avant
 // <windows.h>, qu'UI/InventoryWindow.h tire directement en tête) — même
 // convention que UI/ChatWindow.cpp / UI/WarehouseWindow.cpp.
-#include "Net/SendPackets.h"   // -> Net/NetClient.h : winsock2 puis windows (ordre sur)
-#include "Net/NetClient.h"
+#include "Net/SendPackets.h"   // -> Net/NetClient.h : winsock2 puis windows (ordre sur) + builders Net_SendVaultReq_*
+#include "Net/NetClient.h"     // net::GlobalNetClient() (singleton g_NetClient 0x8156A0)
+#include "Net/ClientState.h"   // net::g_MorphInProgress / g_GmCmdCooldownLatch / flt_1675B0C / g_GameTimeSec
 #include "UI/InventoryWindow.h"
 #include "Asset/ImgFile.h"
 #include "Game/GameDatabase.h"
+#include "Game/ItemSystem.h"   // game::Item_MeetsEquipRequirement 0x64ECD0 (garde d'éligibilité équip)
 #include "Game/ClientRuntime.h" // game::g_Client.inv (InventoryState) : modèle source de vérité (cf. UI/InventoryWindow.h)
 #include "Core/Log.h"
 
@@ -385,10 +387,14 @@ bool InventoryWindow::BeginPickup(int mx, int my) {
         game::EquipSlot& e = game::g_World.self.equip[static_cast<size_t>(es)];
         dragEquipCell_     = e;
         drag_.active       = true;
+        drag_.pendingAck   = false;       // *(g_DragCtx+0x0C) = 0 à la prise (0x5AFDF0)
         drag_.srcType      = DragSource::Equip;
         drag_.srcPage      = 0;
         drag_.srcSlot      = es;
         drag_.itemId       = e.itemId;
+        // +0x20 (a6) : source ÉQUIP -> durability (0x62B199). C'est CE champ que lit
+        // VaultReq_213 (arg3, cf. bandeau de tête). game::EquipSlot::extra0 == durability.
+        drag_.aux20        = static_cast<int>(e.extra0);
         drag_.count        = 1;
         drag_.grabOffsetX  = kCellSize / 2;
         drag_.grabOffsetY  = kCellSize / 2;
@@ -401,10 +407,14 @@ bool InventoryWindow::BeginPickup(int mx, int my) {
                                                     static_cast<uint32_t>(ic));
         dragBagCell_     = src;
         drag_.active     = true;
+        drag_.pendingAck = false;         // *(g_DragCtx+0x0C) = 0 à la prise (0x5AFDF0)
         drag_.srcType    = DragSource::Bag;
         drag_.srcPage    = bagPage_;
         drag_.srcSlot    = ic;
         drag_.itemId     = dragBagCell_.itemId;
+        // +0x20 (a6) : source SAC -> gridX (0x62B5FB). Non émis par les builders sac
+        // (208 lit +0x28 count), conservé par fidélité au layout de Item_BeginDragTransaction.
+        drag_.aux20      = static_cast<int>(dragBagCell_.gridX);
         drag_.count      = static_cast<int>(dragBagCell_.flag ? dragBagCell_.flag : 1);
         drag_.grabOffsetX = kCellSize / 2;
         drag_.grabOffsetY = kCellSize / 2;
@@ -414,99 +424,206 @@ bool InventoryWindow::BeginPickup(int mx, int my) {
     return false;
 }
 
-// Pose l'objet du curseur sur la cible ; échange si la cible est occupée.
+// ============================================================================
+// Pose = ÉMISSION (miroir de UI_MainInventory_OnLButtonUp 0x5B20B0)
+// ----------------------------------------------------------------------------
+// Le binaire N'ÉCRIT AUCUNE cellule de destination et N'ÉCHANGE JAMAIS : il ÉMET
+// le VaultReq correspondant au couple (srcType, cible), pose g_DragCtx+0x0C=1 (ack
+// en attente) puis attend le retour serveur (handlers entrants) — l'objet reste sur
+// le curseur d'ici là. Sur REFUS (garde), il RESTAURE la source et clôt le drag
+// (Inv_AddItemQuantity 0x5B0D70 + Item_DragState_Clear 0x5B02D0 == CancelDrag ici).
+// L'ancien "échange" + écriture locale de destination était une INVENTION (défaut
+// type EnchantWindow/Passe 3) : supprimé.
+// ============================================================================
 bool InventoryWindow::PlaceDrag(int mx, int my) {
     if (!drag_.active) return false;
 
-    // Snapshot AVANT mutation, pour le point d'accroche réseau (cf. NotifyServerItemMove) :
-    // en cas d'échange, drag_ est réécrit ci-dessous pour représenter le NOUVEL objet
-    // resté sur le curseur — le hook réseau doit voir le déplacement qui vient d'avoir lieu.
-    const DragContext preMove = drag_;
-
-    // Cible = slot d'équipement ?
+    // --- Cible = slot d'équipement ? (cGameHud_EquipSlotAtEmpty 0x64F140 : slot VIDE) ---
+    // EquipSlotRectAt = slot sous le curseur (rempli OU vide) ; l'équip ne réussit
+    // (0x64F140) que si le slot est VIDE — sur slot occupé il renvoie -1 : pas d'échange.
     const int es = EquipSlotRectAt(mx, my);
     if (es >= 0) {
-        game::EquipSlot& e = game::g_World.self.equip[static_cast<size_t>(es)];
-        if (e.itemId == 0) {
-            e.itemId = drag_.itemId;
-            e.socket = DragColor();
-            e.extra0 = DragDurability();
-            drag_.reset();
-        } else {
-            // Échange : l'ancien équipement passe sur le curseur.
-            const game::EquipSlot old = e;
-            e.itemId = drag_.itemId;
-            e.socket = DragColor();
-            e.extra0 = DragDurability();
-            dragEquipCell_ = old;
-            drag_.srcType  = DragSource::Equip;
-            drag_.srcSlot  = es;
-            drag_.itemId   = old.itemId;
-            drag_.count    = 1;
-        }
-        NotifyServerItemMove(preMove); // repli propre documenté (cf. UI/InventoryWindow.h)
+        const bool empty = (game::g_World.self.equip[static_cast<size_t>(es)].itemId == 0);
+        if (drag_.srcType == DragSource::Bag && empty)
+            return EmitEquipFromBag(es);                 // VaultReq_210 (sac->équip) @0x5B2555
+        // Slot occupé, OU source non-sac (équip->équip = re-slot) : le binaire n'émet
+        // rien ici et tomberait sur les cibles suivantes. On consomme le clic SANS
+        // échange (fidèle) ; l'objet reste sur le curseur.
+        // TODO [ancre 0x5B20B0] équip->équip (re-slot) : chemin non isolé dans le périmètre.
         return true;
     }
 
-    // Cible = case du sac ?
+    // --- Cible = case du sac ? ---
     int col, row;
     if (GridCellAt(mx, my, col, row)) {
-        const uint32_t page = static_cast<uint32_t>(bagPage_);
-        const int occ = InvCellAt(mx, my);
-
-        game::InvCell nc{};
-        nc.itemId     = drag_.itemId;
-        nc.gridX      = static_cast<uint32_t>(col);
-        nc.gridY      = static_cast<uint32_t>(row);
-        nc.flag       = static_cast<uint32_t>(drag_.count > 0 ? drag_.count : 1);
-        nc.color      = DragColor();
-        nc.durability = DragDurability();
-
-        if (occ < 0) {
-            // Case libre : la cellule est ancrée exactement à (col,row) -> le slot de
-            // stockage EST StorageCol(col,row) (cf. UI/InventoryWindow.h::StorageCol).
-            game::g_Client.inv.At(page, StorageCol(nc.gridX, nc.gridY)) = nc;
-            drag_.reset();
-        } else {
-            // Échange : conserve l'empreinte de l'ancien objet, qui passe sur le curseur.
-            const game::InvCell old = game::g_Client.inv.At(page, static_cast<uint32_t>(occ));
-            nc.gridX = old.gridX;
-            nc.gridY = old.gridY;
-            game::g_Client.inv.At(page, static_cast<uint32_t>(occ)) = nc;
-            dragBagCell_  = old;
-            drag_.srcType = DragSource::Bag;
-            drag_.srcPage = bagPage_;
-            drag_.srcSlot = occ;
-            drag_.itemId  = old.itemId;
-            drag_.count   = static_cast<int>(old.flag ? old.flag : 1);
-        }
-        NotifyServerItemMove(preMove); // repli propre documenté (cf. UI/InventoryWindow.h)
+        const int occ = InvCellAt(mx, my);               // slot occupé sous le curseur, ou -1
+        if (drag_.srcType == DragSource::Bag)
+            return EmitMoveBagToBag(col, row, occ);      // VaultReq_208 (sac->sac) @0x5B22FC
+        if (drag_.srcType == DragSource::Equip)
+            return EmitUnequipToBag(col, row, occ);      // VaultReq_213 (équip->sac) @0x5BA28C
+        // srcType Quiver (carquois) : widget distinct, non géré par InventoryWindow.
         return true;
     }
 
-    return false; // cible hors panneau : l'objet reste sur le curseur
+    return false; // cible hors panneau : l'objet reste sur le curseur (fidèle)
 }
 
-// Point d'accroche réseau — NO-OP désormais PROUVÉ FIDÈLE pour le réarrangement
-// intra-sac (ré-audit W4-F3). Le déplacement d'un objet à l'intérieur du sac
-// passe par Item_BeginDragTransaction 0x5AFDF0 (prise LOCALE : vide la case
-// source SANS envoyer) puis pose locale ; le serveur NE SUIT PAS la disposition
-// de grille du client -> AUCUN paquet n'est émis pour un simple réarrangement.
-// (Pkt_TradeResult 0x48D150, opcode 0x26, réécrit g_InvMain UNIQUEMENT en réponse
-// à un achat/vente/vault — round-trip serveur —, jamais à un déplacement client.)
-// Le seul cas qui DÉCLENCHE un envoi est l'équip/déséquip (drop sac->slot équip),
-// mais via le chemin de drop cGameHud (gardé anticheat), non isolable en un
-// builder unique ici -> reste en TODO pour ce cas précis. `ctx` documente ce
-// qu'un tel envoi devrait transmettre. InventoryWindow POSSÈDE bien un net_ :
-// dès que l'opcode d'équip sera prouvé, il sera câblable ici.
-void InventoryWindow::NotifyServerItemMove(const DragContext& ctx) const {
-    (void)ctx;
-    if (!net_) return; // aucune session liée : rien à faire de toute façon.
-    // Réarrangement intra-sac = local-only (fidèle, cf. ci-dessus) : rien à envoyer.
-    // TODO(send) équip/déséquip uniquement : brancher le builder du chemin de drop
-    // cGameHud une fois l'opcode identifié (aucun candidat confirmé à ce jour —
-    // cf. UI/InventoryWindow.h). Exemple attendu :
-    //   net::Net_SendOpNN(*net_, /* champs de ctx : srcType/srcPage/srcSlot/itemId/count */);
+// Garde universelle (bag->bag 0x5B2297-0x5B22A7, équip 0x5B23E7-0x5B23F7, unequip
+// même paire) : morph en cours OU requête déjà en vol -> refus MUET.
+bool InventoryWindow::EmissionBlockedByMorphOrLatch() const {
+    return net::g_MorphInProgress == 1 || net::g_GmCmdCooldownLatch != 0;  // 0x1675A88 / 0x1675B08
+}
+
+// Épilogue commun à TOUTE émission (0x5B2301-0x5B232D / 0x5BA291-0x5BA2BD) : pose
+// l'ack en attente, arme le verrou anti-spam, horodate, marque l'inventaire dirty.
+// Le drag N'EST PAS clos ici (Item_DragState_Clear n'est appelé QUE sur refus) ->
+// l'objet reste collé au curseur jusqu'au retour serveur (cf. bandeau de tête : écart
+// structurel ASSUMÉ, drag_ étant un MEMBRE et non le global g_DragCtx que les handlers
+// entrants remettraient à zéro — ne PAS "corriger" par un reset local optimiste).
+void InventoryWindow::MarkEmissionPending() {
+    drag_.pendingAck = true;                       // *(g_DragCtx+0x0C) = 1  (0x5B2307 / 0x5BA297)
+    net::g_GmCmdCooldownLatch = 1;                 // 0x5B230E / 0x5BA29E
+    // Horodatage : MÊME limite prouvée que CharacterStatsWindow (net::g_GameTimeSec est un
+    // STUB jamais alimenté ; le binaire n'a qu'UN flt_815180). Sans effet fonctionnel ici
+    // (le déverrouillage vient du latch, remis à 0 par le handler entrant). Remonté au rapport.
+    net::flt_1675B0C = net::g_GameTimeSec;         // 0x5B2318 / 0x5BA2A8
+    // if (g_InvDirtyEnable == 1) g_InvDirtyFlag = 1;  (0x5B2324 / 0x5BA2B4). Via la Var-space
+    // (double représentation : g_InvDirtyEnable a aussi AutoPlayExternalState::invDirtyEnable —
+    // cf. rapport). Défaut permissif (0) = pas de dirty, sans effet HUD observable.
+    if (game::g_Client.VarGet(0x16755AC) == 1)     // g_InvDirtyEnable 0x16755AC
+        game::g_Client.Var(0x815140) = 1;          // g_InvDirtyFlag 0x815140
+}
+
+// Sac -> sac : VaultReq_208 @0x5B22FC. Destination via cGameHud_PlaceItemIntoBag 0x650470
+// (case libre = déplacement ; case occupée = FUSION DE PILE uniquement si type +188 == 2 &&
+// même itemId && somme <= 99, sinon échec sans émission). Layout 208 (7 champs, tous 4 o LE) :
+//   (srcPage +0x14, srcSlot +0x18, count +0x28, dstPage, dstSlot, dstGridX, dstGridY).
+bool InventoryWindow::EmitMoveBagToBag(int col, int row, int occ) {
+    const uint32_t page = static_cast<uint32_t>(bagPage_);
+    int dstSlot = 0, dstGridX = 0, dstGridY = 0;
+
+    if (occ < 0) {
+        // Aucune pile sous le curseur : le binaire (branche cursor de 0x650470, quand
+        // cGameHud_InvCellAt 0x64F9F0 renvoie *a6==-1) délègue à cGameHud_FindInvPlacement
+        // 0x64FCA0 (placement tenant compte de l'empreinte 1x1/2x2). Cette géométrie exacte
+        // n'est pas reproduite ici : on ancre la cellule à (col,row) du curseur.
+        // TODO [ancre 0x64FCA0] placement empreinte-aware (impact : objets 2x2 à cheval).
+        dstSlot  = static_cast<int>(StorageCol(static_cast<uint32_t>(col), static_cast<uint32_t>(row)));
+        dstGridX = col;
+        dstGridY = row;
+    } else {
+        // Case occupée : condition de fusion VÉRIFIÉE mot pour mot dans 0x650470
+        // (branche `else if (*(this+175))`, test @ `*(v24+188)!=2 || g_InvMain[dst]!=a4 ||
+        //  a5+g_InvGrid_Count[dst] > 99`) : type(dragged)+188 == 2 && même itemId && somme <= 99.
+        const game::InvCell& tgt = game::g_Client.inv.At(page, static_cast<uint32_t>(occ));
+        const game::DataTable& db = game::g_World.db.item;
+        const uint8_t* rec = db.record(drag_.itemId);
+        const int type = (rec && db.stride >= 192) ? *reinterpret_cast<const int*>(rec + 188) : -1;
+        const bool mergeable = (type == 2) && (tgt.itemId == drag_.itemId) &&
+                               (drag_.count + static_cast<int>(tgt.flag ? tgt.flag : 1) <= 99);
+        if (!mergeable) {
+            // Échec placement (v254 == -1 @0x5B21FA) : le binaire N'ÉMET RIEN et tombe sur
+            // les cibles suivantes (jusqu'au "jeter" avec confirmation MsgBox). Le "jeter"
+            // est hors périmètre (builder 209 vs 212 non discriminé) ET DESTRUCTIF : on ne
+            // le reproduit pas, on laisse le drag actif SANS échange.
+            // TODO [ancre 0x5B2EBD] jeter (VaultReq_212) / [0x5B9EAE] (VaultReq_209).
+            return true;
+        }
+        dstSlot  = occ;                              // la pile existante
+        dstGridX = static_cast<int>(tgt.gridX);
+        dstGridY = static_cast<int>(tgt.gridY);
+    }
+
+    // Gardes post-placement, ORDRE du binaire :
+    // (1) dword_1822998 != 0 (grille de déplacement déjà active) -> msg 598 + refus (0x5B2204).
+    if (game::g_Client.VarGet(0x1822998) != 0) {
+        game::g_Client.msg.System(game::Str(598));   // StrTable005_Get(0x256) @0x5B2213
+        CancelDrag();
+        return true;
+    }
+    // (2) g_WarehouseWindowOpen != 0 -> msg 598 + refus (0x5B224D).
+    if (game::g_Client.VarGet(0x1822ED4) != 0) {
+        game::g_Client.msg.System(game::Str(598));
+        CancelDrag();
+        return true;
+    }
+    // (3) morph || latch -> refus muet (0x5B2297).
+    if (EmissionBlockedByMorphOrLatch()) { CancelDrag(); return true; }
+
+    // g_NetClient 0x8156A0 est un GLOBAL : les builders l'adressent directement (aucun
+    // socket en paramètre). net::GlobalNetClient() est renseigné par ConnectGameServer ;
+    // cette fenêtre ne s'ouvre qu'en jeu (post-handshake) -> nc est non nul quand ce
+    // chemin est atteint : le `if (!nc)` ci-dessous est un garde-fou DÉFENSIF, PAS du code
+    // mort (contrairement à l'ancien couple Bind()/net_ toujours nul).
+    net::NetClient* nc = net::GlobalNetClient();
+    if (!nc) { CancelDrag(); return true; }          // hors session : restaure, pas d'émission
+    net::Net_SendVaultReq_208(*nc, drag_.srcPage, drag_.srcSlot, drag_.count,
+                              static_cast<int>(page), dstSlot, dstGridX, dstGridY); // 0x5B22FC
+    MarkEmissionPending();
+    return true;
+}
+
+// Sac -> équipement (ÉQUIPER) : VaultReq_210 @0x5B2555. Layout :
+//   (srcPage +0x14, srcSlot +0x18, count +0x28, 0, equipSlot, 0, 0).
+// equipSlot = retour de cGameHud_EquipSlotAtEmpty 0x64F140, supposé identique à l'index
+// du tableau g_World.self.equip (miroir de g_EquipMain) — cf. rapport (non re-mappé).
+bool InventoryWindow::EmitEquipFromBag(int equipSlot) {
+    // Gardes équip (ordre du binaire), reproduites pour l'état MODÉLISÉ uniquement :
+    //
+    // TODO [ancre 0x5B2362 : dword_1675B00 / g_SelfActionState 0x1687328] garde
+    // "(dword_1675B00 != 0 || g_SelfActionState != 1) -> msg 120" NON reproduite :
+    // g_SelfActionState n'est pas fiable ici (Var-space non alimenté -> lirait 0 ->
+    // refuserait TOUT équip ; cf. TODO connu PlayerInputController.cpp:227). Laissée permissive.
+    //
+    // (b) Item_MeetsEquipRequirement 0x64ECD0 : objet non éligible -> refus muet (0x5B23C7).
+    const game::ItemInfo* info = game::GetItemInfo(drag_.itemId);
+    if (info && !game::Item_MeetsEquipRequirement(*info, equipSlot)) {
+        CancelDrag();
+        return true;
+    }
+    //
+    // TODO [ancre 0x5B242C : g_SpecialFormActive 0x16760D4 / Npc_IsSpecialType 0x54EE60]
+    // garde forme spéciale (g_SpecialFormActive>0 && Npc_IsSpecialType(g_SelfMorphNpcId)==1
+    // -> refus) NON reproduite : Npc_IsSpecialType non modélisé (défaut permissif : hors forme).
+    //
+    // TODO [ancre 0x5B246A : Item_ClassifyById 0x550800 / Item_GetAttribByte0 0x545610]
+    // garde gemme (classify ∈ {1,4,8,9} && attribByte0 >= 100 -> msg 2562) NON reproduite :
+    // classificateurs non modélisés ici. Laissée permissive.
+    //
+    // (e) morph || latch -> refus muet (0x5B23E7).
+    if (EmissionBlockedByMorphOrLatch()) { CancelDrag(); return true; }
+
+    net::NetClient* nc = net::GlobalNetClient();
+    if (!nc) { CancelDrag(); return true; }
+    net::Net_SendVaultReq_210(*nc, drag_.srcPage, drag_.srcSlot, drag_.count,
+                              0, equipSlot, 0, 0);      // 0x5B2555
+    MarkEmissionPending();
+    return true;
+}
+
+// Équipement -> sac (DÉSÉQUIPER) : VaultReq_213 @0x5BA28C. Layout :
+//   (0, srcSlot +0x18, aux20 +0x20, dstPage, dstSlot, dstGridX, dstGridY).
+// Le 3e champ est +0x20 (durability, cf. BeginPickup) et NON +0x28 : la source ÉQUIP
+// range ses arguments par TYPE (cf. bandeau de tête). Destination via
+// cGameHud_FindInvPlacement 0x64FCA0 (non désassemblée ici) : dérivée de la case du
+// curseur si LIBRE ; case occupée = TODO (fusion inter-conteneur non prouvée).
+bool InventoryWindow::EmitUnequipToBag(int col, int row, int occ) {
+    if (occ >= 0) {
+        // Case occupée : FindInvPlacement gère fusion/slot libre ; non reproduit ->
+        // pas d'émission, drag laissé actif. TODO [ancre 0x64FCA0] dérivation dst exacte.
+        return true;
+    }
+    // morph || latch -> refus muet.
+    if (EmissionBlockedByMorphOrLatch()) { CancelDrag(); return true; }
+
+    net::NetClient* nc = net::GlobalNetClient();
+    if (!nc) { CancelDrag(); return true; }
+    const int dstPage = bagPage_;
+    const int dstSlot = static_cast<int>(StorageCol(static_cast<uint32_t>(col), static_cast<uint32_t>(row)));
+    net::Net_SendVaultReq_213(*nc, 0, drag_.srcSlot, drag_.aux20,
+                              dstPage, dstSlot, col, row);  // 0x5BA28C
+    MarkEmissionPending();
+    return true;
 }
 
 // Rend l'objet à sa source (fermeture, échec) — pas de perte d'objet. Restaure au

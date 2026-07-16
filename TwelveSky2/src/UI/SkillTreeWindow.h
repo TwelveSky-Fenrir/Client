@@ -14,21 +14,40 @@
 //      la compétence candidate (surlignée) ; clic sur Locked/Learned -> statut
 //      informatif seulement (pas de sélection) ;
 //   2. clic sur un emplacement VIDE de la grille avec une compétence
-//      sélectionnée -> tentative d'apprentissage (Skill_Learn, voir
-//      SkillSystem.h) : vérifie self.skillPoints >= coût SP (SKILL_INFO
-//      +0x230, skillinfo::kOffSpCost) puis débite et place la compétence
-//      dans la barre (section déterminée en interne par Skill_Learn,
-//      indépendamment de l'emplacement cliqué — fidèle à Pkt_ItemAction
-//      groupe G0 0x46A456).
+//      sélectionnée -> tentative d'apprentissage (AttemptLearn) : vérifie
+//      self.skillPoints >= coût SP (SKILL_INFO +0x230, skillinfo::kOffSpCost,
+//      garde réelle UI_SkillLearn_OnLDown 0x5E1DC4) puis... N'APPLIQUE RIEN.
+//      Corrigé Passe 4 / W6 : cette étape débitait self.skillPoints et plaçait
+//      la compétence dans la barre via game::Skill_Learn — un effet local
+//      OPTIMISTE que le binaire ne fait PAS (la confirmation réelle,
+//      UI_MsgBox_OnLButtonUp case 3 @0x5C0C23, se contente d'ÉMETTRE et
+//      d'attendre le serveur), et de surcroît emprunté à un autre flux
+//      (Skill_Learn est ancrée sur le handler ENTRANT Pkt_ItemAction G0
+//      0x46A456 = apprentissage par LIVRE). L'émission qui devrait la remplacer
+//      (opcode 0x13 / sous-code 202) est BLOQUÉE : elle exige l'id du PNJ
+//      formateur, que cette fenêtre ne possède pas — cf. le TODO [ancre
+//      0x5C0C5E] détaillé au-dessus de AttemptLearn() dans le .cpp.
 // Survol d'un emplacement APPRIS : tooltip avec le coût SP réellement débité
 // à l'apprentissage (mémorisé dans le slot) ET le coût MP nominal de cast
 // (Skill_CostById 0x4CD0E0). Bandeau d'en-tête : points de compétence non
 // dépensés (self.skillPoints) + posture/stance active courante
 // (Skill_GetActiveStance 0x4FB210, Game/SkillCombat.h).
 //
-// Aucune action de cette fenêtre n'envoie de paquet réseau : l'apprentissage
-// n'est appliqué qu'à l'état local (SkillBar + SelfState::skillPoints) — voir
-// TODO(send) dans le .cpp pour le point d'accroche réseau identifié.
+// Aucune action de cette fenêtre n'envoie de paquet réseau — état AUDITÉ (Passe 4 /
+// W6), et pour deux raisons de nature DIFFÉRENTE, à ne pas confondre :
+//   - Sélection d'un nœud : NE DOIT RIEN ÉMETTRE. Prouvé : UI_SkillLearn_OnLDown
+//     0x5E1C40 n'émet rien, il valide (SP / déjà apprise / place libre) puis ouvre une
+//     boîte de confirmation (UI_MsgBox_Open kind 3, 0x5E20C0). Le silence réseau au
+//     clic est donc FIDÈLE, ce n'est pas un manque.
+//   - Confirmation de l'apprentissage : DEVRAIT émettre (opcode 0x13, sous-code 202,
+//     [npcId:i32][skillId:i32]) mais reste BLOQUÉE faute d'un npcId prouvé. MISE À JOUR
+//     (Passe 4 / W6, vérif IDA) : le builder Net_SendVaultReq_202 a depuis été corrigé
+//     en (NetClient&, int32_t npcId, int32_t skillId) (Net/SendPackets.h:242) — il ne
+//     tronque plus rien et est conforme au fil. Le SEUL blocage restant est donc le
+//     npcId, que cette fenêtre (arbre générique, hotkey 'K') ne possède pas. Détail
+//     complet + layout dans le TODO [ancre 0x5C0C5E] au-dessus de AttemptLearn() (.cpp).
+// L'apprentissage n'est plus appliqué à l'état local non plus (le binaire ne le fait
+// pas) : la fenêtre reste donc une VUE de l'arbre tant que le flux PNJ n'est pas porté.
 //
 // DISPOSITION — CONFIRME_FIDELE (2026-07-14, décompilation idaTs2, re-vérifiée
 // le même jour) : le binaire d'origine n'a pas de disposition d'arbre à
@@ -69,11 +88,22 @@ public:
     SkillTreeWindow();
 
     // Lie la fenêtre aux données runtime nécessaires : table SKILL_INFO (pour
-    // Skill_GetRecord/Skill_Learn/coût SP), table ITEM_INFO (pour
-    // Skill_CostById), table de bornes de niveau (Skill_IsAvailableByLevel),
-    // la barre de compétences apprises (modifiée par Skill_Learn) et l'état
-    // du joueur local (skillPoints débité, niveau/renaissance lus). `morph`
-    // est optionnel (posture/renaissance) — cf. Game/SkillCombat.h.
+    // Skill_GetRecord/coût SP), table ITEM_INFO (pour Skill_CostById), table de
+    // bornes de niveau (Skill_IsAvailableByLevel), la barre de compétences
+    // apprises et l'état du joueur local (skillPoints/niveau/renaissance, LUS
+    // seulement). `morph` est optionnel (posture/renaissance) — cf.
+    // Game/SkillCombat.h.
+    // NB (Passe 4 / W6) : `bar` et `self` ne sont plus JAMAIS écrits par cette
+    // fenêtre — l'apprentissage local (game::Skill_Learn) a été retiré, le binaire
+    // attendant le serveur (cf. AttemptLearn dans le .cpp). Les références restent
+    // non-const car le contrat de Bind() est partagé/appelé par UI/GameWindows.cpp
+    // (fichier non possédé par ce front) : le durcir en const dépasse ce périmètre.
+    //
+    // AUCUN npcId : c'est précisément ce qui bloque l'émission du sous-code 202
+    // (cf. TODO [ancre 0x5C0C5E] au-dessus de AttemptLearn dans le .cpp). Le vrai
+    // widget d'apprentissage est ouvert PAR un PNJ formateur et tient son
+    // enregistrement (*(this+2) == dword_1822ED0) ; cette fenêtre-ci est ouverte au
+    // raccourci 'K' et n'en a aucun.
     void Bind(const game::DataTable& skillTbl, const game::DataTable& itemTbl,
               const game::SkillLevelTable& lvlTbl, game::SkillBar& bar,
               game::SelfState& self, const game::CombatMorphState& morph = {});
@@ -125,7 +155,10 @@ private:
                         const Rect& prevBtn, const Rect& nextBtn, int x, int y);
     void HandleGridSlotClick(int slotIndex);
     void HandleCandidateClick(int rowOnPage);
-    void AttemptLearn(); // TODO(send) : cf. .cpp
+    // Confirmation d'apprentissage — miroir de UI_MsgBox_OnLButtonUp case 3 (0x5C0C23).
+    // N'émet PAS (npcId indisponible) et n'applique AUCUN effet local, comme le binaire :
+    // cf. le TODO [ancre 0x5C0C5E] détaillé au-dessus de la définition dans le .cpp.
+    void AttemptLearn();
 
     static bool In(const Rect& r, int x, int y) {
         return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;

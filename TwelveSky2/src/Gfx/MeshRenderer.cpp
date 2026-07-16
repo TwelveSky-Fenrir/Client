@@ -25,11 +25,14 @@ constexpr DWORD kRS_AlphaRef          = 24; // D3DRS_ALPHAREF
 constexpr DWORD kRS_AlphaFunc         = 25; // D3DRS_ALPHAFUNC
 constexpr DWORD kRS_AlphaBlendEnable  = 27; // D3DRS_ALPHABLENDENABLE
 
-constexpr DWORD kBLEND_Zero     = 1;  // D3DBLEND_ZERO
-constexpr DWORD kBLEND_One      = 2;  // D3DBLEND_ONE
-constexpr DWORD kBLEND_SrcAlpha = 5;  // D3DBLEND_SRCALPHA
+constexpr DWORD kBLEND_Zero        = 1;  // D3DBLEND_ZERO
+constexpr DWORD kBLEND_One         = 2;  // D3DBLEND_ONE
+constexpr DWORD kBLEND_SrcAlpha    = 5;  // D3DBLEND_SRCALPHA
+constexpr DWORD kBLEND_InvSrcAlpha = 6;  // D3DBLEND_INVSRCALPHA
 constexpr DWORD kCMP_GreaterEqual = 5; // D3DCMP_GREATEREQUAL
 constexpr DWORD kCMP_Always       = 8; // D3DCMP_ALWAYS
+// Seuil d'alpha-test du matériau blendMode 1 : `push 80h` @0x40cbd1 (voir applyBlendMode).
+constexpr DWORD kAlphaRef_Material = 128;
 
 // États du volume d'ombre stencil (numéros bruts relevés dans Model_RenderWithShadow 0x40EEE0).
 constexpr DWORD kRS_CullMode     = 22; // D3DRS_CULLMODE
@@ -40,10 +43,29 @@ constexpr DWORD kSTENCILOP_Incr  = 7;  // D3DSTENCILOP_INCR
 constexpr DWORD kSTENCILOP_Decr  = 8;  // D3DSTENCILOP_DECR
 constexpr DWORD kFVF_XYZ         = 2;  // D3DFVF_XYZ (sommet d'ombre position seule, stride 12)
 
-// Identifiant de passe shader (joue le rôle de g_CurrentShaderPass 0x194591C, valeurs d'origine :
-// 2 = skinné VS03/PS04 ; 8 = volume d'ombre VS15/PS NULL).
+// Identifiant de PASSE SHADER (joue le rôle de g_CurrentShaderPass 0x194591C).
+// ⚠ Numérotation DISTINCTE de la passe de DESSIN (MeshRenderer::kDrawPass_*, = a6 de Model_Render) :
+//   les deux se croisent dans Model_DrawSkinnedSubset 0x40CA40 sans jamais désigner la même chose.
+//   2 = skinné VS03/PS04         (g_CurrentShaderPass = 2 @0x40d3e5)
+//   3 = multi-texture VS05/PS06  (g_CurrentShaderPass = 3 @0x40d9c3) — mTexture0 + mTexture1
+//   4 = multi-texture VS07/PS08  (g_CurrentShaderPass = 4 @0x40d682) — mTexture0/1/2 + mCameraEye
+//   8 = volume d'ombre VS15/PS NULL
 constexpr int kPass_SkinnedLit   = 2;
+constexpr int kPass_MultiTex2    = 3;
+constexpr int kPass_MultiTex3    = 4;
 constexpr int kPass_ShadowVolume = 8;
+
+// g_TextureDetailLevel 0x18C4F04 — CONSTANTE GELÉE À 2, pas une option.
+// data_refs : 1 SEUL writer, `mov ds:g_TextureDetailLevel, 2` @0x4013A2 (GXD_InitGlobalState
+// 0x401320) — un IMMÉDIAT, jamais réécrit (aucune option UI ne le touche) ; 5 readers.
+// Conséquences prouvées, à contre-courant de l'intuition « niveau de détail gelé = pas de
+// multi-texture » : la valeur 2 CONSERVE les textures et ACTIVE les passes 3/4.
+//   Au parse  (Mesh_ReadFromFile 0x40BC50) : `if (!detail) Tex_Free(a1+192)` @0x40c228 -> non pris
+//     -> tex1 CONSERVÉE ; `if (detail != 2) Tex_Free(a1+206)` @0x40c250 -> non pris -> tex2 CONSERVÉE.
+//   Au dessin (0x40d3a8) : branche detail==0 morte, branche detail==1 MORTE PAR VALEUR, branche
+//     `else` (detail>=2) TOUJOURS prise -> les passes 3 et 4 sont VIVANTES.
+// On ne porte donc que la branche vivante ; les deux autres seraient du code mort par valeur.
+constexpr int kTextureDetailLevel = 2;
 
 // Plafond du volume d'ombre : l'original garde v45 > 29976 -> abort (tableaux 30000 sommets).
 constexpr UINT kShadowVolMaxVerts = 30000;
@@ -158,7 +180,12 @@ void SkinnedModel::Release() {
             SafeRelease(lod.vb);
             SafeRelease(lod.ib);
         }
+        // Les 3 slots de matériau du mesh (mat0/mat1/mat2 = mesh+712/+768/+824) possèdent chacun
+        // leur IDirect3DTexture9 (mat+52) : tex1/tex2 sont uploadées par Upload() depuis
+        // sm.tex[1]/sm.tex[2] et doivent être relâchées comme diffuse (sinon fuite GPU).
         SafeRelease(mesh.diffuse);
+        SafeRelease(mesh.tex1);
+        SafeRelease(mesh.tex2);
     }
     meshes.clear();
 }
@@ -376,15 +403,19 @@ bool MeshRenderer::Upload(const asset::SObject& src, SkinnedModel& out) {
             dst.lods.push_back(std::move(lod));
         }
 
-        // Texture diffuse (matDiffuse) depuis le bloc tex[0].
-        dst.diffuse   = createDiffuse(dev_, sm.tex[0]);
-        // TODO [ancre 0x40CA40] blendMode = GXD_Material +0x2C (Model_DrawSkinnedSubset, v61+44 :
-        //   1=alpha-test, 2=additif). Source = u32 processMode/alphaMode en queue du bloc tex[0]
-        //   (Tex_ReadPacked 0x417740, struct 56 o). BLOQUÉ : asset::SObjectTexture (Asset/Model.h,
-        //   front Asset) ne conserve pas ce trailer -> reste 0 (opaque). La chaîne aval
-        //   applyBlendMode/resetBlendMode est déjà bit-exacte ; dès que sm.tex[0] expose le champ,
-        //   une seule ligne (dst.blendMode = sm.tex[0].<champ>) active alpha-test/additif.
-        dst.blendMode = 0;
+        // --- Matériaux : mat0/mat1/mat2 (mesh+712/+768/+824, cf. SkinnedMesh dans le .h) --------
+        // mat0 = texture diffuse (bloc tex[0]) -> mTexture0.
+        dst.diffuse = createDiffuse(dev_, sm.tex[0]);
+        // SOBJ-04 : mat1/mat2 étaient parsées puis JAMAIS uploadées -> passes 3/4 impossibles.
+        // Elles SURVIVENT bien au parse : g_TextureDetailLevel est gelé à 2 et les deux Tex_Free
+        // conditionnels de Mesh_ReadFromFile 0x40BC50 (@0x40c228 `if (!detail)` / @0x40c250
+        // `if (detail != 2)`) ne sont alors NI l'un NI l'autre pris (cf. kTextureDetailLevel).
+        dst.tex1 = createDiffuse(dev_, sm.tex[1]); // -> mTexture1 (passes 3 et 4)
+        dst.tex2 = createDiffuse(dev_, sm.tex[2]); // -> mTexture2 (passe 4)
+        // SOBJ-02 : blendMode = matériau +44 = trailer `alphaMode` du bloc tex[0]
+        //   (Tex_ReadPacked 0x417740 : a1[11] @0x4178dd ; lu au dessin @0x40cb1a/@0x40cb2c/@0x40d953).
+        //   Reste 0 (opaque) si le trailer n'a pas pu être décodé — cf. asset::WalkTexture.
+        dst.blendMode = sm.tex[0].alphaMode;
         out.meshes.push_back(std::move(dst));
     }
 
@@ -458,7 +489,8 @@ void MeshRenderer::DrawModel(const SkinnedModel& model,
                              const D3DXVECTOR3&  rotationDeg,
                              const D3DXVECTOR3&  scale,
                              const BonePalette&  palette,
-                             int                 lod) {
+                             int                 lod,
+                             int                 pass) {
     if (!Ready() || model.Empty()) return;
 
     // Matrice monde composée = Scale * RotZ * RotY * RotX * Translate
@@ -476,24 +508,73 @@ void MeshRenderer::DrawModel(const SkinnedModel& model,
     D3DXMatrixMultiply(&tmp,   &world, &mT);  // *T
     world = tmp;
 
+    // SOBJ-03 — structure à DEUX PASSES (a6 de Model_Render 0x40EBB0, borné {1,2} @0x40ebd5).
+    // kPassBoth = shim assumé (cf. .h) : deux balayages 1 puis 2, dans cet ordre — ce que fait le
+    // binaire par paire d'appels adjacents (@0x51d359/@0x51d3c4, @0x51d421/@0x51d478).
+    if (pass == kPassBoth) {
+        drawMeshSweep(model, world, palette, lod, kDrawPass_Opaque);
+        drawMeshSweep(model, world, palette, lod, kDrawPass_Blend);
+        return;
+    }
+    drawMeshSweep(model, world, palette, lod, pass);
+}
+
+// Corps de la boucle de meshes de Model_Render 0x40EBB0 (@0x40ee02..0x40eebf, stride 888 @0x40eebf).
+void MeshRenderer::drawMeshSweep(const SkinnedModel& model, const D3DXMATRIX& world,
+                                 const BonePalette& palette, int lod, int pass) {
+    // SOBJ-05 — HÉRITAGE DE MATÉRIAU DEPUIS mesh[0]. La question posée (« héritage explicite, ou
+    // état de texture rémanent du device non réinitialisé ? ») est TRANCHÉE : c'est un HÉRITAGE
+    // EXPLICITE, un passage de pointeurs, rien de rémanent. Model_Render @0x40ee53 :
+    //     v17 = v11[2];                  // base du tableau == &mesh[0]
+    //     if ( *(v18 + 764) || !*(v17 + 764) )                       // mesh[i].mat0.tex, mesh[0].mat0.tex
+    //         Model_DrawSkinnedSubset(0, v18, ..., 0, 0, ..);        // @0x40eeb1 : matériaux PROPRES
+    //     else
+    //         Model_DrawSkinnedSubset(v17+712, v18, ..., v17+768, v17+824, ..); // @0x40ee8e
+    // -> si mesh[i] n'a PAS de tex0 ET que mesh[0] en a une, on passe le TRIPLET COMPLET de
+    //    mesh[0] (mat0 +712, mat1 +768, mat2 +824) en override.
+    // COROLLAIRE À NE PAS RATER : en héritage, le blendMode utilisé est celui de mesh[0] (v61+44)
+    // et le choix de passe multi-textures se fait sur mat1/mat2 DE mesh[0]. C'est automatique ici :
+    // DrawSkinnedSubset lit tout son matériau dans `matSrc`.
+    const SkinnedMesh* mesh0 = &model.meshes[0]; // v17 = v11[2]
     for (const SkinnedMesh& mesh : model.meshes) {
-        if (mesh.empty || mesh.lods.empty()) continue;
+        if (mesh.empty || mesh.lods.empty()) continue; // `if (*(v16 + v17))` @0x40ee0e
         int useLod = lod;
         if (useLod < 0) useLod = 0;
         if (useLod >= static_cast<int>(mesh.lods.size()))
             useLod = static_cast<int>(mesh.lods.size()) - 1;
-        DrawSkinnedSubset(mesh, useLod, world, palette);
+        // `!*(v18+764) && *(v17+764)` -> override par le triplet de mesh[0].
+        const SkinnedMesh* matSrc = (!mesh.diffuse && mesh0->diffuse) ? mesh0 : nullptr;
+        DrawSkinnedSubset(mesh, useLod, world, palette, matSrc, pass);
     }
 }
 
 void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
                                      const D3DXMATRIX&  world,
-                                     const BonePalette& palette) {
+                                     const BonePalette& palette,
+                                     const SkinnedMesh* matSrc,
+                                     int                pass) {
     if (!Ready() || lod < 0 || lod >= static_cast<int>(mesh.lods.size())) return;
     const SkinnedLod& L = mesh.lods[lod];
     if (!L.vb || !L.ib || L.vertexCount == 0 || L.faceCount == 0) return;
 
-    // 0) Source de shaders : slots RÉELS du npk (Shader03 VS03_SkinnedLit 0x409AB0 + Shader04
+    // -1) SOURCE DES MATÉRIAUX (a1 = override) — @0x40ca96..0x40cabc :
+    //       if (a1) { v61 = a1;     v62 = a7;     v56 = a8;     }  // triplet override
+    //       else    { v61 = a2+712; v62 = a2+768; v56 = a2+824; }  // matériaux propres du mesh
+    //     La GÉOMÉTRIE (`L`) reste TOUJOURS celle de `mesh` — seuls les matériaux basculent.
+    const SkinnedMesh& M = matSrc ? *matSrc : mesh;
+
+    // 0a) FILTRE DE PASSE (a3) — Model_DrawSkinnedSubset @0x40cb14..0x40cb32 :
+    //      if (a3 == 1) { if (blendMode == 2) return; }   // passe 1 : tout SAUF l'alpha blend
+    //      else         { if (blendMode != 2) return; }   // passe 2 : l'alpha blend UNIQUEMENT
+    //    blendMode vient de v61+44 = du matériau EFFECTIF (donc de mesh[0] en cas d'héritage).
+    //    kPassBoth (défaut) = shim hors binaire : aucun filtre (cf. .h).
+    if (pass == kDrawPass_Opaque) {
+        if (M.blendMode == 2) return;
+    } else if (pass == kDrawPass_Blend) {
+        if (M.blendMode != 2) return;
+    }
+
+    // 0b) Source de shaders : slots RÉELS du npk (Shader03 VS03_SkinnedLit 0x409AB0 + Shader04
     //    PS04_Tex 0x409CC0) si un ShaderSet est attaché, sinon HLSL reconstruit (fallback).
     //    Uniformes/handles prouvés identiques (0x409c23..0x409c8f) -> swap purement interne.
     IDirect3DVertexShader9*      useVS   = vs_;
@@ -525,14 +606,61 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
         }
     }
 
-    // 1) États de mélange du matériau (v14 = blendMode).
-    applyBlendMode(mesh.blendMode);
+    // 0c) SOBJ-04 / GX-SH-01 — SÉLECTION DE LA PASSE MULTI-TEXTURES (@0x40d3a8..0x40d66a).
+    //   Seule la branche `else` (g_TextureDetailLevel >= 2) est vivante (cf. kTextureDetailLevel).
+    //   Logique exacte, désassemblée (v21 = index LOD ; v62 = mat1 ; v56 = mat2 ; `+52` = pTexture) :
+    //     if (v21 != 0)                        -> PASSE 2   ; multi-texture SEULEMENT au LOD 0 (0x40d61f)
+    //     mat1.tex && mat2.tex                 -> PASSE 4   ; 0x40d62d -> 0x40d660 vrai -> 0x40d675
+    //     mat1.tex && !mat2.tex                -> PASSE 3   ; 0x40d660 faux -> chute vers 0x40d9b6
+    //     !mat1.tex && mat2.tex                -> PASSE 4   ; 0x40d63e non pris -> 0x40d660 vrai
+    //     !mat1.tex && !mat2.tex               -> PASSE 2   ; 0x40d642 -> LABEL_53
+    //   Mapping mat->sampler prouvé PAR LES NOMS DE CONSTANTES des loaders, PAS par le nommage de
+    //   pile d'IDA (infiable dans cette zone : delta esp mal suivi) :
+    //     Shader_LoadPS06_MultiTex  0x40A060 -> mTexture0, mTexture1                 (2 textures)
+    //     Shader_LoadPS08_MultiTex3 0x40A490 -> mTexture0, mTexture1, mTexture2      (3 textures)
+    //   corroboré par le NOMBRE de SetTexture (passe 3 : 2 @0x40db25/@0x40db44 ; passe 4 : 3
+    //   @0x40d849/@0x40d868/@0x40d887) -> mat0->mTexture0, mat1->mTexture1, mat2->mTexture2.
+    //
+    //   FALLBACK PRÉSERVÉ : le HLSL reconstruit kSkinnedPS n'a QUE mTexture0 -> on ne bascule en
+    //   passe 3/4 que sur shaders RÉELS du npk. Sans ShaderSet, on reste en passe 2 : le chemin
+    //   qui fonctionne aujourd'hui est intact.
+    int usePass = kPass_SkinnedLit;
+    const GxdShader* mtVS = nullptr;
+    const GxdShader* mtPS = nullptr;
+    if (realShader && lod == 0 && kTextureDetailLevel >= 2) {
+        const bool t1 = (M.tex1 != nullptr); // v62 && *(v62+52)
+        const bool t2 = (M.tex2 != nullptr); // v56 && *(v56+52)
+        if (t1 || t2) {
+            // pass 4 <=> t2 (t1&&t2 ET !t1&&t2) ; pass 3 <=> t1 && !t2.
+            const bool wantPass4 = t2;
+            const GxdShader& gv = shaderSet_->Get(wantPass4 ? GxdShaderId::VS07_SkinnedEye
+                                                            : GxdShaderId::VS05_Skinned);
+            const GxdShader& gp = shaderSet_->Get(wantPass4 ? GxdShaderId::PS08_MultiTex3
+                                                            : GxdShaderId::PS06_MultiTex);
+            if (gv.Valid() && gp.Valid()) {
+                usePass = wantPass4 ? kPass_MultiTex3 : kPass_MultiTex2;
+                mtVS = &gv;  mtPS = &gp;
+                useVS = gv.vs;  usePS = gp.ps;  useCT = gv.ct;
+                // VS05 (0x409E80) : mKeyMatrix, mWorldViewProjMatrix, mLightDirection.
+                // VS07 (0x40A290) : idem + mCameraEye. Aucun des deux n'a mLightAmbient/mLightDiffuse
+                // -> en passes 3/4 l'ambiante/diffuse vivent sur le PIXEL shader (voir plus bas).
+                hKey = gv.Handle("mKeyMatrix");
+                hWvp = gv.Handle("mWorldViewProjMatrix");
+                hDir = gv.Handle("mLightDirection");
+                hAmb = nullptr;
+                hDif = nullptr;
+            }
+        }
+    }
 
-    // 2) Bind du programme skinné (évite les re-bind redondants via currentPass_).
-    if (currentPass_ != kPass_SkinnedLit) {
+    // 1) États de mélange du matériau EFFECTIF (v16 = *(v61+44)).
+    applyBlendMode(M.blendMode);
+
+    // 2) Bind du programme (évite les re-bind redondants via currentPass_ == g_CurrentShaderPass).
+    if (currentPass_ != usePass) {
         dev_->SetVertexShader(useVS);
         dev_->SetPixelShader(usePS);
-        currentPass_ = kPass_SkinnedLit;
+        currentPass_ = usePass;
     }
     dev_->SetVertexDeclaration(useDecl); // g_SkinVertexDecl (method +348)
 
@@ -569,8 +697,40 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
     if (hAmb) useCT->SetFloatArray(dev_, hAmb, &lightAmbient_.x, 3);
     if (hDif) useCT->SetFloatArray(dev_, hDif, &lightDiffuse_.x, 3);
 
-    // 7) Texture diffuse (method +260 SetTexture, registre mTexture0).
-    if (mesh.diffuse) dev_->SetTexture(useSamp, mesh.diffuse);
+    // 7) Textures (method +260 SetTexture) — GX-SH-02 : mat1/mat2 sont désormais TRANSPORTÉES
+    //    jusqu'ici (SkinnedMesh::tex1/tex2) et uploadées sur leurs samplers.
+    if (usePass == kPass_SkinnedLit) {
+        // Passe 2 : mTexture0 seul (@0x40d590).
+        if (M.diffuse) dev_->SetTexture(useSamp, M.diffuse);
+    } else {
+        // Passes 3/4 : samplers résolus PAR NOM sur le PS réel (aucun registre en dur).
+        const int s0 = mtPS->Sampler("mTexture0");
+        if (s0 >= 0) dev_->SetTexture(static_cast<UINT>(s0), M.diffuse); // @0x40db25 / @0x40d849
+        const int s1 = mtPS->Sampler("mTexture1");
+        if (s1 >= 0) dev_->SetTexture(static_cast<UINT>(s1), M.tex1);    // @0x40db44 / @0x40d868
+        if (usePass == kPass_MultiTex3) {
+            const int s2 = mtPS->Sampler("mTexture2");
+            if (s2 >= 0) dev_->SetTexture(static_cast<UINT>(s2), M.tex2); // @0x40d887 (passe 4 seule)
+        }
+        // mLightAmbient/mLightDiffuse sur le PIXEL shader en passes 3/4 (PS06 0x40A060 / PS08
+        // 0x40A490) : @0x40db65/@0x40db86 (passe 3) et @0x40d8a9/@0x40d8cb (passe 4).
+        if (mtPS->ct) {
+            if (D3DXHANDLE h = mtPS->Handle("mLightAmbient"))
+                mtPS->ct->SetFloatArray(dev_, h, &lightAmbient_.x, 3);
+            if (D3DXHANDLE h = mtPS->Handle("mLightDiffuse"))
+                mtPS->ct->SetFloatArray(dev_, h, &lightDiffuse_.x, 3);
+        }
+        // mCameraEye — VS07 UNIQUEMENT (passe 4, 0x40A290) : position caméra monde
+        // (g_CameraEye dword_18C51C0/C4/C8 @0x40d757..0x40d783) ramenée en ESPACE OBJET par
+        // Vec3_TransformCoord(v89, v89, invWorld) @0x40d78b, puis posée @0x40d82a.
+        if (usePass == kPass_MultiTex3 && useCT) {
+            if (D3DXHANDLE h = mtVS->Handle("mCameraEye")) {
+                D3DXVECTOR3 eyeObj;
+                D3DXVec3TransformCoord(&eyeObj, &eye_, &invWorld);
+                useCT->SetFloatArray(dev_, h, &eyeObj.x, 3);
+            }
+        }
+    }
 
     // 8) Flux + indices + dessin (SetStreamSource +400 stride 76, SetIndices +416,
     //    DrawIndexedPrimitive +328 : TRIANGLELIST, nbVtx, nbTri).
@@ -578,19 +738,41 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
     dev_->SetIndices(L.ib);
     dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, L.vertexCount, 0, L.faceCount);
 
-    // 9) Restauration des états de blend (LABEL_70 de l'original).
-    resetBlendMode(mesh.blendMode);
+    // 9) Restauration des états de blend (LABEL_72 de l'original, @0x40d953 : `*(v61+44)`
+    //    -> comme à l'aller, sur le matériau EFFECTIF).
+    resetBlendMode(M.blendMode);
 }
 
-// blendMode 1 = alpha-test ; blendMode 2 = additif/alpha (cf. Model_DrawSkinnedSubset).
+// États de blend par matériau — Model_DrawSkinnedSubset 0x40CA40 @0x40cba4..0x40cc30.
+//   blendMode 1 = alpha-test ; blendMode 2 = ALPHA BLEND (SRCALPHA/INVSRCALPHA), PAS un additif.
+//
+// DÉFAUT CORRIGÉ (Passe 4 / W7) — cette fonction n'était PAS bit-exacte, contrairement à ce
+// qu'affirmait le commentaire qui vivait ici : il MANQUAIT un état à CHACUNE des deux branches.
+// Hex-Rays les avait perdus parce que les deux branches partagent leur DERNIER SetRenderState via
+// une queue commune (`jmp loc_40CC22` @0x40cbd8 / chute @0x40cc20 -> `call` @0x40cc30) : le
+// décompilateur n'en restituait pas les arguments. Relevé au désassemblage :
+//   mode 1 : push esi(=1)/push 0Fh @0x40cbb2 -> ALPHATESTENABLE=1 @0x40cbbb
+//            push 5/push 19h      @0x40cbca -> ALPHAFUNC=5 (D3DCMP_GREATEREQUAL) @0x40cbcf
+//            push 80h/push 18h    @0x40cbd1 -> ALPHAREF=128            <-- MANQUAIT
+//   mode 2 : push 0/push 0Eh      @0x40cbf0 -> ZWRITEENABLE=0 @0x40cbf5
+//            push esi(=1)/push 1Bh@0x40cc04 -> ALPHABLENDENABLE=1 @0x40cc08
+//            push 5/push 13h      @0x40cc17 -> SRCBLEND=5 (D3DBLEND_SRCALPHA) @0x40cc1c
+//            push 6/push 14h      @0x40cc1e -> DESTBLEND=6 (D3DBLEND_INVSRCALPHA) <-- MANQUAIT
+// POURQUOI C'ÉTAIT CRITIQUE : resetBlendMode remet ALPHAREF=0 et DESTBLEND=1 (ZERO). Sans ces
+// deux états, dès le 2e mesh, mode 1 -> alpha-test `alpha >= 0` = toujours vrai = INOPÉRANT, et
+// mode 2 -> blend SRCALPHA/ZERO = destination ÉCRASÉE au lieu d'être mélangée. Le défaut était
+// LATENT tant que blendMode valait 0 partout ; corriger SOBJ-02 sans corriger ceci l'aurait ACTIVÉ.
+// Les deux correctifs sont donc indissociables.
 void MeshRenderer::applyBlendMode(uint32_t blendMode) {
     if (blendMode == 1) {
         dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_AlphaTestEnable), TRUE);
         dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_AlphaFunc), kCMP_GreaterEqual);
+        dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_AlphaRef), kAlphaRef_Material);
     } else if (blendMode == 2) {
         dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_ZWriteEnable), FALSE);
         dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_AlphaBlendEnable), TRUE);
         dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_SrcBlend), kBLEND_SrcAlpha);
+        dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_DestBlend), kBLEND_InvSrcAlpha);
     }
 }
 

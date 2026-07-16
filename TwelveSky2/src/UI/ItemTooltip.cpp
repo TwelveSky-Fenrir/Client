@@ -57,7 +57,25 @@ void DrawItemTooltip(const UiContext& ctx, int x, int y, uint32_t itemId,
     if (enchantLvl > 0) title = "+" + std::to_string(enchantLvl) + " " + title;
     lines.push_back({title, kColTitle});
 
-    lines.push_back({"Niveau requis : " + std::to_string(info->itemLevel), kColText});
+    // « Niveau requis » : les DEUX termes de la seule exigence d'équipement PROUVÉE —
+    // garde @0x64ED49 de Item_MeetsEquipRequirement 0x64ECD0 :
+    //   `if (a2[59] + a2[58] > g_SelfLevelBonus + g_SelfLevel) return 0`
+    // soit field236 (+236, palier de renaissance) + field232 (+232, niveau) comparés à
+    // self.levelBonus + self.level. Ce champ était auparavant renseigné depuis itemLevel
+    // (+204) : +204 n'est PAS une exigence, il ne pilote que le scaling de stats
+    // (seuils 45/100/113/146, cf. Item_GetScaledStat 0x545980) — aucun lecteur du binaire
+    // ne le confronte au niveau du joueur.
+    //
+    // JUGEMENT ASSUMÉ, PAS UNE CORRECTION DE FIDÉLITÉ : ce widget est une fonction LIBRE
+    // (cf. en-tête de ItemTooltip.h) sans contrepartie binaire — le client d'origine
+    // n'affiche AUCUNE infobulle d'objet ; son seul retour d'éligibilité côté icône est un
+    // overlay sprite rouge (Sprite2D_Draw(unk_8F3B10) @0x5d2184, UI_ItemListWin_Draw), sans
+    // texte. Il n'y a donc rien à quoi être fidèle ici ; on aligne simplement le libellé sur
+    // la sémantique prouvée du gate plutôt que sur un champ sans rapport.
+    lines.push_back({"Niveau requis : " + std::to_string(info->field232), kColText});
+    if (info->field236 > 0) {
+        lines.push_back({"Renaissance requise : " + std::to_string(info->field236), kColText});
+    }
 
     if (cellOpt && cellOpt->flag > 1) {
         lines.push_back({"Quantité : " + std::to_string(cellOpt->flag), kColText});

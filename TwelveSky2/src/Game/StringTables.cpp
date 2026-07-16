@@ -1,6 +1,7 @@
 // Game/StringTables.cpp — implémentations non-template de StringTables.h.
 // Voir StringTables.h pour la documentation complète des formats et des EA.
 #include "Game/StringTables.h"
+#include "Game/ClientRuntime.h"   // g_Client.Var(...) : publication de la table de couleurs mFONTCOLOR dans la longue traine
 #include "Core/Log.h"
 #include <cstring>
 
@@ -134,6 +135,7 @@ bool BannedWordDict::IsBanned(const std::string& text) const {
 // toujours 1.
 // ---------------------------------------------------------------------------
 bool ColorPalette::InitPalette() {
+    count_ = 45; // EA 0x4C1D6A (`*this = 45`) — champ count consomme par Get()/ColorTable_GetColor 0x4C1FE0.
     static const int32_t kColors[45] = {
         -1,        -65536,    -256,      -16776961, -16736414,
         -12775045, -5000269,  -406134,   -7483404,  -7746915,
@@ -185,6 +187,35 @@ bool LoadStringTables(StringTables& out, const std::string& gameDataDir,
     }
 
     if (!out.colors.InitPalette()) allOk = false; // ne peut pas echouer en pratique
+
+    // -----------------------------------------------------------------------
+    // CABLAGE de la palette mFONTCOLOR (ColorTable_InitPalette 0x4C1D60) : le
+    // binaire garde les 8 couleurs de canal dans un tableau contigu a
+    // 0x84DFD8..0x84DFF4 (= instance mFONTCOLOR 0x84DF20 + 184), qui EST la
+    // ChannelColorTable (system/whisper/party/shout/guild/faction/trade/gm).
+    // On publie ici les 8 ARGB *deja resolus* (ColorTable_GetColor 0x4C1FE0) dans
+    // la longue traine g_Client.Var(<EA d'origine>), miroir fidele de ce tableau.
+    //
+    // Consommation REELLE (verifiee) :
+    //   - 0x84DFD8 (g_SysMsgColor, idx15) est LU par 6 sites deja cables :
+    //     Net/CharStatDeltaDispatch.cpp:191, Net/GameVarDispatch.cpp (A_SysMsgColor),
+    //     Game/SocialSystem.cpp:69, UI/PartyWindow.cpp:48, UI/NpcDialogWindow.cpp:32,
+    //     UI/VendorShopWindow.cpp:364 (tous via g_Client.VarGet(0x84dfd8)). Avant ce
+    //     cablage la valeur restait 0 -> lignes systeme sociales invisibles
+    //     (Game/SocialSystem.cpp:69, sans repli) : bug corrige.
+    //   - 0x84DFDC..0x84DFF4 (couleurs de canal chat) : consommees par
+    //     UI/ChatWindow.cpp::ChannelColor() qui lit g_Strings.colors DIRECTEMENT ;
+    //     publiees ici aussi comme miroir fidele du tableau du binaire (les
+    //     handlers Net/GameHandlers_ChatSocial.cpp:33 / Net/GameHandlers_PartyGuild.cpp:33
+    //     documentent ces EA comme "valeurs a reextraire" et pourraient les lire ici).
+    g_Client.Var(0x84DFD8u) = static_cast<int32_t>(out.colors.SystemColor());  // g_SysMsgColor       idx15 -> 0xFFA8A400
+    g_Client.Var(0x84DFDCu) = static_cast<int32_t>(out.colors.WhisperColor()); // g_ChatColor_Whisper idx1  -> 0xFFFFFFFF
+    g_Client.Var(0x84DFE0u) = static_cast<int32_t>(out.colors.PartyColor());   // g_ChatColor_Party   idx40 -> 0xFF35E0FF
+    g_Client.Var(0x84DFE4u) = static_cast<int32_t>(out.colors.ShoutColor());   // g_ChatColor_Shout   idx39 -> 0xFFF7CF8C
+    g_Client.Var(0x84DFE8u) = static_cast<int32_t>(out.colors.GuildColor());   // g_ChatColor_Guild   idx36 -> 0xFF8ACD9C
+    g_Client.Var(0x84DFECu) = static_cast<int32_t>(out.colors.FactionColor()); // g_ChatColor_Faction idx37 -> 0xFF00C078
+    g_Client.Var(0x84DFF0u) = static_cast<int32_t>(out.colors.TradeColor());   // g_ChatColor_Trade   idx38 -> 0xFFFFFB9C
+    g_Client.Var(0x84DFF4u) = static_cast<int32_t>(out.colors.GmColor());      // g_ChatColor_GM      idx45 -> 0xFFFF8040
 
     return allOk;
 }

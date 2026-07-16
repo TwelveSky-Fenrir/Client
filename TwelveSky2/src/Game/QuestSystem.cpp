@@ -1,9 +1,11 @@
 // Game/QuestSystem.cpp — implementation du systeme de quetes (ts2::game).
 // Transcription fidele du desassemblage de TwelveSky2.exe. Cf. QuestSystem.h pour les EAs.
 #include "Game/QuestSystem.h"
+#include "Game/ExtraDatabases.h" // g_ExtraDb.quest + FindQuestDefByElementAndId (NpcTbl_FindByTypeAndId 0x4C8340)
 #include "Asset/ImgFile.h"
 #include "Core/Log.h"
 #include <cstring>
+#include <vector>
 
 namespace ts2::game {
 namespace {
@@ -33,10 +35,35 @@ bool StriEqualBounded(const char* a, const char* b, size_t maxLen) {
     return true;
 }
 
-// Resolveur d'etape courant injectable (cf. QuestSystem.h — hors perimetre : vraie table
-// NPC mQUEST non modelisee).
+// Override de test uniquement (nullptr = resolution directe sur la vraie table — cf. le
+// bandeau (B) de QuestSystem.h : le binaire n'a AUCUNE indirection ici).
 QuestStepLookup g_stepLookup = nullptr;
 const QuestStepRecord* g_curStepRecord = nullptr;
+
+// Cache de projection QuestDefRecord (8444 o) -> QuestStepRecord (vue des seuls champs
+// consommes). UNE entree par ligne de g_ExtraDb.quest, indexee par le MEME index de ligne
+// que le binaire : c'est le miroir de `base + 8444*i` @0x4C83CE, donc un pointeur STABLE et
+// UNIQUE par ligne. Indispensable : Quest_GetRewardItemId/IsRewardItemActive re-resolvent
+// pendant qu'ApplyQuestInteractResultState tient deja un `npc` — un buffer statique partage
+// les ferait aliaser.
+std::vector<QuestStepRecord> g_stepCache;
+
+// Projette une ligne mQUEST sur la vue QuestStepRecord. Offsets prouves par decompilation
+// croisee (Quest_CheckObjectiveState 0x50FF10, Quest_GetObjectiveResult 0x510520,
+// Quest_GetRewardItemId 0x510A10, Pkt_SmithUpgradeResult 0x48E7D0).
+void ProjectQuestStep(const QuestDefRecord& def, QuestStepRecord& out) {
+    out.field64  = def.levelReq;           // +64  porte de niveau (@0x50FF86 `cmp g_SelfLevel, [rec+0x40]`)
+    out.category = def.fieldE;             // +72  type d'objectif 1..8 (@0x50FFFC switch ; @0x48E929 -> g_QuestObjType)
+    out.field92  = def.fieldG;             // +92  v10[23] (@0x510520)
+    out.field96  = def.fieldH[0];          // +96  v10[24] (@0x510520)
+    out.field116 = def.fieldI;             // +116 v10[29] (@0x510520)
+    out.targetId = def.objectiveTarget;    // +120 (@0x510012 etc. ; @0x48E881 -> item id g_InvMain)
+    out.required = def.objectiveRequired;  // +124 (@0x51002A `progress >= [v10+124]`)
+    for (int i = 0; i < 3; ++i) {          // +136 + 8*i / +140 + 8*i (@0x510A62 / @0x510A72)
+        out.reward[i].type  = def.rewards[i].category;
+        out.reward[i].value = def.rewards[i].value;
+    }
+}
 
 } // namespace
 
@@ -210,27 +237,75 @@ int QuestTbl_FindNextOfGroup(const DataTable& table, int group0, int fromId1base
 // ===========================================================================
 
 void SetQuestStepLookup(QuestStepLookup fn) { g_stepLookup = fn; }
+
+// LookupQuestStep — miroir de `NpcTbl_FindByTypeAndId(mQUEST, element0, questId)` 0x4C8340,
+// appele EN DUR par le binaire (EA 0x50FF65, 0x50FFCA, 0x510A37, 0x510AB7, 0x664A67,
+// 0x510E40, 0x510ECC). `zoneId` = element local 0-based (nom historique trompeur, cf.
+// QuestSystem.h). Aucune garde de table-chargee : sur une table vide le scan de
+// FindQuestDefByElementAndId ne trouve rien et renvoie nullptr — exactement le `xor eax,eax`
+// @0x4C83D2 du binaire.
 const QuestStepRecord* LookupQuestStep(int zoneId, int npcQuestId) {
-    return g_stepLookup ? g_stepLookup(zoneId, npcQuestId) : nullptr;
+    if (g_stepLookup) return g_stepLookup(zoneId, npcQuestId); // override de test
+
+    const QuestDefRecord* def = FindQuestDefByElementAndId(zoneId, npcQuestId);
+    if (!def) return nullptr;
+
+    // Index de ligne == celui du binaire : (rec - base) / 8444 (imul stride @0x4C836D).
+    const DataTable& t = g_ExtraDb.quest;
+    const uint8_t* base = t.data.data();
+    const size_t row = static_cast<size_t>(reinterpret_cast<const uint8_t*>(def) - base)
+                     / static_cast<size_t>(t.stride);
+
+    if (g_stepCache.size() != t.count) g_stepCache.assign(t.count, QuestStepRecord{});
+    if (row >= g_stepCache.size()) return nullptr; // inatteignable (def vient de la table)
+
+    ProjectQuestStep(*def, g_stepCache[row]);
+    return &g_stepCache[row];
 }
 
-const QuestStepRecord* CurrentQuestStepRecord() { return g_curStepRecord; }
+// CurrentQuestStepRecord — miroir de g_pCurQuestStepRecord 0x18231B4 (record de l'etape de
+// quete COURANTE), RESOLU EN DIRECT. Le binaire LIT ce global (Pkt_SmithUpgradeResult 0x48E7D0 :
+// 20 xrefs @0x18231B4, TOUTES des lectures, aucun store) mais ne l'ecrit jamais statiquement.
+// Le jeu TOURNE, donc a l'execution ce pointeur n'est PAS nul quand les case 1/2/3/4 le
+// deferencent : sa valeur est le record de l'etape courante. Equivalence prouvee
+// g_pCurQuestStepRecord == NpcTbl_FindByTypeAndId(mQUEST, g_LocalElement, g_CurQuestId) : dans le
+// case 2, la boucle de recompenses lit g_pCurQuestStepRecord+8*i+136 (@0x48EB0E) et
+// Quest_GetRewardItemId 0x510A10 relit Find(element, g_CurQuestId) @0x510A37 pour la MEME
+// recompense ecrite en inventaire -> les deux designent forcement le meme record. On resout donc
+// via LookupQuestStep (comme les 7 autres consommateurs) au lieu de renvoyer g_curStepRecord
+// qu'AUCUN code n'ecrit (renvoyait nullptr a vie => etat des case 1/2/3/4 d'ApplyQuestInteract-
+// ResultState ET garde de visibilite du QuestTracker UI/QuestTrackerWindow.cpp:48 = CODE MORT).
+// Ce n'est PAS fabriquer un ecrivain a g_curStepRecord : resolution a la demande, fidele a la
+// lecture du pointeur. element = g_World.self.element (== g_LocalElement 0x1673194) ; questId =
+// g_QuestProgress.npcQuestId (== g_CurQuestId 0x16745F4). npcQuestId==0 (aucune quete) =>
+// Find(element,0) => nullptr => consommateurs masques (gating correct).
+const QuestStepRecord* CurrentQuestStepRecord() {
+    if (g_curStepRecord) return g_curStepRecord; // override de test (prioritaire)
+    return LookupQuestStep(static_cast<int>(g_World.self.element), g_QuestProgress.npcQuestId);
+}
 void SetCurrentQuestStepRecord(const QuestStepRecord* record) { g_curStepRecord = record; }
 
 namespace {
-// Scan des 2x64 slots de suivi (mirroir des boucles i<2 / j<64 du binaire).
-bool KillTrackContains(const QuestProgressState& s, uint32_t value) {
-    for (const auto& block : s.killTrack)
-        for (const auto& slot : block)
-            if (slot.id == value) return true;
+// Mirroir des boucles `for (i<2) for (j<64)` de Quest_CheckObjectiveState (EA 0x510058/
+// 0x510070 et jumelles) : `*(this + 384*i + 6*j + 10320) == cible`. L'octet 10320*4 = 0xA140
+// depuis g_PlayerCmdController 0x1669170 donne 0x16732B0 = g_InvMain -> c'est la GRILLE
+// D'INVENTAIRE (row 0 = sac, row 1 = page bonus), pas une table de suivi dediee. Le binaire
+// lit un global ; on lit donc g_Client.inv, son miroir etabli (ClientRuntime.h).
+bool InvRows01Contains(uint32_t value) {
+    for (uint32_t row = 0; row < 2; ++row)                       // for (i = 0; i < 2; ++i)
+        for (uint32_t col = 0; col < InventoryState::kCols; ++col) // for (j = 0; j < 64; ++j)
+            if (g_Client.inv.At(row, col).itemId == value) return true;
     return false;
 }
 } // namespace
 
 int Quest_CheckObjectiveState(const QuestProgressState& s) {
     if (s.objectiveMode == 0 && s.objectiveType == 0 && s.objectiveTarget == 0 && s.objectiveProgress == 0) {
+        // Branche « implicite » = PORTE DE NIVEAU sur la quete SUIVANTE (npcQuestId + 1).
+        // EA 0x50FF6A : Find(mQUEST, element, questId+1) ; EA 0x50FF80/0x50FF86 :
+        // `mov ecx,[edx+0xA038]` (= g_SelfLevel 0x16731A8) puis `cmp ecx,[eax+0x40]` / `jge`.
         const QuestStepRecord* npc = LookupQuestStep(s.zoneId, s.npcQuestId + 1);
-        return (npc && s.totalKillCount >= static_cast<int>(npc->field64)) ? 1 : 0;
+        return (npc && g_World.self.level >= static_cast<int>(npc->field64)) ? 1 : 0;
     }
     if (s.objectiveMode != 1) return 0;
 
@@ -245,18 +320,18 @@ int Quest_CheckObjectiveState(const QuestProgressState& s) {
         case 3:
         case 4:
             if (s.objectiveTarget != static_cast<int>(npc->targetId)) return 0;
-            return KillTrackContains(s, npc->targetId) ? 3 : 2;
+            return InvRows01Contains(npc->targetId) ? 3 : 2;
         case 5:
             if (s.objectiveTarget != static_cast<int>(npc->targetId)) return 0;
             return (s.objectiveProgress >= 1) ? 3 : 2;
         case 6:
             if (s.objectiveTarget == 1) {
                 if (s.objectiveProgress != static_cast<int>(npc->targetId)) return 0;
-                return KillTrackContains(s, npc->targetId) ? 3 : 2;
+                return InvRows01Contains(npc->targetId) ? 3 : 2;
             }
             if (s.objectiveTarget == 2) {
                 if (s.objectiveProgress != static_cast<int>(npc->required)) return 0;
-                return KillTrackContains(s, npc->required) ? 5 : 4;
+                return InvRows01Contains(npc->required) ? 5 : 4;
             }
             return 0;
         case 7:
@@ -284,9 +359,10 @@ bool Quest_IsObjectiveComplete(const QuestProgressState& s) {
 
 int Quest_GetObjectiveResult(const QuestProgressState& s) {
     if (s.objectiveMode == 0 && s.objectiveType == 0 && s.objectiveTarget == 0 && s.objectiveProgress == 0) {
+        // Meme porte de niveau que Quest_CheckObjectiveState (g_SelfLevel vs rec+64).
         const QuestStepRecord* npc = LookupQuestStep(s.zoneId, s.npcQuestId + 1);
         if (!npc) return 0;
-        return (s.totalKillCount >= static_cast<int>(npc->field64)) ? static_cast<int>(npc->field92) : 0;
+        return (g_World.self.level >= static_cast<int>(npc->field64)) ? static_cast<int>(npc->field92) : 0;
     }
     if (s.objectiveMode != 1) return 0;
 
@@ -301,11 +377,11 @@ int Quest_GetObjectiveResult(const QuestProgressState& s) {
         case 2:
         case 3:
             if (s.objectiveTarget != static_cast<int>(npc->targetId)) return 0;
-            return KillTrackContains(s, npc->targetId)
+            return InvRows01Contains(npc->targetId)
                        ? static_cast<int>(npc->field116) : static_cast<int>(npc->field92);
         case 4:
             if (s.objectiveTarget != static_cast<int>(npc->targetId)) return 0;
-            return KillTrackContains(s, npc->targetId)
+            return InvRows01Contains(npc->targetId)
                        ? static_cast<int>(npc->field116) : static_cast<int>(npc->field96);
         case 5:
             if (s.objectiveTarget != static_cast<int>(npc->targetId)) return 0;
@@ -314,12 +390,12 @@ int Quest_GetObjectiveResult(const QuestProgressState& s) {
         case 6:
             if (s.objectiveTarget == 1) {
                 if (s.objectiveProgress != static_cast<int>(npc->targetId)) return 0;
-                return KillTrackContains(s, npc->targetId)
+                return InvRows01Contains(npc->targetId)
                            ? static_cast<int>(npc->field96) : static_cast<int>(npc->field92);
             }
             if (s.objectiveTarget == 2) {
                 if (s.objectiveProgress != static_cast<int>(npc->required)) return 0;
-                return KillTrackContains(s, npc->required)
+                return InvRows01Contains(npc->required)
                            ? static_cast<int>(npc->field116) : static_cast<int>(npc->field92);
             }
             return 0;
@@ -363,34 +439,41 @@ bool Quest_IsItemAllowed(int containerIndex, int itemId) {
 }
 
 // ===========================================================================
-// Callees directes de Pkt_SmithUpgradeResult (killTrack).
+// Callees directes de Pkt_SmithUpgradeResult — grille d'inventaire (g_InvMain 0x16732B0),
+// lignes 0..1 (sac principal + page bonus).
 // ===========================================================================
 
-int Quest_RemoveTrackedItem(QuestProgressState& s, uint32_t itemId) {
-    for (int i = 0; i < 2; ++i) {
-        auto& block = s.killTrack[static_cast<size_t>(i)];
-        for (auto& slot : block) {
-            if (slot.id == itemId) {
-                slot = QuestKillTrackSlot{};
-                return i;
+// Inventory_RemoveItem 0x510C40.
+int Quest_RemoveTrackedItem(InventoryState& inv, uint32_t itemId) {
+    for (int i = 0; i < 2; ++i) {                                   // for (i = 0; i < 2; ++i) @0x510C49
+        for (uint32_t j = 0; j < InventoryState::kCols; ++j) {      // for (j = 0; j < 64; ++j) @0x510C65
+            InvCell& c = inv.At(static_cast<uint32_t>(i), j);
+            if (c.itemId == itemId) {                               // @0x510CA0
+                c = InvCell{}; // les 6 dwords 10320..10325 remis a 0 (@0x510CBF..0x510D63)
+                return i;                                           // @0x510D6E
             }
         }
     }
-    return -1;
+    return -1;                                                      // @0x510D7D
 }
 
-int Quest_ReplaceTrackedItem(QuestProgressState& s, uint32_t oldItemId, uint32_t newItemId) {
-    for (int i = 0; i < 2; ++i) {
-        auto& block = s.killTrack[static_cast<size_t>(i)];
-        for (auto& slot : block) {
-            if (slot.id == oldItemId) {
-                slot.id = newItemId;
-                slot.aux3 = 0; slot.aux4 = 0; slot.aux5 = 0; // fidele : +12/+16/+20 remis a 0 (aux1/aux2 = +4/+8 non touches)
-                return i;
+// Inventory_ReplaceItem 0x510B40.
+int Quest_ReplaceTrackedItem(InventoryState& inv, uint32_t oldItemId, uint32_t newItemId) {
+    for (int i = 0; i < 2; ++i) {                                   // @0x510B49
+        for (uint32_t j = 0; j < InventoryState::kCols; ++j) {      // @0x510B65
+            InvCell& c = inv.At(static_cast<uint32_t>(i), j);
+            if (c.itemId == oldItemId) {                            // @0x510BA0
+                c.itemId = newItemId;                               // +0  @0x510BC2
+                // Fidele : l'original n'ecrit que 10323/10324/10325 ; gridX/gridY
+                // (10321/10322) restent INCHANGES.
+                c.flag = 0;                                         // +12 @0x510BDE
+                c.color = 0;                                        // +16 @0x510BFF
+                c.durability = 0;                                   // +20 @0x510C20
+                return i;                                           // @0x510C2B
             }
         }
     }
-    return -1;
+    return -1;                                                      // @0x510C3A
 }
 
 // ===========================================================================
@@ -402,6 +485,13 @@ void ApplyQuestInteractResultState(const QuestInteractResultPacket& p,
                                     InventoryState& inv) {
     const QuestStepRecord* npc = CurrentQuestStepRecord();
 
+    // Le binaire lit l'element depuis le global g_LocalElement 0x1673194 (= base+0xA024) a
+    // CHAQUE resolution ; notre `progress.zoneId` en est le miroir. On le resynchronise ici
+    // sur sa source unique (g_World.self.element == g_LocalElement, cf. Net/NetClient.h:111)
+    // : sans ca, il resterait 0 a vie et le resolveur composite renverrait la ligne de
+    // l'element 1 pour 3 joueurs sur 4.
+    progress.zoneId = static_cast<int>(g_World.self.element);
+
     switch (p.resultCode) {
     case 1: {
         g_Client.Var(0x1675B08) = 0; // g_GmCmdCooldownLatch
@@ -409,16 +499,22 @@ void ApplyQuestInteractResultState(const QuestInteractResultPacket& p,
             inv.Set(static_cast<uint32_t>(p.invRow), p.invSlot, npc->targetId, p.gridX, p.gridY,
                     /*count*/0, /*durability*/0, /*serial*/0);
         }
-        g_Client.Var(0x16745F4) += 1;      // g_CurQuestId
-        g_Client.Var(0x16745F8) = 1;       // g_QuestObjMode
+        // Etat de quete : ecrit dans progress.* (= la MEME memoire que les globals
+        // 0x16745F4..0x1674604 du binaire, cf. QuestProgressState). L'ancienne version
+        // ecrivait dans g_Client.Var(0x16745F4..) — une 2e representation que PERSONNE ne
+        // relisait (les consommateurs lisent tous g_QuestProgress) : l'etat etait ecrit puis
+        // perdu. Une seule representation desormais.
+        progress.npcQuestId += 1;    // g_CurQuestId 0x16745F4 @0x48E911/0x48E914
+        progress.objectiveMode = 1;  // g_QuestObjMode 0x16745F8 @0x48E91A
         if (npc) {
-            g_Client.Var(0x16745FC) = static_cast<int32_t>(npc->category); // g_QuestObjType
+            progress.objectiveType = static_cast<int>(npc->category); // g_QuestObjType 0x16745FC @0x48E929
+            // @0x48E938 / @0x48E95E : deux tests `cmp [rec+0x48], 6` independants.
             if (npc->category == 6) {
-                g_Client.Var(0x1674600) = 1;                                   // g_QuestObjParam1
-                g_Client.Var(0x1674604) = static_cast<int32_t>(npc->targetId); // g_QuestObjParam2
+                progress.objectiveTarget = 1;                                   // @0x48E94E
+                progress.objectiveProgress = static_cast<int>(npc->targetId);   // @0x48E975/0x48E978
             } else {
-                g_Client.Var(0x1674600) = static_cast<int32_t>(npc->targetId);
-                g_Client.Var(0x1674604) = 0;
+                progress.objectiveTarget = static_cast<int>(npc->targetId);     // @0x48E943/0x48E946
+                progress.objectiveProgress = 0;                                 // @0x48E964
             }
         }
         // TODO(state) hors perimetre : Snd3D_PlayScaledVolume 0x4DA380, UI_EventNoticeWnd_Open(1) 0x6649F0.
@@ -461,21 +557,21 @@ void ApplyQuestInteractResultState(const QuestInteractResultPacket& p,
                     break;
                 }
             }
-            switch (g_Client.VarGet(0x16745FC)) { // g_QuestObjType (persiste depuis un case 1 precedent)
+            switch (progress.objectiveType) { // g_QuestObjType (persiste depuis un case 1 precedent)
             case 2: case 3: case 4:
-                Quest_RemoveTrackedItem(progress, npc->targetId);
+                Quest_RemoveTrackedItem(inv, npc->targetId);
                 break;
             case 6:
-                Quest_RemoveTrackedItem(progress, npc->required);
+                Quest_RemoveTrackedItem(inv, npc->required);
                 break;
             default:
                 break;
             }
         }
-        g_Client.Var(0x16745F8) = 0;
-        g_Client.Var(0x16745FC) = 0;
-        g_Client.Var(0x1674600) = 0;
-        g_Client.Var(0x1674604) = 0;
+        progress.objectiveMode = 0;
+        progress.objectiveType = 0;
+        progress.objectiveTarget = 0;
+        progress.objectiveProgress = 0;
         g_Client.Var(0x1675AE8) = 0;
         g_Client.VarF(0x1675AEC) = g_World.gameTimeSec - 590.0f;
         break;
@@ -496,21 +592,21 @@ void ApplyQuestInteractResultState(const QuestInteractResultPacket& p,
     case 4: {
         g_Client.Var(0x1675B08) = 0;
         int32_t replaceResult = -1;
-        if (npc) replaceResult = static_cast<int32_t>(Quest_ReplaceTrackedItem(progress, npc->targetId, npc->required));
+        if (npc) replaceResult = static_cast<int32_t>(Quest_ReplaceTrackedItem(inv, npc->targetId, npc->required));
         if (!replaceResult || (replaceResult == 1 && g_Client.VarGet(0x16732A8) > 0)) { // g_Inv_ExtraPageCount
             g_Client.Var(0x18398F8) = replaceResult;
             // TODO(state) hors perimetre : cGameHud_ResetUiState 0x62AFB0.
         }
-        g_Client.Var(0x1674600) = 2;
-        if (npc) g_Client.Var(0x1674604) = static_cast<int32_t>(npc->required);
+        progress.objectiveTarget = 2;                                              // g_QuestObjParam1 0x1674600
+        if (npc) progress.objectiveProgress = static_cast<int>(npc->required);     // g_QuestObjParam2 0x1674604
         break;
     }
     case 5: {
         // TODO(state) hors perimetre : UI_EventNoticeWnd_Open(2) 0x6649F0.
-        g_Client.Var(0x16745F8) = 0;
-        g_Client.Var(0x16745FC) = 0;
-        g_Client.Var(0x1674600) = 0;
-        g_Client.Var(0x1674604) = 0;
+        progress.objectiveMode = 0;
+        progress.objectiveType = 0;
+        progress.objectiveTarget = 0;
+        progress.objectiveProgress = 0;
         g_Client.Var(0x1675AE8) = 0;
         g_Client.VarF(0x1675AEC) = g_World.gameTimeSec - 590.0f;
         break;
@@ -518,7 +614,7 @@ void ApplyQuestInteractResultState(const QuestInteractResultPacket& p,
     case 6:
     case 8:
     case 9:
-        g_Client.Var(0x1674604) += 1;
+        progress.objectiveProgress += 1; // g_QuestObjParam2 0x1674604
         break;
     case 7:
     default:

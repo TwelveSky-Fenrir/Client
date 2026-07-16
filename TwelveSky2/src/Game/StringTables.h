@@ -243,24 +243,48 @@ public:
     // ColorTable_InitPalette 0x4C1D60 : constantes en dur, ne peut pas échouer.
     bool InitPalette();
 
-    uint32_t Count() const { return 45; }
+    // EA 0x4C1D6A (`*this = 45`) : le compteur est un CHAMP de l'objet, pas une
+    // constante de compilation — il vaut 0 tant qu'InitPalette n'a pas tourné,
+    // exactement comme la .data zéro-initialisée du binaire avant App_Init.
+    uint32_t Count() const { return count_; }
 
-    // Index 1-based -> ARGB 0xAARRGGBB ; 0 hors bornes. NOTE : aucun
-    // accesseur Get() dédié n'a été retrouvé dans le désassemblage exploré
-    // pour cette table (seule InitPalette 0x4C1D60 a été analysée en détail,
-    // conformément aux 5 EA assignées) ; la formule d'indexation 1-based est
-    // déduite PAR ANALOGIE avec StrTable003_Get/StrTable005_Get. A confirmer
-    // si un accesseur dédié est localisé plus tard dans l'IDB.
+    // ColorTable_GetColor 0x4C1FE0 — l'accesseur RÉEL du binaire (RETROUVÉ ; la
+    // note « déduit par analogie » qui figurait ici est donc levée) :
+    //     if (a2 >= 1 && a2 <= *this) return *(this + a2);  // EA 0x4C1FF5 / 0x4C2004
+    //     else                        return -16777216;     // EA 0x4C1FF7
+    // Il confirme l'indexation 1-based ET fixe deux points qui étaient faux ici :
+    //   - la sentinelle hors bornes est 0xFF000000 (noir OPAQUE), PAS 0 (noir
+    //     TRANSPARENT, qui rendait le texte invisible au lieu de noir) ;
+    //   - la borne haute est le champ count_ courant, pas la constante 45.
+    // Appelé par UI_DrawNumberValue 0x53FCC0 (@0x53FCD2) et UI_DrawNumberCentered
+    // 0x53FD00 (@0x53FD4B), tous deux avec this = 0x84DF20 (l'instance mFONTCOLOR).
     uint32_t Get(int index) const {
-        if (index < 1 || index > 45) return 0;
-        return static_cast<uint32_t>(colors_[index - 1]);
+        if (index < 1 || static_cast<uint32_t>(index) > count_) return 0xFF000000u; // EA 0x4C1FF7
+        return static_cast<uint32_t>(colors_[index - 1]);                           // EA 0x4C2004
     }
 
     const ChannelIndices& Channels() const { return channel_; }
     // Résout directement la couleur ARGB d'un canal de chat nommé.
     uint32_t ChannelColor(int32_t paletteIndex1Based) const { return Get(paletteIndex1Based); }
 
+    // -----------------------------------------------------------------------
+    // Les 8 index de canal (this+46..+53, EA 0x4C1F5F..0x4C1FBA) RÉSOLUS en ARGB
+    // via Get() — c.-à-d. exactement ce que fait le binaire au DESSIN
+    // (UI_GameHud_Render @0x68441E -> UI_DrawNumberValue 0x53FCC0 ->
+    // ColorTable_GetColor 0x4C1FE0). Les 8 EA absolues sont nommées dans l'IDB et
+    // la sémantique de chacune est prouvée par SON handler consommateur (xrefs) :
+    uint32_t SystemColor()  const { return Get(channel_.system);  } // g_SysMsgColor       0x84DFD8 idx15 — Msg_AppendSystemLine (partout)
+    uint32_t WhisperColor() const { return Get(channel_.whisper); } // g_ChatColor_Whisper 0x84DFDC idx1  — Pkt_WhisperReceive 0x48F210 @0x48F2F1
+    uint32_t PartyColor()   const { return Get(channel_.party);   } // g_ChatColor_Party   0x84DFE0 idx40 — Pkt_PartyChatOrInvite 0x48F3C0 @0x48F4D3
+    uint32_t ShoutColor()   const { return Get(channel_.shout);   } // g_ChatColor_Shout   0x84DFE4 idx39 — Pkt_ShoutMessage 0x48F640 @0x48F72E
+    uint32_t GuildColor()   const { return Get(channel_.guild);   } // g_ChatColor_Guild   0x84DFE8 idx36 — Net_OnGuildChatMessage 0x491420 @0x4914A1
+    uint32_t FactionColor() const { return Get(channel_.faction); } // g_ChatColor_Faction 0x84DFEC idx37 — Net_OnFactionChatMessage 0x492FE0 @0x493061
+    uint32_t TradeColor()   const { return Get(channel_.trade);   } // g_ChatColor_Trade   0x84DFF0 idx38 — Net_OnTradeChatMessage 0x4943F0 @0x49446E
+    uint32_t GmColor()      const { return Get(channel_.gm);      } // g_ChatColor_Gm      0x84DFF4 idx45 — règle « [GM] » @0x48F2D0 / @0x48F70D
+
 private:
+    // Ordre des champs = layout du binaire (+0 count, +4 colors[45], +184 index).
+    uint32_t count_ = 0;            // EA 0x4C1D6A : *this = 45
     int32_t colors_[45] = {};
     ChannelIndices channel_{};
 };

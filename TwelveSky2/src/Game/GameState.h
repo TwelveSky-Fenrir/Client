@@ -11,6 +11,13 @@
 
 namespace ts2::game {
 
+// Déclaration anticipée — `NpcDefRecord` (enregistrement de la table mNPC, 11736 o) est défini
+// dans Game/ExtraDatabases.h, qui inclut DÉJÀ ce fichier (pour DataTable) : un include en sens
+// inverse créerait un cycle. `NpcRenderEntry::def` (ci-dessous) n'étant qu'un POINTEUR, le type
+// incomplet suffit ; les lecteurs qui déréférencent `def` (Scene/WorldRenderer.cpp) incluent
+// déjà Game/StaticNpcLoader.h -> Game/ExtraDatabases.h.
+struct NpcDefRecord;
+
 // Identité réseau d'une entité : paire u32 (id_hi @payload+0, id_lo @payload+4).
 struct EntityId {
     uint32_t hi = 0;  // netId1 (idHi) — ex-VeryOldClient: mServerIndex (avatar/item) / mIndex (monstre) [CONFIRMED, Rosetta §1]
@@ -255,13 +262,85 @@ struct NpcEntity {
     // offset heading confirmé sur ce record 152 o (§8 Rosetta, non ancré → non ajouté).
 };
 
-// Objet au sol — tableau dword_1764D14 (stride 88).
-struct GroundItem {
-    bool     active = false;
-    EntityId id;
-    std::array<uint8_t, 80> body{};
-    float    x = 0.0f, y = 0.0f, z = 0.0f;
+// ---------------------------------------------------------------------------------------
+// PNJ — entrée du pool de RENDU/CIBLAGE `g_NpcRenderArray` (dword_1764D14, stride 88 o /
+// 22 dw, capacité FIXE 100 = g_NpcCount 0x1687220).
+//
+// ⚠️ CE POOL N'A JAMAIS PORTÉ D'OBJETS AU SOL. Il s'appelait `GroundItem` ici jusqu'à la
+// Passe 4 / vague W7 (front « npc-array-unify ») : ce nom était ERRONÉ, et le pool était
+// modélisé DEUX FOIS côté C++ — ce champ (`GameWorld::groundItems`, JAMAIS peuplé, donc tous
+// ses consommateurs étaient morts) et le `std::vector` privé de Game/StaticNpcLoader.cpp (seul
+// peuplé, mais ignoré du clic/tick/ciblage). Les deux représentations sont désormais FUSIONNÉES
+// ici : `GameWorld::npcRenderEntries` est le pool unique, StaticNpcLoader::LoadZoneNpcs() y
+// écrit directement, et `game::ZoneNpcs()` n'en est plus qu'un accesseur.
+//
+// ÉCRIVAIN UNIQUE — cGameData_LoadZoneNpcInfo 0x5578E0 (re-prouvé par décompilation, W7).
+// `this` = g_LocalPlayerSheet 0x1685748 (`mov ecx, offset g_LocalPlayerSheet` @0x4648F7,
+// juste avant le `call` @0x4648FC) ; `this` est typé `float*` et l'immédiat 228723 dw vaut
+// 914892 o = 0xDF5CC, or 0x1685748 + 0xDF5CC = 0x1764D14 EXACTEMENT. Le pool n'apparaît donc
+// PAS dans les xrefs de 0x1764D14 (adressage `this + offset immédiat`) : preuve par calcul
+// d'offset, pas par xref.
+//
+// Champs PROUVÉS (les SEULS écrits/lus des 88 o — le reste (+8, +32..43, +48..79, +84..87)
+// n'est touché par aucun écrivain/lecteur connu et n'est donc PAS modélisé, cf. règle
+// « régions non prouvées ») :
+//   +0  def       = SkillDefTbl_GetRecord(mNPC, kindId)          @0x557946
+//   +4  active    = 1 (flag occupé)                              @0x55796B
+//   +12 mode      = 0                                            @0x55797F
+//   +16 frameAcc  = 0.0                                          @0x557995
+//   +20/24/28 x/y/z ← mZONENPCINFO 0x14AA930 +0x194   @0x5579C1/0x5579ED/0x557A19
+//   +44 angle       ← mZONENPCINFO +0x644                        @0x557A42
+//   +80 angleBase = *(+44)                                       @0x557A62
+//
+// LECTEURS — TOUS traitent ce pool en PNJ, jamais en objet au sol : Npc_DrawMesh 0x57FF00,
+// Npc_RenderSlotTick 0x5803A0 (+ _Loop 0x580400 / _Once 0x5804A0), Scene_RayHitNpcBox
+// 0x541680, World_PickEntityAtCursor 0x538AB0 (boucle j, borne g_NpcCount, catégorie de clic
+// 4 -> Npc_ApproachAndInteract @0x53723F), UI_NpcWin_Open 0x5DB530. Les sacs de butin vivent
+// AILLEURS : dword_17AB534 (stride 152, catégorie de clic 6 -> Npc_Interact @0x536AB9), cf.
+// `GameWorld::npcs`.
+// ---------------------------------------------------------------------------------------
+struct NpcRenderEntry {
+    // +0 — enregistrement mNPC résolu (11736 o, cf. Game/ExtraDatabases.h). Écrit
+    // INCONDITIONNELLEMENT (@0x557946), y compris à nullptr si la résolution échoue : c'est
+    // la garde qui suit (@0x557956) qui décide de l'activation.
+    const NpcDefRecord* def = nullptr;
+    // +4 — flag « slot occupé » (DWORD 0/1 d'origine). SEUL champ remis à 0 par le
+    // constructeur de slot maybe_cGameData_ListField1Reset 0x57FE50 (`*(this+1) = 0`, appelé
+    // 100x par cGameData_InitPools 0x5575D0) ET par le destructeur 0x57FE70 (`*(this+1) = 0`,
+    // bouclé par Pkt_EnterWorld @0x464237) : désactiver un slot NE remet AUCUN autre champ à
+    // zéro — les valeurs résiduelles (def/pos/angle) sont conservées telles quelles.
+    bool active = false;
+    // +12 — sélecteur de mode de tick, lu par Npc_RenderSlotTick @0x5803BA : 0 -> _Loop
+    // (0x580400), 1 -> _Once (0x5804A0), TOUTE AUTRE valeur -> no-op. Le MÊME champ sert
+    // d'animId dans _Loop (`Model_GetWeaponEffectFrameCount(g_ModelMotionArray, def+1324 - 1,
+    // *(this+3))` @0x580429) : double rôle porté tel quel par le binaire.
+    int mode = 0;
+    // +16 — accumulateur de frame : `+= dt*30.0` puis wrap sur frameCount
+    // (@0x58043E / @0x58045F).
+    float frameAcc = 0.0f;
+    // +20/24/28 — position monde. Vec3 CONTIGU d'origine : Math_Dist3D((float*)this + 5,
+    // flt_1687330) @0x580483 le lit comme un vec3 à partir de +20.
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    // +44 — angle affiché courant (rotation Y du maillage, Npc_DrawMesh 0x57FF00).
+    float angle = 0.0f;
+    // +80 — angle « baseline » : recopié DANS +44 par _Loop dès que la distance au joueur
+    // local dépasse 400.0 (`*(this+11) = *(this+20)` @0x58048E).
+    float angleBase = 0.0f;
 };
+
+// Capacité FIXE du pool — cGameData_InitPools 0x5575D0 @0x5575E9 (`*((_DWORD*)this + 1718) =
+// 100` -> 0x1685748 + 1718*4 = 0x1687220 == g_NpcCount). Ce n'est PAS un compteur d'occupation
+// (jamais réécrit par le chargeur) mais une CAPACITÉ, qui sert aussi de BORNE aux lecteurs
+// (World_PickEntityAtCursor boucle `j < g_NpcCount`). L'occupation réelle est portée par le
+// seul flag `active` (+4). Cohérent avec mZONENPCINFO, qui porte structurellement 100 entrées
+// par zone (row = 501 dw = 4 count + 100 kindId + 300 pos + 100 angle = 2004 o).
+inline constexpr int kNpcRenderPoolCapacity = 100;
+
+// Alias TRANSITOIRE de l'ancien nom erroné (cf. bandeau ci-dessus), conservé UNIQUEMENT le
+// temps que les lecteurs hors périmètre de la vague W7 soient renommés (Game/
+// GroundAuraWorldObjectTick.*, Game/ItemPickupSystem.cpp, Game/AutoTargetCombatGate.*).
+// NE PAS UTILISER DANS DU CODE NEUF : ce pool ne contient pas d'objets au sol.
+using GroundItem = NpcRenderEntry;
 
 // Objet de zone / nœud de ressource (mine, portail, etc.) — tableau
 // dword_180EEF4 (stride 76 o / 19 dw), compteur dword_1687230, capacité fixe
@@ -513,7 +592,25 @@ struct GameWorld {
     std::vector<PlayerEntity>  players;
     std::vector<MonsterEntity> monsters;
     std::vector<NpcEntity>     npcs;
-    std::vector<GroundItem>    groundItems;
+    // g_NpcRenderArray dword_1764D14 — pool PNJ de rendu/ciblage, 100 slots FIXES (cf.
+    // NpcRenderEntry + kNpcRenderPoolCapacity). Dimensionné par GameData_InitPools
+    // (== cGameData_InitPools 0x5575D0, propriétaire UNIQUE de la capacité) ; peuplé par
+    // Game/StaticNpcLoader.cpp::LoadZoneNpcs (== cGameData_LoadZoneNpcInfo 0x5578E0, écrivain
+    // UNIQUE), lui-même déclenché depuis EntityManager::OnSpawnCharacter branche self
+    // (== garde `if (!i)` de Pkt_SpawnCharacter @0x4648E6). Ex-`groundItems` (nom erroné,
+    // jamais peuplé) — renommé/fusionné par la vague W7, front « npc-array-unify ».
+    // Les slots INACTIFS restent présents (index stable, aligné sur mZONENPCINFO[i]) : tout
+    // lecteur DOIT tester `active` avant usage.
+    std::vector<NpcRenderEntry> npcRenderEntries;
+    // Pool des OBJETS AU SOL (sacs de butin) — dword_17AB534 dans le binaire (stride 152 o,
+    // catégorie de clic 6, Scene_RayHitItemModel 0x5418B0). CONCEPT DISTINCT du pool PNJ
+    // ci-dessus : la vague W7 « npc-array-unify » a prouvé que g_NpcRenderArray 0x1764D14 ne
+    // porte QUE des PNJ, jamais du butin. Ce vrai pool d'objets au sol n'est PAS encore
+    // modélisé (structure 152 o non portée) ; il reste VIDE — donc ItemPickupSystem
+    // (FindNearestGroundItem 0x539EC0 et voisins) demeure inerte, ce qui est FIDÈLE tant que
+    // le pool source n'est pas branché. Type provisoire NpcRenderEntry : seuls active/x/y/z
+    // sont lus par les consommateurs actuels, tous nuls sur un pool vide.
+    std::vector<NpcRenderEntry> groundItems;
     std::vector<ZoneObjectEntity> zoneObjects; // dword_180EEF4, cf. commentaire du struct
     GameDatabases              db;
     PartyRoster                partyRoster;    // g_PartyRosterNames (10 noms), cf. commentaire PartyRoster ci-dessus

@@ -54,6 +54,7 @@
 #include "Game/CharSelectFlow.h"
 #include <array>
 #include <cstdint>
+#include <string>
 
 namespace ts2::net {
 
@@ -108,16 +109,42 @@ int32_t AccountKeepAlive(NetClient& nc);
 // Net_CreateCharacter 0x52A4A0 (opcode 17). `lookPresetId` = id résolu côté client
 // par CharSelectFlow (table job×variant EXACTE, cf. ResolveLookPresetId). Envoie la
 // fiche de 10088 o (voir mapping d'offsets ci-dessus) ; consomme intégralement la
-// réponse de 10093 o (le serveur renvoie la fiche créée, non exploitée ici — TODO si
-// un miroir client de la liste des personnages est ajouté un jour).
+// réponse de 10093 o = [1][code:4][fiche-écho:10088].
+// MIROIR (EA 0x52a71e, garde `if (!v18)` EA 0x52a700) : sur code 0, la fiche écho
+// (recvBuf+5, 10088 o) est recopiée dans g_CharRecords[slot] — port fidèle du miroir
+// `unk_1669380 + 10088*slot` du binaire, le MÊME tableau que Net_LoginRequest 0x51B8E0
+// remplit au login. Sans cette recopie, LoadCharacterSlotsFromRecords relit une fiche
+// à zéro au prochain sous-état Init et le personnage créé disparaît.
 int32_t CreateCharacter(NetClient& nc, int32_t slot, const game::CharCreateForm& form,
                         int32_t lookPresetId);
 
-// Net_CharSlotAction 0x52A740 (opcode 18). Suppression : action=1, arg=0 (chemin
-// CharSelect_ReqDeleteChar 0x528FD0). `arg` est laissé libre pour un futur usage
-// "restore" (action différente, cf. CharSelect_ReqRestoreChar 0x5295D0), hors
-// périmètre de cette mission.
+// Net_CharSlotAction 0x52A740 (opcode 18). Deux actions PROUVÉES, deux appelants
+// distincts (tous deux atteints depuis UI_MsgBox_OnLButtonUp 0x5C0A90) :
+//   action=1, arg=0        -> CharSelect_ReqDeleteChar   0x528FD0 (EA 0x528fee) : suppression
+//   action=2, arg=listIndex -> CharSelect_ReqRestoreChar 0x5295D0 (EA 0x5295f6) : restauration
+// SÉMANTIQUE DE `arg` PROUVÉE (elle était notée « libre / hors périmètre » ici) :
+// c'est le champ +0xF560 (= this[15704]) de la scène CharSelect = un INDEX DE
+// SÉLECTION dans la liste de restauration, initialisé à -1 (EA 0x51c1e2), piloté par
+// deux boutons flèche clampés — précédent `if (idx > 0) --idx` (EA 0x524232-0x524250)
+// et suivant `if (idx < count-1) ++idx` avec count = champ +0xF3C8 (EA 0x5242ac-
+// 0x5242d8) — remis à 0 à l'EA 0x525c2d, relu par Scene_CharSelectRender (EA
+// 0x52030f/0x52044f). Ce n'est NI une constante NI un drapeau.
 int32_t CharSlotAction(NetClient& nc, int32_t slot, int32_t action, int32_t arg);
+
+// Net_ReqVerifyCharName 0x52B4C0 (opcode 24) — suppression de personnage confirmée par
+// SAISIE DU NOM (chemin distinct de l'opcode 18 action=1 : c'est un second mécanisme de
+// suppression, à double confirmation). Appelée par CharSelect_ReqDeleteCharByName
+// 0x529230 (EA 0x5292cd), elle-même atteinte UNIQUEMENT depuis UI_MsgBox_OnLButtonUp
+// 0x5C0A90 case 41 (EA 0x5c1743).
+// Trame 62 o = en-tête 9 o + [slotEnc:i32@0][name:49@4] (53 o) ; réponse 5 o
+// = [1][code:4]. Codes routés par l'appelant : 0/1/2/3/4/5/101/102/default.
+//
+// `slotEnc` est un slot ENCODÉ, PAS le slot brut — EA 0x5292cd :
+//   Net_ReqVerifyCharName(*(_BYTE *)(this + 62860) + 100 * *(_BYTE *)(this + 62848), ...)
+// soit `slot(+0xF58C) + 100 * flag(+0xF580)`, les DEUX lus en _BYTE. Voir
+// game::ConfirmDeleteCharByName (Game/CharSelectFlow.h) pour la preuve d'atteignabilité
+// qui fixe flag==1 sur tout envoi réel.
+int32_t VerifyCharName(NetClient& nc, int32_t slotEnc, const std::string& name);
 
 // Net_ReqEnterCharInfo 0x52B070 (opcode 22). Résultat COMPLET (resultCode/domainId/
 // gamePort/zoneId), directement au format attendu par CharSelectHost::RequestEnterCharInfo.

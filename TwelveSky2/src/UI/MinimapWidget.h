@@ -85,8 +85,13 @@ public:
     void SetBigMode(bool big);
     bool BigMode() const { return bigMode_; }
 
-    // Mode de fenêtre visible (§12b). Défaut : ClampedCenter (comportement de
-    // jeu normal ; Free est réservé aux cartes spéciales dans l'original).
+    // Mode de fenêtre visible (§12b). Défaut corrigé : Full (=0), valeur écrite par
+    // UI_GameHud_Init 0x675184 (`mov [ecx+268h], 0`). ATTENTION [0x6773DE zoom− / 0x67748E
+    // zoom+] : this+616 est en réalité un NIVEAU DE ZOOM borné [0,2] (2 boutons −/+ en grand
+    // mode : this[0x268]-=1 / +=1), PAS un mode 3 états librement affectable. SetWindowMode()
+    // n'a donc AUCUNE contrepartie binaire (setter arbitraire) ; il est conservé faute de
+    // réfection du modèle (2 boutons de zoom absents + table d'échelle dword_14A906C/14A9070
+    // non dumpée) -> réfection = TODO hors périmètre réseau.
     void SetWindowMode(MinimapWindowMode mode) { windowMode_ = mode; }
     MinimapWindowMode WindowMode() const { return windowMode_; }
 
@@ -137,8 +142,12 @@ private:
 
     int  screenW_ = ts2::kRefWidth;
     int  screenH_ = ts2::kRefHeight;
-    bool bigMode_ = false;                                              // this+612
-    MinimapWindowMode windowMode_ = MinimapWindowMode::ClampedCenter;   // this+616
+    // Défauts corrigés d'après UI_GameHud_Init 0x675140 (recoupé en IDA) :
+    //   this+612 (0x264) <- 1 @0x675177 : la mini-carte démarre en GRAND mode (défaut false
+    //     précédent = infidèle).
+    //   this+616 (0x268) <- 0 @0x675184 : niveau this+616 = 0 (voir bandeau WindowMode ci-dessus).
+    bool bigMode_ = true;                                               // this+612 (défaut 1 @0x675177)
+    MinimapWindowMode windowMode_ = MinimapWindowMode::Full;            // this+616 (défaut 0 @0x675184)
 
     game::EntityId questHighlightMonster_{}; // mécanisme de clignotement (inerte)
 

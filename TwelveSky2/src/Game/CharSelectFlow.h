@@ -74,6 +74,25 @@
 //       notice[1856] (nom invalide) ou notice[47] (aucune sélection).
 //     - Bouton "Quitter" -> OnQuitButtonClicked() : ferme la socket + demande la
 //       fermeture de l'application (g_QuitFlag=1), SEULEMENT si pas en cours d'entrée.
+//     - Panneau "suppression par saisie du nom" (this[15711] = +0xF57C) : ÉLUCIDÉ et
+//       PORTÉ (il était noté « MsgBox 41, contexte non élucidé »). C'est un SECOND
+//       mécanisme de suppression, à double confirmation, distinct de l'opcode 18
+//       action=1 : le joueur doit RETAPER le nom du personnage, puis valider une
+//       MsgBox. Chaîne prouvée EA par EA :
+//         ouverture du panneau (EA 0x525fc0-0x52602d) : Util_SetClampedU8Field(
+//           dword_8E714C,0) · UI_FocusEditBox(&g_UIEditBoxMgr, 19) · SetWindowTextA(
+//           dword_166900C,"") · 150 dwords à this+12 remis à 0 · this[15711]=1 ET
+//           this[15712]=1 (+0xF57C/+0xF580, armés ENSEMBLE, bloc rectiligne).
+//         -> saisie du nom, puis clic de validation : le bloc EA 0x524e9e-0x525012 est
+//           gardé par `cmp [ecx+0F57Ch],0 / jz loc_525013` (EA 0x524e91/0x524e98), donc
+//           n'est atteignable QUE panneau ouvert ; il ouvre UI_MsgBox_Open(dword_1822438,
+//           41, StrTable005_Get(g_LangId, 1467), &String) (EA 0x524f36/0x524f46/0x524f4d)
+//           = « retapez le nom pour confirmer », prompt string 1467.
+//         -> clic "Oui" sur la MsgBox 41 : UI_MsgBox_OnLButtonUp 0x5C0A90 relit l'id 41
+//           en [this+18h] (EA 0x5c0bba) et route le case 41 (EA 0x5c173e) vers
+//           CharSelect_ReqDeleteCharByName 0x529230 (EA 0x5c1743) -> opcode 24.
+//       Porté par OpenDeleteByNamePanel / CancelDeleteByNamePanel /
+//       ConfirmDeleteCharByName ci-dessous.
 //     - Boutons non repris (découverts, hors périmètre explicite de cette mission) :
 //       "Renommer" (this[15706], nécessite un objet-ticket en inventaire, item id 1133,
 //       Net_CharItemAction 0x52A9C0), "Coffre/Entrepôt" (this[15396], Net_ReqStorageList
@@ -81,8 +100,7 @@
 //       suppression malgré le nom générique "AccountReq"), panneau "sélection rapide de
 //       classe" (this[15703], conditionné this[15374]==40||50, semble un système
 //       événementiel/bêta annexe), liste étendue GM à 10 emplacements (this[15707],
-//       pagination + suppression via op21 subtype 2), confirmation this[15711]
-//       (MsgBox 41, contexte non élucidé). Tous laissés en TODO explicite.
+//       pagination + suppression via op21 subtype 2). Tous laissés en TODO explicite.
 //
 //   Écran Formulaire de création (this[15714]==2) :
 //     - 4 paires de boutons +/- ajustent job (0..2), faction (0..1), visage (0..6),
@@ -340,8 +358,70 @@ struct CharSelectHost {
     std::function<int32_t(int32_t slotIndex, const CharCreateForm& form, int32_t lookPresetId)> CreateCharacter;
 
     // Net_CharSlotAction(slot,1,0,&code) 0x52A740 (opcode 18, action=1=suppression),
-    // via CharSelect_ReqDeleteChar 0x528FD0.
+    // via CharSelect_ReqDeleteChar 0x528FD0 (EA 0x528fee).
     std::function<int32_t(int32_t slotIndex)> DeleteCharacter;
+
+    // Net_CharSlotAction(slot,2,listIndex,&code) 0x52A740 (opcode 18, action=2=
+    // restauration), via CharSelect_ReqRestoreChar 0x5295D0 (EA 0x5295f6 :
+    // `Net_CharSlotAction(*(this+15715), 2, *(this+15704), &v18)`). `listIndex` = champ
+    // +0xF560, cf. CharSelectState::restoreListIndex. Le builder net::CharSlotAction
+    // expose DÉJÀ action et arg — rien à changer côté Net/CharSelectPackets.cpp.
+    // CONSOMMÉ désormais par game::ConfirmRestoreCharacter (le C++-side caller existe).
+    // TODO CÂBLAGE [ancre 0x5295f6] : reste à (a) brancher ce hook dans
+    // UI/LoginScene.cpp::BuildCharSelectHost sur
+    // `net::CharSlotAction(net_->Client(), slot, 2, listIndex)`, (b) appeler
+    // game::ConfirmRestoreCharacter sur le clic "Oui" de restauration, (c) modéliser la
+    // liste de restauration qui alimente restoreListIndex — HORS du périmètre de ce front.
+    std::function<int32_t(int32_t slotIndex, int32_t listIndex)> RestoreCharacter;
+
+    // Net_ReqVerifyCharName(slotEnc, name, &code) 0x52B4C0 (opcode 24), via
+    // CharSelect_ReqDeleteCharByName 0x529230 (EA 0x5292cd). `slotEnc` est ENCODÉ
+    // (slot + 100*flag), cf. ConfirmDeleteCharByName.
+    // CONSOMMÉ désormais par game::ConfirmDeleteCharByName (le C++-side caller existe).
+    // TODO CÂBLAGE [ancre 0x5292cd] : reste à brancher ce hook sur net::VerifyCharName
+    // (Net/CharSelectPackets.h) dans UI/LoginScene.cpp::BuildCharSelectHost, et à appeler
+    // OpenDeleteByNamePanel/ConfirmDeleteCharByName depuis les clics UI — HORS du périmètre.
+    std::function<int32_t(int32_t slotEnc, const std::string& name)> VerifyCharName;
+
+    // GetWindowTextA(dword_166900C, String, 49) 0x529273 — nom retapé dans la zone de
+    // saisie DU PANNEAU de suppression par nom. ATTENTION : c'est une zone EDIT
+    // DIFFÉRENTE de celle du formulaire de création (GetEditedName ci-dessus lit
+    // dword_1668FCC sur 13 o, EA 0x526581-0x52658f ; celle-ci lit dword_166900C sur
+    // 49 o) — les deux hooks ne sont PAS interchangeables. nullptr => chaîne vide
+    // (= notice[1463] sans envoi, cf. ConfirmDeleteCharByName).
+    std::function<std::string()> GetDeleteByNameInput;
+
+    // UI_FocusEditBox(&g_UIEditBoxMgr, index) 0x50F4A0 — donne le focus à l'une des 21
+    // zones EDIT natives (index 0 = retour au jeu / aucune saisie active). Le flux
+    // n'utilise que deux index PROUVÉS : 19 à l'ouverture du panneau (`push 13h`,
+    // EA 0x525fcc/0x525fd3) et 0 au succès de l'opcode 24 (EA 0x529365).
+    std::function<void(int32_t editBoxIndex)> FocusEditBox;
+
+    // SetWindowTextA(dword_166900C, "") 0x525fe3 — vide la zone de saisie du panneau de
+    // suppression par nom à son ouverture.
+    std::function<void()> ClearDeleteByNameInput;
+
+    // Publie l'identité du personnage choisi (élément/fiche brute) dans l'état monde
+    // AVANT le handshake du serveur de jeu. Miroir du memcpy unique de
+    // Scene_CharSelectUpdate EA 0x51c6e7-0x51c707 :
+    //   Crt_Memcpy(&g_SelfCharInvBlock /*0x1673170*/,
+    //              &unk_1669380 + 10088 * this[+0xF58C] /*selectedSlot*/, 0x2768u)
+    // Ce memcpy de 10088 o pose À LA FOIS le bloc d'inventaire ET l'« élément »
+    // (g_LocalElement = dword_1673194 = 0x1673170 + 0x24 -> fiche[+36] = le champ `job`),
+    // qui part ensuite sur le fil à l'offset [137..140] du paquet d'auth op11 de
+    // Net_ConnectGameServer 0x462A70 (EA 0x462d5d). ORDRE PROUVÉ : 0x51c6e7 (memcpy)
+    // ≺ 0x51c81d (Net_ReqEnterCharInfo) ≺ 0x51c850 (Net_SelectServerDomain) ≺
+    // Net_ConnectGameServer — d'où l'appel en TÊTE de FireEnterSequence.
+    // INVOQUÉ désormais en TÊTE de FireEnterSequence (Game/CharSelectFlow.cpp), avant
+    // host.RequestEnterCharInfo — ordre fidèle à 0x51c6e7 ≺ 0x51c81d.
+    // TODO CÂBLAGE [ancre 0x51c6e7] : ce module est volontairement découplé de
+    // game::g_World (aucun accès direct — tout passe par cet hôte). Le câblage réel
+    // (`g_World.self.element = slots[slot].job;` + peuplement de
+    // `g_World.self.charInvBlock` depuis net::g_CharRecords[slot]) vit dans
+    // UI/LoginScene.cpp, HORS du périmètre d'édition de ce front. TANT QUE CE HOOK N'EST
+    // PAS CÂBLÉ (l'hôte ne pose pas encore la lambda), le champ [137..140] du handshake
+    // reste à 0 (défaut GAMEAUTH_Element_Zero NON CLOS côté LoginScene).
+    std::function<void(int32_t slotIndex)> PublishSelfFromSlot;
 
     // Net_ReqEnterCharInfo(slot,&domainId,&port,&zoneId,&code) 0x52B070 (opcode 22).
     std::function<EnterCharInfoResult(int32_t slotIndex)> RequestEnterCharInfo;
@@ -379,6 +459,28 @@ struct CharSelectState {
     float         previewElapsed  = 0.0f;                 // this[15719], en "frames" (a2*30)
     bool          enterSequenceFired = false; // garde d'origine = g_MorphInProgress (simplifiée
                                                // en un flag one-shot local, cf. TODO ci-dessous)
+
+    // --- Panneau "suppression par saisie du nom" (opcode 24) ---
+    // Les deux champs d'origine sont ARMÉS ET REMIS À ZÉRO ENSEMBLE, sans exception :
+    // les 12 seules références de +0xF57C/+0xF580 de toute l'image jeu ([0x401000,
+    // 0x6d7234)) forment 3 paires d'écriture rectilignes (0->0 : EA 0x51c223/0x51c230
+    // en Init, EA 0x524ff4/0x525004 à l'annulation, EA 0x52939e/0x5293ae au succès
+    // op24 ; 1->1 : EA 0x52601d/0x52602d, UNIQUE site d'armement) + 4 lectures
+    // (0x520cc7/0x5224c6/0x524e91 pour +0xF57C, 0x5292b1 pour +0xF580).
+    // L'invariant `panneau ouvert => listFlag == 1` est donc STRUCTUREL — il fixe la
+    // valeur de slotEnc, cf. ConfirmDeleteCharByName.
+    bool    deleteByNamePanelOpen = false; // this[15711] / +0xF57C
+    int32_t deleteByNameListFlag  = 0;     // this[15712] / +0xF580 (multiplicateur ×100)
+
+    // Index de sélection dans la liste de restauration (this[15704] / +0xF560), envoyé
+    // comme `arg` de l'opcode 18 action=2 (EA 0x5295f6). Initialisé à -1 par le binaire
+    // (EA 0x51c1e2 : `mov dword ptr [ecx+0F560h], 0FFFFFFFFh`) = aucune sélection.
+    // TODO [ancres 0x524232-0x524250 / 0x5242ac-0x5242d8 / 0x5242bb] : la LISTE de
+    // restauration elle-même n'est PAS modélisée (contenu, nombre d'entrées = champ
+    // +0xF3C8, boutons flèche précédent/suivant qui clampent cet index dans
+    // [0, count-1], rendu EA 0x52030f/0x52044f). Tant que cette liste n'est pas portée,
+    // ce champ reste à sa valeur d'init et ConfirmRestoreCharacter n'a pas d'appelant.
+    int32_t restoreListIndex = -1; // this[15704] / +0xF560
 
     // Formulaire de création (écran CreateForm).
     CharCreateForm createForm{};
@@ -463,6 +565,38 @@ bool OnDeleteButtonClicked(CharSelectState& state, const CharSelectHost& host);
 // applique le résultat (succès -> emplacement libéré + désélection + notice[50] ;
 // échecs -> notices[51(verrouille),411,48,633,2091,52(verrouille),53(verrouille)]).
 void ConfirmDeleteCharacter(CharSelectState& state, const CharSelectHost& host);
+
+// --- Panneau "suppression par saisie du nom" (opcode 24, Net_ReqVerifyCharName 0x52B4C0) ---
+// Second mécanisme de suppression, à DOUBLE confirmation (retaper le nom du personnage),
+// distinct de l'opcode 18 action=1 — cf. l'élucidation complète en tête de fichier.
+
+// Ouvre le panneau (Scene_CharSelectOnMouseUp, EA 0x525fc0-0x52602d) : vide+focus la zone
+// de saisie (host.ClearDeleteByNameInput / host.FocusEditBox(19)) et arme CONJOINTEMENT
+// deleteByNamePanelOpen ET deleteByNameListFlag à 1 (bloc rectiligne 0x52601d/0x52602d) —
+// c'est cet armement qui fixe l'invariant listFlag==1 dont dépend slotEnc. No-op hors
+// sous-état Actif / écran Liste. Gardes d'éligibilité UI non modélisées (TODO ancré).
+void OpenDeleteByNamePanel(CharSelectState& state, const CharSelectHost& host);
+
+// Ferme le panneau SANS envoi réseau : remet les deux drapeaux à 0 (EA 0x524ff4/0x525004).
+void CancelDeleteByNamePanel(CharSelectState& state);
+
+// À appeler par l'hôte sur clic "Oui" de la MsgBox 41 (CharSelect_ReqDeleteCharByName
+// 0x529230). Lit le nom retapé (host.GetDeleteByNameInput) : VIDE -> notice[1463] SANS
+// envoi (EA 0x52928c) ; sinon envoie l'opcode 24 (host.VerifyCharName) avec
+// slotEnc = (uint8_t)selectedSlot + 100*(uint8_t)deleteByNameListFlag (EA 0x5292cd) et
+// route les codes 0/1/2/3/4/5/101/102/default (notices 1464/1465/1468/1469/1466/1470/703/
+// 704, EA 0x5292f5-0x529535 ; succès -> désélection + fermeture du panneau ; 101/102 ->
+// verrou ; default non modélisé, TODO ancré).
+void ConfirmDeleteCharByName(CharSelectState& state, const CharSelectHost& host);
+
+// À appeler par l'hôte sur clic "Oui" de la confirmation de RESTAURATION
+// (CharSelect_ReqRestoreChar 0x5295D0). Envoie l'opcode 18 action=2 via host.RestoreCharacter
+// (slot=selectedSlot, arg=restoreListIndex, EA 0x5295f6) et applique le résultat (succès
+// 0 -> désélection + notice[1271] ; 1/101/102 -> notice[51/52/53] + verrou ; 2/5/11..15 ->
+// notices[1272/2091/2541..2545], EA 0x529615-0x529845). SANS appelant tant que la liste de
+// restauration n'est pas portée (cf. CharSelectState::restoreListIndex) et que
+// host.RestoreCharacter n'est pas câblé dans UI/LoginScene.cpp (HORS périmètre).
+void ConfirmRestoreCharacter(CharSelectState& state, const CharSelectHost& host);
 
 // Bouton "Entrer en jeu" (écran Liste). Précondition : un emplacement sélectionné, pas
 // déjà en cours d'entrée, et (nom du perso stocké valide OU autorisation GM). Sur

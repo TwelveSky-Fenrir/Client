@@ -48,25 +48,38 @@
 //      Defensive (52,131), Offensive (148,131) — colonne gauche/droite = x=52/148,
 //      ligne haut/bas = y=109/131. Correspond exactement à l'ordre PrimaryAttr
 //      (ExtForce=0,IntForce=1,Defensive=2,Offensive=3) mappé en grille
-//      (col=i%2, row=i/2). Il existe aussi des boutons "+5" décalés (67/163,
-//      109/131), actifs seulement si unspentAttr>=5 — NON repris ici (hors
-//      périmètre de cette passe, cf. TODO ci-dessous), seuls les boutons "+1"
-//      sont câblés.
+//      (col=i%2, row=i/2).
+//   4) BOUTONS "+5" ATTRIBUT (câblés Passe 4 / W6, ex-« hors périmètre ») : second
+//      jeu de 4 boutons, sprite unk_940260, offsets (67,109)/(163,109)/(67,131)/
+//      (163,131) — même grille, colonne x=67/163. Armés seulement si
+//      g_SelfUnspentAttrPoints >= 5 (cDrawWin_OnMouseDown 0x629027, cDrawWin_Draw
+//      0x62A3D3) ; émettent les args 5/6/7/8 et décrémentent de 5
+//      (cDrawWin_OnCommit 0x629554/0x629602/0x6296B0/0x629761).
 // Résiduel non confirmé (inchangé) : dimensions exactes des sprites de fond
 // (kBoxW/kBoxH), taille exacte des boutons "+"/fermeture (kPlusSize/kCloseSize -
-// dépendent des sprites unk_8F416C/8F3798, non dumpés). Les VALEURS affichées
-// restent byte-exactes (StatFormulas.h), seule la géométrie du panneau a changé.
+// dépendent des sprites unk_8F416C/940260/8F3798, chargés depuis un .IMG au runtime,
+// non dumpés). Les VALEURS affichées restent byte-exactes (StatFormulas.h), seule la
+// géométrie du panneau a changé.
+// TODO [ancre 0x8F416C / 0x940260] kPlusSize=18 est une approximation : l'écart réel
+// entre la colonne "+1" (x=52/148) et la colonne "+5" (x=67/163) n'est que de 15 px,
+// donc à 18 px les deux rectangles se CHEVAUCHENT de 3 px. Sans conséquence
+// fonctionnelle ici : l'ordre de test reproduit celui du binaire (les 4 "+1" AVANT
+// les 4 "+5", 0x628EDC puis 0x629027), donc la zone commune est attribuée au "+1"
+// exactement comme dans le jeu d'origine. À corriger dès que les dims réelles des
+// sprites seront dumpées.
 //
-// Dépense de point d'attribut ("+") : le mécanisme serveur le plus probable est le
-// dispatcher C->S opcode 0x58 (Net_SendOp88, Net/SendPackets.h — "commande a 9
-// octets"), symétrique du dispatcher S->C Net_OnCultivationDispatch 0x493180
-// (opcode 0x58 également, 20 sous-opcodes, cf. Docs/TS2_PROTOCOL_SPEC.md §0x58 et
-// Net/RecvPackets.h::CultivationDispatch) qui réécrit précisément
-// dword_16731B8/BC/C0/C4/D0 = attrDefensive/attrExtForce/attrOffensive/
-// attrIntForce/unspentAttr. Le sous-opcode exact "dépenser 1 point sur tel
-// attribut" n'a PAS été isolé (aucune table sous-op -> attribut dans
-// RE/opcode_table.json ni RE/outbound_results.json) : voir TODO(send) dans le
-// .cpp, qui ne l'invente pas.
+// Dépense de point d'attribut ("+") — PROUVÉ (Passe 4 / W6, décompilation fraîche
+// cDrawWin_OnCommit 0x6291F0) : ce n'est PAS le dispatcher 0x58 (hypothèse de la
+// passe précédente, désormais RÉFUTÉE — Net_OnCultivationDispatch 0x493180 est le
+// dispatcher ENTRANT qui applique le résultat). L'émission réelle est :
+//   Net_SendVaultReq_206(arg)  // 0x590430
+//     -> Net_SendPacket_Op19(&g_AutoPlayMgr, 206, &arg)  // 0x4B4E70
+//     -> opcode sortant 0x13 @+8, sous-code 206 u32 LE @+9, payload 100 o @+13
+//        dont payload[0..3] = arg int32 LE (Crt_Memcpy(v2, &a1, 4) 0x590454 — le
+//        piège « char sortant émis sur 4 octets LE »), payload[4..99] = pile NON
+//        initialisée (_BYTE v2[108] sans memset). Taille totale figée à 113 (0x71).
+//   arg = 1/2/3/4 -> +1 sur ExtForce/IntForce/Defensive/Offensive ;
+//   arg = 5/6/7/8 -> +5 sur les mêmes, dans le même ordre.
 #pragma once
 #include "UI/UIManager.h"
 #include "Game/StatFormulas.h"
@@ -105,9 +118,16 @@ private:
         Rect box;                                 // panneau complet
         Rect titleBar;                             // bandeau de titre
         Rect closeBtn;                             // bouton fermeture (coin haut-droit)
-        Rect plusBtn[kPrimaryAttrCount];            // bouton "+" par attribut primaire
+        Rect plusBtn[kPrimaryAttrCount];            // bouton "+1" par attribut primaire
+        Rect plus5Btn[kPrimaryAttrCount];           // bouton "+5" par attribut primaire (0x62904D..)
     };
     void ComputeLayout(int screenW, int screenH, Layout& L) const;
+
+    // Émet la dépense de points d'attribut et applique les effets locaux du binaire.
+    // `arg` = valeur envoyée au serveur (1..4 pour "+1", 5..8 pour "+5") ; `cost` =
+    // décrément appliqué à unspentAttr (1 ou 5). Reproduit le corps de chaque branche
+    // de cDrawWin_OnCommit 0x6291F0 — cf. .cpp pour le détail des ancres.
+    void CommitAttrSpend(int arg, int cost);
 
     static const char* AttrLabel(PrimaryAttr a);
     static int          AttrValue(const game::SelfState& s, PrimaryAttr a);
@@ -121,14 +141,20 @@ private:
     // (cDrawWin_OnMouseDown 0x628F02.., cDrawWin_Draw 0x62A26C..).
     static constexpr int kPlusOffX[2] = { 52, 148 }; // colonne gauche / droite
     static constexpr int kPlusOffY[2] = { 109, 131 }; // ligne haute / basse
+    // Offsets réels des 4 boutons "+5" — sprite unk_940260, mêmes lignes que "+1"
+    // (kPlusOffY), colonnes décalées (cDrawWin_OnMouseDown 0x62904D/0x62909D/
+    // 0x6290EC/0x62913E, cDrawWin_OnCommit 0x629514/0x6295C2/0x629670/0x629721).
+    static constexpr int kPlus5OffX[2] = { 67, 163 }; // colonne gauche / droite
     // Bouton fermeture réel : offset (8,6) depuis l'origine panneau (HAUT-GAUCHE,
     // PAS haut-droite) — cDrawWin_OnMouseDown 0x629188.
     static constexpr int kCloseOffX = 8;
     static constexpr int kCloseOffY = 6;
 
     // Latches "clic-enfoncé -> relâché dessus" (pattern MsgBoxDialog/UI d'origine).
+    // Miroirs de *(this+3..this+11) de cDrawWin_OnMouseDown/OnCommit 0x628EA0/0x6291F0.
     bool closeArmed_ = false;
-    bool plusArmed_[kPrimaryAttrCount] = {false, false, false, false};
+    bool plusArmed_[kPrimaryAttrCount] = {false, false, false, false};   // *(this+3..+6)
+    bool plus5Armed_[kPrimaryAttrCount] = {false, false, false, false};  // *(this+7..+10)
 
     // Dims écran mémorisées au dernier Render, pour aligner le hit-test (routé
     // entre deux frames) sur la géométrie effectivement dessinée.

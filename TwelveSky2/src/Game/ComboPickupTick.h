@@ -282,11 +282,12 @@ void Quest_UpdateMarkerTimer(QuestMarkerState& marker, const QuestProgressState&
 // Le timer/index (600 s, wrap à 0) est DÉJÀ porté fidèlement par TipsTable::Advance
 // (Game/StringTables.h) — CE fichier ajoute uniquement l'effet de bord manquant :
 //   Msg_AppendChatLine((char*)this + 101*currentIndex + 4, 3, &String); // 0x4c18c6
-// c.-à-d. append du nouveau texte d'astuce au journal de chat (canal littéral "3" du
-// binaire — NOTE FIDÉLITÉ : la résolution exacte ARGB de ce canal n'est pas prouvée ici,
-// cf. même limitation que g_SysMsgColor documentée dans NpcInteraction.cpp ; la valeur
-// littérale 3 est transmise telle quelle à MessageLog::Chat en attendant la table de
-// couleurs de canal réelle).
+// c.-à-d. append du nouveau texte d'astuce au journal de chat. Le "3" est un INDEX de
+// palette mFONTCOLOR (ColorTable_InitPalette 0x4C1D60) — PAS un ARGB : le binaire le
+// stocke brut et le résout au dessin via ColorTable_GetColor 0x4C1FE0. La résolution
+// est désormais faite chez le producteur (g_Strings.colors.Get(3) = 0xFFFFFF00, jaune
+// opaque), cf. Tips_RotateUpdate dans le .cpp — l'ancienne note « même limitation que
+// g_SysMsgColor » est LEVÉE (l'accesseur réel 0x4C1FE0 a été retrouvé et branché).
 void Tips_RotateUpdate(TipsTable& tips, float gameTimeSec);
 
 } // namespace ts2::game

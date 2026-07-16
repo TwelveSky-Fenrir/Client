@@ -91,6 +91,24 @@ void ArmFullWarp(FactionWarpResolution& r, int32_t warpModeCode, int32_t flagA4,
     //   Net_OnGameServerConnectResult, codes d'erreur 1..12).
 }
 
+// Op99 (0x63) — Net_SendOp99/Net_SendAutoHuntSync 0x4BD140. Le binaire lit les blobs en GLOBAL
+// (Crt_Memcpy(this+13, byte_16755B0, 0x44) @0x4bd1f5 ; Crt_Memcpy(this+81, &g_AutoHuntMode 0x16755F4,
+// 0x2C) @0x4bd20b) — ce ne sont PAS des paramètres. Dans l'état modélisé actuel ces blobs sont
+// INTÉGRALEMENT à ZÉRO : byte_16755B0 est BSS jamais écrit (xrefs_to 0x16755B0 = 1, sa seule
+// lecture 0x4bd1e9) et la grille quick-skills 0x16755B4 (64 o) comme la config auto-hunt 0x16755F4
+// (44 o) n'ont AUCUN writer en ClientSource (grep 0 hit). Ce qui importe pour la fidélité protocole
+// est INDÉPENDANT du contenu des blobs : paquet présent, seq++ (@0x4bd2cf) et 4 tirages RNG
+// (@0x4bd157..18b) — une désync de séquence corromprait TOUTE la session. Émission via le
+// singleton (le binaire adresse g_NetClient directement), même motif qu'ArmFullWarp.
+// TODO(state) ancré : brancher les vrais blobs (byte_16755B0 68 o + g_AutoHuntMode 0x16755F4 44 o,
+//   possédés par AutoPlaySystem, hors périmètre) quand la config auto-hunt sera modélisée.
+void EmitAutoHuntSync(ts2::net::NetClient* nc) {
+    static const uint8_t kBlob68[68] = {0}; // byte_16755B0 (this+13, 68 o) — zéro prouvé/modélisé
+    static const uint8_t kBlob44[44] = {0}; // g_AutoHuntMode 0x16755F4 (this+81, 44 o) — zéro modélisé
+    if (auto* c = nc ? nc : ts2::net::GlobalNetClient())
+        ts2::net::Net_SendAutoHuntSync(*c, 0, kBlob68, kBlob44); // a2=0 (@0x55ca9c/0x55cad9/0x55cb21)
+}
+
 // Résout x/y/z via le resolver optionnel (sinon 0/0/0, cf. IFactionTownCoordResolver).
 void ResolveCoords(int32_t element, int32_t townNpcId, const IFactionTownCoordResolver* resolver,
                     FactionWarpResolution& r) {
@@ -176,12 +194,10 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
             //   EA 0x55CA82 (Net_QueueMoveTo 0x5119B0) ; mode1 : Net_QueueRespawnMove(...)
             //   EA 0x55CABE (Net_QueueRespawnMove 0x5117A0) -> émetteurs op1/op0 (via Op15) du
             //   g_PlayerCmdController : module NON implémenté / NON possédé par ce front.
-            // TODO(net/state) puis Net_SendAutoHuntSync(*client, 0, appearance68, autoHunt44)
-            //   EA 0x55CA9C (mode0) / 0x55CAD9 (mode1) — Op99 0x4BD140. Le client réseau est
-            //   désormais disponible (ts2::net::GlobalNetClient() 0x8156A0) ; le blocage restant
-            //   est l'ÉTAT : appearance68=byte_16755B0 (68 o) + autoHunt44=g_AutoHuntMode 0x16755F4
-            //   (44 o), POSSÉDÉ PAR LE FRONT AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:94-98),
-            //   non modélisé ici. Émettre des blobs nuls serait INFIDÈLE (règle #6) -> TODO ancré.
+            // Op99 émis APRÈS g_InvDirtyEnable=0 — EA 0x55CA9C (mode0) / 0x55CAD9 (mode1). Les deux
+            //   branches émettent un Op99 IDENTIQUE (Net_SendOp99(&g_AutoPlayMgr, 0)) -> un seul
+            //   appel ici couvre le mode réellement pris. Cf. EmitAutoHuntSync (blobs à zéro prouvés).
+            EmitAutoHuntSync(nc);
         } else {
             r.action = WarpAction::None; // mode inconnu : le binaire ne fait rien non plus
         }
@@ -202,14 +218,10 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
     }
 
     g_Client.Var(WarpAddr::InvDirtyEnable) = 0; // g_InvDirtyEnable=0  EA 0x55CB0C
-    // TODO(net/state) Net_SendAutoHuntSync(*client, 0, appearance68, autoHunt44) — EA 0x55CB21
-    //   (Op99 0x4BD140), pré-confirmation émise AVANT l'Op20 d'ArmFullWarp ci-dessous (ordre
-    //   binaire : Op99 PUIS Op20). Le client réseau est désormais disponible
-    //   (ts2::net::GlobalNetClient() 0x8156A0) ; le blocage restant est l'ÉTAT : appearance68=
-    //   byte_16755B0 (68 o) + autoHunt44=g_AutoHuntMode 0x16755F4 (44 o), POSSÉDÉ PAR LE FRONT
-    //   AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:94-98), non modélisé ici -> émettre des zéros
-    //   serait INFIDÈLE (règle #6), laissé en TODO ancré.
-    //   if (auto* c = nc ? nc : ts2::net::GlobalNetClient()) Net_SendAutoHuntSync(*c, 0, kApp68, kAH44);
+    // Op99 émis AVANT l'Op20 d'ArmFullWarp — EA 0x55CB21. L'ordre binaire (Op99 PUIS facing PUIS
+    //   Op20) est ainsi restitué mécaniquement : Op99 tire 4 nonces (seq++), ArmFullWarp tire
+    //   ensuite le facing (1 tirage) puis Op20 (4 nonces, seq++). Cf. EmitAutoHuntSync ci-dessus.
+    EmitAutoHuntSync(nc);
     ArmFullWarp(r, /*warpModeCode=*/7, /*flagA4=*/1, r.townNpcId, r.x, r.y, r.z, nc); // 0x55CB26..0x55CBC9
     return r;
 }

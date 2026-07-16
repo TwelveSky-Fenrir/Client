@@ -152,8 +152,11 @@ gfx::BonePalette MotionCache::SampleByGameTime(const gfx::MotionPalette& mp, flo
     if (!mp.valid || mp.frameCount <= 0 || mp.bonesPerFrame <= 0 || !mp.base)
         return {}; // repli identite cote appelant (BonePalette invalide)
 
-    // Char_RenderModel 0x528d38 : ftol(g_GameTimeSec*30.0) % count (boucle 30 fps). Model_Render
-    // 0x40ebea borne ensuite frame a [0, frameCount-1] via ftol -> le modulo garantit deja la borne.
+    // Idiome `ftol(g_GameTimeSec*30.0) % count` — Npc_DrawMesh 0x57FF00 @0x58005b. MISATTRIBUTION
+    // CORRIGEE (Passe 4 / W7) : cet idiome ne dessine PAS un corps, il n'anime QUE le marqueur de
+    // quete flottant (ModelObj_Draw(unk_B60AB8 + 148*153)) ; l'ancienne citation « Char_RenderModel
+    // 0x528d38 » pour un corps etait erronee. Cette fonction est donc un REPLI (joueurs seuls, cf.
+    // MotionCache.h), pas un chemin fidele -- le chemin fidele corps = SampleByCursor.
     int frame = static_cast<int>(gameTimeSec * 30.0f) % mp.frameCount;
     if (frame < 0) frame += mp.frameCount;
 
@@ -180,6 +183,49 @@ gfx::BonePalette MotionCache::SampleByGameTime(const gfx::MotionPalette& mp, flo
     bp.matrices = mp.base + static_cast<size_t>(frame) * mp.bonesPerFrame;
     bp.count    = static_cast<UINT>(mp.bonesPerFrame); // BRUT, comme FrameSlice et comme le binaire
     return bp;
+}
+
+// Chemin de dessin REEL des corps monstre/PNJ (cf. MotionCache.h pour la chaine d'ancres
+// complete). Char_Draw 0x5805C0 @0x580828 (animTime = slot monstre +28) / Npc_DrawMesh 0x57FF00
+// @0x57fff1 (animTime = slot PNJ +16) -> SObject_DrawEx 0x4D9330 @0x4d946d (a3 passe tel quel)
+// -> Model_Render 0x40EBB0 @0x40ebea (frame = ftol(animTime), borne [0, frameCount-1]).
+gfx::BonePalette MotionCache::SampleByCursor(const gfx::MotionPalette& mp, float cursor) {
+    if (!mp.valid || mp.frameCount <= 0 || mp.bonesPerFrame <= 0 || !mp.base)
+        return {}; // repli identite cote appelant (BonePalette invalide)
+
+    // Model_Render 0x40ebea : frame = ftol(animTime) puis borne [0, frameCount-1]. PAS de modulo
+    // (cf. MotionCache.h) : le curseur arrive deja reboucle par le tick (wrap par soustraction
+    // unique), et l'etat Mort 0x5832E0 @0x583345 gele volontairement a frameCount-1 -- un modulo
+    // casserait ce gel. Le clamp bas protege en plus d'un curseur negatif (jamais produit par les
+    // handlers portes, garde defensive pure).
+    int frame = static_cast<int>(cursor); // Crt_ftol = troncature vers zero
+    if (frame < 0) frame = 0;
+    if (frame > mp.frameCount - 1) frame = mp.frameCount - 1;
+
+    // AUCUN CLAMP D'OS : count = bonesPerFrame BRUT, strictement comme SampleByGameTime ci-dessus
+    // et comme Model_DrawSkinnedSubset 0x40CA40 (@0x40d4e8/@0x40dac2/@0x40d7c0 passent Count tel
+    // quel a SetMatrixArray). La borne d'os reste celle du shader (MeshRenderer::DrawSkinnedSubset
+    // / boneArraySize_) -- coherence chemin shader reel <-> fallback HLSL preservee (regle W5).
+    gfx::BonePalette bp;
+    bp.matrices = mp.base + static_cast<size_t>(frame) * mp.bonesPerFrame;
+    bp.count    = static_cast<UINT>(mp.bonesPerFrame);
+    return bp;
+}
+
+// Model_GetMotionFrameCount 0x4E5A70 = Motion_GetFrameCount(Model_GetNpcMotionSlot(this,
+// kindIdx, animType), 1) — MEME slot que le dessin (Char_Draw @0x580770), donc meme palette :
+// on relit simplement son frameCount. Motion_GetFrameCount 0x4D7830 renvoie *(slot+140)
+// @0x4d786d quel que soit son 2e argument (cf. MotionCache.h) -> equivalence exacte.
+int MotionCache::GetMonsterMotionFrameCount(uint32_t monsterDefId, int animType) {
+    const gfx::MotionPalette* mp = GetForMonster(monsterDefId, animType);
+    return mp ? mp->frameCount : 0; // 0 = slot non resolu (Motion_GetFrameCount renvoie 0 aussi)
+}
+
+// Model_GetWeaponEffectFrameCount 0x4E5A40 = Motion_GetFrameCount(Model_GetNpcMeshSlot(this,
+// kindIdx, animType), 0) — MEME slot que le dessin (Npc_DrawMesh @0x57ffa0), meme raisonnement.
+int MotionCache::GetNpcMotionFrameCount(const game::NpcDefRecord& npc, int animType) {
+    const gfx::MotionPalette* mp = GetForNpc(npc, animType);
+    return mp ? mp->frameCount : 0;
 }
 
 } // namespace ts2::gfx

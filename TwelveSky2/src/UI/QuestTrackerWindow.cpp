@@ -2,6 +2,13 @@
 // Voir UI/QuestTrackerWindow.h pour le contrat et les réserves sur les
 // données affichées (deux sources de données quête distinctes, cf.
 // Game/QuestSystem.h).
+//
+// RÉSEAU : ce fichier n'inclut ni Net/SendPackets.h ni Net/NetClient.h, et n'appelle
+// AUCUN net::Net_Send* — c'est VOULU et PROUVÉ, pas un oubli. Les deux fonctions
+// d'origine du panneau (Quest_DrawTracker 0x510FC0 = rendu pur ; Quest_UpdateMarkerTimer
+// 0x510D90 = état/son uniquement) n'émettent rien : cf. la démonstration détaillée en
+// tête de UI/QuestTrackerWindow.h. La progression de quête arrive par les handlers Pkt_*
+// (entrants), jamais par une action de ce panneau.
 #include "UI/QuestTrackerWindow.h"
 #include "UI/PanelSkin.h"
 #include "Game/StringTables.h" // game::g_Strings.zoneNames (003.DAT -> mZONENAME)

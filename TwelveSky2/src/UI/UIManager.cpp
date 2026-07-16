@@ -297,6 +297,15 @@ void UIManager::Render() {
     // Rendu en ORDRE INVERSE du registre : fond d'abord, popups modaux en dernier
     // (= au-dessus). Deux sous-passes indépendantes car le lot sprite (panneaux) et le
     // lot police (texte) sont deux ID3DXSprite distincts.
+    //
+    // TODO [ancres 0x69E620 / 0x69E650 / 0x6A3080 / 0x69E750] : le binaire fait UN SEUL
+    // Begin/End (Gfx_Begin2D/Gfx_End2D) sur UN SEUL ID3DXSprite (g_GfxRenderer+608 =
+    // dword_800078), blits et texte ENTRELACÉS en ordre de soumission — cf. le pavé de
+    // preuve au-dessus de `enum class UiPhase` dans UIManager.h (gap GX2D-01). Les deux
+    // sous-passes ci-dessous divergent de cet ordre, mais le correctif exige de fusionner
+    // Font::sprite_ et SpriteBatch::sprite_, qui vivent dans Gfx/Font.{h,cpp} et
+    // Gfx/SpriteBatch.{h,cpp} — hors du périmètre de ce front. NON CORRIGÉ ICI, à dessein :
+    // divergence LATENTE tant qu'un seul dialogue est enregistré (cf. Init).
 
     // Passe 1 : panneaux (lot sprite).
     if (ctx_.sprites && ctx_.sprites->Ready()) {

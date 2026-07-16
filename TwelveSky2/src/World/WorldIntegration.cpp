@@ -149,19 +149,20 @@ const asset::WorldChunk* WorldAssets::Collision(CollisionSlot slot) const {
 // des méthodes qui délèguent au moteur ts2::world::collision:: (portage byte-fidèle des
 // MapColl_*, cf. World/WorldMap.cpp). Toutes build-safe (false si la couche .WM est absente).
 // ---------------------------------------------------------------------------
-const asset::CollisionMesh* WorldAssets::MainCollisionMesh() const {
-    const asset::WorldChunk* c = Collision(CollisionSlot::Main); // wm_ (.WM = collision pure)
+// Maille de collision décodée d'une couche .WM/.WJ/.WM2 (AsCollision). Les .WG = AsFace (cf.
+// TerrainMesh). Source unique — MainCollisionMesh/QueryCollisionMesh y délèguent.
+const asset::CollisionMesh* WorldAssets::CollisionMeshOf(CollisionSlot slot) const {
+    const asset::WorldChunk* c = Collision(slot);
     if (!c) return nullptr;
-    const asset::MapCollisionChunk* mc = c->AsCollision();       // .WM -> MapCollisionChunk
+    const asset::MapCollisionChunk* mc = c->AsCollision(); // .WM/.WJ/.WM2 -> MapCollisionChunk
     return mc ? &mc->mesh : nullptr;
+}
+const asset::CollisionMesh* WorldAssets::MainCollisionMesh() const {
+    return CollisionMeshOf(CollisionSlot::Main); // wm_ (.WM = collision pure)
 }
 // Hook WorldLoadHooks::queryCollisionMesh — appelé par WorldMap après un loadFaces réussi.
 const asset::CollisionMesh* WorldAssets::QueryCollisionMesh(void* user, CollisionSlot slot) {
-    auto* self = static_cast<WorldAssets*>(user);
-    const asset::WorldChunk* c = self->Collision(slot);
-    if (!c) return nullptr;
-    const asset::MapCollisionChunk* mc = c->AsCollision(); // couches .WM/.WJ/.WM2 (les .WG = AsFace)
-    return mc ? &mc->mesh : nullptr;
+    return static_cast<WorldAssets*>(user)->CollisionMeshOf(slot);
 }
 
 bool WorldAssets::GetGroundHeight(float x, float z, float probeCeilingY, float& outGroundY) const {
@@ -197,6 +198,78 @@ bool WorldAssets::SlideMoveGround(const float from[3], const float to[3], float 
     const asset::CollisionMesh* m = MainCollisionMesh();
     if (!m) { outPos[0] = from[0]; outPos[1] = from[1]; outPos[2] = from[2]; return false; }
     return collision::SlideMoveGround(*m, from, to, speed, dt, outPos); // 0x697330
+}
+
+// ---------------------------------------------------------------------------
+// WG-02 — Collision CAMÉRA (Camera_UpdateCollision 0x538580). Chaque oracle vise un slot
+// DIFFÉRENT (prouvé) : sweep terrain = .WG (slot 0 = g_GameWorld @0x5387b9) ; point bloqué =
+// Main+WJ (0x540da0) ; sol (HasGroundAt ci-dessus) = Main (@0x5388f4). Consommé par l'oracle
+// Gfx/CameraThirdPersonBridge::WorldCameraCollision (game::ICameraCollisionQueries).
+// ---------------------------------------------------------------------------
+const asset::CollisionMesh* WorldAssets::TerrainMesh() const {
+    // .WG = slot 0 (g_GameWorld lui-même). Sa maille est un MapFaceChunk (AsFace), PAS un
+    // MapCollisionChunk. Ancre : Camera_UpdateCollision @0x5387b9 (mov ecx, offset g_GameWorld)
+    // -> Terrain_SweepSphereSegment 0x69a1f0 sur this[35]=quadtree du .WG (dword_14A88C8).
+    if (!wg_) return nullptr;
+    const asset::MapFaceChunk* fc = wg_->AsFace();
+    return fc ? &fc->mesh : nullptr;
+}
+bool WorldAssets::SweepCameraSegment(const float from[3], const float to[3], float radius,
+                                     float outHit[3]) const {
+    const asset::CollisionMesh* m = TerrainMesh(); // .WG (0x69a1f0 / g_GameWorld @0x5387b9)
+    if (!m) return false;
+    return collision::SweepSphereSegment(*m, from, to, radius, outHit);
+}
+bool WorldAssets::IsPointBlocked(const float p[3]) const {
+    const asset::CollisionMesh* main = CollisionMeshOf(CollisionSlot::Main); // &dword_14A88E4
+    if (!main) return true; // 0x540de1 : pas de maille Main -> pas de sol -> bloqué (fidèle)
+    const asset::CollisionMesh* wj = CollisionMeshOf(CollisionSlot::WJ);     // &dword_14A898C
+    return collision::IsPointBlocked(*main, wj, p); // 0x540da0
+}
+bool WorldAssets::LineOfSightBlockedByObjects(const float /*from*/[3], const float /*to*/[3]) const {
+    // MapColl_LineOfSightObjects 0x696fc0 — NON porté cette vague (blocage PROUVÉ) : le test réel
+    // intersecte le segment avec l'OBB PAR FRAME de chaque objet .WO placé (Model_TransformVertsPick
+    // 0x6a3e00 : table d'OBB @part+284, blocs 64o indexés par frame). Cette table vit dans le blob
+    // géométrie GXD non décodé (asset::WorldMeshPart::geo, Asset/WorldChunk.h:149-157) et l'index de
+    // frame (rec+28 = Math_RandRangeFloat @0x69835d) est runtime-only, absent d'AuxRecord
+    // (Asset/WorldChunk.h:193-198). Fichiers Asset NON possédés par ce front.
+    // TODO [MapColl_LineOfSightObjects 0x696fc0 / Model_TransformVertsPick 0x6a3e00].
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// WG-03 — Picking écran->terrain (Terrain_PickRayScreen 0x699a80). Délègue à la couche
+// demandée (Main @0x536715 / WJ @0x540fc4). L'implémenteur de game::ITerrainPicker
+// (Game/SkillCombat.h:238, hors périmètre) dérive le ScreenPickCamera de gfx::Camera.
+// ---------------------------------------------------------------------------
+bool WorldAssets::PickRayScreen(CollisionSlot slot, const collision::ScreenPickCamera& cam,
+                                int sx, int sy, uint32_t& outFaceIndex, float outHit[3],
+                                bool twoSide) const {
+    const asset::CollisionMesh* m = CollisionMeshOf(slot);
+    if (!m) return false;
+    return collision::PickRayScreen(*m, cam, sx, sy, outFaceIndex, outHit, twoSide); // 0x699a80
+}
+
+// ---------------------------------------------------------------------------
+// GX-ICON-01 — Minimap de zone : exposition des 3 textures + bornes monde. Les textures sont
+// chargées par LoadMinimap (case 8/9/10) mais n'étaient jamais exposées (membre privé sans
+// accesseur) -> mini-carte sans fond. La production côté UI reste hors périmètre.
+// ---------------------------------------------------------------------------
+const asset::Texture* WorldAssets::Minimap(int index) const {
+    if (index < 0 || index > 2) return nullptr; // 0=_MINIMAP01/1=_MINIMAP02/2=_MINIMAP03
+    return minimaps_[static_cast<size_t>(index)].get(); // world+2092/+2132/+2172, stride 40 @0x681aab
+}
+WorldAssets::MinimapBounds WorldAssets::MinimapWorldBounds() const {
+    MinimapBounds b{0.0f, 0.0f, 0.0f, 0.0f, false};
+    const asset::CollisionMesh* m = TerrainMesh(); // dword_14A88C8 = quadtree .WG (g_GameWorld+140)
+    if (!m || m->nodes.empty()) return b;
+    const asset::CollisionQuadNode& root = m->nodes[0]; // UI_GameHud_Render @0x681513..@0x68154b
+    b.minX    =  root.bboxMin[0]; // @0x681519 (+0)
+    b.maxX    =  root.bboxMax[0]; // @0x681527 (+12)
+    b.negMaxZ = -root.bboxMax[2]; // @0x681535 (+20, fchs)
+    b.negMinZ = -root.bboxMin[2]; // @0x681546 (+8,  fchs)
+    b.valid   = true;
+    return b;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,8 +386,10 @@ bool WorldAssets::LoadMinimap(void* user, int index, const char* path) {
     if (index < 1 || index > 3) return false;
     auto& slot = self->minimaps_[static_cast<size_t>(index - 1)];
     slot = std::make_unique<asset::Texture>();
-    // Enveloppe GXD .IMG détectée (pixels non décodés : cTexture_LoadFromImgFile
-    // 0x457A20 hors périmètre de ce parseur, cf. Asset/Texture.h).
+    // Enveloppe GXD .IMG famille T : Texture::LoadFile MATÉRIALISE désormais les pixels (blocs DXT)
+    // via ImgFile + LoadFromImgFile (Asset/Texture.cpp:96-111 / Texture.h:45-47) — format PROUVÉ
+    // identique à Tex_LoadCompressedDDS 0x6A2E80 (en-tête GXD 36 o + DDS embarqué, cf. 0x6A2FFE/
+    // 0x6A3040). Exposée par WorldAssets::Minimap(index) (GX-ICON-01).
     return slot->LoadFile(self->gameDataDir_ + "\\" + path);
 }
 

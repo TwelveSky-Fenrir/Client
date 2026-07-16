@@ -25,7 +25,26 @@
 // (0x1669170), mis à jour par les handlers Pkt_* concernés (progression de
 // quête, kill-track) — hors périmètre de cette mission UI.
 //
-// Aucune action de ce panneau n'envoie de paquet réseau (lecture seule).
+// ---------------------------------------------------------------------------------------
+// AUCUNE ÉMISSION RÉSEAU — PROUVÉ, PAS SUPPOSÉ (Passe 4 / vague W6, front `quest-npcdialog`).
+// Le suivi de quête est PUREMENT LOCAL côté binaire. Les deux seules fonctions d'origine de
+// ce panneau ne contiennent AUCUN appel Net_Send* (vérifié sur la liste de références de leur
+// décompilation, pas sur une lecture approximative) :
+//   Quest_DrawTracker      0x510FC0 — rendu pur : SkillDefTbl_GetRecord(mNPC, this+51588) ->
+//     Sprite2D_Draw(&g_AssetMgr_UiAtlasSlots + 148*rec[1320] - 148) ; NpcTbl_FindByTypeAndId
+//     (mQUEST, this+40996, this+46212 (+1 si this+51584==1)) ; 4x UI_DrawNumberValue aux
+//     y+3/+19/+35/+51 ; formats "%s (%d,%d)" (GInfo_CalcRightMargin/CalcLeftMargin/
+//     FindMotionByFrameId + StrTable003_Get) et "%s!" (this+40980). Ancre verticale :
+//     dword_184C648==1 ? this+24-352 : this+24-196.
+//   Quest_UpdateMarkerTimer 0x510D90 — état + audio seulement : garde !Map_IsArenaZone()
+//     (0x54B690), extinction du marqueur à 30 s, réévaluation à 600 s, Quest_CheckObjectiveState
+//     -> NpcTbl_FindByTypeAndId(mQUEST, ...) ; Snd3D_PlayScaledVolume(flt_148CABC,...,100,1) si
+//     code==1, sinon this+51592 = Rng_Next()%3+1.
+// => Ne rien émettre depuis ce panneau est CORRECT et FIDÈLE. Ce n'est pas une lacune de
+// portage : ajouter un envoi ici serait une INVENTION. (Ancienne formulation non ancrée
+// « Aucune action de ce panneau n'envoie de paquet réseau (lecture seule). » remplacée par
+// les deux EA ci-dessus, qui la démontrent.)
+// ---------------------------------------------------------------------------------------
 #pragma once
 #include "UI/UIManager.h"
 #include "Game/QuestSystem.h"

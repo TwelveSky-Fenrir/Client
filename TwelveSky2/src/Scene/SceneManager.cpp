@@ -26,6 +26,8 @@
 #include "Game/EntityLifecycleTick.h"
 #include "Game/CameraWarpTick.h"
 #include "Game/ComboPickupTick.h"
+#include "Game/MotionPools.h"    // game::LoadedCoordTable / kCoordTableRow* — table GINFO-003
+                                  // (mZONEMOVEINFO 350x805 FLOAT, base d'origine flt_1555D08)
 #include "Game/NpcInteraction.h" // NpcInteractionSystem::AutoInteractForPet (déjà porté, réutilisé)
 // 3 systèmes supplémentaires câblés dans ce même bloc (mission de câblage 2026-07-14,
 // suite des 4 ci-dessus) : effets au sol/auras/objets de zone, gate auto-cible/combat,
@@ -37,6 +39,8 @@
 #include <windows.h>
 #include <cstring>
 #include <cstdio>   // std::snprintf (chemin BGM "Z%03d.BGM")
+#include <cstdint>
+#include <vector>   // std::vector (candidats de combo GINFO-003, cf. ComboCandidateLookup)
 
 // TODO journalisé UNE SEULE FOIS par point d'intégration (évite le flood de logs pour les
 // hooks appelés à 30 Hz depuis InGameTickFlow_Update — cf. case Scene::InGame ci-dessous).
@@ -52,6 +56,150 @@ namespace ts2 {
 // ci-dessous ; consommé par App/PlayerInputController.cpp (garde Camera_UpdateFromInput
 // @0x50B7EC). Valeur initiale 0 = sous-état d'entrée de toute scène. // 0x1676184
 int g_SceneSubState = 0;
+
+// ===========================================================================
+// GINFO-003 — sous-tables A/B de mZONEMOVEINFO (« G02_GINFO\003.BIN », 350x805 FLOAT,
+// base d'origine flt_1555D08, chargée par Motion_LoadGInfo003Bin 0x4FD420 et exposée ici
+// par game::LoadedCoordTable(), cf. Game/MotionPools.h).
+//
+// Layout de ligne RE-DÉRIVÉ des TROIS seuls lecteurs de cette table dans le binaire :
+//   GInfo2_GetVec3           0x4FD4C0 : row[0..2]    = position (x,y,z)      [déjà porté]
+//   Combo_FindNearbyFollowup 0x501270 : row[3]       = countA        (DWORD) @0x501290
+//                                       row[4+3i]    = vec3 candidat A (i < countA)
+//                                       row[304+i]   = idA           (DWORD) @0x501337
+//   GInfo2_FindVec3ByKey     0x4FD540 : row[404]     = countB        (DWORD) @0x4FD583
+//                                       row[705+i]   = clé B         (DWORD) (i < countB)
+//                                       row[405+3i]  = vec3 B                @0x4FD5FF/620/642
+// Somme 3+1+300+100+1+300+100 = 805 -> la ligne est INTÉGRALEMENT expliquée (le gap
+// GINFO-003-SUBTABLES-UNWIRED portait sur ces 802 float jamais lus).
+//
+// `row` 0-based = 805*(motionId-1) : le binaire indexe en 1-based via `805*a2 - 805`.
+// ATTENTION : les champs de comptage/clé/id sont lus en DWORD SUR la table FLOAT (motif
+// `*((_DWORD *)this + ...)` du binaire) -> RÉINTERPRÉTATION binaire des bits, surtout PAS
+// une conversion float->int.
+// ===========================================================================
+namespace {
+
+// Réinterprète en int32 le mot d'index `idx` de la table FLOAT (motif `*((_DWORD *)this + idx)`
+// de Combo_FindNearbyFollowup 0x501270 / GInfo2_FindVec3ByKey 0x4FD540).
+int32_t GInfo2AsI32(const float* table, std::size_t idx) {
+    int32_t v = 0;
+    std::memcpy(&v, table + idx, sizeof(v));
+    return v;
+}
+
+std::size_t GInfo2TableSize() {
+    return static_cast<std::size_t>(game::kCoordTableRowCount) *
+           static_cast<std::size_t>(game::kCoordTableRowStride);
+}
+
+// Sous-table A — candidats de combo de suivi de `motionId` (Combo_FindNearbyFollowup 0x501270 :
+// boucle `i < row[3]`, position `row[4+3i]`, id `row[304+i]`). La sélection finale (distance
+// < 30.0 puis Combo_CheckTransition == 1) reste faite par game::Combo_FindNearbyFollowup.
+std::vector<game::ComboMotionCandidate> GInfo2ComboCandidates(int motionId) {
+    std::vector<game::ComboMotionCandidate> out;
+    const float* table = game::LoadedCoordTable(); // flt_1555D08
+    if (!table) return out;                        // table non chargée -> aucun candidat
+    if (motionId < 1 || motionId > game::kCoordTableRowCount) return out; // garde @0x501286
+
+    const std::size_t row = static_cast<std::size_t>(game::kCoordTableRowStride) *
+                            static_cast<std::size_t>(motionId - 1);       // `805*a2 - 805`
+    const std::size_t tableSize = GInfo2TableSize();
+
+    const int32_t countA = GInfo2AsI32(table, row + 3);                   // row[3] @0x501290
+    if (countA > 0 && countA <= 100) out.reserve(static_cast<std::size_t>(countA));
+
+    for (int32_t i = 0; i < countA; ++i) {                                // @0x501290
+        const std::size_t posIdx = row + 4 + 3 * static_cast<std::size_t>(i);  // row[4+3i]
+        const std::size_t idIdx  = row + 304 + static_cast<std::size_t>(i);    // row[304+i]
+        // Le binaire ne borne PAS la boucle à 100 (il lit `countA` tel quel dans un tableau
+        // global plat) : cette garde est une sûreté MÉMOIRE sur le std::vector, pas un
+        // changement de comportement — pour toute ligne bien formée (countA <= 100) les deux
+        // lectures restent dans la ligne et le résultat est identique au binaire.
+        if (posIdx + 2 >= tableSize || idIdx >= tableSize) break;
+        game::ComboMotionCandidate c;
+        c.id = GInfo2AsI32(table, idIdx);   // @0x501337
+        c.x  = table[posIdx + 0];
+        c.y  = table[posIdx + 1];
+        c.z  = table[posIdx + 2];
+        out.push_back(c);
+    }
+    return out;
+}
+
+// Sous-table B — GInfo2_FindVec3ByKey 0x4FD540 : cherche `originKey` dans la liste de clés de
+// `followupMotionId` (row[705+i], i < row[404]) et renvoie le vec3 associé (row[405+3i]).
+// Non trouvé / hors bornes -> {0,0,0} : le binaire zéro le vec3 de sortie AVANT la recherche
+// (@0x4FD54E/555/55D) et le laisse tel quel si la boucle s'achève sans correspondance.
+void GInfo2ComboOrigin(int followupMotionId, int originKey, float outPos[3]) {
+    outPos[0] = 0.0f; // @0x4FD54E
+    outPos[1] = 0.0f; // @0x4FD555
+    outPos[2] = 0.0f; // @0x4FD55D
+
+    const float* table = game::LoadedCoordTable(); // flt_1555D08
+    if (!table) return;
+    if (followupMotionId < 1 || followupMotionId > game::kCoordTableRowCount) return; // @0x4FD56D
+
+    const std::size_t row = static_cast<std::size_t>(game::kCoordTableRowStride) *
+                            static_cast<std::size_t>(followupMotionId - 1);
+    const std::size_t tableSize = GInfo2TableSize();
+
+    const int32_t countB = GInfo2AsI32(table, row + 404);                 // row[404] @0x4FD583
+    for (int32_t i = 0; i < countB; ++i) {
+        const std::size_t keyIdx = row + 705 + static_cast<std::size_t>(i);   // row[705+i]
+        if (keyIdx >= tableSize) return;                                       // sûreté mémoire
+        if (GInfo2AsI32(table, keyIdx) != originKey) continue;
+        const std::size_t posIdx = row + 405 + 3 * static_cast<std::size_t>(i); // row[405+3i]
+        if (posIdx + 2 >= tableSize) return;                                    // sûreté mémoire
+        outPos[0] = table[posIdx + 0]; // @0x4FD5FF
+        outPos[1] = table[posIdx + 1]; // @0x4FD620
+        outPos[2] = table[posIdx + 2]; // @0x4FD642
+        return;
+    }
+    // Boucle achevée sans correspondance (`i == countB` @0x4FD5DC) -> vec3 laissé à {0,0,0}.
+}
+
+// ===========================================================================
+// gx-fx-01 — Reconstitution des paramètres de spawn de projectile d'attaque monstre.
+// Fx_SpawnAttackProjectile 0x582530 (et sa variante Alt 0x582A10) lisent leur `this` = un
+// enregistrement MONSTRE (dword_1766F74, stride 280). Ce câblage (le producteur documenté du
+// pool, cf. Game/GroundAuraWorldObjectTick.h:204 « Char_Update -> spawn, mission séparée »)
+// remplit game::FxProjectileSpawnParams depuis game::g_World.monsters[idx], son MONSTER_INFO
+// résolu (m.def, +0x60) et g_MonsterTickExt[idx] (cible d'attaque). Chaque champ porte l'offset
+// binaire RE-PROUVÉ par décompilation directe de 0x582530 cette mission (EA en commentaire) ;
+// this+96 == m.def (déréférencé sans garde @0x5825DF -> un monstre actif a toujours un def
+// résolu, Pkt_SpawnMonster 0x467B00 rejette sinon, cf. EntityManager.cpp:410).
+// Retourne false (aucun spawn) si l'index est invalide ou m.def nul : simple filet de sûreté
+// mémoire, jamais franchi pour un monstre actif bien formé.
+bool BuildMonsterProjectileParams(int idx, game::FxProjectileSpawnParams& p) {
+    if (idx < 0 || static_cast<std::size_t>(idx) >= game::g_World.monsters.size()) return false;
+    const game::MonsterEntity& m = game::g_World.monsters[static_cast<std::size_t>(idx)];
+    if (!m.def) return false;                                   // *(this+96) @0x5825DF (actif => def!=null)
+    const uint8_t* def = reinterpret_cast<const uint8_t*>(m.def);
+
+    p.owner     = m.id;                                          // *(this+4)/*(this+8)  @0x5825B5/0x5825C7
+    p.startX    = m.x;                                           // *(float*)(this+32)   @0x58281F
+    p.startYRaw = m.y;                                           // *(float*)(this+36)   @0x58283D (avant + heightOffset)
+    p.startZ    = m.z;                                           // *(float*)(this+40)   @0x58284F
+    p.heading   = m.heading;                                     // *(float*)(this+56)   @0x58286F
+    // targetX/Y/Z = *(float*)(this+44/48/52) = m.body[28/32/36] (body démarre à record+16).
+    std::memcpy(&p.targetX, m.body.data() + 28, sizeof(p.targetX)); // @0x5828D7
+    std::memcpy(&p.targetY, m.body.data() + 32, sizeof(p.targetY)); // @0x5828E9
+    std::memcpy(&p.targetZ, m.body.data() + 36, sizeof(p.targetZ)); // @0x5828FB
+    // Champs MONSTER_INFO (int32 aux offsets OCTET du record def ; record de 944 o, bornes sûres).
+    std::memcpy(&p.weaponId,      def + 244, sizeof(p.weaponId));      // *(*(this+96)+244) @0x5825DF
+    std::memcpy(&p.weaponSubtype, def + 236, sizeof(p.weaponSubtype)); // *(*(this+96)+236) @0x58268F
+    std::memcpy(&p.heightOffset,  def + 328, sizeof(p.heightOffset));  // *(*(this+96)+328) @0x58283D
+    std::memcpy(&p.speed,         def + 332, sizeof(p.speed));         // *(*(this+96)+332) @0x582913
+    // cible = *(this+68)/*(this+72) = MonsterTickExt::attackTargetId (peuplée par l'IA de combat
+    // réseau, HORS de ce front — d'où la latence documentée au site de câblage). g_MonsterTickExt
+    // est dimensionné par UpdateMonster (EnsureCapacity) avant l'appel du hook ; garde défensive.
+    if (static_cast<std::size_t>(idx) < game::g_MonsterTickExt.size())
+        p.target = game::g_MonsterTickExt[static_cast<std::size_t>(idx)].attackTargetId; // @0x582601/0x582613
+    return true;
+}
+
+} // namespace
 
 SceneManager::SceneManager() = default;
 SceneManager::~SceneManager() { Shutdown(); }
@@ -831,12 +979,69 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
 
         // --- MainTick étape 8 : monstres, péremption 7,5 s --------------------------------
         // Char_Update / sub_580550 (Game/EntityLifecycleTick.h). EntityLifecycleTickHost
-        // partagé avec l'étape 9 ci-dessous ; sous-hooks hors périmètre (tables de fenêtre de
-        // coup, envoi réseau melee/projectile, dispatch FSM, hauteur de sol, son d'impact —
-        // cf. tête de Game/EntityLifecycleTick.h) laissés nuls : dégradation propre (le
-        // monstre tick sans jamais frapper/tomber tant qu'un futur système combat/FX ne les
-        // branche pas).
+        // partagé avec l'étape 9 ci-dessous. DispatchMotionTick + SpawnAttackProjectile(Alt)
+        // sont désormais câblés ci-dessous (gx-fx-01, cette mission) ; les sous-hooks ENCORE
+        // nuls (tables de fenêtre de coup Anim_IsFrameInHitListA/B 0x559F80/0x55A000, envoi
+        // réseau melee Combat_SendMeleeHit1/2 0x5823E0/0x582480, hauteur de sol
+        // MapColl_GetGroundHeight 0x697130, son d'impact Snd3D_PlayPositional 0x4DA450) restent
+        // hors périmètre de ce front : dégradation propre documentée en tête de
+        // Game/EntityLifecycleTick.h. NB : IsFrameInHitListA/B étant nuls, la fenêtre de coup
+        // ne s'arme jamais (inWindow=false) — 2e verrou de latence du spawn projectile, en sus
+        // de l'absence de producteur de motionState=5/7 (cf. câblage SpawnAttackProjectile).
         static game::EntityLifecycleTickHost s_lifecycleHost;
+
+        // DispatchMotionTick — Char_Update 0x581E10, switch terminal @0x5822D3 (les 9 handlers
+        // Char_MotionTick_* 0x582D40..0x5832E0). CE HOOK ÉTAIT LA CAUSE RACINE du gap
+        // « s_lifecycleHost n'a aucun hook assigné » : game::Monster_DispatchMotionTick
+        // (Game/AnimationTick.h §5) porte DÉJÀ fidèlement les 9 handlers et est appelé par
+        // UpdateMonster (EntityLifecycleTick.cpp:153) via ce hook... qui n'était assigné NULLE
+        // PART -> la FSM entière était du code mort et MonsterTickExt::motionState/animFrame ne
+        // bougeaient jamais. Ce câblage la rend réellement atteinte (30 Hz, un appel par monstre
+        // actif), ce que Scene/WorldRenderer.cpp détecte via game::Monster_MotionTickIsWired()
+        // pour ne consommer le curseur par-entité (`ent.hasAnimCursor`) qu'une fois alimenté.
+        // oracle = ts2::WorldMotionFrameCountOracle() (Scene/WorldRenderer.h, seul détenteur du
+        // MotionCache) -> Model_GetMotionFrameCount 0x4E5A70, MÊME slot que le dessin.
+        // StepTowardTarget (MapColl_StepTowardTarget 0x6974C0, états Move 3/4) laissé nul :
+        // dégradation EXPLICITEMENT prescrite par AnimationTick.h — on saute le déplacement et
+        // la transition « arrivé », on NE traite SURTOUT PAS « hook absent » comme
+        // « échec -> state=1 » (le monstre ne marcherait jamais) ; le wrap de frame s'applique.
+        // TODO [ancre MapColl_StepTowardTarget 0x6974C0] — exige la géométrie de collision de
+        // carte + MONSTER_INFO+384/388, hors périmètre de ce front.
+        s_lifecycleHost.DispatchMotionTick = [](int idx, float dt) {
+            static const game::MonsterMotionTickHost s_motionHost{}; // StepTowardTarget nul (cf. supra)
+            game::Monster_DispatchMotionTick(game::g_World, idx, dt,
+                                              &WorldMotionFrameCountOracle(), s_motionHost);
+        };
+
+        // gx-fx-01 — SpawnAttackProjectile / SpawnAttackProjectileAlt : les DEUX DERNIERS slots
+        // non assignés de s_lifecycleHost. Char_Update 0x581E10 les appelle (@0x5820A9 état 5 /
+        // @0x58213D état 7) pour PEUPLER le pool de projectiles FX dword_17D06F4 via
+        // Fx_SpawnAttackProjectile(Alt) 0x582530/0x582A10 — c'est LE cœur fonctionnel du gap
+        // gx-fx-01 (« pool jamais peuplé »). Le port réel du pool + du spawn existe déjà
+        // (game::Fx_SpawnAttackProjectile, Game/GroundAuraWorldObjectTick.cpp) mais n'avait
+        // AUCUN appelant = code mort ; ce câblage lui donne son producteur documenté
+        // (GroundAuraWorldObjectTick.h:204). Params reconstitués par BuildMonsterProjectileParams
+        // (namespace anonyme en tête, offsets binaires re-prouvés en IDA cette mission).
+        //
+        // RÉSERVE HONNÊTE (re-prouvée en IDA + grep exhaustif cette mission) : le site d'appel est
+        // gardé par `ext.motionState == 5/7 && ext.attackWindupMode == 1` puis `hitActionKind == 2`
+        // (EntityLifecycleTick.cpp:80/103/108/117). Or AUCUN chemin de ClientSource ne produit
+        // motionState=5/7, ni attackWindupMode=1, ni hitActionKind=2 : Monster_DispatchMotionTick
+        // (câblé juste au-dessus) n'écrit QUE motionState=Loop(1) et attackWindupMode=0
+        // (AnimationTick.cpp:703/744), et le vrai producteur est le handler réseau d'ordre
+        // d'attaque monstre (HORS de ce front). Le spawn reste donc LATENT (jamais atteint
+        // aujourd'hui) — mais fidèle et immédiatement fonctionnel dès qu'un producteur de
+        // motionState=5/7 sera câblé. Même politique que host.GetFxAuraCount/UpdateHomingProjectile
+        // plus bas (« câblage réel malgré tout », dégradation propre et sûre).
+        s_lifecycleHost.SpawnAttackProjectile = [](int idx) {
+            game::FxProjectileSpawnParams p;
+            if (BuildMonsterProjectileParams(idx, p)) game::Fx_SpawnAttackProjectile(p);    // 0x582530 (état 5)
+        };
+        s_lifecycleHost.SpawnAttackProjectileAlt = [](int idx) {
+            game::FxProjectileSpawnParams p;
+            if (BuildMonsterProjectileParams(idx, p)) game::Fx_SpawnAttackProjectileAlt(p); // 0x582A10 (état 7)
+        };
+
         host.UpdateMonster = [](int idx, float dt) {
             game::UpdateMonster(game::g_World, idx, dt, s_lifecycleHost);
         };
@@ -936,29 +1141,47 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         };
 
         // --- MainTick étape 12c -------------------------------------------------------------
-        // Combo_FindNearbyFollowup (Game/ComboPickupTick.h) : la table GINFO2 (candidats de
-        // suivi + Combo_CheckTransition) n'est modélisée nulle part dans ClientSource ->
-        // candidates/transitionCheck nuls (résultat -1 fidèle, garde EA 0x501286). motionId
-        // (g_SelfMorphNpcId) n'est pas non plus tracé dans GameState.h -> 0 fixe (TODO),
-        // renvoie -1 immédiatement (hors bornes [1,350]).
+        // Combo_FindNearbyFollowup (Game/ComboPickupTick.h), site d'appel @0x52CEA9 :
+        //   `mov ecx, offset flt_1555D08`   -> this = table GINFO-003 (game::LoadedCoordTable())
+        //   `mov edx, ds:g_SelfMorphNpcId`  -> a2   = motionId courant          @0x52CE9D
+        //   `push offset flt_1687330`       -> a3   = position du joueur local  @0x52CE98
+        // GINFO-003-SUBTABLES : `candidates` lit désormais RÉELLEMENT la sous-table A de la
+        // ligne (row[3]/row[4+3i]/row[304+i]) — ce lambda EST atteint : InGameTickFlow étape 12c
+        // l'appelle toutes les 30 frames (garde `% 30` @0x52CE8E), et motionId est maintenant la
+        // vraie valeur de g_SelfMorphNpcId (le « TODO non tracé » précédent était PÉRIMÉ :
+        // l'adresse est tracée par game::WarpAddr::SelfMorphNpcId et déjà lue par une dizaine
+        // de consommateurs via g_Client.VarGet).
+        // `transitionCheck` reste nul : Combo_CheckTransition 0x4FD650 (validateur géant, ~250
+        // paires + ~25 globals non tracés + g_MotionFrameRangeTable/SkillLevelTable_GetMin/Max)
+        // appartient au domaine SkillCombat et n'est porté nulle part dans ClientSource -> 0
+        // constant, donc aucun candidat ne franchit la garde `== 1` @0x501337 et le résultat
+        // reste -1. La sous-table A est bien LUE (gap levé) mais la SÉLECTION finale reste
+        // latente. TODO [ancre Combo_CheckTransition 0x4FD650] — hors périmètre de ce front.
         host.FindComboFollowupTarget = [] {
             const game::PlayerEntity& self = game::g_World.Self();
-            const int motionId = 0; // TODO : g_SelfMorphNpcId non trace dans GameState.h
-            return game::Combo_FindNearbyFollowup(motionId, self.x, self.y, self.z, nullptr, nullptr);
+            const int motionId = game::g_Client.VarGet(game::WarpAddr::SelfMorphNpcId); // @0x52CE9D
+            return game::Combo_FindNearbyFollowup(motionId, self.x, self.y, self.z,
+                                                   GInfo2ComboCandidates, nullptr);
         };
         // host.IsMorphInProgress est DÉJÀ câblé réellement plus haut (porte de gating étape 12,
         // même champ réutilisé ici par le binaire pour la gate combo étape 12c) — pas de
         // réaffectation ici.
         // BeginComboMorph (Game/ComboPickupTick.h) : port fidèle complet (phase=4, reset des
-        // 72 o, rotation aléatoire via net::DefaultRng(), Net_SendPacket_Op20). currentMotionId
-        // (clé GInfo2_FindVec3ByKey) partage le même TODO que motionId ci-dessus -> 0 fixe,
-        // originLookup GINFO2 nul (position d'origine résolue à {0,0,0}, fidèle). Ne
-        // s'exécutera jamais tant que FindComboFollowupTarget renverra -1 ci-dessus.
+        // 72 o, rotation aléatoire via net::DefaultRng(), Net_SendPacket_Op20).
+        // GINFO-003-SUBTABLES : `originLookup` lit désormais RÉELLEMENT la sous-table B
+        // (row[404]/row[705+i]/row[405+3i]) via GInfo2_FindVec3ByKey 0x4FD540, appelée au site
+        // @0x52CF30 avec a2 = followupMotionId (var_4) et a3 = g_SelfMorphNpcId (@0x52CF20) —
+        // d'où `currentMotionId` = g_SelfMorphNpcId (l'ancien « TODO non tracé » était PÉRIMÉ,
+        // cf. étape 12c ci-dessus).
+        // RÉSERVE HONNÊTE : ce lambda n'est atteint que si FindComboFollowupTarget renvoie
+        // != -1, ce qui exige Combo_CheckTransition 0x4FD650 (non porté, cf. étape 12c) —
+        // la sous-table B est donc câblée fidèlement mais reste LATENTE tant que 0x4FD650
+        // n'est pas porté. TODO [ancre Combo_CheckTransition 0x4FD650].
         static game::ComboMorphState s_comboMorph;
         host.BeginComboMorph = [this](int followupTargetId) {
-            const int currentMotionId = 0; // TODO : g_SelfMorphNpcId non trace
+            const int currentMotionId = game::g_Client.VarGet(game::WarpAddr::SelfMorphNpcId); // @0x52CF20
             game::BeginComboMorph(s_comboMorph, followupTargetId, currentMotionId,
-                                   net_->Client(), nullptr);
+                                   net_->Client(), GInfo2ComboOrigin);
             if (windowsReady_ && windows_) {
                 windows_->AutoPlaySys().externalState.morphInProgress = s_comboMorph.inProgress;
             }
@@ -1028,7 +1251,8 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         // APRÈS la mise à jour de la position du joueur local pour cette frame (host.
         // UpdateEntityAnimFrame(0,...) déjà exécuté par InGameTickFlow_Update ci-dessus) —
         // remplace host.InitCamera/host.UpdateCameraCollision (laissés no-op plus haut).
-        gfx::TickThirdPersonCamera(camera, game::g_World, static_cast<float>(dt), justEnteredInGame);
+        gfx::TickThirdPersonCamera(camera, game::g_World, static_cast<float>(dt), justEnteredInGame,
+                                   worldAssets_.get()); // WG-02 : oracle collision terrain réel (0x69a1f0/0x540da0)
 
         // AutoPlay_Update(g_AutoPlayBot) — TOUJOURS après Scene_InGameUpdate, cf. commentaire
         // en tête de bloc et Game/InGameTickFlow.h (note d'intégration en bas de fichier).

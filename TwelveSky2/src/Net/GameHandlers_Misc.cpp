@@ -31,11 +31,15 @@
 #include "Game/ClientRuntime.h"
 #include "Game/StatEngine.h"   // game::StatEngine::CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0) — M3
 #include "Game/BitPacking.h"   // game::Stat_UnpackCombined/PackCombined (0x54CE40/0x54CEB0) — M4
-#include "Game/MapWarp.h"      // game::BeginWarpToMap37/BeginWarpToFactionTown (0x62/0x8f)
+#include "Game/MapWarp.h"      // game::BeginWarpToMap37/BeginWarpToFactionTown (0x62/0x8f) + Warp_SendTeleport (0x84)
 #include "Game/MotionPoolsCoordResolver.h" // game::g_CoordResolver (résolution coords warp)
 #include "Game/SocialSystem.h" // game::g_Achievements/PostAchievementNotice (AchievementNotice 0x99)
+#include "Game/GameDatabase.h" // game::GetItemInfo — MobDb_GetEntry(mITEM, id) 0x4C3C00 (0xae cas 3)
+#include "Game/StringTables.h" // game::g_Strings.zoneNames = StrTable003 (0x4C1AD0) — 0x61 sous-op 1
 
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -78,6 +82,65 @@ void RecalcTalismanAttackRating() {
     const int32_t mx = game::StatEngine::CalcAttackRatingMax(game::g_World.self, game::g_World.db); // 0x4CE3F0
     game::g_Client.Var(0x1687374) = mx;                                          // dword_1687374 base max
     if (game::g_Client.VarGet(0x1687378) > mx) game::g_Client.Var(0x1687378) = mx; // dword_1687378 cur max (clamp)
+}
+
+// Recalcul AR SANS clamp — motif DISTINCT de RecalcTalismanAttackRating() ci-dessus :
+// le binaire écrit ici les 4 globals en AFFECTATION SÈCHE (aucun test `if (cur > n)`).
+// Ancre : Net_OnCultivationDispatch 0x493180, cases 19/20 — EA 0x493FD7 (dword_1687370=Min),
+// 0x493FE6 (dword_168736C=Min), 0x493FF5 (dword_1687378=Max), 0x494004 (dword_1687374=Max)
+// [idem case 20 : EA 0x494114/0x494123/0x494132/0x494141]. Le binaire appelle Min et Max
+// DEUX fois chacun (fonctions pures, sans effet de bord) -> factorisé en un appel.
+void RecalcAttackRatingSetAll() {
+    const int32_t mn = game::StatEngine::CalcAttackRatingMin(game::g_World.self, game::g_World.db); // 0x4CD970
+    game::g_Client.Var(0x1687370) = mn;   // 0x493FD7 — PAS de clamp (≠ cases 9/10)
+    game::g_Client.Var(0x168736C) = mn;   // 0x493FE6
+    const int32_t mx = game::StatEngine::CalcAttackRatingMax(game::g_World.self, game::g_World.db); // 0x4CE3F0
+    game::g_Client.Var(0x1687378) = mx;   // 0x493FF5
+    game::g_Client.Var(0x1687374) = mx;   // 0x494004
+}
+
+// Recalcul AR de la case 6 : SEULEMENT dword_168736C et dword_1687374, sans clamp.
+// Ancre : Net_OnCultivationDispatch 0x493180, case 6 — EA 0x4935F8 / 0x493607. Le binaire
+// ne touche NI dword_1687370 NI dword_1687378 ici (contrairement aux cases 9/10/19/20).
+void RecalcAttackRatingBaseOnly() {
+    game::g_Client.Var(0x168736C) =
+        game::StatEngine::CalcAttackRatingMin(game::g_World.self, game::g_World.db); // 0x4935F8
+    game::g_Client.Var(0x1687374) =
+        game::StatEngine::CalcAttackRatingMax(game::g_World.self, game::g_World.db); // 0x493607
+}
+
+// StrTable003_Get(dword_84A6A8, id) 0x4C1AD0 — table des NOMS DE ZONE (003.DAT / mZONENAME),
+// DISTINCTE de StrTable005_Get(g_LangId, id) 0x4C1D10 (005.DAT / mMESSAGE) qu'expose game::Str().
+// Index 1-based, chaîne vide hors bornes (comme &String dans l'original).
+// Ancre : Net_OnServerNameNotice 0x4A5540, EA 0x4A55AC.
+const char* Str3(int id) { return game::g_Strings.zoneNames.Get(id); }
+
+// Crt_Vsnprintf(buf, StrTable005_Get(g_LangId, strId), ...) 0x75CD5F — le FORMAT est
+// l'entrée de table localisée elle-même (et non un littéral). Buffer 1000 o comme
+// l'original (v28/v29, [ebp-7F8h]/[ebp-410h] de Net_OnBuffEffectDispatch 0x4A88D0).
+std::string FmtFromStrTable(int strId, ...) {
+    char buf[1000];
+    va_list ap; va_start(ap, strId);
+    std::vsnprintf(buf, sizeof buf, game::Str(strId).c_str(), ap);
+    va_end(ap);
+    return std::string(buf);
+}
+
+// vsnprintf sur un format LITTÉRAL du binaire ("%s %d", "%s%s", "%s%s %d%s", "[%d]%s").
+std::string Fmt(const char* f, ...) {
+    char buf[1000];
+    va_list ap; va_start(ap, f);
+    std::vsnprintf(buf, sizeof buf, f, ap);
+    va_end(ap);
+    return std::string(buf);
+}
+
+// MobDb_GetEntry(mITEM, id) 0x4C3C00 ; le champ +4 de l'entrée == ItemInfo::name
+// (GameDatabase.h:60). Renvoie nullptr si l'entrée n'existe pas — l'appelant DOIT
+// tester, car le binaire s'en sert pour brancher (cf. cas 3 de 0xae).
+const char* ItemNameOrNull(uint32_t itemId) {
+    const game::ItemInfo* it = game::GetItemInfo(itemId);
+    return it ? it->name : nullptr;
 }
 } // namespace
 
@@ -174,10 +237,14 @@ void RegisterMiscHandlers(NetSystem& sys) {
                 const int sid = (v40 == 3) ? 104 : (v40 == 4) ? 105 : 106;
                 g_Client.msg.System(Str(sid));                     // Msg_AppendSystemLine(g_ChatManager, Str104/105/106, g_SysMsgColor)
                 net::Net_SendPacket_Op21(sys.Client());            // Net_SendPacket_Op21(&g_AutoPlayMgr) 0x4B5190
-                // ÉCART FIDÉLITÉ [ancre 0x469CF0, LABEL_12] : l'original branche sur le retour
-                // d'envoi (0=échec -> UI_NoticeDlg_Open(_,2,Str20,"") ; sinon g_MorphInProgress=0).
-                // net::Net_SendPacket_Op21 retourne void (SendPackets.h:42, NON possédé par ce
-                // front) -> on prend la branche succès (cas socket saine), pas de notice Str20.
+                // ÉCART FIDÉLITÉ [ancre 0x469CF0, EA 0x469E20 -> LABEL_12 0x469EE5] : l'original
+                // fait `call Net_SendPacket_Op21 / test eax,eax / jnz` — le builder 0x4B5190
+                // retourne bien un int (0 après Net_CloseSocket, 1 en succès) et, sur échec,
+                // saute à LABEL_12 = UI_NoticeDlg_Open(byte_18225C8, 2, Str20, "") AU LIEU de
+                // poser g_MorphInProgress = 0. Le correctif exige de changer la signature de
+                // net::Net_SendPacket_Op21 (void -> bool) dans Net/SendPackets.h:42, fichier NON
+                // POSSÉDÉ par ce front -> écart conservé et remonté à l'orchestrateur. Effet
+                // observable limité au cas d'une socket déjà rompue.
                 g_MorphInProgress = 0;                             // ts2::net::g_MorphInProgress = g_MorphInProgress 0x1675A88
                 break;
             }
@@ -268,60 +335,313 @@ void RegisterMiscHandlers(NetSystem& sys) {
     });
 
     // 0x58 CultivationDispatch — méga-dispatcher cultivation (attributs/growth/buffs).
+    // Ancre : Net_OnCultivationDispatch 0x493180. Décodage : v72=value @0x8156C1 (memcpy
+    // 0x49319E), v67=subOpcode @0x8156C5 (0x4931B4), v73..[100] = body @0x8156C9 (0x4931C7).
+    //
+    // NOTE DE MODÉLISATION (currency) : le binaire tient DEUX globals — g_Currency 0x1673180
+    //   et son miroir dword_1687254 — décrémentés ENSEMBLE dans les cases 4/6/7/16/17/20.
+    //   Le C++ les fusionne en un seul champ (g_Client.inv.currency, ClientRuntime.h:82,
+    //   « g_Currency 0x1673180 (+ miroir dword_1687254[0]) ») ; la clé Var(0x1687254) n'a
+    //   aucun lecteur. La case 15 fait exception : elle décrémente g_Currency SEUL (EA
+    //   0x493C6B/9A/B3, sans toucher 0x1687254) — asymétrie NON représentable par le repli à
+    //   un champ ; on applique la décrémentation à inv.currency (comportement observable).
+    //
+    // ⚠ ÉCART CROISÉ (hors périmètre de ce front, à arbitrer par l'orchestrateur) : le C++ a
+    //   DEUX représentations concurrentes de g_Currency 0x1673180 — `g_Client.inv.currency`
+    //   (qu'écrivent ce module et Net/GameHandlers_InvDispatch.cpp / InvCells.cpp) et
+    //   `g_World.self.currency` (qu'écrivent Net/GameVarDispatch.cpp:163/556 et
+    //   Net/CharStatDeltaDispatch.cpp:397, et que LIT le HUD — UI/GameHud.cpp:1166). Les coûts
+    //   posés ici sur inv.currency ne sont donc pas affichés. Défaut PRÉ-EXISTANT et
+    //   TRANSVERSAL (≈15 sites, 4 fichiers non possédés) : on conserve la convention en place
+    //   dans ce fichier (cf. 0x16 case 3 ci-dessus) plutôt que d'introduire ici une écriture
+    //   double qui doublerait les comptes face à GameVarDispatch pour le même opcode.
     OnPacket<CultivationDispatch>(sys, 0x58, [](const CultivationDispatch& p) {
-        g_GmCmdCooldownLatch = 0;
+        // g_GmCmdCooldownLatch = 0 : le binaire le pose PAR-CASE, en 1re instruction de
+        // chacune des cases 1..20 (EA 0x493212 case 1 … 0x49402F case 20), et JAMAIS dans
+        // le `default` (def_49320B 0x4941C7 = épilogue `return` sec). Le poser en tête du
+        // lambda libérerait le verrou sur un sous-opcode inconnu — écart réel.
+        if (p.subOpcode >= 1 && p.subOpcode <= 20) g_GmCmdCooldownLatch = 0;
+
         switch (p.subOpcode) {
-        case 1:  // reset attributs -> redistribue vers g_SelfUnspentAttrPoints, str601
-            g_Client.msg.System(Str(601));
-            // TODO(state): remettre g_SelfBaseAttr292/296/300/304 (0x16731BC/C4/B8/C0)
-            //   à 0 et cumuler dans g_SelfUnspentAttrPoints (0x16731D0).
+        case 1:  // reset d'attributs — TOUT est gaté par v72==0 (EA 0x49322C)
+            if (p.value != 0) break;
+            // 0x493255 : unspent += (300 + 292 + 304 + 296) - 4 ; puis les 4 attributs à 1
+            // (EA 0x49325A/64/6E/78) — à 1, PAS à 0 (d'où le `-4` du cumul).
+            // Champs modélisés (GameState.h:311-315) et NON g_Client.Var(0x16731B8..) : ce sont
+            // eux que lisent le moteur de stats (StatFormulas.cpp:440/809/1021/1134) et l'UI
+            // (CharacterStatsWindow.cpp:72-75/145) — les clés Var() n'ont aucun lecteur.
+            g_World.self.unspentAttr += g_World.self.attrDefensive   // 0x16731B8
+                                     +  g_World.self.attrExtForce    // 0x16731BC
+                                     +  g_World.self.attrOffensive   // 0x16731C0
+                                     +  g_World.self.attrIntForce    // 0x16731C4
+                                     -  4;
+            g_World.self.attrDefensive  = 1;   // 0x49325A
+            g_World.self.attrExtForce   = 1;   // 0x493264
+            g_World.self.attrOffensive  = 1;   // 0x49326E
+            g_World.self.attrIntForce   = 1;   // 0x493278
+            g_Client.Var(0x1687370) = 1;       // 0x493282
+            g_Client.Var(0x1687378) = 0;       // 0x49328C
+            g_Client.msg.System(Str(601));     // 0x4932A7
+            // TODO(ui) [ancre 0x4932BC] : cDrawWin_Init(dword_1839290) 0x628E40 — popup de
+            //   tirage/gamble (this+2 actif, efface 9 flags). Aucune abstraction de ce popup
+            //   n'existe côté C++ ; ne pas simuler.
             break;
-        case 6:  // croissance/growth : body[0..3] = u32 ; coût selon g_GrowthIndex%100
-            g_Client.Var(0x1674774) = static_cast<int32_t>(Rd32(p.body)); // g_GrowthIndex
-            // TODO(state): appliquer le coût et recalculer les bornes d'attaque (AR).
+
+        case 2:  // messages purs (EA 0x4932D0)
+            switch (p.value) {
+            case 0: g_Client.msg.System(Str(775)); break;  // 0x49330E
+            case 1: g_Client.msg.System(Str(776)); break;  // 0x493334
+            case 2: g_Client.msg.System(Str(778)); break;  // 0x493359
+            case 3: g_Client.msg.System(Str(779)); break;  // 0x49337F
+            default: break;                                // def_4932F6 : return
+            }
             break;
-        case 7:  // core attr +/- : coût 100 argent + 1M poids
-            g_Client.inv.currency -= 100;
-            g_Client.inv.weight   -= 1000000;
-            // TODO(state): poser l'attribut de cœur puis recalcul AR.
+
+        case 3:  // message pur gaté v72==0 (EA 0x49339E / gate 0x4933B8)
+            if (p.value == 0) g_Client.msg.System(Str(777));  // 0x4933CC
             break;
-        case 12: g_Client.Var(0x16747D4) = p.value; break;  // toggle dword_16747D4
-        case 13: g_Client.Var(0x16747D8) = p.value; break;  // toggle dword_16747D8
+
+        case 4:  // coût 500 (EA 0x4933EB)
+            if (p.value == 0) {
+                g_Client.inv.currency -= 500;              // 0x49341E g_Currency / 0x49342E miroir
+                g_Client.msg.System(Str(783));             // 0x493444
+            } else if (p.value == 1) {
+                g_Client.msg.System(Str(784));             // LABEL_111 0x493ED3
+            }
+            break;
+
+        case 5:  // latch seul, aucun autre effet (EA 0x493489-0x493493)
+            break;
+
+        case 6: {  // croissance/growth : coût tabulé par g_GrowthIndex%100
+            if (p.value != 0) break;                       // gate 0x4934B2
+            // switch (g_GrowthIndex % 100) -> coût v68 (EA 0x4934DF..0x49356D) ; toute autre
+            // valeur = `default: return` (def_4934DF 0x493579) SANS le moindre effet.
+            // g_World.self.growthIndex = g_GrowthIndex 0x1674774 (GameState.h:317) : c'est le
+            // champ que lit le moteur de stats (StatFormulas.cpp:310/437/596/724/807/1020) ;
+            // l'ancienne écriture g_Client.Var(0x1674774) n'avait AUCUN lecteur (clé morte).
+            int32_t cost;
+            switch (g_World.self.growthIndex % 100) {      // 0x4934C4 (idiv 100), 0x4934DF
+            case 0:  cost =   800; break;  // 0x4934E6
+            case 1:  cost =  1700; break;  // 0x4934F5
+            case 2:  cost =  2500; break;  // 0x493501
+            case 3:  cost =  3400; break;  // 0x49350D
+            case 4:  cost =  4200; break;  // 0x493519
+            case 5:  cost =  5100; break;  // 0x493525
+            case 6:  cost =  5900; break;  // 0x493531
+            case 7:  cost =  6800; break;  // 0x49353D
+            case 8:  cost =  7600; break;  // 0x493549
+            case 9:  cost =  8500; break;  // 0x493555
+            case 10: cost =  9300; break;  // 0x493561
+            case 11: cost = 10000; break;  // 0x49356D
+            default: return;               // 0x493579 : return, aucun effet
+            }
+            const int32_t v71 = static_cast<int32_t>(Rd32(p.body));  // memcpy 0x49357E : v71 = body+0
+            g_Client.inv.currency -= cost;                 // 0x49359C g_Currency / 0x4935AD miroir
+            // Mise à jour EXACTE (0x4935B2-0x4935E4) : le binaire n'assigne JAMAIS
+            // g_GrowthIndex = v71 — v71 est un PALIER, pas un index.
+            if (g_World.self.growthIndex != 0 || v71 <= 1)
+                ++g_World.self.growthIndex;                // 0x4935DE
+            else
+                g_World.self.growthIndex = 100 * (v71 - 1) + 1;  // 0x4935CD
+            g_Client.Var(0x1687314) = g_World.self.growthIndex;   // 0x4935E9
+            RecalcAttackRatingBaseOnly();                  // 0x4935F8 / 0x493607 (2 globals, sans clamp)
+            g_Client.msg.System(Str(939));                 // 0x49361D (push 3ABh)
+            break;
+        }
+
+        case 7:  // attribut de cœur +/- : v72 >= 3 ne fait RIEN (0x493656/5F/6C)
+            if (p.value > 2) break;
+            // Coûts communs aux 3 branches v72==0/1/2 (EA 0x49367F/0x4936FF/0x493763).
+            g_Client.inv.currency -= 100;                   // g_Currency + miroir dword_1687254
+            g_Client.inv.weight   -= 1000000;               // g_InvWeight 0x16732AC
+            if (p.value == 0) {
+                ++g_Client.Var(0x167477C);                  // 0x4936AD g_CoreAttr (lu par StatFormulas.cpp:1021/1134)
+                ++g_Client.Var(0x1687318);                  // 0x4936BB
+                g_Client.msg.System(Str(1143));             // 0x4936D2
+                // TODO(audio) [ancre 0x4936ED] : Snd3D_PlayScaledVolume(flt_14980FC, 0, 100, 1).
+            } else if (p.value == 1) {
+                g_Client.msg.System(Str(1144));             // 0x493735
+                // TODO(audio) [ancre 0x493750] : Snd3D_PlayScaledVolume(flt_14981BC, 0, 100, 1).
+            } else {  // p.value == 2
+                --g_Client.Var(0x167477C);                  // 0x493790
+                --g_Client.Var(0x1687318);                  // 0x49379F
+                g_Client.msg.System(Str(1144));             // 0x4937B5
+                g_Client.msg.System(Str(1145));             // 0x4937D6
+                // TODO(audio) [ancre 0x4937F1] : Snd3D_PlayScaledVolume(flt_149827C, 0, 100, 1).
+            }
+            break;
+
+        case 8:  // (EA 0x493800)
+            if (p.value == 0)      g_Client.Var(0x1674780) = 0;   // 0x493827 — SANS message
+            else if (p.value == 2) g_Client.msg.System(Str(117)); // 0x493843
+            break;
+
+        case 9:  // toggle dword_1674798 ON + clamp AR (EA 0x493862)
+            if (p.value != 0) break;                       // gate 0x49387C
+            g_Client.Var(0x1674798) = 1;                   // 0x493880
+            RecalcTalismanAttackRating();                  // 0x493894-0x4938E5 (clamp identique)
+            break;
+
+        case 10:  // toggle dword_1674798 OFF + même clamp (EA 0x4938F9) — symétrique de 9
+            if (p.value != 0) break;                       // gate 0x493913
+            g_Client.Var(0x1674798) = 0;                   // 0x493917
+            RecalcTalismanAttackRating();                  // 0x49392B-0x49397C
+            break;
+
+        case 11:  // latch seul, aucun autre effet (EA 0x493990-0x4939AA)
+            break;
+
+        case 12:  // (EA 0x4939B4) — sous-switch sur v72
+            switch (p.value) {
+            case 0:
+                // Le binaire DÉCRÉMENTE dword_16747D4 (il ne l'assigne pas) puis pose
+                // dword_16747D8 = body[0..3] (et non p.value).
+                --g_Client.Var(0x16747D4);                          // 0x4939FC
+                g_Client.Var(0x16747D8) = static_cast<int32_t>(Rd32(p.body)); // memcpy 0x4939EB / 0x493A05
+                g_Client.msg.System(Str(1341));                     // 0x493A1B
+                break;
+            case 1: g_Client.msg.System(Str(1342)); break;  // LABEL_68 0x493A41
+            case 2: g_Client.msg.System(Str(1343)); break;  // 0x493A66
+            case 3: g_Client.msg.System(Str(1344)); break;  // 0x493A8C
+            case 4: g_Client.msg.System(Str(1336)); break;  // 0x493AB2
+            default: break;                                 // return, aucun effet
+            }
+            break;
+
+        case 13:  // (EA 0x493AD1) — le binaire MET À ZÉRO (il n'assigne pas p.value)
+            if (p.value == 0) {
+                g_Client.Var(0x16747D8) = 0;                // 0x493AF8
+                g_Client.msg.System(Str(1339));             // 0x493B13
+            } else if (p.value == 1) {
+                g_Client.msg.System(Str(1340));             // 0x493B39
+            }
+            break;
+
+        case 14:  // messages purs (EA 0x493B58)
+            if (p.value == 0)      g_Client.msg.System(Str(1493));  // 0x493B99
+            else if (p.value == 1) g_Client.msg.System(Str(1494));  // 0x493BBF
+            else if (p.value == 2) g_Client.msg.System(Str(1495));  // 0x493BE4
+            break;
+
+        case 15:  // (EA 0x493C03) — message D'ABORD, puis coût selon le niveau
+            switch (p.value) {
+            case 0:
+                g_Client.msg.System(Str(1768));             // 0x493C40 — AVANT le coût (0x493C4B)
+                // Coût conditionnel (0x493C60-0x493CB3) : g_SelfLevel 0x16731A8 et
+                // g_SelfLevelBonus 0x16731AC == g_World.self.level / .levelBonus (GameState.h:308-309).
+                // Cf. NOTE DE MODÉLISATION : ici le binaire ne touche PAS le miroir 0x1687254.
+                if (g_World.self.level >= 100 && g_World.self.level <= 112) {
+                    g_Client.inv.currency -= 20;            // 0x493C6B
+                } else if (g_World.self.level >= 113 && g_World.self.level <= 145 &&
+                           g_World.self.levelBonus == 0) {
+                    g_Client.inv.currency -= 50;            // 0x493C9A
+                } else if (g_World.self.levelBonus > 0) {
+                    g_Client.inv.currency -= 100;           // 0x493CB3
+                }
+                break;
+            case 1: g_Client.msg.System(Str(1342)); break;  // LABEL_68 0x493A41 (partagé avec case 12/1)
+            case 2: g_Client.msg.System(Str(1803)); break;  // 0x493CF4
+            case 3: g_Client.msg.System(Str(1868)); break;  // 0x493D19
+            default: break;                                 // return, aucun effet
+            }
+            break;
+
+        case 16:  // coût 1 (EA 0x493D33)
+            if (p.value == 0) {
+                --g_Client.inv.currency;                    // 0x493D63 g_Currency / 0x493D71 miroir
+                g_Client.msg.System(Str(783));              // 0x493D87
+            } else if (p.value == 1) {
+                g_Client.msg.System(Str(784));              // LABEL_111 0x493ED3
+            }
+            break;
+
+        case 17:  // coût 10 (EA 0x493DCC)
+            if (p.value == 0) {
+                g_Client.inv.currency -= 10;                // 0x493DFC g_Currency / 0x493E0B miroir
+                g_Client.msg.System(Str(783));              // 0x493E21
+            } else if (p.value == 1) {
+                g_Client.msg.System(Str(784));              // LABEL_111 0x493ED3
+            }
+            break;
+
+        case 18:  // coût en POIDS (EA 0x493E66)
+            if (p.value == 0) {
+                g_Client.inv.weight -= 500000000;           // 0x493E97 g_InvWeight
+                g_Client.msg.System(Str(783));              // 0x493EAD
+            } else if (p.value == 1) {
+                g_Client.msg.System(Str(784));              // LABEL_111 0x493ED3
+            }
+            break;
+
         case 19:
-        case 20:  // applique 11 u32 de buffs d'attributs depuis body[0..43]
-            for (int i = 0; i < 11; ++i)
-                g_Client.Var(0x16758BC + static_cast<uint32_t>(i) * 4u) =
-                    static_cast<int32_t>(Rd32(p.body + 4 * i));
-            if (p.subOpcode == 20)
-                g_Client.inv.currency -= 1000;
-            // TODO(state): mapper g_AttrBuffActive/300/304/292/296 + recalcul AR min/max.
+        case 20: {
+            // 11 memcpy de 4 o depuis les lvars CONTIGUËS v73..v83 ([ebp-70h]..[ebp-48h]),
+            // toutes remplies par l'unique `Crt_Memcpy(v73, MEMORY[0x8156C9], 0x64)` (0x4931C7)
+            // => v73 = body+0 … v83 = body+40. Base RÉELLE = g_AttrBuffActive 0x16758A8.
+            // ATTENTION : le binaire SAUTE 0x16758C4 (il enchaîne 0x16758C0 -> 0x16758C8) —
+            // trou volontaire, consommé ailleurs ; une boucle contiguë le corromprait.
+            // EA case 19 : 0x493F07..0x493FC5 ; case 20 : 0x494044..0x494102 (identiques).
+            g_Client.Var(0x16758A8) = static_cast<int32_t>(Rd32(p.body +  0)); // g_AttrBuffActive 0x493F07
+            g_Client.Var(0x16758AC) = static_cast<int32_t>(Rd32(p.body +  4)); // g_AttrBuff300    0x493F1A
+            g_Client.Var(0x16758B0) = static_cast<int32_t>(Rd32(p.body +  8)); // g_AttrBuff304    0x493F2D
+            g_Client.Var(0x16758B4) = static_cast<int32_t>(Rd32(p.body + 12)); // g_AttrBuff292    0x493F40
+            g_Client.Var(0x16758B8) = static_cast<int32_t>(Rd32(p.body + 16)); // g_AttrBuff296    0x493F53
+            g_Client.Var(0x16758BC) = static_cast<int32_t>(Rd32(p.body + 20)); //                  0x493F66
+            g_Client.Var(0x16758C0) = static_cast<int32_t>(Rd32(p.body + 24)); //                  0x493F79
+            g_Client.Var(0x16758C8) = static_cast<int32_t>(Rd32(p.body + 28)); // NB : C4 sauté    0x493F8C
+            g_Client.Var(0x16758CC) = static_cast<int32_t>(Rd32(p.body + 32)); //                  0x493F9F
+            g_Client.Var(0x16758D0) = static_cast<int32_t>(Rd32(p.body + 36)); //                  0x493FB2
+            g_Client.Var(0x16758D4) = static_cast<int32_t>(Rd32(p.body + 40)); //                  0x493FC5
+            RecalcAttackRatingSetAll();   // 4 globals en affectation sèche, SANS clamp
+            if (p.subOpcode == 19) {
+                g_Client.msg.System(Str(2945));            // 0x49401A (push B79h)
+            } else {  // subOpcode == 20
+                g_Client.inv.currency -= 1000;             // 0x494152 g_Currency / 0x494162 miroir
+                if (p.value == 0)      g_Client.msg.System(Str(2943));  // 0x494195 (push B7Fh)
+                else if (p.value == 1) g_Client.msg.System(Str(2944));  // 0x4941B7 (push B80h)
+            }
             break;
+        }
+
         default:
-            // TODO(state): sous-op de cultivation non reversé (value=p.value).
-            break;
+            break;   // def_49320B 0x4941C7 : `return` sec — n'écrit RIEN (pas même le latch).
         }
     });
 
     // 0x5b QuickslotSync — mode 1 = charge les raccourcis ; mode 2 = argent/poids.
+    // Ancre : Net_OnQuickslotSync 0x4944A0. L'imbrication suit le binaire : le switch
+    // EXTERNE porte sur v3=mode (0x494517/0x494520), le gate `if (!v6)` est INTERNE à
+    // chaque mode (0x49452E pour mode 1, 0x494588 pour mode 2).
     OnPacket<QuickslotSync>(sys, 0x5b, [](const QuickslotSync& p) {
-        if (p.flag == 0) {
-            if (p.mode == 1) {  // copie quickslot[0..49] -> dword_184C0F8[]
-                for (int i = 0; i < 50; ++i)
+        if (p.mode == 1) {                       // 0x494517
+            if (p.flag == 0) {                   // 0x49452E
+                for (int i = 0; i < 50; ++i)     // copie quickslot[0..49] -> dword_184C0F8[] (0x49456C)
                     g_Client.Var(0x184C0F8 + static_cast<uint32_t>(i) * 4u) =
                         static_cast<int32_t>(p.quickslot[i]);
-            } else if (p.mode == 2) {  // synchro argent/poids
-                g_GmCmdCooldownLatch = 0;
-                g_Client.inv.weight = static_cast<int64_t>(p.money);  // g_InvWeight
-                g_Client.msg.System(Str(640));
+            }
+        } else if (p.mode == 2) {                // 0x494520
+            // g_GmCmdCooldownLatch = 0 dès mode==2 (0x494577), INDÉPENDAMMENT de v6 :
+            // le binaire libère le verrou AVANT le test `if (!v6)` (0x494588). L'imbriquer
+            // sous flag==0 laisserait le verrou armé sur un échec de synchro d'argent.
+            g_GmCmdCooldownLatch = 0;
+            if (p.flag == 0) {                   // 0x494588
+                g_Client.inv.weight = static_cast<int64_t>(p.money);  // g_InvWeight 0x494592
+                g_Client.msg.System(Str(640));   // 0x4945A8
             }
         }
     });
 
     // 0x61 ServerNameNotice — subop1 = message par id (StrTable003) ; subop2 = 3 floats.
+    // Ancre : Net_OnServerNameNotice 0x4A5540.
     OnPacket<ServerNameNotice>(sys, 0x61, [](const ServerNameNotice& p) {
         if (p.subop == 1) {
-            uint32_t id = Rd32(p.data);           // data[0..3] = id string
-            g_Client.msg.System(Str(static_cast<int>(id)));
+            uint32_t id = Rd32(p.data);           // memcpy 0x4A5594 : data[0..3] = id string
+            // 0x4A55AC : StrTable003_Get(dword_84A6A8, v4) — table des NOMS DE ZONE (003.DAT),
+            // et NON StrTable005_Get(g_LangId, …) qu'expose game::Str() (005.DAT / mMESSAGE).
+            // Tables distinctes (fichiers + strides différents) : le même index rend un texte
+            // différent. Conforme au commentaire de champ RecvPackets.h:731.
+            g_Client.msg.System(Str3(static_cast<int>(id)));
         } else if (p.subop == 2) {
             for (int i = 0; i < 3; ++i)           // data[0..11] = 3 floats -> flt_1687330
                 g_Client.VarF(0x1687330 + static_cast<uint32_t>(i) * 4u) = RdF32(p.data + 4 * i);
@@ -466,7 +786,18 @@ void RegisterMiscHandlers(NetSystem& sys) {
             g_Client.Var(0x1675DBC) = (v % 1000000) / 10000;
             g_Client.Var(0x1675DC0) = (v % 10000) / 100;
             g_Client.Var(0x1675DC4) = v % 100;
-            // TODO(state): charge/décharge le modèle de zone selon dword_1675DB8[g_LocalElement].
+            // Branche `else if (!dword_1675DB8[g_LocalElement])` (0x4A9E70) : outre le
+            // chargement de modèle, le binaire remet DEUX états à zéro (0x4A9E8B / 0x4A9E9E).
+            // Ces resets sont de l'état pur (aucune dépendance à l'asset .IMG) — le périmètre
+            // invoqué par le TODO(state) ci-dessous ne les couvre pas.
+            if (g_Client.VarGet(0x1675DB8 + g_LocalElement * 4u) == 0) {
+                g_Client.Var(0x1675D98 + g_LocalElement * 4u)  = 0;      // 0x4A9E8B
+                g_Client.VarF(0x1675DA8 + g_LocalElement * 4u) = 0.0f;   // 0x4A9E9E
+            }
+            // TODO(state) [ancre 0x4A9E41 / 0x4A9E81] : World_LoadCurrentZoneModel(g_GameWorld,
+            //   g_LocalElement+1) si dword_1675DB8[elem]==1, sinon (…, 6) — plus, dans la branche
+            //   ==1, flt_1675DA8[elem] = ModelObj_GetSubObjectCount(&unk_B68CCC, 0) - 1 (0x4A9E61),
+            //   qui DÉPEND du modèle chargé : non calculable sans l'asset. Hors périmètre réseau.
             break;
         }
         case 2:  // toggle indexé (value 0..4)
@@ -477,12 +808,19 @@ void RegisterMiscHandlers(NetSystem& sys) {
                 g_Client.VarF(0x1675DA8 + idx * 4u) = 0.0f;
             }
             break;
-        case 5:  // message flottant
-            g_Client.msg.Floating(1, 0, Str(245) + " " + std::to_string(p.value));
+        case 5: {  // ligne système + message flottant, MÊME tampon
+            // 0x4A9EF2-0x4A9F05 : Crt_Vsnprintf(v6, "[%d]%s", v7, StrTable005_Get(245))
+            // -> ordre gauche-à-droite = "[value]Str245" (et non "Str245 value").
+            const std::string buf = Fmt("[%d]%s", p.value, Str(245).c_str());
+            g_Client.msg.System(buf, 1);         // 0x4A9F18 : Msg_AppendSystemLine(_, v6, 1)
+            g_Client.msg.Floating(0, 0, buf);    // 0x4A9F2F : HUD_ShowFloatingMessage(_, 0, 0, v6, &String)
             break;
+        }
         case 6:
-            g_Client.Var(0x1675DCC) = 1;
-            g_Client.msg.System(Str(246));
+            g_Client.Var(0x1675DCC)  = 1;               // 0x4A9F39
+            g_Client.VarF(0x1675DD4) = 0.0f;            // 0x4A9F45
+            g_Client.msg.Floating(0, 0, Str(246));      // 0x4A9F69 : HUD_ShowFloatingMessage(_, 0, 0, Str246, &String)
+            g_Client.msg.System(Str(246), 1);           // 0x4A9F85 : Msg_AppendSystemLine(_, Str246, 1)
             break;
         case 7:
         case 9:
@@ -508,17 +846,19 @@ void RegisterMiscHandlers(NetSystem& sys) {
     });
 
     // 0x84 SummonSpawn — téléportation d'invocation vers une position fixe.
+    // Ancre : Net_OnSummonSpawn 0x4AA810 — v3=status @0x8156C1 (0x4AA846), v1=slot @0x8156C5
+    // (0x4AA859), garde `if (v1 < 4 && !v3)` (0x4AA879), puis `return Warp_SendTeleport(v1, v2)`
+    // (0x4AA88B) avec v2 = {-14.0f, 0.0f, -4242.0f} (0x4AA82A/2F/38).
     OnPacket<SummonSpawn>(sys, 0x84, [](const SummonSpawn& p) {
         if (p.slot < 4u && p.status == 0) {
             // Position d'invocation codée en dur dans le handler d'origine.
             const float pos[3] = { -14.0f, 0.0f, -4242.0f };
-            (void)pos; (void)p.slot;
-            // TODO(send): Warp_SendTeleport (EA 0x5F5CE0, RE/naming_results.json : « send
-            //   teleport-to-map request (sub_4B5000 op6) ») — enveloppe sub_4B5000 avec un sous-opcode
-            //   interne 6. NE PAS FORCER : ni Warp_SendTeleport ni sub_4B5000 ne figurent parmi les 234
-            //   builders Net_SendOpNN/Net_SendPacket_OpNN déjà portés dans Net/SendPackets.h — ce
-            //   dispatcher-là n'a pas encore été reversé/porté côté C++, donc aucun appel existant à
-            //   câbler ici sans d'abord ajouter ce builder (hors périmètre de ce passage de câblage).
+            // game::Warp_SendTeleport 0x5F5CE0 (MapWarp.h:187, corps MapWarp.cpp:281) : arme le
+            // warp (mode 6, zones {138,139,165,166}) ET émet Op20 (EA 0x5F5DD6). Le paramètre
+            // `nc` reste au défaut nullptr -> ArmFullWarp le résout vers net::GlobalNetClient()
+            // (MapWarp.cpp:86-87) : l'envoi est RÉEL, conforme au binaire qui adresse g_NetClient
+            // en global. La garde interne (a1<=3 && !g_MorphInProgress, EA 0x5F5D1A) est portée.
+            game::Warp_SendTeleport(static_cast<uint16_t>(p.slot), pos);
         }
     });
 
@@ -564,33 +904,137 @@ void RegisterMiscHandlers(NetSystem& sys) {
     });
 
     // 0xae BuffEffectDispatch — dispatcher de buff/stat + maj cellule inventaire.
+    // Ancre : Net_OnBuffEffectDispatch 0x4A88D0 (7 memcpy, EA 0x4A891F..0x4A89BE = 28 o utiles).
     OnPacket<BuffEffectDispatch>(sys, 0xae, [](const BuffEffectDispatch& p) {
         switch (p.subOpcode) {
-        case -1:
-        case 5:  // pose deux valeurs de stat
-            g_Client.Var(0x1675894) = p.param5;
-            g_Client.Var(0x1675898) = p.param6;
-            // TODO(state): Player_CheckStateDigit (rafraîchit l'état dérivé).
+        case -1:  // (EA 0x4A91EF) — pose deux valeurs de stat PUIS émet str2659
+            g_Client.Var(0x1675894) = p.param5;   // 0x4A91EF
+            g_Client.Var(0x1675898) = p.param6;   // 0x4A91F8
+            // TODO(player) [ancre 0x4A9202] : Player_CheckStateDigit(&g_PlayerCmdController)
+            //   0x511740 — le seul portage C++ est un stub VIDE local au TU GameVarDispatch.cpp
+            //   (l.127), non déclaré en header : l'appeler serait un no-op trompeur.
+            g_Client.msg.System(Str(2659));       // 0x4A9218 — le cas 5 n'a PAS ce message
             break;
-        case 1: {  // pose un objet dans la grille d'inventaire
-            uint32_t count = (p.param1 == 12101) ? 99u : 0u;
+        case 5:  // (EA 0x4A91D2) — mêmes deux Var, mais AUCUN message (≠ cas -1)
+            g_Client.Var(0x1675894) = p.param5;   // 0x4A91D2
+            g_Client.Var(0x1675898) = p.param6;   // 0x4A91DA
+            // TODO(player) [ancre 0x4A91EA] : Player_CheckStateDigit (cf. cas -1).
+            break;
+        case 1: {  // pose un objet dans la grille d'inventaire (EA 0x4A89E2)
+            uint32_t count = (p.param1 == 12101) ? 99u : 0u;   // 0x4A8A38 / 0x4A8A49 / 0x4A8A65
             g_Client.inv.Set(p.param2, p.param3, static_cast<uint32_t>(p.param1),
                              p.param4 % 8u, p.param4 / 8u, count, 0, 0);
-            // TODO(state): mise à jour de l'état dérivé après pose.
+            g_Client.Var(0x1675894) = p.param5;   // 0x4A8AA7 — manquant jusqu'ici
+            g_Client.Var(0x1675898) = p.param6;   // 0x4A8AB0
+            // TODO(player) [ancre 0x4A8ABA] : Player_CheckStateDigit (cf. cas -1).
+            g_Client.msg.System(Str(2901));       // 0x4A8AD0 — manquant jusqu'ici
             break;
         }
-        case 2: g_Client.msg.System(Str(598)); break;
-        case 4: g_Client.msg.System(Str(1257)); break;
-        case 3: {  // sous-dispatcher d'effets temporels
-            int v26 = p.param1 / 1000;
-            int v31 = -(p.param1 % 1000);
-            (void)v26; (void)v31;
-            // TODO(state): 2e switch v26 (-6..-17) ajustant les compteurs de buff
-            //   (dword_167587C, 16746E4/E8, 1674700/708/794, 1674AA0) + messages
-            //   formatés avec le nom d'objet (MobDb_GetEntry).
+        case 2: g_Client.msg.System(Str(598));  break;  // 0x4A8AF6
+        case 4: g_Client.msg.System(Str(1257)); break;  // 0x4A91BD
+        case 3: {  // sous-dispatcher d'effets temporels (EA 0x4A8B0E)
+            g_Client.Var(0x1675894) = p.param5;   // 0x4A8B0E
+            g_Client.Var(0x1675898) = p.param6;   // 0x4A8B16
+            // TODO(player) [ancre 0x4A8B21] : Player_CheckStateDigit (cf. cas -1).
+            const int v26 = p.param1 / 1000;      // 0x4A8B31
+            // 0x4A8B45 : v31 = -v35 % 1000. En division tronquée (C/C++ comme x86 idiv),
+            // (-a)%b et -(a%b) sont IDENTIQUES — la forme ci-dessous est équivalente.
+            const int v31 = -(p.param1 % 1000);
+
+            // 1er switch (0x4A8B87) : v26 -> v27 (id d'ITEM) ou v30 (id de CHAÎNE).
+            // v27/v30 initialisés à 0 (EA 0x4A8B48 / 0x4A8B4F) ; ni -14 ni -5 n'ont de cas.
+            int v27 = 0;  // id item (MobDb_GetEntry)
+            int v30 = 0;  // id chaîne (StrTable005)
+            switch (v26) {
+            case -16: v27 =  1894; break;  // 0x4A8C1E
+            case -15: v27 =  1097; break;  // 0x4A8C12
+            case -13: v27 =  1166; break;  // 0x4A8C06
+            case -12: v27 =  1124; break;  // 0x4A8BFA
+            case -11: v27 =  1103; break;  // 0x4A8BEE
+            case -10: v27 =  1108; break;  // 0x4A8BE2
+            case  -9: v27 = 12105; break;  // 0x4A8BD6
+            case  -8: v27 =   869; break;  // 0x4A8BCA
+            case  -7: v30 =  2318; break;  // 0x4A8BC1
+            case  -6: v30 =   918; break;  // 0x4A8BB8
+            case  -4: v30 =  2647; break;  // 0x4A8BAF
+            case  -3: v30 =  2646; break;  // 0x4A8BA6
+            case  -2: v30 =  2645; break;  // 0x4A8B9A
+            case  -1: v30 =  2644; break;  // 0x4A8B8E
+            default: break;
+            }
+
+            // 2e switch (0x4A8C2F) : compteurs en `+=` (DELTA) — sémantique DISTINCTE du
+            // `= value` que Net/GameVarDispatch.cpp applique aux MÊMES globals sous 0x16.
+            //
+            // ÉCART ASSUMÉ (UB d'origine) : quand MobDb_GetEntry rend 0, l'original émet
+            // quand même la ligne avec v28 NON INITIALISÉ (1000 o de pile — EA 0x4A8CB9,
+            // 0x4A8DF1, 0x4A8E74, 0x4A8EF7, 0x4A8F7D, 0x4A8FFF, 0x4A9084). Comportement
+            // indéfini, non reproductible : on émet une chaîne VIDE. En pratique inatteignable
+            // (v27 sont des ids codés en dur, présents en base d'items).
+            const char* nm = nullptr;
+            switch (v26) {
+            case -6:   // aucun compteur ; le format EST Str(v30), sans argument
+                g_Client.msg.System(FmtFromStrTable(v30));                  // 0x4A8C3A/47/0x4A8DB1
+                break;
+            case -7:   // aucun compteur ; Str(v30) formaté avec 180
+                g_Client.msg.System(FmtFromStrTable(v30, 180));             // 0x4A8C6B/78/80
+                break;
+            case -8:
+                g_Client.Var(0x167587C) += v31;                             // 0x4A8C96
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A8CAC
+                g_Client.msg.System(nm ? FmtFromStrTable(2825, nm, v31) : std::string()); // LABEL_53 0x4A9001/26
+                break;
+            case -9: {  // aucun compteur
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A8D28
+                std::string s;
+                if (nm) s = (v31 == 1) ? FmtFromStrTable(2823, nm, 1)       // 0x4A8D55/62
+                                       : FmtFromStrTable(2824, nm, v31);    // 0x4A8D84/91
+                g_Client.msg.System(s);                                     // 0x4A8D6A
+                break;
+            }
+            case -10:
+                g_Client.Var(0x16746E4) += v31;                             // 0x4A8DCD
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A8DE4
+                g_Client.msg.System(nm ? FmtFromStrTable(2826, nm) : std::string()); // LABEL_49 0x4A8F7F/A0
+                break;
+            case -11:
+                g_Client.Var(0x16746E8) += v31;                             // 0x4A8E50
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A8E67
+                g_Client.msg.System(nm ? FmtFromStrTable(2826, nm) : std::string()); // LABEL_49
+                break;
+            case -12:
+                g_Client.Var(0x1674708) += v31;                             // 0x4A8ED3
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A8EEA
+                g_Client.msg.System(nm ? FmtFromStrTable(2825, nm, v31) : std::string()); // LABEL_53
+                break;
+            case -13:
+                g_Client.Var(0x1674794) += v31;                             // 0x4A8F59
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A8F70
+                g_Client.msg.System(nm ? FmtFromStrTable(2826, nm) : std::string()); // LABEL_49
+                break;
+            case -15:
+                g_Client.Var(0x1674700) += v31;                             // 0x4A8FDB
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A8FF2
+                g_Client.msg.System(nm ? FmtFromStrTable(2825, nm, v31) : std::string()); // LABEL_53
+                break;
+            case -16:
+                g_Client.Var(0x1674AA0) += v31;                             // 0x4A9061
+                nm = ItemNameOrNull(static_cast<uint32_t>(v27));            // 0x4A9077
+                g_Client.msg.System(nm ? FmtFromStrTable(2999, nm) : std::string()); // 0x4A909A/A7
+                break;
+            case -17: {  // aucun compteur ; double formatage littéral
+                const std::string a = Fmt("%s %d", Str(2293).c_str(), v31); // 0x4A90E8/FA
+                g_Client.msg.System(Fmt("%s%s", a.c_str(), Str(2648).c_str())); // 0x4A910C/25/40
+                break;
+            }
+            default:  // 0x4A915B — couvre v26 = -14, -5..-1 et hors plage
+                g_Client.msg.System(Fmt("%s%s %d%s", Str(2532).c_str(), Str(v30).c_str(),
+                                        v31, Str(2648).c_str()));           // 0x4A9179/8B/A5
+                break;
+            }
             break;
         }
-        default: break;
+        default: break;   // cas 0 et hors plage : `return` sec (0x4A89C4)
         }
     });
 

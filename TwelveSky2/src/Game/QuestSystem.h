@@ -44,17 +44,26 @@
 //      consultee par l'UI d'aide (mHELP -> UI_CharListWnd_*, xrefs verifiees). C'est la
 //      QUEST_INFO deduite/chargee ici (struct QuestInfo, DataTable g_QuestTable).
 //
-//  (B) Enregistrements NPC de type mQUEST — table NPC generale (8444 o/ligne,
-//      NpcTbl_FindByTypeAndId 0x4C8340), HORS PERIMETRE de cette mission (aucun loader
-//      assigne, aucun EA de chargeur fourni). Quest_CheckObjectiveState/IsObjectiveComplete/
-//      GetObjectiveResult/GetRewardItemId/IsRewardItemActive ET g_pCurQuestStepRecord
-//      (dword_18231B4) operent TOUS sur CE type d'enregistrement (offsets +64/+72/+92/
-//      +96/+116/+120/+124/+136..+156 confirmes par decompilation croisee des 5 fonctions
-//      + de Pkt_SmithUpgradeResult). On le modelise ici via QuestStepRecord — une VUE
-//      PROPRE limitee aux seuls champs consommes (pas un overlay memoire des 8444 o) —
-//      plus une interface d'injection (QuestStepLookup) a cabler sur le futur chargeur
-//      NPC. TODO PRECIS : brancher QuestStepLookup sur un vrai chargeur de la table NPC
-//      (NpcTbl_FindByTypeAndId 0x4C8340) quand ce sous-systeme existera.
+//  (B) Table mQUEST — 1000 lignes x 8444 o (005_00006.IMG). Quest_CheckObjectiveState/
+//      IsObjectiveComplete/GetObjectiveResult/GetRewardItemId/IsRewardItemActive ET
+//      g_pCurQuestStepRecord (dword_18231B4) operent TOUS sur CE type d'enregistrement
+//      (offsets +64/+72/+92/+96/+116/+120/+124/+136..+156 confirmes par decompilation
+//      croisee des 5 fonctions + de Pkt_SmithUpgradeResult). Modelise ici via
+//      QuestStepRecord — une VUE PROPRE limitee aux seuls champs consommes (pas un overlay
+//      memoire des 8444 o), projetee depuis game::QuestDefRecord (Game/ExtraDatabases.h).
+//
+//      L'ancien bandeau « HORS PERIMETRE — aucun loader assigne » etait PERIME : mQUEST
+//      0x8E71E4 EST chargee, par `call NpcTbl_LoadImg 0x4C8090` a l'EA 0x4621A0 dans
+//      App_Init (echec => MessageBoxA "[Error::mQUEST.Init()]" + App_Init renvoie 0). Cote
+//      C++ elle l'est aussi, dans g_ExtraDb.quest (Game/ExtraDatabases.cpp:47).
+//
+//      RESOLUTION — le binaire n'a AUCUNE indirection : il appelle en dur
+//      `NpcTbl_FindByTypeAndId(mQUEST, element0, questId)` 0x4C8340 (EA 0x50FF65, 0x50FFCA,
+//      0x510A37, 0x510AB7, 0x664A67, 0x510E40, 0x510ECC). LookupQuestStep() resout donc EN
+//      DIRECT sur g_ExtraDb.quest. Le pointeur de fonction QuestStepLookup (ci-dessous) est
+//      une invention de la reecriture, datant de l'epoque ou la table n'etait pas modelisee ;
+//      il n'a JAMAIS eu d'implementeur -> toute l'evaluation d'objectif etait morte (le
+//      lookup renvoyait nullptr a vie). Il est conserve UNIQUEMENT comme override de test.
 //
 // RÈGLE : ce fichier n'édite AUCUN header existant. Il inclut Game/GameState.h (DataTable,
 // SelfState non utilisé), Game/GameDatabase.h (ItemInfo/GetItemInfo pour
@@ -173,9 +182,16 @@ int QuestTbl_FindNextOfGroup(const DataTable& table, int group0, int fromId1base
 //     par Pkt_SmithUpgradeResult (0x48E7D0, alias QuestInteractResult op 0x27).
 // ===========================================================================
 struct QuestStepRecord {
-    uint32_t field64  = 0; // +64  seuil (branche "objectif implicite" sans etape active)
-    uint32_t category = 0; // +72  1..6 : type d'interaction (dispatch dword_18231B4+72
-                            //      dans Pkt_SmithUpgradeResult case 1/4)
+    uint32_t field64  = 0; // +64  levelReq : porte de NIVEAU de la branche "implicite"
+                            //      (Quest_CheckObjectiveState @0x50FF86 : `cmp g_SelfLevel,
+                            //      [rec+0x40]` puis `jge` -> 1). Donnees intro : 1,1,1,1,2,4,
+                            //      6,8,10,12 = une echelle de niveau.
+    uint32_t category = 0; // +72  1..8 : type d'objectif — selecteur du switch a 8 cas de
+                            //      Quest_CheckObjectiveState @0x50FFFC, et source de
+                            //      g_QuestObjType 0x16745FC (Pkt_SmithUpgradeResult @0x48E929
+                            //      lit `[rec+0x48]`). Le commentaire "1..6" etait FAUX : le
+                            //      validateur borne 1..8 et les donnees couvrent 1..8
+                            //      ({1:227,2:57,3:38,4:69,5:127,6:7,7:88,8:75}).
     uint32_t field92  = 0; // +92  v10[23] : id/valeur "resultat" (variante A)
     uint32_t field96  = 0; // +96  v10[24] : id/valeur "resultat" (variante B, case 4/6.1)
     uint32_t field116 = 0; // +116 v10[29] : id/valeur "resultat" si objectif rempli
@@ -188,39 +204,85 @@ struct QuestStepRecord {
                                                                   // cf Quest_GetRewardItemId)
 };
 
-// Resolveur injectable (table NPC mQUEST reelle non modelisee ici — TODO PRECIS ci-dessus).
-// Signature fidele a NpcTbl_FindByTypeAndId(mQUEST, zoneId, npcQuestId) 0x4C8340.
-using QuestStepLookup = const QuestStepRecord* (*)(int zoneId, int npcQuestId);
-void SetQuestStepLookup(QuestStepLookup fn);
+// LookupQuestStep — resolution DIRECTE sur g_ExtraDb.quest via
+// FindQuestDefByElementAndId (= NpcTbl_FindByTypeAndId 0x4C8340), projetee en
+// QuestStepRecord. Fidele : le binaire appelle le resolveur en dur, sans indirection.
+// `zoneId` est un NOM HISTORIQUE TROMPEUR conserve pour les appelants hors perimetre
+// (Game/ComboPickupTick.cpp:179/188, UI/GameHud.cpp:971, UI/QuestTrackerWindow.cpp) : ce
+// parametre est en realite l'ELEMENT LOCAL 0-based (g_LocalElement 0x1673194 ==
+// game::g_World.self.element), PAS une zone/map. Preuve : Quest_GetRewardItemId 0x510A10
+// lit `[this+0xA024]` avec this = g_PlayerCmdController 0x1669170 (@0x5E01C5) et
+// 0x1669170+0xA024 = 0x1673194 = g_LocalElement ; UI_EventNoticeWnd_Open 0x6649F0 @0x664A67
+// appelle litteralement NpcTbl_FindByTypeAndId(mQUEST, g_LocalElement, g_CurQuestId).
+// -> Les appelants qui l'affichent comme un nom de zone (StrTable003/zoneNames) sont dans
+//    l'erreur ; signale a l'orchestrateur, hors de ce fichier.
 const QuestStepRecord* LookupQuestStep(int zoneId, int npcQuestId);
 
-// Accesseur equivalent a g_pCurQuestStepRecord (dword_18231B4) : le record d'etape mis en
-// cache par le (futur) code d'ouverture de dialogue de quete. nullptr par defaut.
+// Override de test UNIQUEMENT (le binaire n'a pas cette indirection — cf. bandeau (B)).
+// nullptr (defaut) => LookupQuestStep resout sur la vraie table.
+using QuestStepLookup = const QuestStepRecord* (*)(int zoneId, int npcQuestId);
+void SetQuestStepLookup(QuestStepLookup fn);
+
+// Accesseur equivalent a g_pCurQuestStepRecord (dword_18231B4) = record de l'etape de quete
+// COURANTE. RESOLU EN DIRECT (corps dans QuestSystem.cpp).
+//
+// FAIT VERIFIE DANS IDA (2026-07-16) : g_pCurQuestStepRecord 0x18231B4 n'est ECRIT NULLE PART
+// dans le binaire — les 20 references a cette adresse sont TOUTES dans Pkt_SmithUpgradeResult
+// 0x48E7D0 et TOUTES des LECTURES (aucun store ; xrefs re-verifiees). Mais le binaire est un jeu
+// qui TOURNE : ce pointeur ne peut PAS valoir NULL a l'execution quand les case 1/2/3/4 le
+// deferencent, sa valeur runtime est forcement le record de l'etape courante. Equivalence prouvee
+// g_pCurQuestStepRecord == NpcTbl_FindByTypeAndId(mQUEST, g_LocalElement, g_CurQuestId) : dans le
+// case 2, la boucle de recompenses lit g_pCurQuestStepRecord+8*i+136 (@0x48EB0E) et
+// Quest_GetRewardItemId 0x510A10 relit Find(element, g_CurQuestId) @0x510A37 pour la MEME
+// recompense -> meme record.
+// => CurrentQuestStepRecord() resout donc EN DIRECT via LookupQuestStep (comme les 7 autres
+//    consommateurs) au lieu de renvoyer un g_curStepRecord qu'AUCUN code n'ecrit. L'ancienne
+//    version renvoyait nullptr a vie -> l'etat des case 1/2/3/4 d'ApplyQuestInteractResultState
+//    ET la garde de visibilite du QuestTracker (UI/QuestTrackerWindow.cpp:48, fichier voisin)
+//    etaient du CODE MORT. Ce n'est PAS fabriquer un ecrivain a g_curStepRecord (aucun store
+//    fabrique) : c'est une resolution a la demande, fidele a la lecture d'un pointeur qui, en jeu,
+//    vaut ce record. Les gardes `if (npc)` d'ApplyQuestInteractResultState restent (LookupQuestStep
+//    peut rendre nullptr si la table n'est pas chargee ou npcQuestId==0) = seul comportement non-UB.
+// => SetCurrentQuestStepRecord subsiste comme OVERRIDE DE TEST (prioritaire) ; g_curStepRecord
+//    reste nullptr en production.
+// NB CABLAGE (hors de ce module) : la resolution depend de g_QuestProgress.npcQuestId (== g_CurQuestId
+// 0x16745F4) et g_World.self.element (== g_LocalElement 0x1673194), alimentes par le RESEAU. Tant que
+// le front reseau ne les peuple pas, la resolution rend nullptr (gating correct : aucune quete active).
 const QuestStepRecord* CurrentQuestStepRecord();
 void SetCurrentQuestStepRecord(const QuestStepRecord* record);
 
 // ---------------------------------------------------------------------------------
-// Etat de progression du joueur (mirroir des offsets +10249/+10254/+11553..+11557/+10320
-// du gros struct joueur g_PlayerCmdController 0x1669170, seuls champs consommes par
-// Quest_CheckObjectiveState & consorts). QuestKillTrackSlot = une des 2x64 entrees
-// (6 dwords) de la grille de suivi ; seul le premier dword (id/valeur suivie) est
-// interprete par l'algorithme d'origine, les 5 autres sont des metadonnees opaques
-// (compteur/aux, jamais lues par les fonctions ciblees — mises a zero par
-// Quest_RemoveTrackedItem/ReplaceTrackedItem).
+// Etat de progression du joueur — miroir des champs du gros struct joueur
+// g_PlayerCmdController 0x1669170 consommes par Quest_CheckObjectiveState & consorts.
+// ATTENTION : les indices Hex-Rays (+10249, +11553, ...) sont SCALES `int*`, pas des
+// offsets octets. Offsets octets reels = indice*4, verifies au desassemblage.
+//
+// DEUX champs de l'ancienne version ont ete SUPPRIMES car ils dupliquaient un etat qui
+// existe deja ailleurs (et que PERSONNE n'ecrivait -> evaluation morte) :
+//   * `totalKillCount` (+10254 -> octet 0xA038 -> 0x1669170+0xA038 = 0x16731A8 =
+//     g_SelfLevel) n'etait PAS un compteur de kills mais le NIVEAU du joueur. La branche
+//     "implicite" est une porte de niveau : @0x50FF80 `mov ecx,[edx+0xA038]` puis @0x50FF86
+//     `cmp ecx,[eax+0x40]` / `jge` -> 1. Lu desormais depuis g_World.self.level
+//     (GameState.h::SelfState, le miroir etabli de g_SelfLevel, ecrit par le reseau :
+//     Net/CharStatDeltaDispatch.cpp:239, Game/EntityManager.cpp:523).
+//   * `killTrack` (2x64 slots de 6 dwords, "+10320") etait un doublon fantome de la GRILLE
+//     D'INVENTAIRE, toujours nul donc jamais satisfait. Octet 10320*4 = 0xA140 ->
+//     0x1669170+0xA140 = 0x16732B0 = g_InvMain (nom IDA), et l'indexation `384*i + 6*j` du
+//     binaire est exactement `0x600*row + 0x18*col`, celle deja modelisee par
+//     ClientRuntime.h::InventoryState. Les fonctions IDA `Inventory_RemoveItem 0x510C40` /
+//     `Inventory_ReplaceItem 0x510B40` sont donc BIEN NOMMEES (l'ancien commentaire qui les
+//     disait mal nommees etait faux) : elles operent sur g_Client.inv.
 // ---------------------------------------------------------------------------------
-struct QuestKillTrackSlot {
-    uint32_t id = 0;                          // +0 (seul champ compare par l'algorithme)
-    uint32_t aux1 = 0, aux2 = 0, aux3 = 0, aux4 = 0, aux5 = 0; // +4..+20 (opaques)
-};
 struct QuestProgressState {
-    int zoneId           = 0; // +10249 (*4 = offset dword) : zone/map courante
-    int totalKillCount    = 0; // +10254 : compteur global utilise par la branche "implicite"
-    int npcQuestId        = 0; // +11553 : id de l'enregistrement NPC (mQUEST) courant
-    int objectiveMode     = 0; // +11554 : 0 = aucun objectif custom actif, 1 = actif
-    int objectiveType     = 0; // +11555 : 1..8 (type d'objectif)
-    int objectiveTarget   = 0; // +11556 : parametre cible (sens depend du type)
-    int objectiveProgress = 0; // +11557 : compteur de progression courant
-    std::array<std::array<QuestKillTrackSlot, 64>, 2> killTrack{}; // +10320.. (2 blocs x 64)
+    // +10249 -> octet 0xA024 -> 0x1669170+0xA024 = 0x1673194 = g_LocalElement.
+    // NOM TROMPEUR conserve (appelants hors perimetre) : c'est l'ELEMENT local 0-based,
+    // PAS une zone. Cf. LookupQuestStep ci-dessus. Doit valoir g_World.self.element.
+    int zoneId           = 0;
+    int npcQuestId        = 0; // +11553 -> 0xB484 = g_CurQuestId 0x16745F4
+    int objectiveMode     = 0; // +11554 -> 0xB488 = g_QuestObjMode 0x16745F8 (0 = porte de niveau, 1 = objectif actif)
+    int objectiveType     = 0; // +11555 -> 0xB48C = g_QuestObjType 0x16745FC (1..8)
+    int objectiveTarget   = 0; // +11556 -> 0xB490 = g_QuestObjParam1 0x1674600 (id cible / phase du type 6)
+    int objectiveProgress = 0; // +11557 -> 0xB494 = g_QuestObjParam2 0x1674604 (compteur de progression)
 };
 
 // ===========================================================================
@@ -259,17 +321,19 @@ bool Quest_IsItemAllowed(int containerIndex, int itemId);
 // Callees directes de Pkt_SmithUpgradeResult (op 0x27) operant sur QuestProgressState.
 // ===========================================================================
 
-// Inventory_RemoveItem 0x510C40 — cherche `itemId` dans killTrack (2x64), remet le slot a
-// zero et renvoie l'indice de bloc (0/1), ou -1 si absent. NOTE : malgre son nom
-// d'origine, opere sur QuestProgressState::killTrack (table de suivi de quete), PAS sur la
-// grille d'inventaire principale (g_Client.inv).
-int Quest_RemoveTrackedItem(QuestProgressState& s, uint32_t itemId);
+// Inventory_RemoveItem 0x510C40 — cherche `itemId` dans les lignes 0..1 de la GRILLE
+// D'INVENTAIRE (g_InvMain 0x16732B0, `384*i + 6*j + 10320` == `0x600*row + 0x18*col`), remet
+// les 6 dwords de la cellule a zero (EA 0x510CBF..0x510D63) et renvoie l'indice de ligne
+// (0/1), ou -1 si absent (@0x510D7D). Le nom IDA `Inventory_*` est CORRECT : c'est bien
+// l'inventaire (row 0 = sac principal, row 1 = page bonus).
+int Quest_RemoveTrackedItem(InventoryState& inv, uint32_t itemId);
 
-// Inventory_ReplaceItem 0x510B40 — cherche `oldItemId` dans killTrack, remplace l'id par
-// `newItemId` puis remet aux3/aux4/aux5 (+12/+16/+20) a zero ; aux1/aux2 (+4/+8) sont
-// INCHANGES — fidele : l'original n'ecrit que +0/+12/+16/+20. Renvoie l'indice de bloc,
-// ou -1 si absent.
-int Quest_ReplaceTrackedItem(QuestProgressState& s, uint32_t oldItemId, uint32_t newItemId);
+// Inventory_ReplaceItem 0x510B40 — cherche `oldItemId` dans les lignes 0..1 de la grille,
+// remplace l'id (+0 @0x510BC2) puis remet a zero flag/color/durability (+12/+16/+20 =
+// dwords 10323/10324/10325, EA 0x510BDE/0x510BFF/0x510C20). gridX/gridY (+4/+8 = 10321/
+// 10322) sont INCHANGES — fidele : l'original n'ecrit que +0/+12/+16/+20. Renvoie l'indice
+// de ligne, ou -1 si absent.
+int Quest_ReplaceTrackedItem(InventoryState& inv, uint32_t oldItemId, uint32_t newItemId);
 
 // Util_SumExceeds2Billion 0x53F660 — (a+b) > 2 000 000 000 en arithmetique 64 bits.
 inline bool Quest_SumExceeds2Billion(int64_t a, int64_t b) { return (a + b) > 2000000000LL; }
@@ -293,10 +357,11 @@ struct QuestInteractResultPacket {
 // 427=type6, 428=type2/poids, 429=type3/monnaie, 430=type4, 431=type5), qui ne sont PAS
 // couverts par le TODO de GameHandlers_Misc.cpp (celui-ci ne traite que le message de
 // premier niveau selon resultCode, pas la boucle interne des 3 slots de recompense).
-// Utilise CurrentQuestStepRecord() pour TOUS les acces au record d'etape (le binaire
-// d'origine relit deux fois via NpcTbl_FindByTypeAndId(mQUEST, s.zoneId, s.npcQuestId)
-// dans Quest_GetRewardItemId/IsRewardItemActive — resolution equivalente en pratique
-// puisque g_pCurQuestStepRecord est cache depuis la meme cle (zoneId, npcQuestId)).
+// Utilise CurrentQuestStepRecord() pour TOUS les acces au record d'etape ; cet accesseur
+// resout desormais EN DIRECT via LookupQuestStep(g_World.self.element, g_QuestProgress.npcQuestId),
+// exactement la cle que le binaire relit via NpcTbl_FindByTypeAndId(mQUEST, element, g_CurQuestId)
+// dans Quest_GetRewardItemId/IsRewardItemActive (@0x510A37) — d'ou l'equivalence avec le global
+// cache g_pCurQuestStepRecord 0x18231B4 (cf. le bloc de doc de CurrentQuestStepRecord ci-dessus).
 // TODO PRECIS (hors perimetre — audio/UI, pas de logique d'etat) :
 //   Snd3D_PlayScaledVolume 0x4DA380, UI_EventNoticeWnd_Open 0x6649F0 (cases 1/2/5),
 //   cGameHud_ResetUiState 0x62AFB0 (cases 2/3/4).

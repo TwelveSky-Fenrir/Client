@@ -62,7 +62,27 @@ void WarehouseWindow::Open() {
     statusText_.clear();
 }
 
+// Fermeture — UI_StorageWin_OnLUp case 2, verrou +12 (EA 0x5d579e/0x5d57ce) : le
+// bouton « fermer » (sprite unk_8F3798 @ (x+8, y+6)) appelle UI_StorageWin_CommitGrid(this)
+// (EA 0x5d57e4) et RIEN d'autre — contrairement aux cases 1/3/5/7, il n'y a pas de
+// cGameHud_Hide ici.
+// UI_StorageWin_CommitGrid 0x5d2f70 : `if (a1[2])` (EA 0x5d2f7e) puis `switch (a1[10])`
+// (= mode) ; le case 2 = ENTREPÔT (EA 0x5d338c) déverse la grille 5x5 dans les tableaux
+// d'inventaire PUIS émet Net_SendPacket_Op32(&g_AutoPlayMgr, 1) — INCONDITIONNEL
+// (EA 0x5d373f). bOpen_ tient lieu d'analogue de a1[2] (cf. bandeau de tête du .h).
 void WarehouseWindow::Close() {
+    if (bOpen_) SendStorageCommit(); // Op32(1) — EA 0x5d373f (via CommitGrid case 2)
+
+    // TODO [ancre 0x5d338c..0x5d3727] : le case 2 de UI_StorageWin_CommitGrid déverse
+    // AUSSI la grille 5x5 entière vers g_InvMain/g_InvGrid_*/g_InvAux avant d'émettre.
+    // Non reproduit ici À DESSEIN : le modèle C++ committe DÉJÀ par action
+    // (WarehouseState::CommitCellToInventory sur « Retirer »), là où le binaire utilise
+    // la grille comme tampon de staging déversé en une fois. Appeler ici
+    // CommitAllToInventory() en plus déplacerait vers le sac tout objet RESTÉ en
+    // entrepôt (le déversement ne filtre que sur `itemId >= 1`, EA 0x5d33de, pas sur
+    // une quelconque destination) — effet local non prouvé, donc écarté. Divergence
+    // structurelle préexistante de Game/WarehouseSystem.h (non possédé), cf. rapport.
+
     // Ne laisse pas une sélection « en l'air » entre deux ouvertures.
     game::g_Warehouse.CancelPendingMove();
     statusText_.clear();
@@ -83,7 +103,14 @@ WarehouseWindow::Rect WarehouseWindow::CloseButtonRect() const {
 
 WarehouseWindow::Rect WarehouseWindow::WithdrawButtonRect() const {
     const int footerTop = y_ + kPanelH - kFooterH;
-    return { x_ + (kPanelW - kBtnW) / 2, footerTop + 28, kBtnW, kBtnH };
+    return { x_ + kGridPad, footerTop + 28, kBtnW, kBtnH };
+}
+
+// Bouton « Valider » = verrou +24 du binaire (UI_StorageWin_OnLUp case 2, sprite
+// unk_901064 testé en (x+167, y+411), EA 0x5d592d).
+WarehouseWindow::Rect WarehouseWindow::ValidateButtonRect() const {
+    const int footerTop = y_ + kPanelH - kFooterH;
+    return { x_ + kPanelW - kGridPad - kBtnW, footerTop + 28, kBtnW, kBtnH };
 }
 
 WarehouseWindow::Rect WarehouseWindow::CellRect(int row, int col) const {
@@ -146,6 +173,14 @@ bool WarehouseWindow::OnClick(int x, int y) {
         }
     }
 
+    // « Valider » (verrou +24, EA 0x5d58f8) : toujours actif — le binaire ne
+    // conditionne ce bouton à aucun état (ni sélection, ni morph, ni verrou).
+    const Rect vbtn = ValidateButtonRect();
+    if (PointInRect(x, y, vbtn.x, vbtn.y, vbtn.w, vbtn.h)) {
+        HandleValidateClick();
+        return true;
+    }
+
     // Clic dans le panneau mais hors zone active (fond, en-tête...) : consommé
     // quand même, la fenêtre est modale de fait pendant qu'elle est ouverte.
     return true;
@@ -153,10 +188,17 @@ bool WarehouseWindow::OnClick(int x, int y) {
 
 bool WarehouseWindow::OnKey(int vk) {
     if (!bOpen_) return false;
-    if (vk == VK_ESCAPE) {
-        Close();
-        return true;
-    }
+    // Fidélité UI_StorageWin_OnKey 0x5d6330 : fenêtre entrepôt ACTIVE (*(this+2)) => le
+    // handler CONSOMME la touche (return 1) sans jamais fermer ni émettre — 0x5d6330 ne
+    // contient AUCUN call Net_Send ni UI_StorageWin_CommitGrid. Le commit/close ne part
+    // QUE de la souris : bouton X (verrou +12 -> CommitGrid case 2 -> Op32(1), EA 0x5d373f)
+    // et bouton Valider (verrou +24 -> Op32(1), EA 0x5d5947). L'ancien code faisait
+    // ESC -> Close() -> SendStorageCommit() -> Op32(1), donc émettait un paquet que le
+    // binaire N'ENVOIE PAS sur clavier : les 19 xrefs de UI_StorageWin_CommitGrid 0x5d2f70
+    // sont TOUTES souris (X, cGameHud_OnMouseUp) ou handlers réseau, AUCUN appelant clavier.
+    // On consomme donc ESC SANS fermer (return true, comme 0x5d6330) -> plus d'émission
+    // parasite. La fermeture (et son Op32(1) fidèle) reste possible via le bouton X.
+    if (vk == VK_ESCAPE) return true;
     return false;
 }
 
@@ -182,22 +224,31 @@ void WarehouseWindow::HandleCellClick(int row, int col) {
         return;
     }
 
-    // Reclic sur une AUTRE cellule de la grille -> échange local (« tri »),
-    // à l'image de UI_StorageWin_Open mode 5 / UI_StorageWin_CommitGrid, PUIS
-    // envoi réseau RÉEL du commit de grille via SendGridCommit(kind=5) — voir
-    // le commentaire de tête de fichier (Net_SendPacket_Op31, seul builder dont
-    // la charge utile correspond EXACTEMENT à sizeof(WarehouseGrid)). Le
-    // serveur répondrait normalement par Pkt_WarehouseUpdate (déjà géré côté
-    // handlers) ; l'échange affiché reste local (immédiat) en attendant ce
-    // round-trip, comme le fait le client d'origine (prédiction optimiste).
+    // Reclic sur une AUTRE cellule -> échange PUREMENT LOCAL (« tri »).
+    // AUCUNE ÉMISSION — et c'est FIDÈLE : le binaire n'émet rien pour la
+    // manipulation de la grille (UI_StorageWin_OnLDown 0x5d4240 et
+    // UI_StorageWin_OnKey 0x5d6330 ne contiennent aucun `call Net_Send*` ;
+    // balayage exhaustif de la plage 0x5d2770..0x5d8900 : seuls Open, CommitGrid
+    // et OnLUp émettent). La grille est un TAMPON DE STAGING côté client ; elle
+    // ne part au serveur qu'au « Valider »/« Fermer », sous forme d'Op32(1).
+    // L'ancien SendGridCommit(kind=5) émettait un Op31 sélecteur 5 qui N'EXISTE
+    // NULLE PART dans le binaire (cf. bandeau de tête du .h).
     if (wh.SwapCells(pm.srcRow, pm.srcCol, row, col)) {
-        SendGridCommit(/*kind=tri*/ 5);
-        statusText_ = net_ ? "Objets echanges (envoye au serveur)."
-                            : "Objets echanges (local, reseau non lie).";
+        statusText_ = "Objets echanges.";
     } else {
         statusText_ = "Echange impossible.";
     }
     pm.Clear();
+}
+
+// Bouton « Valider » : UI_StorageWin_OnLUp case 2, verrou +24 (EA 0x5d58f8/0x5d592d).
+// Émet Net_SendPacket_Op32(&g_AutoPlayMgr, 1) à l'EA 0x5d5947 — INCONDITIONNEL :
+// aucune garde morph/verrou (contrairement au case 1/5 qui gardent leur Op31 par
+// `g_MorphInProgress == 1 || g_GmCmdCooldownLatch`), et AUCUN verrou posé ensuite
+// (ni g_GmCmdCooldownLatch, ni flt_1675B0C) — ne rien ajouter ici.
+void WarehouseWindow::HandleValidateClick() {
+    SendStorageCommit();
+    statusText_ = "Entrepot valide.";
 }
 
 void WarehouseWindow::HandleWithdrawClick() {
@@ -207,31 +258,35 @@ void WarehouseWindow::HandleWithdrawClick() {
 
     const int row = pm.srcRow, col = pm.srcCol;
 
-    // Retrait -> commit LOCAL via WarehouseState::CommitCellToInventory (écrit
-    // dans game::g_Client.inv exactement comme le ferait le binaire, cf.
-    // UI_StorageWin_CommitGrid dans WarehouseSystem.cpp) PUIS envoi réseau réel
-    // du commit de grille via SendGridCommit(kind=4). Le serveur validerait
-    // normalement la place disponible dans le sac avant de renvoyer
-    // Pkt_WarehouseUpdate (0x24, déjà routé) — le retrait affiché reste local
-    // en attendant ce round-trip.
+    // Retrait -> commit LOCAL via WarehouseState::CommitCellToInventory (écrit dans
+    // game::g_Client.inv, à l'image du déversement de UI_StorageWin_CommitGrid
+    // EA 0x5d3438..0x5d3727). AUCUNE ÉMISSION ici — fidèle : dans le binaire, le
+    // retrait se fait par glisser-déposer, qui ne produit aucun paquet (le staging
+    // ne part qu'au « Valider »/« Fermer »). L'ancien SendGridCommit(kind=4)
+    // émettait un Op31 sélecteur 4 INEXISTANT dans le binaire.
     if (wh.CommitCellToInventory(row, col)) {
-        SendGridCommit(/*kind=retrait*/ 4);
-        statusText_ = net_ ? "Objet retire vers le sac (envoye au serveur)."
-                            : "Objet retire vers le sac (local, reseau non lie).";
+        statusText_ = "Objet retire vers le sac.";
     } else {
         statusText_ = "Retrait impossible (cellule vide).";
     }
     pm.Clear();
 }
 
-// Net_SendPacket_Op31 (Net/SendPackets.h) : opcode sortant 0x1f, payload
-// `int8_t kind + 1232 o`. `game::g_Warehouse.grid` EST le blob byte-exact
-// (static_assert sizeof(WarehouseGrid)==1232 dans Game/WarehouseSystem.h) :
-// aucune sérialisation à faire, on passe directement son adresse. No-op
-// silencieux si net_ n'est pas lié (cf. Bind() / commentaire de tête de fichier).
-void WarehouseWindow::SendGridCommit(int8_t kind) {
-    if (!net_) return;
-    net::Net_SendPacket_Op31(*net_, kind, &game::g_Warehouse.grid);
+// Net_SendPacket_Op32 (Net/SendPackets.cpp:1370, byte-exact vs Net_SendPacket_Op32
+// 0x4b64e0) : opcode 0x20, un champ char émis sur 4 octets LE, total 13 octets.
+// Le sélecteur est le littéral 1 dans les DEUX sites entrepôt (EA 0x5d5947 et
+// EA 0x5d373f) ; le sélecteur 2 existe aussi (EA 0x5d6127) mais appartient au
+// case 6 = boutique-joueur, PAS à l'entrepôt.
+//
+// Cible = net::GlobalNetClient() : le binaire adresse g_NetClient 0x8156A0 en
+// GLOBAL (Net_SendPacket_Op32 le lit directement, il ne reçoit aucun socket).
+// Ce pointeur est renseigné par ConnectGameServer (Net/Login.cpp:311) — il est
+// donc réellement non-nul en session ; ce n'est PAS le `if (!net_)` mort d'avant
+// (net_ n'était jamais lié). Même idiome que Game/MapWarp.cpp:86. Hors session
+// (self-test Tools/UiWindowSelfTest.cpp), no-op silencieux.
+void WarehouseWindow::SendStorageCommit() {
+    if (net::NetClient* nc = net::GlobalNetClient())
+        net::Net_SendPacket_Op32(*nc, 1);
 }
 
 std::string WarehouseWindow::CellLabel(const game::WarehouseItemCell& cell) {
@@ -269,6 +324,7 @@ void WarehouseWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     const Rect panel      = PanelRect();
     const Rect closeBtn   = CloseButtonRect();
     const Rect withdrawBt = WithdrawButtonRect();
+    const Rect validateBt = ValidateButtonRect();
     const bool hasSel     = wh.pendingMove.active;
 
     if (ctx.phase == UiPhase::Panels) {
@@ -352,6 +408,13 @@ void WarehouseWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         ctx.FillRect(withdrawBt.x, withdrawBt.y, withdrawBt.w, withdrawBt.h,
                      !hasSel ? kColBtnBgOff : (wbtnHover ? kColSelect : kColBtnBg));
         ctx.DrawFrame(withdrawBt.x, withdrawBt.y, withdrawBt.w, withdrawBt.h, kColFrame, 1);
+
+        // Bouton « Valider » (verrou +24, EA 0x5d592d) : TOUJOURS actif — le binaire
+        // ne le conditionne à aucun état.
+        const bool vbtnHover = PointInRect(cursorX, cursorY, validateBt.x, validateBt.y, validateBt.w, validateBt.h);
+        ctx.FillRect(validateBt.x, validateBt.y, validateBt.w, validateBt.h,
+                     vbtnHover ? kColSelect : kColBtnBg);
+        ctx.DrawFrame(validateBt.x, validateBt.y, validateBt.w, validateBt.h, kColFrame, 1);
         return;
     }
 
@@ -392,10 +455,15 @@ void WarehouseWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     ctx.Text(line, panel.x + kGridPad, footerTop + 4, kColText);
 
     // Libellé du bouton retirer.
-    const char* btnLabel = hasSel ? "Retirer -> Sac" : "(selectionner un objet)";
+    const char* btnLabel = hasSel ? "Retirer -> Sac" : "(selectionner)";
     const int btnLabelW = ctx.MeasureText(btnLabel);
     ctx.Text(btnLabel, withdrawBt.x + (withdrawBt.w - btnLabelW) / 2,
               withdrawBt.y + (withdrawBt.h - 12) / 2, hasSel ? kColText : kColTextDim);
+
+    // Libellé du bouton valider (seul émetteur explicite de la fenêtre, EA 0x5d5947).
+    const int vLabelW = ctx.MeasureText("Valider");
+    ctx.Text("Valider", validateBt.x + (validateBt.w - vLabelW) / 2,
+              validateBt.y + (validateBt.h - 12) / 2, kColText);
 
     // Dernier statut d'action (échange/retrait), sous le bouton.
     if (!statusText_.empty())
