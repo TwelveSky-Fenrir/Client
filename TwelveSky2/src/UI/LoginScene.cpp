@@ -1536,6 +1536,14 @@ void LoginScene::CharSelectRenderPreview3D() {
     appCam.BuildProjMatrix(proj, static_cast<float>(screenW_) / static_cast<float>(screenH_));
     charMesh_.SetCamera(view, proj);
 
+    // Le batch de fond CharSelectRenderBg() (chemin 2D sprite, @0x51D22D-0x51D2B5) a tourné
+    // JUSTE AVANT sur le MÊME device partagé et y a rebindé ses propres shaders/états. Le cache
+    // de bind LOCAL de charMesh_ (currentPass_) ne voit pas ce changement -> dès la 2e frame il
+    // resterait à kPass_SkinnedLit et sauterait le rebind, dessinant le skinné avec le shader 2D
+    // périmé (cf. bandeau Gfx/MeshRenderer.h). Fidèle au binaire, où tout passe par le même
+    // g_CurrentShaderPass 0x194591C (venir d'une passe 2D force donc le rebind). On invalide.
+    charMesh_.InvalidateShaderBindingCache();
+
     // DEUX rendus COMPLETS du paperdoll : passe 1 puis passe 2 (les 4 sites d'appel du
     // binaire sont deux paires adjacentes, jamais entrelacées par pièce).
     gfx::CharPreview3D::Render(charMesh_, r, pose, gfx::MeshRenderer::kDrawPass_Opaque); // pass=1

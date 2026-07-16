@@ -23,6 +23,7 @@
 #include <d3dx9.h>
 #include <cstddef>
 #include <cstdint>
+#include <utility> // std::move (opérations de déplacement de SkinnedModel)
 #include <vector>
 
 namespace ts2::gfx {
@@ -119,9 +120,37 @@ struct SkinnedMesh {
 };
 
 // Modèle skinné complet (.SOBJECT) résident GPU.
+//
+// PROPRIÉTAIRE UNIQUE de ressources COM (VB/IB/textures libérées par Release()) : DÉPLAÇABLE,
+// PAS COPIABLE. Le binaire d'origine range chaque modèle dans UN slot du catalogue par POINTEUR
+// (Mesh_ReadFromFile 0x40BC50 / SObject_DrawEx 0x4D9330 lisent a2+688/696 en place) — jamais de
+// copie par valeur d'un modèle, donc une seule propriété par ressource. Le C++ doit refléter ça.
+//
+// ⚠ BUG CORRIGÉ (crash CharSelect, d3d9 AV lecture 0x00000001 dans DrawIndexedPrimitive) :
+// déclarer `~SkinnedModel` supprime le CONSTRUCTEUR DE DÉPLACEMENT implicite mais LAISSE la COPIE
+// implicite (superficielle). Sans les déclarations ci-dessous, `ModelCache::Get` faisait
+// `entries_.emplace(stem, std::move(entry))` (ModelCache.cpp:113) : ce « move » retombait sur la
+// copie superficielle, dupliquant les pointeurs COM SANS AddRef ; puis le `entry` local était
+// détruit et son Release() faisait tomber les refcounts à 0 -> VB/IB LIBÉRÉS, tandis que la copie
+// résidente dans la map gardait des pointeurs pendants. Le DrawIndexedPrimitive suivant
+// (MeshRenderer.cpp:777, chemin CharPreview3D) déréférençait un IDirect3DVertexBuffer9 mort.
+// CharSelect est le PREMIER site qui dessine du skinné via ModelCache -> premier à crasher.
+// Rendre le type move-only fait de `std::move(entry)` un vrai transfert (source vidée, un seul
+// propriétaire) : plus de double-Release, plus de pointeur pendant.
 class SkinnedModel {
 public:
     std::vector<SkinnedMesh> meshes;
+
+    SkinnedModel() = default;
+
+    SkinnedModel(const SkinnedModel&)            = delete; // ressources COM à propriété unique
+    SkinnedModel& operator=(const SkinnedModel&) = delete;
+
+    SkinnedModel(SkinnedModel&& o) noexcept : meshes(std::move(o.meshes)) {}
+    SkinnedModel& operator=(SkinnedModel&& o) noexcept {
+        if (this != &o) { Release(); meshes = std::move(o.meshes); }
+        return *this;
+    }
 
     bool Empty() const { return meshes.empty(); }
     void Release(); // libère tous les VB/IB/textures
