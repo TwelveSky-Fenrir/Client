@@ -12,6 +12,11 @@
 //   Net_CharSlotAction   0x52A740 (opcode 18 / 0x12), via CharSelect_ReqDeleteChar 0x528FD0
 //   Net_ReqEnterCharInfo 0x52B070 (opcode 22 / 0x16)
 //   Net_ReqCancelEnter   0x52B310 (opcode 23 / 0x17 — PAS 21, cf. RECONFIRMATION ci-dessous)
+//   Net_ReqVerifyCharName 0x52B4C0 (opcode 24 / 0x18) — porté mais JAMAIS ÉMIS (chaîne
+//     morte prouvée, voir l'ancre sur VerifyCharName)
+//   Net_AccountReq_op27  0x52BD80 (opcode 27 / 0x1b) — émis depuis
+//     Scene_CharSelectOnMouseUp @0x523E07 (xref unique). À ne PAS confondre avec
+//     Net_SendPacket_Op27 0x4B5B90 (Net/SendPackets.h), sans rapport.
 //
 // RECONFIRMATION RE (2026-07-14, accès idaTs2 direct — HTTP JSON-RPC 127.0.0.1:13337,
 // outil `decompile`, sur les 5 EAs ci-dessus + Scene_CharSelectOnMouseUp 0x522E50 pour
@@ -31,9 +36,12 @@
 //     (relatifs au début, confirmés par décompilation de l'appelant
 //     Scene_CharSelectOnMouseUp EA 0x526634-0x5267E4, cohérents avec les commentaires
 //     déjà présents dans Game/CharSelectFlow.h::CharCreateForm) :
-//       [20..32] nom (13 o) · [36] job · [44] faction · [48] face · [52] hairColor ·
-//       [216] lookPresetId (résolu). Tout le reste est ZÉRO dans tous les chemins
-//       observés (jamais écrit avant l'envoi dans le binaire).
+//       [20..32] nom (13 o) · [36] job · [44] genre (dit « faction ») · [48] face ·
+//       [52] hairColor · [216] startingWeaponItemId (ex-« lookPresetId », RENOMMÉ —
+//       c'est un id d'OBJET résolu dans la DB items, cf. l'ancre sur la constante).
+//       Tout le reste est ZÉRO dans tous les chemins observés (jamais écrit avant
+//       l'envoi dans le binaire) — en particulier [40] (race), que SEUL le serveur
+//       remplit, et qui revient par l'écho de l'opcode 17.
 //   - Net_CharSlotAction : charge utile RÉELLE de 12 o (3 champs 4o à 0/4/8), PAS 76 o.
 //     Réponse [1][code:4] (5 o) inchangée/confirmée.
 //   - Net_ReqEnterCharInfo : charge utile RÉELLE de 4 o (SEUL le slot), PAS 2 champs/8o

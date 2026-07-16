@@ -4,6 +4,7 @@
 #include "Core/Types.h"
 #include "Core/Log.h"
 #include "Asset/AssetSelfTest.h"
+#include "UI/UIManager.h"         // ui::UIManager : routeurs de clic droit (UI_RouteRButtonDown 0x5AD5D0 / Up 0x5ADA90)
 #include "Gfx/SpriteBatch.h"      // gfx::g_GameTimeSec (horloge des blits sprite)
 #include "Gfx/Font.h"             // mFONTDATA : Font::AddTtfResource
 #include "Game/GameDatabase.h"    // game::LoadGameDatabases (tables .IMG 005_*)
@@ -628,41 +629,26 @@ bool App::Init() {
 
     // WM_RBUTTONDOWN 0x204 / WM_RBUTTONUP 0x205 -> Input_OnRButtonDown 0x50ADB0 /
     // Input_OnRButtonUp 0x50AE40 (@0x461A8F / @0x461AC3).
-    // ÉTAT : la garde d'état (RButtonGateOpen, miroir @0x50AE17/@0x50AEA7) est reproduite et
-    // s'exécute, mais le DISPATCH TERMINAL est BLOQUÉ hors de ce front — ni
-    // ts2::ui::UIManager::RouteRButtonDown/Up (UIManager.h:206-209 n'expose que RouteMouseDown/
-    // RouteMouseUp/RouteKey, sans paramètre de bouton) ni ts2::SceneManager::OnRButtonDown/Up
-    // (SceneManager.h:90-93 n'expose que OnLButtonDown/OnLButtonUp/OnChar/OnKeyDown) n'existent.
-    // Les écrire ici ne compilerait pas et sort du périmètre de ce front (fichiers non possédés).
-    // Les hooks SONT néanmoins assignés (ils s'exécutent à chaque clic droit) et la garde est
-    // exacte : il ne reste qu'UNE ligne à substituer dans chacun des deux corps ci-dessous dès
-    // que le front Scene aura ajouté ses méthodes (cf. rapport de front, wiringTodo).
+    // Chaîne d'origine @0x50AE2F : `if (!UI_RouteRButtonDown(a1,a2)) cSceneMgr_OnRButtonDown(...)`
+    // — « premier consommateur gagne ». La branche SCÈNE est un no-op PROUVÉ :
+    // cSceneMgr_OnRButtonDown 0x517EA0 -> SceneMgr_RButtonDown_NoOp 0x537310 = corps VIDE
+    // (idem 0x517F10 -> 0x537320 pour le Up). Toute la valeur comportementale est donc dans le
+    // routeur UI, et AUCUN ajout à SceneManager n'est requis : le dispatch terminal se réduit à
+    // l'appel du routeur UI. (Le bandeau précédent affirmait que RouteRButtonDown/Up n'existaient
+    // pas — c'était vrai à l'écriture du front, plus depuis : UIManager.h:262-263.)
     input_.SetRButtonDownCallback([this](int x, int y) {
         // 0x50AE17 : hors garde, le clic droit est INTÉGRALEMENT avalé (ni UI ni scène).
         if (!RButtonGateOpen())
             return;
-        (void)x; (void)y;
-        // Chaîne d'origine : `if (!UI_RouteRButtonDown(a1,a2)) cSceneMgr_OnRButtonDown(...)`
-        // (@0x50AE2F) — premier consommateur gagne. Le corps scène est un no-op FIDÈLE
-        // (cSceneMgr_OnRButtonDown 0x517EA0 n'appelle, en scène 6, que les vides 0x537310/
-        // 0x537320) : toute la valeur comportementale est dans le routeur UI 0x5AD5D0.
-        // TODO [ancre 0x50AE2F] : le front Scene doit exposer `void SceneManager::OnRButtonDown
-        // (int x, int y)` (à côté de OnLButtonDown, SceneManager.h:90) qui, en interne, tente
-        // d'abord UIManager::RouteRButtonDown (miroir UI_RouteRButtonDown 0x5AD5D0, chaîne
-        // « premier consommateur gagne ») puis retombe sur le no-op fidèle 0x517EA0. La
-        // décomposition UI-puis-scène appartient à SceneManager, qui SEUL possède le UIManager
-        // (App n'y a aucun accès : SceneManager.h n'expose ni UI() ni Chat()).
-        // Une fois la méthode ajoutée, remplacer les deux (void) ci-dessus par :
-        //     scene_.OnRButtonDown(x, y);
+        // UI_RouteRButtonDown 0x5AD5D0 (@0x50AE2F). La valeur de retour est ignorée : la branche
+        // scène qu'elle garde dans l'original est vide (0x537310), donc sans effet observable.
+        ui::UIManager::Instance().RouteRButtonDown(x, y);
     });
     input_.SetRButtonUpCallback([this](int x, int y) {
         if (!RButtonGateOpen())   // 0x50AEA7 : garde IDENTIQUE à celle du RButtonDown
             return;
-        (void)x; (void)y;
-        // TODO [ancre 0x50AEBF] : symétrique du RButtonDown ci-dessus — le front Scene doit
-        // exposer `void SceneManager::OnRButtonUp(int x, int y)` (UI_RouteRButtonUp 0x5ADA90
-        // puis no-op fidèle cSceneMgr_OnRButtonUp 0x517F10). Remplacer alors les (void) par :
-        //     scene_.OnRButtonUp(x, y);
+        // UI_RouteRButtonUp 0x5ADA90 (@0x50AEBF), même raisonnement qu'au RButtonDown.
+        ui::UIManager::Instance().RouteRButtonUp(x, y);
     });
 
     // mEDITBOX (0x4623b0) : UI_CreateEditBoxes 0x50E460 — crée 21 EDIT Win32 natifs
@@ -1103,12 +1089,15 @@ LRESULT App::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         // (« Échap doit atteindre le routeur de dialogues »). Les deux moitiés du correctif
         // doivent donc atterrir ENSEMBLE (App + Scene + UI). Le feed VK est conservé tel quel
         // en attendant. TODO [ancre 0x537330] : migration DIK atomique, cf. rapport de front.
+        // @0x461B5E : Entrée (VK_RETURN=13) -> UI_Chat_FocusInput 0x68B200 — SEUL traitement
+        // clavier du WndProc d'origine, et il PRÉCÈDE le routage de scène. RouteTextInputKey
+        // (SceneManager.h:141, miroir 0x50E070 / @0x461B5E) empaquette l'arbitrage du focus :
+        // s'il consomme la touche (saisie de chat active), le WndProc s'arrête là.
+        // (Le TODO précédent disait ce câblage impossible — SceneManager n'exposait alors ni
+        // RouteTextInputKey ni FocusChatInput ; le front scene-wiring les a ajoutés depuis.)
+        if (scene_.RouteTextInputKey(static_cast<int>(wParam)))
+            return 0;
         scene_.OnKeyDown(static_cast<int>(wParam));
-        // TODO [ancre 0x461B5E] : Entrée (VK_RETURN=13) -> UI_Chat_FocusInput 0x68B200, seul
-        // traitement clavier du WndProc d'origine. Non câblable depuis ce front : SceneManager
-        // n'expose aucun accès au ChatWindow (ni UI() ni Chat()), et ChatWindow n'est de toute
-        // façon pas enregistré dans UIManager en InGame (Focus() n'a aucun appelant) — cf.
-        // rapport de front, chantier du front Scene/UI.
         return 0;
 
     case WM_SYSCOMMAND: {
