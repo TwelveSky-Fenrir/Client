@@ -43,16 +43,19 @@ constexpr int kPanelW = 470, kPanelH = 210;
 constexpr int kFieldW = 170, kFieldH = 22;
 constexpr int kBtnW   = 72,  kBtnH   = 24;
 
-// Palette (ARGB) — restreinte aux SEULES couleurs encore utilisées après la suppression
-// (2026-07-15) de TOUS les aplats/textes de repli inventés du shell (fonds, panneaux,
-// champs, boutons, titres/libellés FR). Ne subsistent que : le panneau/liseré/bouton de la
-// notice modale (RenderNotice, hors périmètre de cette passe) et la couleur de texte des
-// VALEURS réelles que le binaire dessine bel et bien (valeur des champs, noms de perso,
-// valeurs du formulaire de création). Aucune couleur d'aplat n'est plus présentée à la
-// place d'un asset .IMG réel.
-constexpr D3DCOLOR kColPanel     = 0xF01E2A44; // panneau (notice modale uniquement)
-constexpr D3DCOLOR kColPanelEdge = 0xFF3C5580; // liseré  (notice modale uniquement)
-constexpr D3DCOLOR kColBtn       = 0xFF244066; // bouton  (repli OK de la notice modale)
+// Palette (ARGB) — restreinte aux SEULES couleurs encore employées après le câblage 1:1
+// du formulaire de création CharSelect sur ses vrais sprites d'atlas (2026-07-16, front
+// W4-F1). Ne subsistent que : kColPanel/kColPanelEdge = panneau + liseré de la
+// confirmation modale de suppression (DeleteConfirmRender — overlay Oui/Non sans asset
+// dédié identifié dans IDA) ; kColText = couleur des VALEURS réelles que le binaire dessine
+// (valeur des champs Login, niveaux de perso, valeurs du formulaire de création). Aucune
+// couleur d'aplat n'est plus présentée à la place d'un sprite .IMG réel. Les anciens
+// placeholders CharSelect (kColBackdrop/kColField/kColFieldFocus/kColSel/kColTitle/
+// kColLabel/kColBtn + BtnColor) ont été RETIRÉS : le formulaire est désormais câblé sur les
+// vrais sprites (panneau slot 40 unk_8EA270 @0x51E4C5, +/- slots 41/42, Confirmer/Annuler
+// slots 9/12, caret slot 43 g_SprTextInputCaret @0x51E53E) — cf. CreateFormRender().
+constexpr D3DCOLOR kColPanel     = 0xF01E2A44; // panneau (confirmation de suppression modale)
+constexpr D3DCOLOR kColPanelEdge = 0xFF3C5580; // liseré  (confirmation de suppression modale)
 constexpr D3DCOLOR kColText      = 0xFFE8ECF4; // texte principal (VALEURS réelles)
 
 inline RECT MakeRect(int x, int y, int w, int h) {
@@ -65,23 +68,15 @@ inline bool RectContains(const RECT& r, int x, int y) {
     return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
-// --- Palette PLACEHOLDER réservée à CharSelect (scène 4, « câblage complet plus tard ») ---
-// IMPORTANT : ces couleurs ne servent QU'aux écrans CharSelect (liste / création /
-// suppression), dont le rendu 1:1 depuis les vraies assets .IMG est explicitement reporté à
-// un tour ultérieur (cf. roadmap TS2_SESSION_REPORT_AND_ROADMAP.md). Les écrans
-// Init / ServerSelect / Login (Credential) n'utilisent PLUS AUCUN de ces aplats : ils sont
-// entièrement câblés sur les vrais sprites de l'atlas UI (slots verrouillés depuis IDA :
-// panneau 14, boutons 9/10/12/13, caret 43, checkbox 3007, fond 2380/2381).
-constexpr D3DCOLOR kColBackdrop   = 0xF0101828; // fond CharSelect (placeholder, à câbler)
-constexpr D3DCOLOR kColField      = 0xFF16223A; // emplacement perso / champ (placeholder)
-constexpr D3DCOLOR kColFieldFocus = 0xFF25406A; // emplacement / champ sélectionné (placeholder)
-constexpr D3DCOLOR kColSel        = 0xFF2E5A8C; // sélection (placeholder)
-constexpr D3DCOLOR kColTitle      = 0xFFFFFFFF; // titre CharSelect (placeholder)
-constexpr D3DCOLOR kColLabel      = 0xFFB8C4DC; // libellé CharSelect (placeholder)
-
-// Couleur de bouton CharSelect (placeholder) : Créer / Supprimer / formulaire n'ont pas de
-// sprite dédié identifié dans IDA -> rendu à plat en attendant le câblage 1:1 de CharSelect.
-inline D3DCOLOR BtnColor(const Button&, bool = false) { return kColBtn; }
+// Caméra d'aperçu 3D CharSelect — état de scène possédé ici (rule 6), extrait de
+// Scene_CharSelectUpdate (sous-état Init, EA 0x51BDED -> 0x51BE65) : le binaire écrit le
+// bloc g_CameraPos 0x800130..0x800144 (6 floats = œil + cible) puis le recopie dans
+// g_GxdRenderer. Valeurs lues dans l'IDB : 0x800130=0.0 / 0x800134=flt_7EDA1C=5.0 /
+// 0x800138=flt_7A9764=-28.0 (œil), 0x80013C=0.0 / 0x800140=flt_7A8D74=10.0 / 0x800144=0.0
+// (cible), up=(0,1,0). Consommées par le bloc TODO d'aperçu 3D de CharListRender/
+// CreateFormRender (câblage 3D bloqué : membres possédés par LoginScene.h, non éditable).
+constexpr float kCharPreviewEye[3]    = { 0.0f, 5.0f, -28.0f }; // 0x800130/34/38 (0x51BDED)
+constexpr float kCharPreviewTarget[3] = { 0.0f, 10.0f, 0.0f };  // 0x80013C/40/44 (0x51BE65)
 
 } // namespace
 
@@ -129,16 +124,18 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     // tant que l'atlas de sprites boutons n'est pas chargé (TODO rendu, cf. commentaire
     // de tête de fichier et LayoutCreateForm/LayoutCharSelect ci-dessous).
     okBtn_.SetLabel("OK");        exitBtn_.SetLabel("Quitter");  optBtn_.SetLabel("Ombres");
-    enterBtn_.SetLabel("Entrer"); backBtn_.SetLabel("Quitter");  // fidèle (flux) : seul bouton
-                                                                  // connu de l'écran Liste hors
-                                                                  // Créer/Suppr/Entrer (cf.
-                                                                  // CharSelectFlow.h
-                                                                  // OnQuitButtonClicked) ; l'ancien
-                                                                  // "Retour"->ServerSelect (jamais
-                                                                  // confirmé, Docs/TS2_CHARSELECT_
-                                                                  // AUDIT.md §3) est remplacé.
-                                                                  // Le TEXTE "Entrer"/"Quitter" reste
-                                                                  // un placeholder (cf. note ci-dessus).
+    enterBtn_.SetLabel("Entrer"); backBtn_.SetLabel("Retour");   // backBtn_ = slots 963/964/965
+                                                                  // (unk_90B80C) = bouton RETOUR ->
+                                                                  // ServerSelect, CONFIRMÉ par IDA
+                                                                  // cette session (Scene_CharSelect
+                                                                  // OnMouseUp EA 0x525A1A-0x525A71 :
+                                                                  // Net_CloseSocket + scene=2). Le
+                                                                  // vrai QUITTER est le slot 25
+                                                                  // (unk_8E99C4, EA 0x525AA5), hit-
+                                                                  // testé séparément dans
+                                                                  // CharSelectOnMouseUp. Le TEXTE
+                                                                  // reste un placeholder (bouton
+                                                                  // skinné, label non dessiné).
     createBtn_.SetLabel("Creer");  deleteBtn_.SetLabel("Supprimer");
     createConfirmBtn_.SetLabel("Confirmer"); createCancelBtn_.SetLabel("Annuler");
     deleteYesBtn_.SetLabel("Oui"); deleteNoBtn_.SetLabel("Non");
@@ -165,7 +162,21 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
 
     // Boutons CharSelect : down-arme/up-valide comme les boutons Login (Button::SetOnClick).
     enterBtn_.SetOnClick([this] { game::OnEnterButtonClicked(charState_, charHost_); });
-    backBtn_.SetOnClick([this]  { game::OnQuitButtonClicked(charState_, charHost_); });
+    // RETOUR (unk_90B80C = slots 963/964/965, colonne @v117+185) : Scene_CharSelectOnMouseUp
+    // EA 0x525A1A-0x525A71 (re-décompilé cette session, front W4-F1) — l'action RÉELLE de ce
+    // bouton n'est PAS "Quitter" mais un RETOUR à ServerSelect : garde `this[+0xF598]==3`
+    // (aperçu en cours d'entrée -> ignore, EA 0x525A33), sinon Net_CloseSocket(&g_NetClient)
+    // (0x463000, EA 0x525A46) puis this[0]=2 (scene=ServerSelect, EA 0x525A51), this[1]=0
+    // (sous-état Init, EA 0x525A5D), this[2]=0 (compteur de frames, EA 0x525A6A). L'ancien
+    // câblage sur OnQuitButtonClicked était FAUX (le Quit réel est le slot 25, cf.
+    // CharSelectOnMouseUp).
+    backBtn_.SetOnClick([this] {
+        if (charState_.previewMotion == game::PreviewMotion::Entering) return; // EA 0x525A33
+        if (net_) net::NetCloseSocket(net_->Client());                          // EA 0x525A46
+        pending_                = ts2::Scene::ServerSelect;                      // EA 0x525A51 (this[0]=2)
+        charState_.subState     = game::CharSelectSubState::Init;               // EA 0x525A5D (this[1]=0)
+        charState_.frameCounter = 0;                                            // EA 0x525A6A (this[2]=0)
+    });
     createBtn_.SetOnClick([this] { game::OnCreateButtonClicked(charState_, charHost_); });
     deleteBtn_.SetOnClick([this] { game::OnDeleteButtonClicked(charState_, charHost_); });
     createConfirmBtn_.SetOnClick([this] { game::ConfirmCreateCharacter(charState_, charHost_); });
@@ -213,6 +224,18 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
         skinColBtn(deleteBtn_,  22,  23,  24); // SUPPRIMER
         skinColBtn(backBtn_,   963, 964, 965); // RETOUR
     }
+
+    // Formulaire de création (écran CreateForm) : boutons -/+ = sprites UNIQUES d'atlas baked
+    // (slot 41 unk_8EA304 = "-", slot 42 unk_8EA398 = "+", Scene_CharSelectRender 0x51CED0) —
+    // un seul état, dessiné en continu (SetNormal). Confirmer/Annuler = paire générique
+    // Confirm/Cancel (slots 9/12, survol/pressé via ApplyConfirmCancelSkin, cf. EA 0x51E4A1).
+    {
+        Button* minusBtns[] = { &jobMinusBtn_, &factionMinusBtn_, &faceMinusBtn_, &hairMinusBtn_, &variantMinusBtn_ };
+        Button* plusBtns[]  = { &jobPlusBtn_,  &factionPlusBtn_,  &facePlusBtn_,  &hairPlusBtn_,  &variantPlusBtn_ };
+        if (gfx::GpuTexture* t = GetAtlasSprite(41)) for (Button* b : minusBtns) b->SetNormal(WidgetSprite(t->Handle()));
+        if (gfx::GpuTexture* t = GetAtlasSprite(42)) for (Button* b : plusBtns)  b->SetNormal(WidgetSprite(t->Handle()));
+    }
+    ApplyConfirmCancelSkin(createConfirmBtn_, createCancelBtn_);
 
     BuildCharSelectHost();
 
@@ -1144,24 +1167,33 @@ void LoginScene::LayoutCharSelect() {
 }
 
 // Écran Formulaire de création : 5 paires -/+ (job/faction/visage/couleur/variant),
-// nom saisi, Confirmer/Annuler. Layout NOMINAL (pas de sprite d'origine chargé ici,
-// cf. commentaire de tête du fichier).
+// nom saisi, Confirmer/Annuler — ANCRES RÉELLES (Scene_CharSelectRender 0x51CED0, panneau
+// unk_8EA270 slot 40 @ (nWidth-0x14F, 0x49) EA 0x51E4A1/0x51E4B0). Les rangées -/+ sont
+// alignées sur les VALEURS dessinées (panelY+{78,102,126,150,174}, pas +24), minus @panelX+115,
+// plus @panelX+196 ; Confirmer @panelX+47 / Annuler @panelX+149, y=panelY+203 (slots 9/12).
 void LoginScene::LayoutCreateForm() {
-    const int px = screenW_ / 2 - 160, py = screenH_ / 2 - 150;
-    const int rowH = 28;
+    const int panelX = screenW_ - 335, panelY = 73; // EA 0x51E4A7 (sub 0x14F) / 0x51E4B0 (0x49)
+    // Dims des hit-rects -/+ = taille NATIVE des sprites slots 41/42 (unk_8EA304/unk_8EA398)
+    // si chargeables, sinon gabarit nominal -> le clic colle exactement au sprite dessiné.
+    int mw = 20, mh = 20, pw = 20, ph = 20;
+    if (gfx::GpuTexture* t = GetAtlasSprite(41)) { if (t->Width() > 0) { mw = static_cast<int>(t->Width()); mh = static_cast<int>(t->Height()); } }
+    if (gfx::GpuTexture* t = GetAtlasSprite(42)) { if (t->Width() > 0) { pw = static_cast<int>(t->Width()); ph = static_cast<int>(t->Height()); } }
+    const int rowY[5] = { panelY + 78, panelY + 102, panelY + 126, panelY + 150, panelY + 174 };
     auto layoutRow = [&](int row, Button& minus, Button& plus) {
-        const int y = py + row * rowH;
-        minus.SetBounds(px, y, 24, 22);
-        plus.SetBounds(px + 260, y, 24, 22);
+        minus.SetBounds(panelX + 115, rowY[row], mw, mh);
+        plus.SetBounds (panelX + 196, rowY[row], pw, ph);
     };
     layoutRow(0, jobMinusBtn_, jobPlusBtn_);
     layoutRow(1, factionMinusBtn_, factionPlusBtn_);
     layoutRow(2, faceMinusBtn_, facePlusBtn_);
     layoutRow(3, hairMinusBtn_, hairPlusBtn_);
     layoutRow(4, variantMinusBtn_, variantPlusBtn_);
-    createNameBox_.SetBounds(px, py + 5 * rowH + 14, 220, 24);
-    createConfirmBtn_.SetBounds(px,               py + 6 * rowH + 48, kBtnW, kBtnH);
-    createCancelBtn_.SetBounds(px + 284 - kBtnW,   py + 6 * rowH + 48, kBtnW, kBtnH);
+    // Zone de saisie du nom : valeur dessinée à (panelX+0x7F, panelY+0x35) EA 0x51E4F4-0x51E507.
+    createNameBox_.SetBounds(panelX + 127, panelY + 53, 150, 20);
+    // Confirmer (slot 9 unk_8E9084) @(panelX+47, panelY+203) ; Annuler (slot 12 unk_8E9240)
+    // @(panelX+149, panelY+203).
+    createConfirmBtn_.SetBounds(panelX + 47,  panelY + 203, kBtnW, kBtnH);
+    createCancelBtn_.SetBounds (panelX + 149, panelY + 203, kBtnW, kBtnH);
 }
 
 // AUDIT (2026-07-14, décompilation + désassemblage directs de Scene_CharSelectRender
@@ -1169,25 +1201,31 @@ void LoginScene::LayoutCreateForm() {
 // 0x51CED0-0x520F40) — écarts CONFIRMÉS entre le binaire et cette implémentation :
 //
 // 1) DISPATCH RÉEL À 3 BRANCHES, pas 2 : le binaire teste `this[+0xF588]` (EA 0x51D4CB)
-//    ==1 -> Liste (0x51D4E6), ==2 -> Formulaire (0x51E4A1), SINON -> une 3e branche
-//    (0x51ECC5) non caractérisée ici (probablement l'état transitoire « Init » 30f
-//    documenté dans CharSelectUpdate() plus haut). CharSelectRender() ci-dessous ne
-//    modélise que 2 écrans (CreateForm/Liste) + l'overlay deleteConfirmOpen_ (qui n'est
-//    PAS piloté par ce même champ côté binaire) — la 3e branche réelle n'a pas
-//    d'équivalent ici (TODO, hors périmètre de cette passe faute d'accès IDA prolongé).
+//    ==1 -> Liste (0x51D4E6), ==2 -> Formulaire (0x51E4A1), SINON -> 3e branche (0x51ECC5).
+//    3e branche ÉLUCIDÉE (front W4-F1) : `screen∉{1,2}` -> `if (this[+0xF03C]==0) goto
+//    0x51F895` (popups communs de fin) `else` overlay MOT DE PASSE SECONDAIRE / PIN — le
+//    compte-annexe/GM piloté par dword_16692A4 / this[15375] (this[+0xF03C]). Sous-états
+//    this[+0xF040] 1/2/3 (0x51ED12 / 0x51F0DB / 0x51F3DD), masque '*' de longueur
+//    this[+0xF048], pavé PIN, sprites unk_93EF4C. CharSelectFlow.h déclare CE système
+//    EXPLICITEMENT NON REPRODUIT (hors périmètre) et game::CharSelectScreen ne modélise que
+//    {List, CreateForm} : l'état PIN (this[15375]/15376/longueur saisie) n'existe PAS dans
+//    game::CharSelectState. -> TODO ancre (nécessiterait d'ajouter l'état PIN à
+//    CharSelectState, fichier possédé par un autre front) — PAS de code ici. CharSelectRender()
+//    ci-dessous ne modélise donc que 2 écrans (CreateForm/Liste) + l'overlay deleteConfirmOpen_.
 //
-// 2) APERÇU 3D DU PERSONNAGE TOTALEMENT ABSENT ICI : le binaire appelle
-//    `Char_RenderModel` (0x527020 — commentaire IDB existant : « assemblage du paperdoll
-//    joueur pièce par pièce via SObject_DrawEx ... appelé UNIQUEMENT depuis
-//    Scene_CharSelectRender (4x) — JAMAIS depuis Scene_InGameRender ») DEUX fois de suite
-//    juste avant le panneau de la Liste (EA 0x51D429 et 0x51D480, avant le premier
-//    Gfx_Begin2D à 0x51D48A) — donc en mode 3D, PAS en sprite 2D. Le vrai écran CharSelect
-//    affiche le MODÈLE 3D ÉQUIPÉ du/des personnage(s), CharListRender()/CreateFormRender()
-//    ci-dessous ne dessinent QUE des aplats 2D (FillRect) : aucun rendu de modèle, aucune
-//    caméra de preview, aucun appel équivalent à Char_RenderModel n'existe dans
-//    ClientSource — c'est l'écart de fidélité le plus important de cet écran, non corrigé
-//    dans cette passe (nécessite de retrouver la mise en place caméra/lumière + le layout
-//    exact de la struct d'équipement `a4[9..74]` passée à Char_RenderModel).
+// 2) APERÇU 3D DU PERSONNAGE : le binaire appelle `Char_RenderModel` (0x527020 —
+//    « assemblage du paperdoll joueur pièce par pièce via SObject_DrawEx ... appelé
+//    UNIQUEMENT depuis Scene_CharSelectRender (4x) ») QUATRE fois avant le 1er Gfx_Begin2D
+//    (0x51D48A) : Liste EA 0x51D361/0x51D3CC (fiche &unk_1669380+0x2768*selectedSlot),
+//    CreateForm EA 0x51D429/0x51D480 (fiche d'aperçu dword_16709B8) — en mode 3D, PAS en
+//    sprite 2D. La CAMÉRA de preview est désormais modélisée (kCharPreviewEye/Target,
+//    0x51BDED) et la RECETTE 3D complète est posée en TODO ancre au début de CharListRender()
+//    et CreateFormRender() (résolution paperdoll disponible en lecture seule via
+//    gfx::PlayerPaperdoll::Resolve, W3). Le CÂBLAGE reste BLOQUÉ : il exige des membres 3D
+//    persistants (MeshRenderer/ModelCache/MotionCache/Camera + OnDeviceLost/Reset) et une
+//    entrée begin-frame (Gfx_BeginFrame 0x6A2280) vivant dans LoginScene.h, NON possédé par
+//    ce front (W4-F1) ; Scene/WorldRenderer est interdit d'édition. -> front possédant ces
+//    membres 3D.
 //
 // 3) Habillage sprite de la Liste (panneau + icône de tier + surlignage + niveau
 //    numérique par slot) confirmé et documenté EA par EA dans CharSlotRect() ci-dessous —
@@ -1233,6 +1271,25 @@ void LoginScene::CharListRender() {
     const int v126     = screenW_ - 140;  // origine colonne boutons
     const int v117     = screenH_ - 301;
 
+    // TODO(ancre) APERÇU 3D — Scene_CharSelectRender 0x51CED0, 2x Char_RenderModel 0x527020
+    // AVANT le 1er Gfx_Begin2D (0x51D48A), écran Liste : EA 0x51D361 (pass=1,isCreate=0) et
+    // 0x51D3CC (pass=2,isCreate=0), sur la fiche sélectionnée &unk_1669380 + 0x2768*this[15715]
+    // (charState_.selectedSlot). Caméra : œil kCharPreviewEye / cible kCharPreviewTarget
+    // (Scene_CharSelectUpdate EA 0x51BDED). Chaque pièce -> SObject_DrawEx(desc, pass, animTime,
+    // pos, rotY, 20.0, palette, 1) avec palette d'os partagée v37 =
+    // PcModel_ResolveEquipSlot 0x4E46A0 (== PcModel_ResolveSlotAndApply 0x4E5A00), animTime
+    // échantillonné par g_GameTimeSec (idiome ftol(t*30)%frameCount, Char_RenderModel 0x528D38).
+    // Résolution DISPONIBLE en lecture seule : gfx::PlayerPaperdoll::Resolve (Gfx/PlayerPaperdoll.h,
+    // W3) -> {palette, pièces SLOT0/SLOT1/[arme]} depuis (race, gender, costume0, costume1,
+    // weaponItemId, gameTimeSec). Paramètres de la fiche = charState_.slots[selectedSlot]
+    // (job@36/faction@44/face@48/hairColor@52 exposés ; race/gender/costume/arme PAS encore
+    // exposés par LoadCharacterSlots -> état possédé par un autre front).
+    // BLOQUÉ ICI : le câblage 3D exige des membres PERSISTANTS possédés (gfx::MeshRenderer +
+    // gfx::ModelCache + gfx::MotionCache + gfx::Camera + hooks OnDeviceLost/Reset) et une entrée
+    // begin-frame 3D (Gfx_BeginFrame 0x6A2280) qui vivent dans LoginScene.h (NON possédé par ce
+    // front) ; Scene/WorldRenderer est interdit d'édition. -> à câbler par le front possédant
+    // ces membres 3D. Ne pas toucher Scene/WorldRenderer.
+
     if (sprites_.Ready()) {
         sprites_.Begin();
         DrawFullscreenBg(charBgSlot_); // fond RÉEL CharSelect (slot 2383/2384/2385) — zéro aplat
@@ -1267,17 +1324,18 @@ void LoginScene::CharListRender() {
         deleteBtn_.DrawSkin(sprites_);
         backBtn_.DrawSkin(sprites_);
 
-        // RENOMMER / ENTREPÔT / QUITTER : pas de membre Button ni de hit-test (l'édition des
-        // handlers souris CharSelectOnMouseDown/Up est hors périmètre de cette passe) ->
-        // dessinés en sprites DIRECTS à l'état idle (doc §7). TODO : ajouter le latch + l'action
-        // (3 membres Button + hit-test dans CharSelectOnMouseDown/Up).
+        // RENOMMER / ENTREPÔT / QUITTER : pas de membre Button -> dessinés en sprites DIRECTS
+        // à l'état idle (doc §7). QUITTER (slot 25) est désormais HIT-TESTÉ dans
+        // CharSelectOnMouseUp (rect direct sur ce sprite -> game::OnQuitButtonClicked, EA
+        // 0x525AA5) ; RENOMMER (this[15706], ticket item 1133) / ENTREPÔT (this[15396],
+        // Net_ReqStorageList) restent hors périmètre (latch/action non portés — TODO).
         auto drawIdleSprite = [&](int slot, int px, int py) {
             if (gfx::GpuTexture* t = GetAtlasSprite(slot))
                 sprites_.DrawSprite(t->Handle(), nullptr, px, py, gfx::kSpriteWhite);
         };
-        drawIdleSprite(1812, v126, v117 + 111); // RENOMMER (idle)
-        drawIdleSprite(1925, v126, v117 + 148); // ENTREPÔT (idle)
-        drawIdleSprite(25,   v126, v117 + 222); // QUITTER  (idle)
+        drawIdleSprite(1812, v126, v117 + 111); // RENOMMER (idle, hors périmètre)
+        drawIdleSprite(1925, v126, v117 + 148); // ENTREPÔT (idle, hors périmètre)
+        drawIdleSprite(25,   v126, v117 + 222); // QUITTER  (idle ; hit-test en OnMouseUp)
         sprites_.End();
     }
 
@@ -1305,8 +1363,11 @@ void LoginScene::CharListRender() {
     }
 }
 
-// Écran Formulaire de création : valeurs RÉELLES de charState_.createForm (job/
-// faction/visage/couleur/variant), nom saisi via createNameBox_.
+// Écran Formulaire de création — CÂBLAGE 1:1 sur les vrais sprites d'atlas (front W4-F1,
+// Scene_CharSelectRender 0x51CED0, branche screen==2 EA 0x51E4A1). Plus AUCUN aplat FillRect,
+// AUCUN titre/libellé FR fabriqué : le binaire ne dessine QUE le panneau (slot 40), les
+// boutons -/+ (slots 41/42) baked, Confirmer/Annuler (slots 9/12), le caret (slot 43) et les
+// 5 VALEURS localisées + le nom. Aucune chaîne "Créer/Nom/Classe/…" n'existe dans l'exe.
 void LoginScene::CreateFormRender() {
     LayoutCreateForm();
     const POINT mp = CursorClient();
@@ -1317,73 +1378,74 @@ void LoginScene::CreateFormRender() {
     };
     for (Button* b : formBtns) b->OnMouseMove(mp.x, mp.y);
 
-    const int px = screenW_ / 2 - 160, py = screenH_ / 2 - 150;
-    const int rowH = 28;
-    const int panelH = 6 * rowH + 96;
+    // Ancres RÉELLES du panneau de création (EA 0x51E4A1 sub 0x14F / 0x51E4B0 = 0x49).
+    const int panelX = screenW_ - 335, panelY = 73;
+
+    // TODO(ancre) APERÇU 3D — Scene_CharSelectRender 0x51CED0, 2x Char_RenderModel 0x527020
+    // AVANT le 1er Gfx_Begin2D (0x51D48A), écran CreateForm : EA 0x51D429 (pass=1,isCreate=1)
+    // et 0x51D480 (pass=2,isCreate=1), sur la fiche d'aperçu de création &dword_16709B8.
+    // Caméra œil kCharPreviewEye / cible kCharPreviewTarget (Scene_CharSelectUpdate 0x51BDED) ;
+    // palette d'os partagée v37 = PcModel_ResolveEquipSlot 0x4E46A0 (== PcModel_ResolveSlotAndApply
+    // 0x4E5A00), animTime par g_GameTimeSec (idiome ftol(t*30)%frameCount). Résolution en lecture
+    // seule : gfx::PlayerPaperdoll::Resolve (Gfx/PlayerPaperdoll.h, W3). Source d'apparence = la
+    // fiche d'aperçu dword_16709B8 (construite depuis charState_.createForm) — NON répliquée dans
+    // game::CharCreateForm (état possédé par un autre front).
+    // BLOQUÉ ICI : mêmes membres 3D possédés manquants (MeshRenderer/ModelCache/MotionCache/
+    // Camera + OnDeviceLost/Reset, entrée begin-frame Gfx_BeginFrame 0x6A2280) dans LoginScene.h
+    // (NON possédé par ce front). Ne pas toucher Scene/WorldRenderer.
 
     if (sprites_.Ready()) {
         sprites_.Begin();
         DrawFullscreenBg(charBgSlot_); // fond RÉEL CharSelect (slot 2383/2384/2385) — zéro aplat
-        FillRect(px - 20, py - 34, 324, panelH, kColPanel);
-        for (Button* b : formBtns) FillRect(b->X(), b->Y(), b->W(), b->H(), BtnColor(*b, true));
-        FillRect(createNameBox_.X(), createNameBox_.Y(), createNameBox_.W(), createNameBox_.H(),
-                 createNameBox_.Focused() ? kColFieldFocus : kColField);
-        sprites_.End();
-    }
-    if (font_.Ready()) {
-        font_.BeginBatch();
-        // Titre "Creation de personnage" : texte libre CONFIRMÉ non-fidèle (RE idaTs2
-        // 2026-07-15, Docs/TS2_CHARSELECT_AUDIT.md §3) — le binaire ne dessine aucun titre
-        // texte (panneau réel gravé, unk_931680) ; repli de lisibilité, pas fidèle au binaire.
-        font_.DrawTextStyled("Creation de personnage", px - 10, py - 28, kColTitle, gfx::kStyleOutline);
-        // Libellés de façade pour le squelette de rendu ; l'IDA n'a pas confirmé de
-        // chaînes texte distinctes à cet endroit, donc on ne les présente pas comme
-        // fidèles au binaire.
-        const char* labels[5] = { "Classe", "Faction", "Visage", "Couleur cheveux", "Variante" };
-        // VALEUR affichée par ligne — RE-DÉCOMPILÉ FRAÎCHEMENT (idaTs2, 2026-07-15,
-        // désassemblage direct de Scene_CharSelectRender 0x51CED0, plage 0x51E571-0x51E93E) ;
-        // l'IDB PRIME et CORRIGE l'ancienne note (et CharSelectFlow.h L224-228) :
-        //   - Classe  (var_484)          : Str(CreateJobLabelStrId(job))   EA 0x51E571-0x51E5AD
-        //   - Faction (dword_16709E4)    : Str(CreateFactionLabelStrId(...)) EA 0x51E60B-0x51E632
-        //   - Visage  (dword_16709E8)    : sprintf("%c %s",'A'+face,Str(28))      EA 0x51E690-0x51E6F8
-        //   - Couleur (dword_16709EC)    : sprintf("%c %s",'A'+hairColor,Str(28)) EA 0x51E6FD-0x51E767
-        //       hairColor N'EST PAS un swatch : il rend le MÊME format "%c %s"+Str(28) que
-        //       Visage. L'ancienne hypothèse (« aucun StrTable005 / swatch de couleur ») est
-        //       RÉFUTÉE par le désassemblage : `push 1Ch; StrTable005_Get; mov ecx,
-        //       dword_16709EC; add ecx,41h ('A'); push "%c %s"` en 0x51E6FD-0x51E714.
-        //   - Variante (this[15716])     : Str(CreateVariantLabelStrId(...)), grille 3x3
-        //                                   EA 0x51E76C-0x51E93E
-        //       (job==0 -> {29,30,31}, job==1 -> {32,33,34}, job==2 -> {35,36,37}).
-        // (Le binaire centre ces valeurs via UI_MeasureNumberText/UI_DrawNumberValue en police
-        // bitmap numérique unk_1685740 ; rendu à plat ici par font_ sans ce centrage — géométrie
-        // exacte hors périmètre. Plus AUCUNE valeur numérique brute « %d » fabriquée.)
-        const std::string faceHairWord = game::Str(game::kCreateFaceHairLabelWordStrId); // mot fixe partagé Visage/Couleur
-        const std::string jobText      = game::Str(game::CreateJobLabelStrId(charState_.createForm.job));
-        const std::string factionText  = game::Str(game::CreateFactionLabelStrId(charState_.createForm.faction));
-        const std::string variantText  = game::Str(game::CreateVariantLabelStrId(
-            charState_.createForm.job, charState_.createForm.variant));
-        for (int i = 0; i < 5; ++i) {
-            const int y = py + i * rowH;
-            font_.DrawTextAt(labels[i], px + 32, y + 3, kColLabel);
-            char buf[64];
-            if (i == 0)      font_.DrawTextAt(jobText.c_str(),     px + 130, y + 3, kColText);
-            else if (i == 1) font_.DrawTextAt(factionText.c_str(), px + 130, y + 3, kColText);
-            else if (i == 2) { // Visage : 'A'+face + " " + Str(28)
-                std::snprintf(buf, sizeof(buf), "%c %s",
-                              game::CreateFaceHairLabelLetter(charState_.createForm.face), faceHairWord.c_str());
-                font_.DrawTextAt(buf, px + 130, y + 3, kColText);
-            } else if (i == 3) { // Couleur cheveux : 'A'+hairColor + " " + Str(28)
-                std::snprintf(buf, sizeof(buf), "%c %s",
-                              game::CreateFaceHairLabelLetter(charState_.createForm.hairColor), faceHairWord.c_str());
-                font_.DrawTextAt(buf, px + 130, y + 3, kColText);
-            } else {           // Variante : Str(29 + 3*job + variant)
-                font_.DrawTextAt(variantText.c_str(), px + 130, y + 3, kColText);
+        // Panneau de création (slot 40 unk_8EA270) @ (panelX, panelY) — blit natif, EA 0x51E4C5.
+        if (gfx::GpuTexture* t = GetAtlasSprite(40))
+            sprites_.DrawSprite(t->Handle(), nullptr, panelX, panelY, gfx::kSpriteWhite);
+        // Boutons -/+ (slots 41/42 skinnés en Init) + Confirmer/Annuler (slots 9/12) : DrawSkin
+        // dessine l'état courant à la taille native du sprite.
+        for (Button* b : formBtns) b->DrawSkin(sprites_);
+        // Caret du champ nom (g_SprTextInputCaret = slot 43 unk_8EA42C) @ (panelX+largeurNom+0x80,
+        // panelY+0x35), quand le champ est focalisé (EA 0x51E50C test g_UIEditBoxMgr==3, Sprite2D_Draw
+        // 0x51E543). Repli caret texte assuré par DrawFieldValue (batch font) si le sprite manque.
+        if (createNameBox_.Focused()) {
+            if (gfx::GpuTexture* caret = GetAtlasSprite(43)) {
+                const std::string nm = createNameBox_.Text();
+                const int w = nm.empty() ? 0 : font_.MeasureText(nm.c_str());
+                sprites_.DrawSprite(caret->Handle(), nullptr, panelX + w + 128, panelY + 53, gfx::kSpriteWhite);
             }
         }
-        for (Button* b : formBtns) // libellés -/+/Confirmer/Annuler
-            font_.DrawTextAt(b->Label().c_str(), b->X() + 6, b->Y() + 3, kColText);
-        font_.DrawTextAt("Nom", px, createNameBox_.Y() - 16, kColLabel);
-        DrawFieldValue(createNameBox_, createNameBox_.X() + 4, createNameBox_.Y() + 4);
+        sprites_.End();
+    }
+
+    if (font_.Ready()) {
+        font_.BeginBatch();
+        // 5 VALEURS localisées du formulaire (Scene_CharSelectRender, plage 0x51E548-0x51E93E),
+        // CENTRÉES à x=panelX+0xA3 (=+163) via UI_MeasureNumberText/UI_DrawNumberValue :
+        //   Job     (dword_16709DC) : Str(CreateJobLabelStrId)     y=panelY+0x4F (=+79)  EA 0x51E571
+        //   Faction (dword_16709E4) : Str(CreateFactionLabelStrId) y=panelY+0x67 (=+103) EA 0x51E60B
+        //   Face    (dword_16709E8) : "%c %s" 'A'+face + Str(28)   y=panelY+0x7F (=+127) EA 0x51E690
+        //   Hair    (dword_16709EC) : "%c %s" 'A'+hair + Str(28)   y=panelY+0x97 (=+151) EA 0x51E6FD
+        //   Variant (this[15716])   : Str(CreateVariantLabelStrId) y=panelY+0xAF (=+175) EA 0x51E76C
+        // (helpers CharSelectFlow.h, mapping bit-exact re-vérifié EA par EA). Plus AUCUN "%d" brut,
+        // AUCUN libellé/titre FR fabriqué (le binaire n'en dessine aucun).
+        const int cx = panelX + 163; // panelX + 0xA3, centre des valeurs
+        const std::string faceHairWord = game::Str(game::kCreateFaceHairLabelWordStrId);
+        auto drawCentered = [&](const std::string& s, int y) {
+            font_.DrawTextAt(s.c_str(), cx - font_.MeasureText(s.c_str()) / 2, y, kColText);
+        };
+        char buf[64];
+        drawCentered(game::Str(game::CreateJobLabelStrId(charState_.createForm.job)),        panelY + 79);
+        drawCentered(game::Str(game::CreateFactionLabelStrId(charState_.createForm.faction)), panelY + 103);
+        std::snprintf(buf, sizeof(buf), "%c %s",
+                      game::CreateFaceHairLabelLetter(charState_.createForm.face), faceHairWord.c_str());
+        drawCentered(buf, panelY + 127);
+        std::snprintf(buf, sizeof(buf), "%c %s",
+                      game::CreateFaceHairLabelLetter(charState_.createForm.hairColor), faceHairWord.c_str());
+        drawCentered(buf, panelY + 151);
+        drawCentered(game::Str(game::CreateVariantLabelStrId(
+                         charState_.createForm.job, charState_.createForm.variant)), panelY + 175);
+        // Nom saisi : GetWindowTextA(dword_1668FCC) -> UI_DrawNumberValue @(panelX+0x7F, panelY+0x35)
+        // EA 0x51E4DB-0x51E507. Valeur à gauche (non centrée), (panelX+127, panelY+53).
+        DrawFieldValue(createNameBox_, panelX + 127, panelY + 53);
         font_.EndBatch();
     }
 }
@@ -1478,6 +1540,19 @@ void LoginScene::CharSelectOnMouseUp(int x, int y) {
     deleteBtn_.OnMouseUp(x, y);
     enterBtn_.OnMouseUp(x, y);
     backBtn_.OnMouseUp(x, y);
+
+    // QUITTER (unk_8E99C4 = slot 25, colonne @v117+222) : Scene_CharSelectOnMouseUp EA
+    // 0x525AA5 hit-test -> si this[+0xF598]!=3 (pas en cours d'entrée), UI_MsgBox_Open de
+    // confirmation de quit (EA 0x525AE5). Contrairement à RETOUR/ENTRER/CRÉER/SUPPRIMER, ce
+    // bouton n'a PAS de membre Button (LoginScene.h non possédé par ce front) -> hit-test
+    // DIRECT du rect du sprite (mêmes ancres que le drawIdleSprite de CharListRender).
+    // game::OnQuitButtonClicked porte déjà la garde PreviewMotion::Entering et fait
+    // Net_CloseSocket + g_QuitFlag=1 (simplification assumée vs la MsgBox du binaire).
+    if (gfx::GpuTexture* t = GetAtlasSprite(25)) {
+        const RECT r = MakeRect(screenW_ - 140, (screenH_ - 301) + 222,
+                                static_cast<int>(t->Width()), static_cast<int>(t->Height()));
+        if (RectContains(r, x, y)) { game::OnQuitButtonClicked(charState_, charHost_); return; }
+    }
 }
 
 // Construit charHost_ : point d'intégration réseau/UI de Game/CharSelectFlow.h,

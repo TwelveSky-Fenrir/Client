@@ -487,18 +487,25 @@ bool InventoryWindow::PlaceDrag(int mx, int my) {
     return false; // cible hors panneau : l'objet reste sur le curseur
 }
 
-// Point d'accroche réseau — REPLI PROPRE (cf. commentaire de tête de
-// UI/InventoryWindow.h pour la recherche menée et les raisons détaillées de
-// l'absence d'envoi). Volontairement un NO-OP aujourd'hui : envoyer un mauvais
-// opcode au serveur serait pire que ne rien envoyer (le déplacement reste donc
-// purement local, comme AVANT ce câblage). `ctx` documente ce qu'un futur
-// Net_SendOpNN/Net_SendVaultReq_NNN confirmé devrait transmettre.
+// Point d'accroche réseau — NO-OP désormais PROUVÉ FIDÈLE pour le réarrangement
+// intra-sac (ré-audit W4-F3). Le déplacement d'un objet à l'intérieur du sac
+// passe par Item_BeginDragTransaction 0x5AFDF0 (prise LOCALE : vide la case
+// source SANS envoyer) puis pose locale ; le serveur NE SUIT PAS la disposition
+// de grille du client -> AUCUN paquet n'est émis pour un simple réarrangement.
+// (Pkt_TradeResult 0x48D150, opcode 0x26, réécrit g_InvMain UNIQUEMENT en réponse
+// à un achat/vente/vault — round-trip serveur —, jamais à un déplacement client.)
+// Le seul cas qui DÉCLENCHE un envoi est l'équip/déséquip (drop sac->slot équip),
+// mais via le chemin de drop cGameHud (gardé anticheat), non isolable en un
+// builder unique ici -> reste en TODO pour ce cas précis. `ctx` documente ce
+// qu'un tel envoi devrait transmettre. InventoryWindow POSSÈDE bien un net_ :
+// dès que l'opcode d'équip sera prouvé, il sera câblable ici.
 void InventoryWindow::NotifyServerItemMove(const DragContext& ctx) const {
     (void)ctx;
     if (!net_) return; // aucune session liée : rien à faire de toute façon.
-    // TODO(send): brancher ici le builder Net_SendOpNN/Net_SendVaultReq_NNN une
-    // fois identifié par un appelant désassemblé (aucun candidat confirmé à ce
-    // jour — cf. UI/InventoryWindow.h). Exemple attendu :
+    // Réarrangement intra-sac = local-only (fidèle, cf. ci-dessus) : rien à envoyer.
+    // TODO(send) équip/déséquip uniquement : brancher le builder du chemin de drop
+    // cGameHud une fois l'opcode identifié (aucun candidat confirmé à ce jour —
+    // cf. UI/InventoryWindow.h). Exemple attendu :
     //   net::Net_SendOpNN(*net_, /* champs de ctx : srcType/srcPage/srcSlot/itemId/count */);
 }
 

@@ -195,6 +195,7 @@
 // devise, même politique de « simplification assumée, jamais bloquante » que §2 ci-dessus.
 #include "UI/GameHud.h"
 #include "Game/GameState.h"      // game::g_World (self.hp/maxHp/mp/maxMp/level/currency)
+#include "Game/GameDatabase.h"   // game::GetLevelInfo/LevelInfo (§1 barre EXP, mission W4-F2)
 #include "Game/ActionStateMachine.h" // game::CharActionState (CastSlot0-2/Channel -> indicateur de cast §16, mission 2026-07-14)
 #include "Game/ClientRuntime.h"  // game::g_Client.msg (MessageLog -> ChatWindow, mission 2026-07-14)
 #include "Game/StringTables.h"   // game::g_Strings.zoneNames (§17 callout marqueur de quête, mission 2026-07-14)
@@ -225,6 +226,37 @@ constexpr D3DCOLOR kSlotBorder   = 0xFF404050u; // contour d'un quickslot
 constexpr D3DCOLOR kSlotFilled   = 0xFF2E7D46u; // marqueur « slot assigné » (placeholder icône)
 constexpr D3DCOLOR kTextColor    = 0xFFFFFFFFu; // texte principal (blanc)
 constexpr D3DCOLOR kTextDim      = 0xFFBFBFBFu; // texte secondaire (numéros de slot)
+
+// --- Barre EXP + Maîtrise élémentaire (§1, UI_GameHud_Render 0x67A59E-0x67A782) ----
+// Style libre (ARGB non prouvé — aucune table de couleurs modélisée côté client).
+constexpr D3DCOLOR kExpBg       = 0xFF201028u; // fond barre d'expérience (violet sombre)
+constexpr D3DCOLOR kExpFill     = 0xFF9A46E0u; // remplissage EXP (violet)
+constexpr D3DCOLOR kMasteryBg   = 0xFF08201Cu; // fond barre de maîtrise (vert sombre)
+constexpr D3DCOLOR kMasteryFill = 0xFF2CC888u; // remplissage maîtrise (vert)
+constexpr int      kMasteryMax  = 3000;        // push 0BB8h @0x67A737 ; dbl_7EDAE8 = 3000.0
+
+// §1 EXP : progression/span exacts extraits de UI_GameHud_Render 0x67A59E (disasm
+// vérifié cette mission). Getters LevelTable_GetId 0x4C2930 -> LevelInfo::expCumul (+4),
+// LevelTable_GetMinExp 0x4C2960 -> LevelInfo::expNext (+8) (décompilés : record = 11
+// dwords, GetId=record[+1], GetMinExp=record[+2]). Lecture via g_Client.VarGet — AUCUN
+// champ SelfState ajouté (Game/GameState.h en lecture seule, cf. tâche W4-F2).
+void ComputeExpProgress(int level, int levelBonus, int& outProgress, int& outSpan) {
+    if (levelBonus >= 1) {
+        // Renaissance (branche jge @0x67A59E->0x67A618) : span =
+        // maybe_GameHud_GetQuickSlotItemId(mLEVEL, levelBonus) = sous-table mLEVEL+1594
+        // (dwords), NON portée dans LevelInfo -> barre vide en renaissance.
+        outProgress = game::g_Client.VarGet(0x16731B4); // dword_16731B4 @0x67A62F
+        outSpan     = 0; // TODO [ancre 0x67A624] : sous-table span renaissance non modélisée
+    } else if (const game::LevelInfo* li = game::GetLevelInfo(level)) {
+        const int expCumul = li->expCumul;                          // GetId(level) 0x4C2930 = +4
+        outProgress = game::g_Client.VarGet(0x16731B0) - expCumul;  // dword_16731B0 - GetId @0x67A608
+        // level<145 (0x91) : span = GetMinExp - GetId ; sinon : 2e9 (0x77359400) - GetId.
+        outSpan = (level < 145 ? li->expNext : 2000000000) - expCumul; // @0x67A5B8 / 0x67A5EA
+    } else {
+        outProgress = 0;
+        outSpan     = 0;
+    }
+}
 
 // --- Cadres alliance/groupe (§8, EA 0x67B891-0x67BD54) -----------------------
 constexpr D3DCOLOR kAllyFrameBg    = 0xA0141420u; // fond translucide d'une ligne
@@ -602,6 +634,28 @@ void GameHud::DrawVitalsFrame() {
     const game::SelfState& self = game::g_World.self;
     DrawBarFill(layout_.hpBar, self.hp, self.maxHp, kHpBg, kHpFill);
     DrawBarFill(layout_.mpBar, self.mp, self.maxMp, kMpBg, kMpFill);
+
+    // §1 barre EXP + barre Maîtrise élémentaire (mission W4-F2, UI_GameHud_Render
+    // 0x67A59E-0x67A782). Rects LOCAUX dérivés de layout_.frame — le header GameHud.h
+    // étant en lecture seule, aucun champ Layout ne peut être ajouté : on réutilise le
+    // même x=57 / largeur 150 / pas de 14 px que hpBar (y=8) / mpBar (y=22), fidèle aux
+    // ancres de fill (57,36) @0x67A672 et (57,50) @0x67A71F.
+    const HudRect& fr = layout_.frame;
+    const HudRect expBar{ fr.x + 57, fr.y + 36, 150, 12 };     // fill (0x39,0x24) @0x67A672
+    const HudRect masteryBar{ fr.x + 57, fr.y + 50, 150, 12 }; // fill (0x39,0x32) @0x67A71F
+
+    int expProgress = 0, expSpan = 0;
+    ComputeExpProgress(self.level, self.levelBonus, expProgress, expSpan);
+    // Gate fidèle `cmp var_84C,0 / jle` @0x67A641 : dessiné seulement si progress > 0
+    // (DrawBarFill clampe déjà le ratio [0,1], équivalent du clamp de frame 220 @0x67A66B).
+    if (expProgress > 0 && expSpan > 0)
+        DrawBarFill(expBar, expProgress, expSpan, kExpBg, kExpFill);
+
+    // Maîtrise élémentaire : échelle FIXE /3000 (dbl_7EDAE8 @0x67A6FC), dessinée si
+    // val > 0 (cmp dword_168746C,0 / jle @0x67A6EE).
+    const int chi = game::g_Client.VarGet(0x168746C); // dword_168746C @0x67A6E7
+    if (chi > 0)
+        DrawBarFill(masteryBar, chi, kMasteryMax, kMasteryBg, kMasteryFill);
 }
 
 // Repli si quickBarWindow_ n'a pas pu être alloué (bad_alloc, cf. Init()) — ancien
@@ -776,6 +830,30 @@ void GameHud::DrawTextPass(int hp, int maxHp, int mp, int maxMp, int level, int 
     centeredLabel(layout_.hpBar, hp, maxHp);
     centeredLabel(layout_.mpBar, mp, maxMp);
 
+    // §1 texte EXP + Maîtrise (mission W4-F2, UI_GameHud_Render 0x67A690-0x67A782).
+    // Recalcul local (idempotent, coût nul) : DrawTextPass ne reçoit pas progress/span.
+    // EXP = POURCENTAGE "%.3f" de progress*100/span (a3f @0x67A6A2, dbl_7EDAF0=100.0),
+    // aligné à droite bord x=207 (0xCF-largeur @0x67A6CE), y=35 (0x23 @0x67A6B8).
+    // Maîtrise = "%d/%d" (val, 3000) aligné droite x=207, y=49 (0x31 @0x67A758).
+    {
+        const game::SelfState& s = game::g_World.self;
+        int p = 0, span = 0;
+        ComputeExpProgress(s.level, s.levelBonus, p, span);
+        if (span > 0) {
+            std::snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(p) * 100.0 / span);
+            const int tw = font_.MeasureText(buf);
+            font_.DrawTextStyled(buf, layout_.frame.x + 207 - tw, layout_.frame.y + 35,
+                                 kTextColor, gfx::kStyleShadow);
+        }
+        const int chi = game::g_Client.VarGet(0x168746C);
+        if (chi > 0) {
+            std::snprintf(buf, sizeof(buf), "%d/%d", chi, kMasteryMax);
+            const int tw = font_.MeasureText(buf);
+            font_.DrawTextStyled(buf, layout_.frame.x + 207 - tw, layout_.frame.y + 49,
+                                 kTextColor, gfx::kStyleShadow);
+        }
+    }
+
     // §2 devise (haut-droite, EA 0x67A839-0x67A8FA) — donnée déjà disponible
     // (game::g_World.self.currency, tenue à jour par les handlers réseau) mais
     // jamais affichée avant cette passe (mission 2026-07-14). Ancrage réel =
@@ -914,6 +992,86 @@ void GameHud::DrawQuestMarkerText() {
 }
 
 // =============================================================================
+// §7 plaques de cible verrouillée + §15 rangée de boutons de menu (mission W4-F2)
+// — helpers file-local (GameHud.h en lecture seule : aucune méthode/champ ajouté).
+// =============================================================================
+namespace {
+
+// --- §7 plaques de cible (UI_GameHud_Render 0x67B0D3 / 0x67B436) ---------------
+// Registres de nom = blobs 13 o 0x167468A (plaque A) / 0x1674697 (plaque B), écrits
+// par Pkt SC 0x44 (Net/GameHandlers_ChatSocial.cpp) et déjà lus par
+// Scene/SceneManager.cpp::readReqName (même motif répliqué ici). Affichage gaté par
+// nom non vide (`Crt_Strcmp(&name,"") != 0` @0x67B0D3). Résolution par NOM dans
+// g_World.players (le binaire balaie g_EntityArray 0x1687234, stride 0x38C, nom à
+// entity+72 @0x67B115-0x67B171 ; ici on recoupe le miroir players[], même méthode que
+// BuildAllianceFrames). LIMITE FIDÈLE : maxHp d'une entité DISTANTE non modélisé
+// (PlayerEntity n'a pas de maxHp) -> jauge grisée plutôt qu'un ratio inventé.
+constexpr int kTargetPlateY0   = 105; // panneau à (0,105), au-dessus des lignes alliance §8 (y=155)
+constexpr int kTargetPlateW    = 204;
+constexpr int kTargetPlateH    = 48;
+constexpr int kTargetPlateStep = 50;  // plaques A/B empilées quand les deux sont actives
+
+struct TargetPlate {
+    bool        active   = false; // registre de nom non vide (gate 0x67B0D3)
+    bool        resolved = false; // entité trouvée par NOM dans g_World.players
+    std::string name;
+    int         hp = 0, hpMax = 0;
+    bool        hpMaxKnown = false; // maxHp connu (self uniquement, cf. §8 alliance)
+};
+
+// Réplique de Scene/SceneManager.cpp::readReqName (blob 13 o, lu jusqu'au NUL).
+std::string ReadTargetName(uint32_t addr) {
+    const auto& blob = game::g_Client.Blob(addr, 13);
+    size_t len = 0;
+    while (len < blob.size() && blob[len] != 0) ++len;
+    return std::string(reinterpret_cast<const char*>(blob.data()), len);
+}
+
+// Accesseur de « cible courante résolue » (demandé par la tâche W4-F2).
+TargetPlate ResolveTargetPlate(uint32_t nameAddr) {
+    TargetPlate tp;
+    tp.name   = ReadTargetName(nameAddr);
+    tp.active = !tp.name.empty();
+    if (!tp.active) return tp;
+
+    const auto& players = game::g_World.players;
+    for (size_t pi = 0; pi < players.size(); ++pi) {
+        const game::PlayerEntity& p = players[pi];
+        if (!p.active || p.name != tp.name) continue;
+        tp.resolved = true;
+        if (pi == 0) {
+            // players[0] = self (convention EntityManager) : PV/maxPV réels via StatEngine.
+            const game::SelfState& self = game::g_World.self;
+            tp.hp = self.hp; tp.hpMax = self.maxHp; tp.hpMaxKnown = true;
+        } else {
+            tp.hp = p.hp; // PV courant réel ; maxHp distant non modélisé -> hpMaxKnown=false
+        }
+        break;
+    }
+    return tp;
+}
+
+// --- §15 rangée de boutons de menu (UI_GameHud_Render 0x685177) ----------------
+// Chaque icône Sprite2D est dessinée à (ancre quickbar + dx, + dy), où l'ancre =
+// (this[0],this[1]) = coin du fond de quickbar (EA 0x684CB0/0x684CBC, = layout_.quickBar
+// +4). Le clic appelle sub_4C1110(0) (= Util_SetClampedU8Field, toggle d'un flag U8
+// this+flagOff = ouverture/fermeture d'une fenêtre, cible NON identifiée statiquement).
+// Offsets dx/dy/flag relevés du doc §15. Tailles de boutons non lisibles (icônes skin
+// .npk non chargées) -> estimées 24x16 (même limite que §1/§14).
+struct MenuBtn { int dx, dy, flagOff; };
+const MenuBtn kMenuButtons[] = {
+    {   0, -17, 124 }, {  25, -17, 396 }, {  59, -16, 452 }, {  84, -16, 448 },
+    { 109, -16, 444 }, { 134, -16, 440 }, { 159, -16, 436 }, { 184, -16, 428 },
+    { 234, -17, 420 }, { 284, -17, 412 }, { 334, -17, 384 }, { 359, -17, 388 },
+    { 384, -17, 392 }, { 309, -17, 408 }, { 409, -17, 400 }, { 434, -17, 404 },
+    { 458,   2, 432 },
+};
+constexpr int kMenuBtnW = 24;
+constexpr int kMenuBtnH = 16;
+
+} // namespace
+
+// =============================================================================
 // Render — cGameHud_Render 0x64A900
 // =============================================================================
 void GameHud::Render() {
@@ -958,6 +1116,40 @@ void GameHud::Render() {
             DrawQuickSlotFrames(); // repli si l'allocation a échoué (cf. Init())
         }
         minimap_.DrawPanels(sprite_, white_);
+        // §7 plaques de cible verrouillée x2 (mission W4-F2, UI_GameHud_Render 0x67B0D3 /
+        // 0x67B436) — panneaux d'information à (0,105+), dessinés AVANT les lignes alliance
+        // §8 (elles à y=155). Même politique de dégradation que §8 : maxHp d'une cible
+        // distante non modélisé -> jauge grisée, jamais un ratio inventé.
+        {
+            const TargetPlate plates[2] = {
+                ResolveTargetPlate(0x167468A), // plaque A (0x67B0D3)
+                ResolveTargetPlate(0x1674697), // plaque B (0x67B436)
+            };
+            int prow = 0;
+            for (int pi = 0; pi < 2; ++pi) {
+                const TargetPlate& tp = plates[pi];
+                if (!tp.active) continue; // gate `Crt_Strcmp(name,"") != 0` @0x67B0D3
+                const int py = kTargetPlateY0 + prow * kTargetPlateStep;
+                const HudRect frame{ 0, py, kTargetPlateW, kTargetPlateH };
+                DrawFilledRect(frame, kAllyFrameBg);
+                DrawBorder(frame, 1, kAllyFrameBrd);
+                // Pastille de présence (le binaire distingue icône offline unk_923758 /
+                // max-level unk_9464A8 / normal unk_9236C4 ; ici réduit à résolu/introuvable).
+                const HudRect icon{ 4, py + 4, kAllianceIconSize, kAllianceIconSize };
+                DrawFilledRect(icon, tp.resolved ? kAllyIconOnline : kAllyIconOffline);
+                DrawBorder(icon, 1, kAllyFrameBrd);
+                // Mini-barre HP uniquement (36 paliers frames 520-556 @ (5,129) local
+                // dans le binaire) — PAS de barre MP (contraste avec l'alliance §8).
+                const HudRect hpBar{ 5, py + 24, kTargetPlateW - 10, kAllianceBarH };
+                if (tp.resolved && tp.hpMaxKnown) {
+                    DrawBarFill(hpBar, tp.hp, tp.hpMax, kHpBg, kHpFill);
+                } else {
+                    DrawFilledRect(hpBar, kAllyNoData);
+                    DrawBorder(hpBar, 1, kBarBorder);
+                }
+                ++prow;
+            }
+        }
         // §8 cadres alliance/groupe (mission 2026-07-14, voir bandeau de tête) —
         // reconstruit à chaque frame (coût négligeable : au plus 5 slots x recherche
         // linéaire dans g_World.players), même politique que UI/PartyWindow.cpp.
@@ -996,6 +1188,40 @@ void GameHud::Render() {
     if (font_.Ready()) {
         font_.BeginBatch(D3DXSPRITE_ALPHABLEND);
         DrawAllianceFrameText(BuildAllianceFrames());
+        font_.EndBatch();
+    }
+
+    // Passe 3quinquies : texte des plaques de cible (§7, mission W4-F2) — nom (centré
+    // x=75 @0x67B294) + PV réel (max si connu) + compteur de la plaque B (VarGet
+    // 0x16746A4 @0x67B... ). Rebuild indépendant de la passe 1 (résultat identique).
+    if (font_.Ready()) {
+        font_.BeginBatch(D3DXSPRITE_ALPHABLEND);
+        const TargetPlate plates[2] = {
+            ResolveTargetPlate(0x167468A),
+            ResolveTargetPlate(0x1674697),
+        };
+        int prow = 0;
+        char b[64];
+        for (int pi = 0; pi < 2; ++pi) {
+            const TargetPlate& tp = plates[pi];
+            if (!tp.active) continue;
+            const int py = kTargetPlateY0 + prow * kTargetPlateStep;
+            font_.DrawTextStyled(tp.name.c_str(), 75, py + 6,
+                                 tp.resolved ? kAllyNameCol : kTextDim, gfx::kStyleShadow);
+            if (tp.resolved) {
+                if (tp.hpMaxKnown) std::snprintf(b, sizeof(b), "%d/%d", tp.hp, tp.hpMax);
+                else               std::snprintf(b, sizeof(b), "%d", tp.hp); // max distant non modélisé
+                font_.DrawTextStyled(b, 8, py + 24, kTextColor, gfx::kStyleShadow);
+            }
+            if (pi == 1) {
+                // Plaque B : compteur bas-droite, affiché même cible absente (@0x67B436).
+                std::snprintf(b, sizeof(b), "%d", game::g_Client.VarGet(0x16746A4));
+                const int tw = font_.MeasureText(b);
+                font_.DrawTextStyled(b, kTargetPlateW - tw - 8, py + kTargetPlateH - 14,
+                                     kTextDim, gfx::kStyleShadow);
+            }
+            ++prow;
+        }
         font_.EndBatch();
     }
 
@@ -1104,11 +1330,43 @@ bool GameHud::OnMouseDown(int x, int y) {
     if (buffPanel_.OnMouseDown(x, y))
         return true;
 
+    // §7 plaques de cible (mission W4-F2) : panneau d'information pur (pas de sous-hit-test),
+    // consommé si le clic tombe dans la zone des plaques actives (premier consommateur gagne,
+    // même politique que §8 alliance).
+    {
+        const TargetPlate tpA = ResolveTargetPlate(0x167468A);
+        const TargetPlate tpB = ResolveTargetPlate(0x1674697);
+        const int nActive = (tpA.active ? 1 : 0) + (tpB.active ? 1 : 0);
+        if (nActive > 0) {
+            const HudRect area{ 0, kTargetPlateY0, kTargetPlateW, kTargetPlateStep * nActive };
+            if (area.Contains(x, y))
+                return true;
+        }
+    }
+
     // Cadres alliance/groupe (§8, mission 2026-07-14) : consommé si le clic tombe dans
     // la zone actuellement peuplée (pas de sous-hit-test par ligne, panneau
     // d'information pure — même politique que UI/PartyWindow.cpp/UI/QuestTrackerWindow.h).
     if (AllianceFramesContains(x, y))
         return true;
+
+    // §15 rangée de boutons de menu (mission W4-F2, UI_GameHud_Render 0x685177) : ~17
+    // icônes autour de la quickbar, ancrées sur le fond de quickbar (this[0]/this[1],
+    // EA 0x684CB0/0x684CBC = coin layout_.quickBar + 4). Action réelle = sub_4C1110(0)
+    // (toggle d'un flag U8 this+flagOff -> ouvre une fenêtre non identifiée) : ici on
+    // CONSOMME + log, sans ouverture de GameWindows (cible non prouvée statiquement).
+    {
+        const int anchorX = layout_.quickBar.x + 4; // this[0] (0x684CB0)
+        const int anchorY = layout_.quickBar.y + 4; // this[1] (0x684CBC)
+        for (const MenuBtn& mb : kMenuButtons) {
+            const HudRect r{ anchorX + mb.dx, anchorY + mb.dy, kMenuBtnW, kMenuBtnH };
+            if (r.Contains(x, y)) {
+                lastClickedSlot_ = -1;
+                TS2_LOG("GameHud : clic bouton de menu (flag+%d) a (%d,%d)", mb.flagOff, x, y);
+                return true; // sub_4C1110(0) : toggle flag (fenetre cible non identifiee)
+            }
+        }
+    }
 
     // Clic sur le cadre vitales ou le panneau de quickslots : consommé (bloque
     // le passage à la scène monde derrière le HUD).

@@ -332,9 +332,15 @@ bool EnchantWindow::OnClick(int x, int y) {
         if (PointInRect(x, y, L.enchantBtn.x, L.enchantBtn.y, L.enchantBtn.w, L.enchantBtn.h)) {
             const EnchantState st = ComputeState(selectedSlot_);
             if (st.valid && st.itemClass >= 0 && !st.atMax) {
-                // TODO(send) : demande d'enchantement au serveur. Aucun builder
-                // Net_Send* dédié à l'enchantement n'est identifié dans
-                // Net/SendPackets.h à ce jour (pas de "Net_SendEnchant*"). Le
+                // TODO(send) : demande d'enchantement au serveur.
+                // MANIP DE SLOT PROUVÉE (ré-audit W4-F3, UI_Enchant_Press 0x5FB770) :
+                // poser/retirer l'objet à enchanter dans la fenêtre passe par
+                // Item_BeginDragTransaction(g_DragCtx, /*type=*/8|9, ...)  // 0x5AFDF0
+                // (prise/pose LOCALE, types de conteneur 8/9), PAS un send. La
+                // validation (envoi réel) est dans UI_Enchant_OnLUp (famille Op19,
+                // sous-op non isolée statiquement). Aucun builder Net_Send* dédié à
+                // l'enchantement n'est identifié dans Net/SendPackets.h à ce jour
+                // (pas de "Net_SendEnchant*"). Le
                 // candidat le plus probable est le DISPATCHER générique action/
                 // inventaire opcode SORTANT 0x13 (Outgoing::Op19, Net/Opcodes.h,
                 // "sous-op 0..255, vault 201..250"), symétrique du dispatcher

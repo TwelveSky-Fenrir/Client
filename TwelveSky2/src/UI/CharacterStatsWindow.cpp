@@ -180,30 +180,31 @@ bool CharacterStatsWindow::OnClick(int x, int y) {
         const Rect& r = L.plusBtn[i];
         if (self.unspentAttr > 0 &&
             PointInRect(x, y, r.x, r.y, r.w, r.h)) {
-            // TODO(send) : dépense d'un point sur l'attribut primaire AttrLabel(PrimaryAttr(i)).
-            // CORRECTIF (ré-audit 2026-07-14, preuve IDA fraîche) : l'ancien commentaire
-            // ci-dessous citait Net_SendOp88 comme candidat par simple rapprochement de
-            // description spec ("9x int8, relevé stats perso") — CE N'EST PAS le bon
-            // builder, hypothèse non vérifiée. La décompilation directe (xrefs_to sur
-            // Net_SendOp88 0x4BBF60 : UN SEUL appelant dans tout le binaire, 0x602b7b)
-            // montre que l'unique site d'appel d'origine est UI_Dlg41_OnLUp (0x602490),
-            // le gestionnaire de clic d'une fenêtre de COMBINAISON D'OBJETS À 4 SLOTS
-            // (matrice de compatibilité d'ID objets 1002-1011/1178-1184-1235, "recipe"
-            // de craft/fusion), PAS la fiche personnage : les 9 arguments envoyés sont
-            // *(this+799) (sous-résultat de la combinaison, 0-3) puis 4 PAIRES
-            // *(this+4/10, +5/11, +6/12, +7/13) (les 4 objets des slots), rien à voir
-            // avec un attribut primaire ni un point à dépenser. Aucune fenêtre de
-            // combinaison/craft n'existe dans ClientSource à ce jour -> Net_SendOp88
-            // reste À JUSTE TITRE non câblé ici ; le VRAI opcode "dépenser 1 point
-            // d'attribut" (dispatcher ENTRANT symétrique Net_OnCultivationDispatch
-            // 0x493180, opcode 0x58, Net/RecvPackets.h::CultivationDispatch, 20
-            // sous-opcodes réécrivant dword_16731B8/BC/C0/C4/D0 = attrDefensive/
-            // attrExtForce/attrOffensive/attrIntForce/unspentAttr) n'est TOUJOURS PAS
-            // identifié dans RE/opcode_table.json ni RE/outbound_results.json -> NE
-            // PAS deviner ; nécessite soit une RE statique plus poussée du dispatcher
-            // envoyant sur ce même opcode 0x58 depuis un autre site, soit un
-            // breakpoint dynamique sur le clic "+" en jeu pour capturer le vrai
-            // builder/sous-opcode.
+            // OPCODE PROUVÉ (ré-audit W4-F3, décompilation fraîche cDrawWin_OnCommit
+            // 0x6291F0) : la dépense d'un point d'attribut envoie
+            //   Net_SendVaultReq_206(nc, arg)   // 0x590430 = Net_SendPacket_Op19(
+            //                                    //   &g_AutoPlayMgr, 206, &arg) ->
+            //                                    //   opcode sortant 0x13, sous-op 206,
+            //                                    //   payload = arg sur 4 octets LE.
+            // Mapping bouton->attribut PROUVÉ par les hit-tests de cDrawWin_OnCommit :
+            // les 4 boutons "+1" testent (this.x+52, +109)/(+148, +109)/(+52, +131)/
+            // (+148, +131) = grille col=i%2, row=i/2 = ordre PrimaryAttr
+            // {ExtForce=0, IntForce=1, Defensive=2, Offensive=3} et appellent
+            // Net_SendVaultReq_206(1/2/3/4) -> plusBtn[i] = Net_SendVaultReq_206(nc, i+1).
+            // (Les boutons "+5" du binaire, absents de cette fenêtre, envoient 5/6/7/8
+            // et décrémentent g_SelfUnspentAttrPoints de 5.) Gardes d'origine :
+            // n'envoyer que si g_MorphInProgress(0x1675A88)!=1 && !g_GmCmdCooldownLatch
+            // (0x1675B08) ; sur envoi : latch=1, flt_1675B0C=g_GameTimeSec, décrément.
+            //
+            // NON CÂBLABLE ICI : CharacterStatsWindow n'a AUCUN accès à un NetClient
+            // (UiContext ne porte pas de `net`, OnClick ne reçoit pas de contexte
+            // réseau, cette fenêtre n'a pas de membre net_). L'ajout d'un net_/Bind()
+            // exigerait d'éditer CharacterStatsWindow.h (hors périmètre W4-F3). L'appel
+            // exact, dès qu'une session sera joignable :
+            //   // TODO [net_] Net_SendVaultReq_206(*net_, static_cast<int8_t>(i + 1));
+            // On NE décrémente PAS self.unspentAttr optimistiquement : le binaire couple
+            // décrément ET envoi (le serveur tient le compte via Pkt_CharStatDelta
+            // 0x465D90) ; décrémenter sans envoyer désynchroniserait l'UI du serveur.
             return true;
         }
     }

@@ -370,8 +370,15 @@ void SkillTreeWindow::AttemptLearn() {
         // TODO(send): notifier le serveur de l'apprentissage — builder non identifié avec
         // certitude dans Net/SendPackets.h à la date d'écriture (candidat probable : groupe
         // d'opcode « item action » G0, cf. Pkt_ItemAction 0x46A456 côté handler entrant ;
-        // aucun Net_SendItemActionG0(...) confirmé ici). Ne PAS inventer l'appel : l'état
-        // local (bar_/self_->skillPoints) est déjà à jour pour l'UI.
+        // aucun Net_SendItemActionG0(...) confirmé ici).
+        // PISTE (ré-audit W4-F3, NON PROUVÉE) : cGameHud_OnMouseDown 0x62B080 route
+        // l'apprentissage via SkillTrain_RowCount 0x5F1930 / SkillTrain_SkillIdAt
+        // 0x5F1B70 / Game_MapSkillRowToId 0x6121A0 puis appelle Net_SendGuarded_12
+        // (0x593670) / Net_SendGuarded_13 (0x5936F0) = Net_SendOp75(container, 12|13,
+        // payload) -> opcode sortant 0x4B, sous-op 12/13, gardés cooldown/morph. Payload
+        // vide observé -> rôle « apprendre skill » NON confirmé : NE PAS câbler (et pas
+        // de net_ joignable ici de toute façon). Ne PAS inventer l'appel : l'état local
+        // (bar_/self_->skillPoints) est déjà à jour pour l'UI.
     } else {
         statusText_ = "Échec de l'apprentissage (section incompatible ou barre pleine).";
         statusIsError_ = true;

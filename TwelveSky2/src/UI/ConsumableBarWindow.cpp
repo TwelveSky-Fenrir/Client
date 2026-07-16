@@ -176,14 +176,20 @@ void ConsumableBarWindow::ApplyDecision(const game::ConsumableDecision& d, int i
                               static_cast<unsigned>(d.refId), index + 1, owned);
                 lastMessage_ = buf;
                 lastMessageColor_ = kTextSuccess;
-                // TODO(send): aucun opcode « usage d'objet consommable » identifié
-                // avec certitude parmi les builders génériques de Net/SendPackets.h
-                // (Net_SendOp36..Net_SendOp143 : noms non résolus faute de string/
-                // xref distinctifs). Contrepartie entrante probable : le
-                // mega-dispatcher Pkt_ItemActionDispatch (opcode 0x1a, voir
-                // Net/ItemActionDispatch.h et la mémoire ts2-entity-model). Une fois
-                // le builder confirmé dans idaTs2, remplacer cette ligne par :
-                //   Net_SendOpNN(netClient, /*itemId=*/d.refId, /*slot=*/index);
+                // MÉCANISME PROUVÉ (ré-audit W4-F3, décompilation UI_ConsumableBar_OnClick
+                // 0x68E4B4) : un clic sur un slot de la barre N'ENVOIE PAS de paquet
+                // « usage d'objet » isolé. Pour un objet dont ITEM_INFO+188 == 2
+                // (consommable), le binaire appelle
+                //   Item_BeginDragTransaction(g_DragCtx, /*type=*/21, 0, 0,
+                //                             itemId=*(this+slot+4), amount, ...)  // 0x5AFDF0
+                // c.-à-d. une PRISE de drag LOCALE (conteneur type 21 = barre rapide/
+                // consommable), pas un send. `byte_8013FE<0` -> drag avec offset curseur
+                // (a4-52,a5-72) et quantité 0 ; sinon quantité 99. L'usage réel
+                // (consommation) survient au DROP de cet objet sur soi, validé côté
+                // cGameHud (chemin gardé anticheat), non isolable en un builder unique.
+                // -> Aucun Net_SendOpNN direct à câbler ici ; contrepartie ENTRANTE du
+                // résultat = Pkt_ItemActionDispatch (opcode 0x1a). Le message visuel
+                // ci-dessus reste correct (décision locale, cf. Game/ConsumableBarLogic.h).
             }
             (void)slots;
             break;

@@ -375,6 +375,16 @@ constexpr int kVK_RIGHT  = 0x27;
 constexpr int kVK_DELETE = 0x2E;
 } // namespace
 
+// TODO [ancre 0x461930 / SceneManager.cpp L904/L908] : routage clavier InGame NON
+// cable (mission W4-F2). OnChar/OnKey ci-dessous sont complets et fideles (Entree ->
+// UI_Chat_FocusInput 0x68B200 / UI_Chat_SubmitInput 0x68B330, Echap/Backspace/fleches/
+// Tab/PageUp-Down, insertion caret) mais RIEN ne les appelle en scene monde :
+// Scene/SceneManager.cpp::OnChar (L904) et OnKeyDown (L908) ne dispatchent qu'a login_
+// (scene Login/CharSelect). Maillon manquant (fichier NON possede par ce front) : ajouter,
+// sous scene_==Scene::World, hud_->Chat().OnChar(c) / hud_->Chat().OnKey(vk) (accessor
+// GameHud::Chat() deja expose, GameHud.h L166). Source WM_CHAR/WM_KEYDOWN = App_WndProc
+// 0x461930 -> App.cpp -> SceneManager (non possedes). Idem Chat().Bind(net::NetClient*)
+// (ChatWindow.h L120) a appeler depuis SceneManager pour activer l'envoi reseau.
 bool ChatWindow::OnKey(int vk) {
     // Entree : ouvre la saisie (App_WndProc WM_KEYDOWN VK_RETURN -> UI_Chat_FocusInput),
     // ou soumet puis referme.
