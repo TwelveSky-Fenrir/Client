@@ -134,6 +134,7 @@
     <ClCompile Include="src\Config\GameOptions.cpp" />
     <ClCompile Include="src\Game\ActionStateMachine.cpp" />
     <ClCompile Include="src\Game\AnimationTick.cpp" />
+    <ClCompile Include="src\Game\PlayerAnimCursorTick.cpp" />
     <ClCompile Include="src\Game\AutoPlaySystem.cpp" />
     <ClCompile Include="src\Game\AutoTargetCombatGate.cpp" />
     <ClCompile Include="src\Game\BitPacking.cpp" />
@@ -184,6 +185,7 @@
     <ClCompile Include="src\Gfx\MotionCache.cpp" />
     <ClCompile Include="src\Gfx\FxRenderer.cpp" />
     <ClCompile Include="src\Gfx\ParticleSystem.cpp" />
+    <ClCompile Include="src\Gfx\ZoneFxEmitter.cpp" />
     <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp" />
     <ClCompile Include="src\Gfx\ModelCache.cpp" />
     <ClCompile Include="src\Gfx\Renderer.cpp" />
@@ -289,6 +291,7 @@
     <ClInclude Include="src\Core\Types.h" />
     <ClInclude Include="src\Game\ActionStateMachine.h" />
     <ClInclude Include="src\Game\AnimationTick.h" />
+    <ClInclude Include="src\Game\PlayerAnimCursorTick.h" />
     <ClInclude Include="src\Game\AutoPlaySystem.h" />
     <ClInclude Include="src\Game\AutoTargetCombatGate.h" />
     <ClInclude Include="src\Game\BitPacking.h" />
@@ -342,6 +345,7 @@
     <ClInclude Include="src\Gfx\ModelCache.h" />
     <ClInclude Include="src\Gfx\FxRenderer.h" />
     <ClInclude Include="src\Gfx\ParticleSystem.h" />
+    <ClInclude Include="src\Gfx\ZoneFxEmitter.h" />
     <ClInclude Include="src\Gfx\Renderer.h" />
     <ClInclude Include="src\Gfx\ShaderSet.h" />
     <ClInclude Include="src\Gfx\SilverLiningSky.h" />

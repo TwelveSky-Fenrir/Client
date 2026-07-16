@@ -324,11 +324,17 @@ void WorldGeometryRenderer::releaseTerrain() {
     terrainNumMaterials_ = 0;
 }
 
-// Libère les textures GPU des nœuds FX de zone (.WP) et vide la liste de billboards.
+// Libère les pools de particules (.WP), leurs tableaux heap, les templates et textures des nœuds FX.
+// FRONT F_ZONEFX : chaque FxParticlePool possède un tableau HeapAlloc (Particle_Free 0x6a6ff0).
 void WorldGeometryRenderer::releaseFx() {
+    for (ts2::gfx::FxParticlePool& pool : fxPools_)
+        ts2::gfx::ZoneFx_Free(&pool);           // HeapFree du tableau de particules
+    fxPools_.clear();
+    fxRecords_.clear();
+    fxTemplates_.clear();                        // templates 232o (pointés par les pools, libérés après)
     for (IDirect3DTexture9*& t : fxTextures_) SafeRelease(t);
     fxTextures_.clear();
-    fxBillboards_.clear();
+    fxScratch_.clear();
 }
 
 // D3DPOOL_MANAGED : survit à un Reset() sans re-upload (même politique que MeshRenderer::Upload).
@@ -777,23 +783,36 @@ bool WorldGeometryRenderer::buildFx(const world::WorldAssets& assets) {
     const asset::FxChunk* wp = chunk->AsFx();
     if (!wp || wp->empty || wp->nodes.empty()) return true; // pas de FX : rien à dessiner
 
-    // Texture GPU par nœud FX (nullptr si absente) — POSSÉDÉES par fxTextures_.
+    // 1) Une texture GPU + un TEMPLATE 232o par nœud FX (this+29 du binaire, stride 232). Le template
+    //    est bâti octet-exact depuis asset::FxNode : enabled=1, texture à +52, et les 144 o de disque
+    //    (FxNode.fields = runtime [+72,+216)) recopiés à (tmpl+72). Ancre : Fx_NodeLoadFromHandle 0x6a69f0.
+    //    ⚠ fxTemplates_ est dimensionné UNE FOIS ici et n'est plus redimensionné : les pools gardent
+    //    un pointeur vers ses éléments (pool->tmpl), qui doit rester stable jusqu'à releaseFx().
     fxTextures_.assign(wp->nodes.size(), nullptr);
-    for (size_t i = 0; i < wp->nodes.size(); ++i)
-        fxTextures_[i] = createTextureFromBlock(dev_, wp->nodes[i].tex);
+    fxTemplates_.assign(wp->nodes.size(), ts2::gfx::FxEmitterTemplate{});
+    for (size_t i = 0; i < wp->nodes.size(); ++i) {
+        fxTextures_[i] = createTextureFromBlock(dev_, wp->nodes[i].tex); // nullptr si absente
+        const asset::FxNode& node = wp->nodes[i];
+        ts2::gfx::ZoneFx_BuildTemplate(&fxTemplates_[i], node.fields.data(), node.fields.size(),
+                                       fxTextures_[i]);
+        if (!node.present) fxTemplates_[i].enabled = 0; // nœud non chargé -> émetteur désactivé (gate Init)
+    }
 
-    // Un billboard par instance placée (fxbRecords), texture = celle de son nœud.
+    // 2) Un POOL (POBJECT 48o, flag=0 -> ZoneFx_Init au 1er tick) par instance placée (record B,
+    //    this+32 stride 76). On garde le record (nodeIndex/pos/rot) aligné avec le pool. Ancre :
+    //    MapColl_LoadObjectsB 0x6983b0 (@0x698602 lit nodeIndex+pos+rot) + boucle 2 0x694af0.
+    fxRecords_.clear();
     size_t outOfRange = 0;
     for (const asset::AuxFxRecord& rec : wp->fxbRecords) {
-        if (rec.nodeIndex >= fxTextures_.size()) { ++outOfRange; continue; }
-        FxBillboard bb;
-        bb.pos[0] = rec.pos[0]; bb.pos[1] = rec.pos[1]; bb.pos[2] = rec.pos[2];
-        bb.texture = fxTextures_[rec.nodeIndex]; // réf non-possédante
-        fxBillboards_.push_back(bb);
+        if (rec.nodeIndex >= fxTemplates_.size()) { ++outOfRange; continue; }
+        fxRecords_.push_back(rec);
     }
-    TS2_LOG("WorldGeometryRenderer::buildFx (W3-F3) : %zu noeuds FX, %zu billboards places (%zu "
-            "nodeIndex hors bornes). Sim particules complet = TODO ancre (Particle_UpdateEmit 0x6a7530).",
-            wp->nodes.size(), fxBillboards_.size(), outOfRange);
+    fxPools_.assign(fxRecords_.size(), ts2::gfx::FxParticlePool{}); // zéro-init : flag=0, particles=nullptr
+
+    TS2_LOG("WorldGeometryRenderer::buildFx (F_ZONEFX) : %zu noeuds FX (templates 232o), %zu emetteurs "
+            "instancies (POBJECT 48o) (%zu nodeIndex hors bornes). Sim VIVANTE : Particle_Init 0x6a7020 "
+            "/ UpdateEmit 0x6a7530 / RenderBillboards 0x6a70b0.",
+            fxTemplates_.size(), fxPools_.size(), outOfRange);
     return true;
 }
 
@@ -1264,7 +1283,7 @@ void WorldGeometryRenderer::renderObjects(const D3DXMATRIX& view, const D3DXMATR
 //  matrice vue). Le sim complet (base flt_8001D4..E8 runtime + Particle_Init/UpdateEmit) = TODO ancre.
 // ===========================================================================
 void WorldGeometryRenderer::RenderFxBillboards(const Camera& camera) {
-    if (!ready_ || fxBillboards_.empty()) return;
+    if (!ready_ || fxPools_.empty()) return;
 
     DWORD prevLighting = TRUE, prevBlend = FALSE, prevZWrite = TRUE, prevCull = D3DCULL_CCW,
           prevSrc = D3DBLEND_ONE, prevDst = D3DBLEND_ZERO;
@@ -1297,32 +1316,42 @@ void WorldGeometryRenderer::RenderFxBillboards(const Camera& camera) {
     dev_->SetTransform(D3DTS_WORLD, &ident);
     dev_->SetTransform(D3DTS_TEXTURE0, &ident);
 
-    // Base camera-facing depuis la matrice vue (right/up monde = colonnes de la rotation).
+    // Base camera-facing depuis la matrice vue (right/up monde = colonnes de la rotation). Fidèle au
+    // rôle des globales flt_8001D4..8001E8 du binaire (droite/haut caméra monde), lues et multipliées
+    // par particle.size dans Particle_RenderBillboards 0x6a70b0.
     D3DXMATRIX view; camera.BuildViewMatrix(view);
     D3DXVECTOR3 right(view._11, view._21, view._31);
     D3DXVECTOR3 up(view._12, view._22, view._32);
     D3DXVec3Normalize(&right, &right);
     D3DXVec3Normalize(&up, &up);
-    // Demi-taille du quad : la vraie base flt_8001D4..E8 est calculée au runtime depuis la vue
-    // (Particle_RenderBillboards) et non disponible statiquement -> défaut build-safe. TODO ancre 0x6a70b0.
-    constexpr float kHalf = 8.0f;
 
-    struct BbVert { float x, y, z; DWORD color; float u, v; };
-    static_assert(sizeof(BbVert) == 24, "vertex billboard = 24 o (FVF 322)");
-    const DWORD kWhite = 0xFFFFFFFF;
-    for (const FxBillboard& bb : fxBillboards_) {
-        if (!bb.texture) continue;
-        const D3DXVECTOR3 c(bb.pos[0], bb.pos[1], bb.pos[2]);
-        const D3DXVECTOR3 r = right * kHalf, u2 = up * kHalf;
-        const D3DXVECTOR3 p0 = c - r + u2, p1 = c + r + u2, p2 = c + r - u2, p3 = c - r - u2;
-        auto set = [&](BbVert& d, const D3DXVECTOR3& p, float u, float v) {
-            d.x = p.x; d.y = p.y; d.z = p.z; d.color = kWhite; d.u = u; d.v = v;
-        };
-        BbVert q[6];
-        set(q[0], p0, 0, 0); set(q[1], p1, 1, 0); set(q[2], p2, 1, 1); // tri 1
-        set(q[3], p0, 0, 0); set(q[4], p2, 1, 1); set(q[5], p3, 0, 1); // tri 2
-        dev_->SetTexture(0, bb.texture);
-        dev_->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, q, sizeof(BbVert));
+    // Paramètres de frame communs à tous les émetteurs (le device, la base et le scratch CPU sont
+    // partagés — dword_800080 dans le binaire). maxQuads=0 => pas de plafond (dword_7FFEE0 vaut 0 en
+    // statique ; posé au runtime par le renderer -> non prouvé, 0 conservé = pas de coupe).
+    ts2::gfx::ZoneFxFrameParams params;
+    params.device   = dev_;
+    params.right[0] = right.x; params.right[1] = right.y; params.right[2] = right.z;
+    params.up[0]    = up.x;    params.up[1]    = up.y;    params.up[2]    = up.z;
+    params.maxQuads = 0;                // dword_7FFEE0 (0 statique)
+    params.scratch  = &fxScratch_;      // buffer CPU des sommets (réutilisé), DrawPrimitiveUP
+    params.frustum  = nullptr;          // Cam_FrustumTestPoint6 non câblé ici (cull distance ci-dessous)
+
+    // Cull DISTANCE CARRÉE par nœud (Terrain_Render a5=2 @0x698c81-0x698cbb : dist²(eye, FxNode.pos)
+    // < a10²). a10 = Game_GetTierRange 0x5402f0 (option d'affichage 1000/2000/3000 selon
+    // g_Opt_DisplayRangeTier 0x84dec4, = 0 en statique -> valeur RUNTIME non dumpable). Seuil build-safe
+    // documenté = tier LOINTAIN 3000.0 (la plus permissive des 3 valeurs prouvées) pour ne rien masquer ;
+    // à câbler sur l'option réelle quand la config sera portée. Origine cull = record B pos (FxNode.pos).
+    const D3DXVECTOR3 eye = camera.Eye();
+    constexpr float kZoneFxDrawRange = 3000.0f;                 // Game_GetTierRange (tier 3, documenté)
+    const float range2 = kZoneFxDrawRange * kZoneFxDrawRange;
+    for (size_t i = 0; i < fxPools_.size(); ++i) {
+        ts2::gfx::FxParticlePool& pool = fxPools_[i];
+        if (!pool.flag) continue;                              // pas encore Init -> aucun pool à dessiner
+        const float dx = eye.x - fxRecords_[i].pos[0];
+        const float dy = eye.y - fxRecords_[i].pos[1];
+        const float dz = eye.z - fxRecords_[i].pos[2];
+        if (dx * dx + dy * dy + dz * dz >= range2) continue;   // hors portée -> saute le nœud (@0x698cbb)
+        ts2::gfx::ZoneFx_RenderBillboards(&pool, params);      // Particle_RenderBillboards 0x6a70b0
     }
 
     // Restauration.
@@ -1364,9 +1393,22 @@ void WorldGeometryRenderer::TickWorldAnim(float dt) {
         }
     }
 
-    // Tick des systèmes de particules .WP : le sim complet (Particle_Init 0x6a7020 /
-    // Particle_UpdateEmit 0x6a7530) n'est pas porté -> les billboards restent en pose placée.
-    // TODO ancre 0x694a00 (branche fxbRecords : Particle_Init/UpdateEmit par fxb+28).
+    // FRONT F_ZONEFX — sim des particules .WP : miroir EXACT de la boucle 2 de MapColl_UpdateObjectAnim
+    // @0x694af0 (stride 76) : si le POBJECT est déjà initialisé (flag != 0) -> Particle_UpdateEmit avec
+    // (dt=a3, pos=FxNode+4, rot=FxNode+16) ; sinon -> Particle_Init(POBJECT, template = this+29[nodeIndex]).
+    // dt = a3 du binaire = VRAI delta de frame (call site Scene_InGameUpdate @0x52c94b : a2=15.0, a3=dt).
+    // Frustum d'émission non câblé (nullptr) : le cull Cam_FrustumTestPoint6 est une optimisation
+    // perf/durée-de-vie ; l'omettre garde le visuel à l'écran identique (les émetteurs hors-champ
+    // continuent de simuler — sans effet observable). Ancre : MapColl_UpdateObjectAnim 0x694a00.
+    for (size_t i = 0; i < fxPools_.size(); ++i) {
+        ts2::gfx::FxParticlePool& pool = fxPools_[i];
+        const uint32_t node = fxRecords_[i].nodeIndex;
+        if (pool.flag) {                                        // if(*(v11+v12+28)) @0x694af6
+            ts2::gfx::ZoneFx_UpdateEmit(&pool, dt, fxRecords_[i].pos, fxRecords_[i].rot, nullptr); // @0x694b2e
+        } else if (node < fxTemplates_.size()) {
+            ts2::gfx::ZoneFx_Init(&pool, &fxTemplates_[node]); // template = this+29[nodeIndex] @0x694b13
+        }
+    }
 }
 
 } // namespace ts2::gfx

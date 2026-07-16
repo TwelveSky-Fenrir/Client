@@ -245,7 +245,16 @@
 //     (MeshPart_Render 0x6aeea5), frame = Crt_Dbl2Uint(phase) gate [0, A-1] (Model_RenderParts 0x6a3756).
 //     Le chemin .WO passe de skinné (76o) à FIXED-FUNCTION natif (fidèle au binaire, qui est FF).
 //
-//  RESTES (TODO ancres) : sim complet de particules (Particle_UpdateEmit 0x6a7530) ; eau des 5 zones
+//  MISE À JOUR FRONT F_ZONEFX (2026-07-17) — SIM DE PARTICULES .WP VIVANTE : le billboard statique
+//  dégénéré est remplacé par le vrai moteur « Object A » (Gfx/ZoneFxEmitter.h) — un template 232o par
+//  nœud (Fx_NodeLoadFromHandle 0x6a69f0), un pool POBJECT 48o par instance placée, Init/UpdateEmit
+//  (switch 6 formes) dans TickWorldAnim (boucle 2 de MapColl_UpdateObjectAnim 0x694a00), rendu
+//  Particle_RenderBillboards 0x6a70b0 dans RenderFxBillboards avec cull distance carrée par nœud
+//  (Terrain_Render a5=2 @0x698c81 ; portée Game_GetTierRange 0x5402f0 = 3000 par défaut documenté).
+//  Non porté : chemin keyframe du transform d'émetteur (template+56, piste quaternion) -> matrice de
+//  frame = identité ; cull Cam_FrustumTestPoint6 de l'origine (nullptr, visuel à l'écran identique).
+//
+//  RESTES (TODO ancres) : keyframe d'émetteur .WP (0x6a787d) ; eau des 5 zones
 //  « mixtes » dessinée une fois au lieu de deux (cf. bandeau de renderTerrain dans le .cpp) ; échelle
 //  du bump eau : ancre 0x699206 RÉSOLUE (= a10 = distance de tirage Game_GetTierRange 0x5402f0, très
 //  probablement un bug d'origine) mais volontairement NON reproduite — cf. bindWaterStates() ; cull
@@ -257,6 +266,7 @@
 #include "Gfx/MeshRenderer.h"
 #include "Gfx/Camera.h"
 #include "Gfx/SkyRenderer.h" // ciel dérivé du .ATM réel (cf. MISE À JOUR 2026-07-14 ci-dessus)
+#include "Gfx/ZoneFxEmitter.h" // FRONT F_ZONEFX : moteur de particules « Object A » des .WP (sim VIVANTE)
 #include "Asset/WorldChunk.h" // asset::AuxRecord : type complet requis (membre std::vector direct)
 #include <cstddef>
 #include <vector>
@@ -305,18 +315,21 @@ public:
     // RenderSky() pour pouvoir se placer à la fois avant le décor et après les entités.
     void Render(const Camera& camera, int screenW, int screenH);
 
-    // FRONT W3-F3 — passe FX de zone (.WP) : billboards unlit (Gfx_BeginUnlitPass 0x69e470 ->
-    // Particle_RenderBillboards 0x6a70b0), correspond à Terrain_Render a5=2 @0x698c6d (le point
+    // FRONT W3-F3 / F_ZONEFX — passe FX de zone (.WP) : billboards unlit (Gfx_BeginUnlitPass 0x69e470
+    // -> Particle_RenderBillboards 0x6a70b0), correspond à Terrain_Render a5=2 @0x698c6d (le point
     // d'entrée de rendu .WP EST là — corrige WorldIntegration « point non identifié »). Appelée par
     // Render() APRÈS le terrain et les props .WO (blend actif, depth-write off). Camera-facing via
-    // la matrice vue.
+    // la matrice vue. FRONT F_ZONEFX : dessine désormais le VRAI pool de particules de chaque
+    // émetteur (ZoneFx_RenderBillboards) avec cull distance carrée par nœud (Terrain_Render 0x698c81),
+    // et non plus 1 billboard statique dégénéré.
     void RenderFxBillboards(const Camera& camera);
 
-    // FRONT W3-F3 — tick d'animation du monde (à appeler par SceneManager chaque frame, cf.
-    // MapColl_UpdateObjectAnim 0x694A00, site Scene_InGameUpdate 0x52c94b, kAnimFps=15.0) :
+    // FRONT W3-F3 / F_ZONEFX — tick d'animation du monde (à appeler par SceneManager chaque frame,
+    // cf. MapColl_UpdateObjectAnim 0x694A00, site Scene_InGameUpdate 0x52c94b) :
     //   - wavePhase_ += dt (matrice bump-env eau) ;
     //   - phase de flipbook sway par instance .WO (aux+28 += dt*15, wrap par nb de frames A) ;
-    //   - tick des systèmes de particules .WP (données prêtes ; sim complet = TODO ancre).
+    //   - FRONT F_ZONEFX : sim des particules .WP (boucle 2 de MapColl_UpdateObjectAnim @0x694af0 :
+    //     ZoneFx_Init au 1er passage sinon ZoneFx_UpdateEmit, dt = a3 = vrai delta de frame).
     // SceneManager (non possédé) doit l'appeler ; commentaire d'intégration seulement, pas d'édition.
     void TickWorldAnim(float dt);
 
@@ -341,8 +354,10 @@ public:
     // de faces terrain (3 sommets/face, 120o/face copiés @0x698e21).
     size_t TerrainBatchCount() const { return terrainLayers_.size(); }
     size_t TerrainFaceCount()  const { return terrainFaceCount_; }
-    // Billboards FX de zone (.WP) prêts à dessiner (1 par instance placée à texture résolue).
-    size_t FxBillboardCount()  const { return fxBillboards_.size(); }
+    // Émetteurs FX de zone (.WP) instanciés (1 pool de particules « Object A » par instance placée).
+    size_t FxBillboardCount()  const { return fxPools_.size(); }
+    // Nœuds FX (templates 232o) chargés pour la zone (sanité).
+    size_t FxNodeCount()       const { return fxTemplates_.size(); }
 
 private:
     // FRONT F_TERRAIN (B6, 2026-07-17) — part .WO en FIXED-FUNCTION NATIVE (remplace le chemin
@@ -392,14 +407,10 @@ private:
         uint32_t           materialIndex = 0;       // face.materialIndex@0 -> region matBase_/matCounter_
     };
 
-    // Billboard FX de zone (.WP) — SOUS-ENSEMBLE build-safe de Particle_RenderBillboards 0x6a70b0 :
-    // 1 quad camera-facing par instance placée AuxFxRecord, à sa position, texture du nœud FX.
-    // (Le sim complet de particules — Particle_Init/UpdateEmit + base flt_8001D4..E8 runtime — reste
-    // un TODO ancre, cf. RenderFxBillboards() dans le .cpp.)
-    struct FxBillboard {
-        float              pos[3]  = {0, 0, 0};
-        IDirect3DTexture9* texture = nullptr;  // réf dans fxTextures_ (NON possédée)
-    };
+    // FRONT F_ZONEFX (2026-07-17) — le billboard statique dégénéré est REMPLACÉ par le vrai moteur de
+    // particules « Object A » (Gfx/ZoneFxEmitter.h) : un ts2::gfx::FxEmitterTemplate 232o par nœud FX,
+    // un ts2::gfx::FxParticlePool (POBJECT 48o) par instance placée AuxFxRecord, tickés/rendus par
+    // Particle_Init/UpdateEmit/RenderBillboards 0x6a70xx/0x6a75xx. Voir fxTemplates_/fxPools_ ci-dessous.
 
     void releaseObjects();
     bool uploadPart(const asset::WorldMeshPart& part, StaticObject& out);
@@ -502,9 +513,13 @@ private:
     // Ancre IDA : Terrain_Render @0x698f54 (SetTextureStageState(1,COLOROP,MODULATE=4)) / @0x698f68.
     IDirect3DTexture9*           shadowTex_ = nullptr;
 
-    // FX de zone (.WP) : billboards placés + textures GPU des nœuds FX (POSSÉDÉES).
-    std::vector<FxBillboard>        fxBillboards_;
-    std::vector<IDirect3DTexture9*> fxTextures_; // POSSÉDÉES (une par nœud FX, nullptr si absente)
+    // FX de zone (.WP) — moteur de particules « Object A » VIVANT (FRONT F_ZONEFX). Ancre IDA :
+    // MapColl_LoadObjectsB 0x6983b0 (this+29 templates stride 232, this+32 records B stride 76).
+    std::vector<IDirect3DTexture9*>       fxTextures_;   // POSSÉDÉES (une par nœud FX, nullptr si absente)
+    std::vector<ts2::gfx::FxEmitterTemplate> fxTemplates_; // par nœud FX (this+29) — 232o ; stable (pointé par les pools)
+    std::vector<ts2::gfx::FxParticlePool>    fxPools_;      // par instance placée (FxNode+28) — POBJECT 48o
+    std::vector<asset::AuxFxRecord>          fxRecords_;    // par instance : nodeIndex/pos/rot (FxNode+0/+4/+16)
+    std::vector<ts2::gfx::Billboard_Vertex>  fxScratch_;    // buffer CPU du rendu (dword_800080), réutilisé/frame
 
     bool                         ready_ = false;
 };

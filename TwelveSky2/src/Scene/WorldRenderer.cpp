@@ -25,6 +25,7 @@
 #include "Config/GameOptions.h"   // config::g_Options (g_Opt_ShowHitMarkers/ShowNameplates 0x84DED0/D4) — W9
 #include "Game/StaticNpcLoader.h" // PNJ de decor (mission "PNJ DECOR VISIBLES A L'ECRAN", cf. Render())
 #include "Game/AnimationTick.h"       // ZoneNpc_AnimTickIsWired() / Monster_MotionTickIsWired() / IMotionFrameCountOracle — W7
+#include "Game/PlayerAnimCursorTick.h" // Player_AnimCursorTickIsWired() (curseur joueur) — front F_PLAYERANIM
 #include "Game/EntityLifecycleTick.h" // g_MonsterTickExt (motionState/animFrame par monstre) — W7
 #include "Gfx/MotionCache.h"      // palette d'os animee (miroir g_ModelMotionArray 0x8E8B30) — W3-F1
 #include "Gfx/PlayerPaperdoll.h"  // paperdoll joueur (calque Char_RenderModel 0x527020) — W3-F1
@@ -230,6 +231,15 @@ std::string ReadBodyCString(const std::array<uint8_t, 600>& body, size_t offset,
 const game::IMotionFrameCountOracle& WorldMotionFrameCountOracle() {
     static const MotionFrameCountOracle s_oracle;
     return s_oracle;
+}
+
+// FrameCount du clip courant d'un JOUEUR (front F_PLAYERANIM) — cf. Scene/WorldRenderer.h. Adosse
+// au MEME MotionCache (Motions()) que le dessin : Motion_GetFrameCount 0x4D7830 renvoye par
+// PcModel_ResolveSlotAndApply 0x4E5A00, qui borne le wrap du curseur (Char_TickMoveState @0x574922).
+int WorldPlayerMotionFrameCount(int race, int gender, int weaponType, int animState) {
+    if (const gfx::MotionPalette* mp = Motions().GetForPlayer(race, gender, weaponType, animState))
+        return mp->frameCount; // MotionPalette+4 = Motion_GetData 0x4D78C0 (slot+140), cf. MotionCache.h
+    return 0;                  // slot non resolu -> Player_AdvanceAnimCursor avance sans wrap
 }
 
 // ===========================================================================
@@ -532,9 +542,13 @@ void WorldRenderer::renderPlanarShadows(const std::vector<DrawableEntity>& drawa
             // JOUEUR : paperdoll (pièces corps + arme, palette d'os partagée). Chaque pièce est
             // aplatie séparément -> l'ombre est la composite (cf. Model_RenderPlanarShadow : un
             // SObject_DrawAnimated2 par pièce, chaque appel une silhouette).
+            // front F_PLAYERANIM : animType (etat FSM entity+244) + curseur (entity+248, garde
+            // par hasAnimCursor) -> clip ET cadence reels du joueur (cf. header PlayerPaperdoll).
+            // Passe aussi a la passe d'ombre planaire (silhouette aplatie = MEME anim que le corps).
             gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
                 *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
                 ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                ent.animType, ent.animCursor, ent.hasAnimCursor,
                 game::g_World.gameTimeSec);
             if (!pd.valid) continue; // corps non résolu -> pas d'ombre (pas de cube d'ombre inventé)
             for (const gfx::SkinnedModel* piece : pd.pieces)
@@ -689,9 +703,13 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
             // 2-pièces inline ET l'ancien hack d'arme (wpos = pos.y + scale*0.6). L'arme est
             // désormais une pièce dessinée à la MÊME transformée + MÊME palette que le corps
             // (Char_RenderModel 0x527bfe : arme skinnée au bone de main via v37), pas un offset.
+            // front F_PLAYERANIM : animType (etat FSM entity+244) + curseur (entity+248, garde
+            // par hasAnimCursor) -> clip ET cadence reels du joueur (cf. header PlayerPaperdoll).
+            // Passe aussi a la passe d'ombre planaire (silhouette aplatie = MEME anim que le corps).
             gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
                 *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
                 ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                ent.animType, ent.animCursor, ent.hasAnimCursor,
                 game::g_World.gameTimeSec);
             if (pd.valid) {
                 for (const gfx::SkinnedModel* piece : pd.pieces)
@@ -1165,6 +1183,26 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         ent.bodyGender       = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyGenderOffset));
         ent.bodyCostumeSlot0 = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyCostumeSlot0Offset));
         ent.bodyCostumeSlot1 = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyCostumeSlot1Offset));
+
+        // ANIMATION JOUEUR (front F_PLAYERANIM, 2026-07-17) — MEME patron que monstres/PNJ (cf.
+        // la boucle monstre ci-dessous et renderOne) : animType = etat FSM entity+244
+        // (CharAnimState::state, peuple depuis le reseau Game/EntityManager.cpp:390 = body+220),
+        // qui SELECTIONNE le clip (PcModel_ResolveEquipSlot 0x4E46A0, base + 156*etat). animCursor =
+        // curseur entity+248 (CharAnimState::animFrame), avance par game::Player_AdvanceAnimCursor
+        // (Game/PlayerAnimCursorTick.h) en phase UPDATE (frame += dt*30, wrap par soustraction —
+        // Char_TickMoveState 0x574830 @0x574922). Vaut pour soi (i==0) ET les distants sans
+        // distinction (l'etat vient du meme champ entity+244 pour tous, l'index 0 etant l'alias
+        // g_SelfActionState 0x1687328).
+        //
+        // GARDE DE NON-REGRESSION (blocker recon, cf. game::Player_AnimCursorTickIsWired) : tant que
+        // MAIN n'appelle pas Player_AdvanceAnimCursor par frame (Scene/SceneManager.cpp,
+        // host.UpdateEntityAnimFrame — cf. rapport de front / integrationForMain), le curseur reste 0
+        // et hasAnimCursor=false -> repli SampleByGameTime (clip CORRECT via animType, mais horloge
+        // globale). On ne consomme SampleByCursor(animFrame) QUE si le curseur est reellement avance,
+        // sinon on figerait TOUS les joueurs a la frame 0 (strictement pire que l'idle en phase).
+        ent.animType      = p.anim.state;                       // entity+244, selecteur de clip (reseau)
+        ent.animCursor    = p.anim.animFrame;                   // entity+248, curseur reel (avance en UPDATE)
+        ent.hasAnimCursor = game::Player_AnimCursorTickIsWired();
         // reflectionEligible reste false (défaut) : Char_DrawReflection 0x581090 n'est JAMAIS
         // appelée sur g_EntityArray dans le binaire d'origine (appelant unique @0x52DB09, dans
         // la boucle monstre) -> câbler drawReflectionOverlay() ICI serait une invention.

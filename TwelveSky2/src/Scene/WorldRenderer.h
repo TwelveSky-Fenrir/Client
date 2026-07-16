@@ -359,6 +359,20 @@ namespace world { class WorldAssets; }
 // avancent sans jamais reboucler (degradation propre, cf. Game/AnimationTick.h).
 const game::IMotionFrameCountOracle& WorldMotionFrameCountOracle();
 
+// Nombre de frames du CLIP COURANT d'un JOUEUR (front F_PLAYERANIM, 2026-07-17) — miroir de
+// Motion_GetFrameCount 0x4D7830 retourne par PcModel_ResolveSlotAndApply 0x4E5A00, qui borne le
+// wrap du curseur (Char_TickMoveState 0x574830 @0x574922). Adosse au MEME MotionCache (Motions())
+// que le dessin : le frameCount du wrap == frameCount de la palette echantillonnee (fidelite —
+// sinon wrap et rendu divergeraient). weaponType laisse a 0 par l'appelant (a8 = switch ~500 cas
+// non reverse, TODO ancre 0x4E46A0). Renvoie 0 si le slot ne resout pas (fichier absent / borne
+// depassee) -> game::Player_AdvanceAnimCursor avance alors sans wrap (duree inconnue, degradation
+// propre). Il n'existe PAS de methode "joueur" sur IMotionFrameCountOracle (interface non
+// possedee) : d'ou cet accesseur libre dedie, seul point d'entree pour l'avance de curseur joueur
+// de Game/PlayerAnimCursorTick.h qui vit hors de la couche gfx.
+// A CABLER (hors de mes fichiers) : Scene/SceneManager.cpp l'appelle en UPDATE pour fournir le
+// frameCount a game::Player_AdvanceAnimCursor (cf. rapport de front, integrationForMain).
+int WorldPlayerMotionFrameCount(int race, int gender, int weaponType, int animState);
+
 // WorldRenderer — dessine chaque frame InGame le contenu de game::g_World
 // (joueurs + monstres + npcs, cf. bandeau) : corps (modèle ou placeholder)
 // + nameplate. Un seul MeshRenderer/Font est partagé entre toutes les entités de
@@ -513,10 +527,17 @@ private:
         //                @0x57ffa0, arg 3 de Model_GetNpcMeshSlot).
         //   animCursor = slot monstre +28 (Char_Draw @0x580828, animTime de SObject_DrawEx) /
         //                slot PNJ +16 (Npc_DrawMesh @0x57fff1, idem).
-        // hasAnimCursor=false -> repli SampleByGameTime (JOUEURS : leur curseur réel dépend du
-        // switch terminal 0x5727BF non porté, cf. Gfx/MotionCache.h). Sources C++ :
-        // game::g_MonsterTickExt[i] (monstres, .motionState/.animFrame) / g_World.npcRenderEntries[i]
-        // (PNJ de décor, champs natifs .mode/.frameAcc -- pool unique W7, cf. Game/AnimationTick.h §6).
+        // hasAnimCursor=false -> repli SampleByGameTime (clip correct via animType, cadence
+        // horloge globale). Sources C++ par famille d'entité :
+        //   MONSTRES     : game::g_MonsterTickExt[i] (.motionState = slot+24 / .animFrame = slot+28) ;
+        //   PNJ DE DÉCOR : g_World.npcRenderEntries[i] (.mode = slot+12 / .frameAcc = slot+16,
+        //                  pool unique W7, cf. Game/AnimationTick.h §6) ;
+        //   JOUEURS      : CharAnimState p.anim.state (entity+244, sélecteur de clip, réseau) /
+        //                  p.anim.animFrame (entity+248, curseur avancé par
+        //                  game::Player_AdvanceAnimCursor — front F_PLAYERANIM, Game/PlayerAnimCursorTick.h).
+        // hasAnimCursor = game::Monster_MotionTickIsWired / ZoneNpc_AnimTickIsWired /
+        // Player_AnimCursorTickIsWired selon la famille (garde anti-régression : n'active
+        // SampleByCursor que si le tick de curseur correspondant a réellement tourné).
         int   animType      = 0;
         float animCursor    = 0.0f;
         bool  hasAnimCursor = false;

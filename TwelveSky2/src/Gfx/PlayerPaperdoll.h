@@ -39,11 +39,25 @@ struct PaperdollResult {
 
 // Resolveur SANS etat (refs passees a l'appel) — evite d'ajouter un membre a WorldRenderer.h
 // (NON editable). Calque sur Char_RenderModel 0x527020.
+//
+// ANIMATION VIVANTE (front F_PLAYERANIM, 2026-07-17) — params ajoutes :
+//   animState     = etat FSM entity+244 = CharAnimState::state (peuple depuis le reseau,
+//                   Game/EntityManager.cpp:390 = body+220). SELECTEUR de clip : passe TEL QUEL a
+//                   PcModel_ResolveEquipSlot 0x4E46A0 (base + 156*etat), remplace l'ancien 0 fige.
+//   animCursor    = curseur entity+248 = CharAnimState::animFrame, avance par
+//                   game::Player_AdvanceAnimCursor (Game/PlayerAnimCursorTick.h) en phase UPDATE.
+//   hasAnimCursor = game::Player_AnimCursorTickIsWired() : true UNIQUEMENT si le curseur est
+//                   reellement avance (garde anti-regression, cf. .cpp) -> SampleByCursor ; sinon
+//                   repli SampleByGameTime (clip correct via animState, cadence horloge globale).
+// Meme patron exact que monstres/PNJ (Scene/WorldRenderer.cpp renderOne : animType toujours
+// passe, seul le SampleByCursor vs SampleByGameTime est garde par hasAnimCursor).
 class PlayerPaperdoll {
 public:
     static PaperdollResult Resolve(ModelCache& models, MotionCache& motions,
                                    int race, int gender, int costume0, int costume1,
-                                   uint32_t weaponItemId, float gameTimeSec);
+                                   uint32_t weaponItemId,
+                                   int animState, float animCursor, bool hasAnimCursor,
+                                   float gameTimeSec);
 };
 
 } // namespace ts2::gfx

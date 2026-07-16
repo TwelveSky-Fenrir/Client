@@ -10,6 +10,8 @@
 #include "Scene/WorldRenderer.h"
 #include "Gfx/WorldGeometryRenderer.h" // géométrie statique .WO (distinct de WorldRenderer=entités)
 #include "Gfx/GxdRenderer.h"           // GXD_RenderPostBlur 0x4053E0 (bloom, câblé en fin de rendu InGame)
+#include "Game/PlayerAnimCursorTick.h" // Player_AdvanceAnimCursor (avance curseur anim joueur, switch 0x5727BF)
+#include <cstring>                     // std::memcpy (lecture race/genre depuis PlayerEntity::body)
 #include "World/WorldIntegration.h"    // world::WorldAssets (charge réellement Z%03d.WO)
 #include "World/WorldMap.h"            // world::WorldMap::LoadZoneResource / ZoneIdToFileId
 #include "Audio/AudioSystem.h"        // audio::BgmChannel (slot BGM de scène, cSceneMgr +612)
@@ -1138,6 +1140,19 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
                                              isSelf, isSelf,
                                              false /* pendingCastInterrupt: TODO g_AutoHuntFuelA/B non traces */,
                                              dt, nullptr, nullptr, animHost, result);
+
+            // front F_PLAYERANIM : avance du curseur d'animation joueur (entity+248, field 62) =
+            // idiome UNIVERSEL du switch terminal 0x5727BF (frame += dt*30 puis wrap par SOUSTRACTION,
+            // Char_TickMoveState 0x574922), que la version C++ de Char_UpdateAnimationFrame ne fait pas
+            // (stateHandler nul). frameCount du clip courant via l'oracle adossé au MÊME MotionCache que
+            // le dessin ; race/genre = body+68/+72 (MÊME source que WorldRenderer), weaponType 0 (a8 de
+            // PcModel_ResolveEquipSlot 0x4E46A0, switch ~500 cas non reversé). Player_AdvanceAnimCursor
+            // arme lui-même le latch IsWired -> pas de figement (dégradation propre si non appelé).
+            int animRace = 0, animGender = 0;
+            std::memcpy(&animRace,   p.body.data() + 68, sizeof(animRace));
+            std::memcpy(&animGender, p.body.data() + 72, sizeof(animGender));
+            const int animFrameCount = ts2::WorldPlayerMotionFrameCount(animRace, animGender, 0, p.anim.state);
+            game::Player_AdvanceAnimCursor(p.anim, dt, animFrameCount);
 
             if (isSelf && result.contactFiredThisTick) {
                 uint8_t payload[76] = {};
