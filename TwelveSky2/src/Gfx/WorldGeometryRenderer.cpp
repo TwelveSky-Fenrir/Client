@@ -29,6 +29,10 @@ static_assert(kFvfTerrain == 0x212, "FVF terrain doit valoir 530 (0x212)");
 // Ancre IDA : Gfx_BeginUnlitPass 0x69e470 SetFVF(322).
 constexpr DWORD kFvfBillboard = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1; // 0x142
 static_assert(kFvfBillboard == 0x142, "FVF billboard doit valoir 322 (0x142)");
+// FVF fixed-function des parts .WO (MobjVertex 32o) : 0x112 = 274 = D3DFVF_XYZ|NORMAL|TEX1.
+// Ancre IDA : Model_RenderParts 0x6a3720 SetFVF(274) @0x6a377f (stride 32, cf. MeshPart_Render 0x6aeea5).
+constexpr DWORD kFvfWo = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX1; // 0x112
+static_assert(kFvfWo == 0x112, "FVF .WO doit valoir 274 (0x112)");
 
 // ---------------------------------------------------------------------------------------------
 //  RANGS DE DESSIN DU TERRAIN — liste EXACTE des couches que Terrain_Render 0x698670 dessine.
@@ -165,29 +169,89 @@ constexpr size_t kMobjVertexStride = 32;
 // Stride disque d'un index (INDEX16, 3 index/face = 6 o/face).
 constexpr size_t kIndexStride = 2;
 
-// Convertit un vertex MOBJECT disque (32 o : pos12+normal12+uv8, PAS de poids/os) vers le
-// GpuSkinVertex 76 o de MeshRenderer (cf. bandeau du .h, point 4) : poids (1,0,0,0), os 0
-// (repli palette identité de meshRenderer_), tangent/binormal à zéro (jamais lus par le VS).
-GpuSkinVertex ConvertMobjVertex(const uint8_t* src) {
-    GpuSkinVertex v{};
-    std::memcpy(v.position, src + 0, 12);
-    v.blendWeight[0] = 1.0f;
-    v.blendWeight[1] = v.blendWeight[2] = v.blendWeight[3] = 0.0f;
-    v.blendIndices = 0; // 4 index empaquetés (D3DCOLOR) = os 0 pour les 4 influences
-    v.tangent[0] = v.tangent[1] = v.tangent[2] = 0.0f;
-    v.binormal[0] = v.binormal[1] = v.binormal[2] = 0.0f;
-    std::memcpy(v.normal, src + 12, 12);
-    std::memcpy(v.texcoord, src + 24, 8);
-    return v;
+// FVF terrain -> FfTerrainVertex 40o : le vertex disque asset::TerrainVertex (pos/normal/uv0/uv1)
+// est BIT-À-BIT identique -> aucune conversion, copie directe (memcpy dans le batch de cull).
+static_assert(sizeof(asset::TerrainVertex) == 40, "TerrainVertex disque = 40o (memcpy direct FF)");
+
+// =============================================================================================
+//  FRONT F_TERRAIN (B5) — CULL QUADTREE/FRUSTUM DU TERRAIN (helpers de rendu, LECTURE SEULE).
+//  Reproduction byte-exacte des 3 primitives de cull du binaire (vérifiées en IDA le 2026-07-17) :
+//    Cam_FrustumTestAABB      0x69f230  (rejet AABB ssi les 8 coins derrière UN même plan)
+//    Cam_FrustumTestSphere2x  0x69f0e0  (sphère : plane·c + d >= -2*rayon, marge DOUBLÉE)
+//    MapColl_CollectLeafFaces 0x694b50  (descente quadtree frustum-cull -> feuilles visibles)
+//  Les 6 plans du frustum sont stockés par l'original à g_GfxRenderer+334 (offsets +334..+357,
+//  cf. décompilation Cam_FrustumTestSphere2x). ClientSource ne dispose pas de ce singleton : on
+//  les RECONSTRUIT depuis view*proj (Gribb-Hartmann), ce qui donne les MÊMES plans (repère monde,
+//  normales rentrantes, dedans <=> a*x+b*y+c*z+d >= 0). Plans NORMALISÉS : la marge -2*rayon du
+//  test sphère est en unités monde, donc le facteur d'échelle DOIT être unitaire.
+// =============================================================================================
+struct FrustumPlanes { float pl[6][4]; }; // [plan][a,b,c,d] ; g_GfxRenderer+(334+4*p)
+
+// Extrait les 6 plans (rentrants, normalisés) depuis vp = view*proj (D3DX row-vector, LH D3D z€[0,w]).
+FrustumPlanes ExtractFrustum(const D3DXMATRIX& vp) {
+    FrustumPlanes f;
+    // col j (0-based) composante i = vp._{i+1}{j+1}. Gauche=col3+col0, Droite=col3-col0,
+    // Bas=col3+col1, Haut=col3-col1, Proche=col2 (z>=0 en D3D), Loin=col3-col2.
+    f.pl[0][0]=vp._14+vp._11; f.pl[0][1]=vp._24+vp._21; f.pl[0][2]=vp._34+vp._31; f.pl[0][3]=vp._44+vp._41; // gauche
+    f.pl[1][0]=vp._14-vp._11; f.pl[1][1]=vp._24-vp._21; f.pl[1][2]=vp._34-vp._31; f.pl[1][3]=vp._44-vp._41; // droite
+    f.pl[2][0]=vp._14+vp._12; f.pl[2][1]=vp._24+vp._22; f.pl[2][2]=vp._34+vp._32; f.pl[2][3]=vp._44+vp._42; // bas
+    f.pl[3][0]=vp._14-vp._12; f.pl[3][1]=vp._24-vp._22; f.pl[3][2]=vp._34-vp._32; f.pl[3][3]=vp._44-vp._42; // haut
+    f.pl[4][0]=vp._13;        f.pl[4][1]=vp._23;        f.pl[4][2]=vp._33;        f.pl[4][3]=vp._43;        // proche
+    f.pl[5][0]=vp._14-vp._13; f.pl[5][1]=vp._24-vp._23; f.pl[5][2]=vp._34-vp._33; f.pl[5][3]=vp._44-vp._43; // loin
+    for (int p = 0; p < 6; ++p) {
+        const float len = std::sqrt(f.pl[p][0]*f.pl[p][0] + f.pl[p][1]*f.pl[p][1] + f.pl[p][2]*f.pl[p][2]);
+        if (len > 1e-8f) { const float inv = 1.0f / len; for (int k = 0; k < 4; ++k) f.pl[p][k] *= inv; }
+    }
+    return f;
 }
 
-// Contrainte INDEX16 : au plus 65536 sommets adressables par lot. On borne les lots terrain à
-// 65535 sommets = 21845 faces (3 sommets/face, 65535 % 3 == 0) pour rester dans DrawIndexedPrimitive.
-constexpr uint32_t kTerrainMaxVertsPerBatch = 65535u; // 21845 faces * 3
+// Cam_FrustumTestAABB 0x69f230 : renvoie false (rejet) SSI, pour UN plan, les 8 coins de [mn,mx] ont
+// tous plane·coin + d < 0 (boîte entièrement derrière ce plan). Conservateur (jamais de faux rejet).
+bool FrustumTestAABB(const FrustumPlanes& fr, const float mn[3], const float mx[3]) {
+    for (int p = 0; p < 6; ++p) {
+        const float a = fr.pl[p][0], b = fr.pl[p][1], c = fr.pl[p][2], d = fr.pl[p][3];
+        bool allOut = true;
+        for (int ci = 0; ci < 8; ++ci) {                       // 8 coins {mn|mx}^3
+            const float x = (ci & 1) ? mx[0] : mn[0];
+            const float y = (ci & 2) ? mx[1] : mn[1];
+            const float z = (ci & 4) ? mx[2] : mn[2];
+            if (a * x + b * y + c * z + d >= 0.0f) { allOut = false; break; } // ce coin est du bon côté
+        }
+        if (allOut) return false;                              // 8 coins derrière -> rejet du sous-arbre
+    }
+    return true;                                               // intersection/dedans -> gardé
+}
 
-// FVF terrain -> FfTerrainVertex 40o : le vertex disque asset::TerrainVertex (pos/normal/uv0/uv1)
-// est BIT-À-BIT identique -> aucune conversion, copie directe (memcpy dans buildTerrain).
-static_assert(sizeof(asset::TerrainVertex) == 40, "TerrainVertex disque = 40o (memcpy direct FF)");
+// Cam_FrustumTestSphere2x 0x69f0e0 : sphère (centre, rayon) gardée SSI plane·c + d >= -2*rayon pour
+// les 6 plans (marge DOUBLÉE @0x69f0ee `v4 = a3 * -2.0`).
+bool FrustumTestSphere2x(const FrustumPlanes& fr, const float c[3], float radius) {
+    const float v4 = radius * -2.0f;                           // 0x69f0ee
+    for (int p = 0; p < 6; ++p)
+        if (fr.pl[p][0]*c[0] + fr.pl[p][1]*c[1] + fr.pl[p][2]*c[2] + fr.pl[p][3] < v4) return false; // 0x69f21a
+    return true;
+}
+
+// MapColl_CollectLeafFaces 0x694b50 : descente récursive du quadtree, collecte des feuilles dont
+// l'AABB intersecte le frustum. Byte-exact : garde trisNum>0 (node+24 @0x694b65), test AABB
+// (@0x694b7d, break/return sur rejet -> sous-arbre pruné), feuille = child[0]==-1 (@0x694b93 -> append
+// @0x694bed), sinon récursion child[0..2] (@0x694b98/@0x694baa/@0x694bbc) + boucle-tail child[3]
+// (@0x694bc7). Racine = nœud d'index 0. `out` = indices des nœuds feuilles visibles (a1+152).
+void CollectLeaves(const std::vector<asset::CollisionQuadNode>& nodes, const FrustumPlanes& fr,
+                   int nodeIdx, std::vector<int32_t>& out) {
+    if (nodeIdx < 0 || static_cast<size_t>(nodeIdx) >= nodes.size()) return;
+    if (nodes[nodeIdx].trisNum == 0) return;                    // *(node+24)==0 -> nœud vide  0x694b65
+    for (;;) {
+        const asset::CollisionQuadNode& n = nodes[nodeIdx];
+        if (!FrustumTestAABB(fr, n.bboxMin, n.bboxMax)) return; // hors frustum -> tout pruné  0x694b7d
+        if (n.child[0] == -1) { out.push_back(nodeIdx); return; } // FEUILLE  0x694b93 / append 0x694bed
+        CollectLeaves(nodes, fr, n.child[0], out);              // 0x694b98
+        CollectLeaves(nodes, fr, n.child[1], out);              // 0x694baa
+        CollectLeaves(nodes, fr, n.child[2], out);              // 0x694bbc
+        nodeIdx = n.child[3];                                   // boucle-tail  0x694bc7
+        if (nodeIdx < 0 || static_cast<size_t>(nodeIdx) >= nodes.size()) return;
+        if (nodes[nodeIdx].trisNum == 0) return;                // while *(child3+24)!=0  0x694b7d
+    }
+}
 
 } // namespace
 
@@ -220,9 +284,9 @@ void WorldGeometryRenderer::Shutdown() {
 }
 
 void WorldGeometryRenderer::releaseObjects() {
+    // B6 : chaque StaticObject possède un VB natif (A frames), un IB et sa texture diffuse.
     for (StaticObject& obj : objects_) {
-        for (SkinnedLod& lod : obj.mesh.lods) { SafeRelease(lod.vb); SafeRelease(lod.ib); }
-        SafeRelease(obj.mesh.diffuse);
+        SafeRelease(obj.vb); SafeRelease(obj.ib); SafeRelease(obj.diffuse);
     }
     objects_.clear();
     modelRanges_.clear();
@@ -240,8 +304,7 @@ void WorldGeometryRenderer::releaseObjects() {
 // Libère les VB/IB des couches terrain, les textures diffuses (possédées), les textures d'eau
 // procédurales et la lightmap.
 void WorldGeometryRenderer::releaseTerrain() {
-    for (TerrainLayer& l : terrainLayers_)
-        for (FfLod& lod : l.lods) { SafeRelease(lod.vb); SafeRelease(lod.ib); }
+    // B5 : les couches ne possèdent plus de VB/IB statique (le batch est CPU -> DrawPrimitiveUP).
     terrainLayers_.clear();
     for (IDirect3DTexture9*& t : terrainTextures_) SafeRelease(t);
     terrainTextures_.clear();
@@ -249,6 +312,16 @@ void WorldGeometryRenderer::releaseTerrain() {
     SafeRelease(shadowTex_);
     wavePhase_ = 0.0f;
     terrainFaceCount_ = 0;
+    // État du cull quadtree/frustum (B5).
+    terrainFaces_.clear();
+    terrainNodes_.clear();
+    terrainTriIndices_.clear();
+    terrainBatch_.clear();
+    matBase_.clear();
+    matCounter_.clear();
+    faceSeen_.clear();
+    terrainLeafScratch_.clear();
+    terrainNumMaterials_ = 0;
 }
 
 // Libère les textures GPU des nœuds FX de zone (.WP) et vide la liste de billboards.
@@ -323,68 +396,53 @@ bool WorldGeometryRenderer::uploadPart(const asset::WorldMeshPart& part, StaticO
     if (part.A == 0 || part.B == 0 || part.D == 0) return false; // aucune frame/sommet/face
 
     // Layout du bloc géométrie décodé (Asset/WorldChunk.cpp::ReadMeshPart) :
-    //   [136 o en-tête][64*A o bones (ignorés, cf. bandeau ci-dessus)][32*A*B o VB
-    //   = A frames consécutives de B sommets][6*D o IB, partagé par toutes les frames]
-    const size_t boneBytes       = 64ull * part.A;
-    const size_t vbOffset        = kGeoHeaderSize + boneBytes;      // début de la frame 0
-    const size_t vbFrameBytes    = kMobjVertexStride * static_cast<size_t>(part.B); // 1 frame
-    const size_t vbAllFramesBytes = vbFrameBytes * part.A;          // A frames sur le disque
-    const size_t ibOffset        = vbOffset + vbAllFramesBytes;
-    const size_t ibBytes         = 3ull * kIndexStride * part.D;
+    //   [136 o en-tête][64*A o bones (métadonnée sway, non lue au rendu)][32*A*B o VB = A frames
+    //   consécutives de B sommets 32o][6*D o IB, PARTAGÉ par toutes les frames (topologie fixe)]
+    const size_t boneBytes        = 64ull * part.A;
+    const size_t vbOffset         = kGeoHeaderSize + boneBytes;               // début de la frame 0
+    const size_t vbAllFramesBytes = kMobjVertexStride * static_cast<size_t>(part.B) * part.A; // 32*A*B
+    const size_t ibOffset         = vbOffset + vbAllFramesBytes;
+    const size_t ibBytes          = 3ull * kIndexStride * part.D;             // 6*D
     if (part.geo.size() < ibOffset + ibBytes) {
         TS2_WARN("WorldGeometryRenderer: part incoherente (geo=%zu < attendu=%zu)",
                  part.geo.size(), ibOffset + ibBytes);
         return false;
     }
-    // CONFIRMED ex-VeryOldClient: MOBJECTINFO::mFrame (A copies de B sommets = flipbook de sway).
-    // TODO terrain WO (sway non rejoué) : seule la frame 0 est uploadée, pas le vrai balancement au
-    // vent -> voir SPEC TS2_WORLD_ROSETTA.md §3 G09 ; ancre IDA : MeshPart_Render 0x6aed60
-    // (SetStreamSource(0, vb, 32*frame*B, 32), frame = Crt_Dbl2Uint(animPhase) borné [0, A-1]).
-    if (part.A > 1) ++multiAnchorStaticCount_; // rendu en pose figee (frame 0), pas de sway
 
-    // VB : on ne charge QUE la frame 0 (pose statique — pas de vrai balancement au vent, cf.
-    // bandeau ci-dessus), conversion MOBJECT(32o) -> GpuSkinVertex(76o) via ConvertMobjVertex.
-    std::vector<GpuSkinVertex> verts(part.B);
-    const uint8_t* vbSrc = part.geo.data() + vbOffset; // la frame 0 commence exactement ici
-    for (uint32_t i = 0; i < part.B; ++i)
-        verts[i] = ConvertMobjVertex(vbSrc + static_cast<size_t>(i) * kMobjVertexStride);
-
-    SkinnedLod lod;
-    lod.vertexCount = part.B;
-    lod.faceCount   = part.D;
-
-    const UINT vbTotal = static_cast<UINT>(verts.size() * sizeof(GpuSkinVertex));
-    HRESULT hr = dev_->CreateVertexBuffer(vbTotal, 0, 0, D3DPOOL_MANAGED, &lod.vb, nullptr);
+    // B6 (2026-07-17) — REJEU DU SWAY : on uploade DÉSORMAIS les A frames contiguës TELLES QUELLES en
+    // 32o natif (MobjVertex, FVF 0x112), miroir de MeshPart_Load 0x6ad169 (`qmemcpy 32*A*B`). La frame
+    // est sélectionnée au dessin par SetStreamSource(0, vb, 32*frame*B, 32) (MeshPart_Render 0x6aeea5)
+    // -> plus de conversion 76o ni de pose figée frame 0. L'IB (6*D o) est partagé par toutes les
+    // frames (topologie identique, seules positions/normales changent, cf. bandeau .h point 5).
+    const UINT vbBytes = static_cast<UINT>(vbAllFramesBytes);
+    HRESULT hr = dev_->CreateVertexBuffer(vbBytes, 0, kFvfWo, D3DPOOL_MANAGED, &out.vb, nullptr);
     if (FAILED(hr)) {
-        TS2_ERR("WorldGeometryRenderer: CreateVertexBuffer echoue (0x%08lX)", hr);
+        TS2_ERR("WorldGeometryRenderer: CreateVertexBuffer (.WO) echoue (0x%08lX)", hr);
         return false;
     }
     void* p = nullptr;
-    if (SUCCEEDED(lod.vb->Lock(0, vbTotal, &p, 0))) {
-        std::memcpy(p, verts.data(), vbTotal);
-        lod.vb->Unlock();
+    if (SUCCEEDED(out.vb->Lock(0, vbBytes, &p, 0))) {
+        std::memcpy(p, part.geo.data() + vbOffset, vbBytes); // A frames brutes (aucune conversion)
+        out.vb->Unlock();
     }
 
     const UINT ibTotal = static_cast<UINT>(ibBytes);
-    hr = dev_->CreateIndexBuffer(ibTotal, 0, D3DFMT_INDEX16, D3DPOOL_MANAGED, &lod.ib, nullptr);
+    hr = dev_->CreateIndexBuffer(ibTotal, 0, D3DFMT_INDEX16, D3DPOOL_MANAGED, &out.ib, nullptr);
     if (FAILED(hr)) {
-        TS2_ERR("WorldGeometryRenderer: CreateIndexBuffer echoue (0x%08lX)", hr);
-        SafeRelease(lod.vb);
+        TS2_ERR("WorldGeometryRenderer: CreateIndexBuffer (.WO) echoue (0x%08lX)", hr);
+        SafeRelease(out.vb);
         return false;
     }
-    if (SUCCEEDED(lod.ib->Lock(0, ibTotal, &p, 0))) {
+    if (SUCCEEDED(out.ib->Lock(0, ibTotal, &p, 0))) {
         std::memcpy(p, part.geo.data() + ibOffset, ibTotal);
-        lod.ib->Unlock();
+        out.ib->Unlock();
     }
 
-    out.mesh.lods.clear();
-    out.mesh.lods.push_back(lod);
-    // tex1 seul (diffuse). TODO terrain WO (matériaux secondaires) : tex2/materials[] parsés mais
-    // ignorés (forcé opaque) -> voir SPEC TS2_WORLD_ROSETTA.md §3 G09 ; ancre IDA :
-    // MeshPart_Load 0x6ad160 (tex1@296 / tex2@348 / materials@404).
-    out.mesh.diffuse   = createTextureFromBlock(dev_, part.tex1);
-    out.mesh.blendMode = 0; // opaque par defaut (blendMode reel non expose par WorldMeshPart)
-    out.mesh.empty     = false;
+    out.A = part.A; out.B = part.B; out.D = part.D;
+    // tex1 seul (diffuse). TODO .WO (matériaux secondaires) : tex2/materials[] parsés mais ignorés
+    // -> voir SPEC TS2_WORLD_ROSETTA.md §3 G09 ; ancre IDA : MeshPart_Load 0x6ad160 (tex1@296).
+    out.diffuse = createTextureFromBlock(dev_, part.tex1);
+    if (part.A > 1) ++multiAnchorStaticCount_; // A>1 = flipbook de sway (désormais REJOUÉ, cf. B6)
     return true;
 }
 
@@ -521,12 +579,13 @@ bool WorldGeometryRenderer::Build(const world::WorldAssets& assets) {
 //    - a1+16  = matériaux (stride 52) : +40 CATÉGORIE (trailer[0]), +44 subOrder (trailer[1]),
 //               +48 texture (rempli par Tex_LoadCompressedFromHandle 0x6a9cf0) ;
 //    - SetFVF(530) @0x698e6d, DrawPrimitiveUP(TRIANGLELIST, count, VB+120*start, stride 40).
-//  Ici : GROUPE les faces par matériau -> une TerrainLayer(diffuse, category, subOrder) par matériau,
-//  TRIÉES par rang (catégorie, subOrder) pour reproduire l'ordre de dessin de Terrain_Render(a5=1).
-//  Sommets FfTerrainVertex 40o (= asset::TerrainVertex bit-à-bit, uv0=diffuse stage0, uv1=lightmap
-//  stage1) uploadés par memcpy. Crée aussi les textures d'eau procédurales (si une couche cat==3
-//  existe, fidèle @0x698043) et la lightmap .SHADOW. Le cull quadtree/frustum par frame reste un
-//  TODO perf (on dessine tout — correct, non optimisé).
+//  Ici : une TerrainLayer(diffuse, category, subOrder, materialIndex) par matériau dessiné, TRIÉE par
+//  rang pour reproduire l'ordre de dessin de Terrain_Render(a5=1). FRONT F_TERRAIN (B5) : la couche
+//  ne porte PLUS de VB/IB statique — le rendu est un CULL quadtree/frustum PAR FRAME (cullTerrain())
+//  qui remplit un batch CPU (terrainBatch_, 3 sommets/face) puis DrawPrimitiveUP par matériau,
+//  EXACTEMENT comme le binaire. buildTerrain se limite donc à : textures par matériau, COPIE du
+//  quadtree/faces/heap d'index (a1+88/a1+140), bases de batch cumulées (matBase_), textures d'eau
+//  (falloff, cat==3) et lightmap .SHADOW. Sommets = asset::TerrainVertex bit-à-bit FfTerrainVertex 40o.
 // ===========================================================================
 bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
     // releaseObjects() (appelé par Build avant nous) a déjà purgé terrainLayers_/terrainTextures_.
@@ -549,90 +608,73 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
     for (uint32_t m = 0; m < numMat && m < wg->textures.size(); ++m)
         terrainTextures_[m] = createTextureFromBlock(dev_, wg->textures[m]);
 
-    // 2) Regroupe les sommets FF 40o par materialIndex (face.materialIndex@0). Chaque face fournit
-    //    3 TerrainVertex (v0/v1/v2) copiés tels quels (memcpy — layout identique à FfTerrainVertex).
-    std::vector<std::vector<FfTerrainVertex>> perMat(numMat);
-    size_t outOfRange = 0;
-    for (const asset::CollisionFace& f : mesh.tris) {
-        const uint32_t m = f.materialIndex;
-        if (m >= numMat) { ++outOfRange; continue; } // materialIndex hors bornes -> ignoré
-        std::vector<FfTerrainVertex>& dst = perMat[m];
-        FfTerrainVertex v;
-        std::memcpy(&v, &f.v0, sizeof(FfTerrainVertex)); dst.push_back(v);
-        std::memcpy(&v, &f.v1, sizeof(FfTerrainVertex)); dst.push_back(v);
-        std::memcpy(&v, &f.v2, sizeof(FfTerrainVertex)); dst.push_back(v);
-    }
+    // 2) FRONT F_TERRAIN (B5) — copie CPU des données de cull du .WG (Render() n'a plus accès à
+    //    WorldAssets) : faces 156o (a1+88), quadtree 48o (a1+140, racine = index 0) et heap d'index
+    //    de faces (node.trisIndex = offset dans ce heap). Le quadtree est déjà décodé par
+    //    Asset/WorldChunk.cpp (CollisionMesh::nodes/triIndices, ancre MapColl_LoadFaces 0x694510)
+    //    -> réutilisé tel quel, AUCUN re-décodage nécessaire.
+    terrainNumMaterials_ = numMat;
+    terrainFaces_       = mesh.tris;         // a1+88
+    terrainNodes_       = mesh.nodes;        // a1+140
+    terrainTriIndices_  = mesh.triIndices;   // heap faceRefIndex
 
-    // 3) Une TerrainLayer par matériau (catégorie/subOrder = trailer[0]/trailer[1] de la texture),
-    //    découpée en FfLod <=65535 sommets (INDEX16, index séquentiels comme DrawPrimitiveUP).
-    //    FILTRE (Passe 4/W5) : les couches que Terrain_Render 0x698670 ne dessine par AUCUNE de ses
-    //    boucles (rang < 0, cf. table TerrainLayerRank) sont écartées ICI, avant toute création de
-    //    VB/IB -> supprime la géométrie fantôme ET la mémoire GPU correspondante.
-    size_t totalFaces = 0, failed = 0;
+    // 3) Compte des faces PAR MATÉRIAU -> base cumulée matBase_ (a1+144) : chaque matériau reçoit une
+    //    région contiguë [matBase_[m], matBase_[m]+count[m]) dans le batch, dimensionnée au pire cas
+    //    (toutes ses faces visibles). L'original précalcule ces bases au chargement du .WG.
+    std::vector<uint32_t> faceCountPerMat(numMat, 0);
+    size_t outOfRange = 0;
+    for (const asset::CollisionFace& f : terrainFaces_) {
+        if (f.materialIndex < numMat) ++faceCountPerMat[f.materialIndex];
+        else ++outOfRange;                   // materialIndex hors bornes -> jamais batché
+    }
+    matBase_.assign(numMat, 0);
+    uint32_t cum = 0;
+    for (uint32_t m = 0; m < numMat; ++m) { matBase_[m] = cum; cum += faceCountPerMat[m]; }
+    const uint32_t drawableFaces = cum;      // faces à matériau valide (capacité du batch)
+
+    // 4) Buffers de travail réutilisés chaque frame (alloués UNE FOIS ici) : batch CPU (3 sommets par
+    //    face, a1+164), curseur par matériau (a1+160), flag « face vue cette frame » (a1+156, indexé
+    //    par face), liste de feuilles visibles (a1+152). Reset des trois derniers dans cullTerrain.
+    terrainBatch_.assign(static_cast<size_t>(drawableFaces) * 3, FfTerrainVertex{}); // a1+164
+    matCounter_.assign(numMat, 0);                                                    // a1+160
+    faceSeen_.assign(terrainFaces_.size(), 0);                                        // a1+156
+    terrainLeafScratch_.clear();
+    terrainLeafScratch_.reserve(terrainNodes_.size());                                // a1+152 (borne haute)
+
+    // 5) Une TerrainLayer par matériau PORTANT des faces et effectivement DESSINÉ par le binaire
+    //    (rang >= 0). Les (cat,sub) que Terrain_Render 0x698670 ne dessine par AUCUNE boucle (rang < 0)
+    //    sont écartés ici (géométrie fantôme). Plus de VB/IB : la couche ne fait que référencer sa
+    //    région de batch via `materialIndex` (le batch est rempli par frame et dessiné en DrawPrimitiveUP).
     size_t ghostLayers = 0, ghostFaces = 0;
     bool hasWater = false;
     for (uint32_t m = 0; m < numMat; ++m) {
-        const std::vector<FfTerrainVertex>& verts = perMat[m];
-        if (verts.size() < 3) continue;
-
+        if (faceCountPerMat[m] == 0) continue;
         TerrainLayer layer;
-        layer.diffuse  = terrainTextures_[m]; // réf non-possédante
+        layer.diffuse       = terrainTextures_[m]; // réf non-possédante
         // trailer[0]=catégorie, trailer[1]=subOrder (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0).
-        layer.category = (m < wg->textures.size()) ? wg->textures[m].trailer[0] : 0;
-        layer.subOrder = (m < wg->textures.size()) ? wg->textures[m].trailer[1] : 0;
-        layer.rank     = TerrainLayerRank(layer.category, layer.subOrder);
+        layer.category      = (m < wg->textures.size()) ? wg->textures[m].trailer[0] : 0;
+        layer.subOrder      = (m < wg->textures.size()) ? wg->textures[m].trailer[1] : 0;
+        layer.rank          = TerrainLayerRank(layer.category, layer.subOrder);
+        layer.materialIndex = m;
         if (layer.rank == kRank_NotDrawn) {
-            // Le binaire n'a aucune boucle pour ce (cat,sub) -> ne rien uploader ni dessiner.
-            // Compté et loggé : si ce compteur est != 0 sur des données réelles, c'est le signal
-            // qu'il faut re-vérifier la table des rangs AVANT de conclure (inventaire des 97 .WG
-            // réels = 0 couche écartée, cf. bandeau de TerrainLayerRank).
+            // Le binaire n'a aucune boucle pour ce (cat,sub) : compté/loggé (attendu 0 sur les 97 .WG
+            // réels ; si != 0, re-vérifier TerrainLayerRank AVANT de conclure).
             ++ghostLayers;
-            ghostFaces += verts.size() / 3;
+            ghostFaces += faceCountPerMat[m];
             continue;
         }
         if (layer.category == kTerrainCatWater) hasWater = true;
-
-        for (size_t base = 0; base < verts.size(); base += kTerrainMaxVertsPerBatch) {
-            const UINT vcount = static_cast<UINT>(
-                (std::min)(static_cast<size_t>(kTerrainMaxVertsPerBatch), verts.size() - base));
-            if (vcount < 3) break; // pas un triangle complet
-
-            FfLod lod;
-            lod.vertexCount = vcount;
-            lod.faceCount   = vcount / 3u;
-
-            const UINT vbBytes = vcount * static_cast<UINT>(sizeof(FfTerrainVertex));
-            HRESULT hr = dev_->CreateVertexBuffer(vbBytes, 0, kFvfTerrain, D3DPOOL_MANAGED, &lod.vb, nullptr);
-            if (FAILED(hr)) { TS2_ERR("buildTerrain: CreateVertexBuffer echoue (0x%08lX)", hr); ++failed; continue; }
-            void* p = nullptr;
-            if (SUCCEEDED(lod.vb->Lock(0, vbBytes, &p, 0))) {
-                std::memcpy(p, verts.data() + base, vbBytes);
-                lod.vb->Unlock();
-            }
-
-            const UINT ibBytes = vcount * static_cast<UINT>(kIndexStride); // 1 index u16/sommet
-            hr = dev_->CreateIndexBuffer(ibBytes, 0, D3DFMT_INDEX16, D3DPOOL_MANAGED, &lod.ib, nullptr);
-            if (FAILED(hr)) { TS2_ERR("buildTerrain: CreateIndexBuffer echoue (0x%08lX)", hr); SafeRelease(lod.vb); ++failed; continue; }
-            if (SUCCEEDED(lod.ib->Lock(0, ibBytes, &p, 0))) {
-                uint16_t* idx = static_cast<uint16_t*>(p);
-                for (UINT i = 0; i < vcount; ++i) idx[i] = static_cast<uint16_t>(i);
-                lod.ib->Unlock();
-            }
-
-            totalFaces += lod.faceCount;
-            layer.lods.push_back(lod);
-        }
-        if (!layer.lods.empty()) terrainLayers_.push_back(std::move(layer));
+        terrainLayers_.push_back(layer);
     }
-    terrainFaceCount_ = totalFaces;
+    terrainFaceCount_ = drawableFaces;
 
-    // 4) Tri des couches par rang — reproduit l'ordre EXACT de Terrain_Render : passe a5=1
+    // 6) Tri des couches par rang — reproduit l'ordre EXACT de Terrain_Render : passe a5=1
     //    (rangs 0..5) puis passe a5=2 (rangs 6..7). renderTerrain() s'appuie sur cet ordre
     //    croissant pour n'ouvrir la sous-passe blendée qu'une fois (bascule à sens unique).
     std::stable_sort(terrainLayers_.begin(), terrainLayers_.end(),
                      [](const TerrainLayer& a, const TerrainLayer& b) { return a.rank < b.rank; });
 
-    // 5) Eau (TWS-01/TWS-02) : la texture de FALLOFF radiale (V8U8 256x256) est créée UNE FOIS si une
+    // 7) Eau (TWS-01/TWS-02) : la texture de FALLOFF radiale (V8U8 256x256) est créée UNE FOIS si une
     //    couche cat==3 existe, miroir fidèle de MapColl_LoadMapFile @0x698043 -> MapColl_CreateFalloff
     //    Texture 0x694ca0 (seul écrivain vivant de *(a1+20), le bump-map stage 0). PAS de texture de
     //    vagues : son générateur 0x451220 est mort (cf. bandeau TWS-01 ci-dessus).
@@ -640,20 +682,85 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
         falloffTex_ = MakeFalloffTexture(dev_, kWaterTexDim);
     }
 
-    // 6) Lightmap .SHADOW (stage 1, uv1) — texture GPU depuis les octets DDS bruts exposés par
+    // 8) Lightmap .SHADOW (stage 1, uv1) — texture GPU depuis les octets DDS bruts exposés par
     //    WorldAssets (le vertex FF possède bien uv1 : le TODO G8 « 1 seul TEXCOORD » disparaît).
     shadowTex_ = createTextureFromDds(dev_, assets.ShadowBytes());
 
-    TS2_LOG("WorldGeometryRenderer::buildTerrain (W3-F3) : %zu faces sur %u materiaux -> %zu couches "
-            "FF (%zu hors bornes, %zu lots echec) ; eau=%d (falloff=%p) lightmap=%p ; sol .WG "
-            "pret (FVF 530, world=identite). Cull quadtree/frustum = TODO perf. "
-            "Filtre categories (Terrain_Render 0x698670) : %zu couches / %zu faces ecartees car "
-            "jamais dessinees par le binaire (attendu 0 sur donnees reelles -- si != 0, re-verifier "
-            "la table TerrainLayerRank AVANT de conclure).",
-            totalFaces, numMat, terrainLayers_.size(), outOfRange, failed,
+    TS2_LOG("WorldGeometryRenderer::buildTerrain (B5) : %u faces dessinables sur %u materiaux -> %zu "
+            "couches FF (%zu faces hors bornes) ; quadtree=%zu noeuds / %zu index de faces (cull par "
+            "frame) ; batch CPU=%zu sommets ; eau=%d (falloff=%p) lightmap=%p ; sol .WG pret (FVF 530, "
+            "world=identite). Filtre categories (Terrain_Render 0x698670) : %zu couches / %zu faces "
+            "ecartees car jamais dessinees par le binaire (attendu 0 sur donnees reelles -- si != 0, "
+            "re-verifier la table TerrainLayerRank AVANT de conclure).",
+            drawableFaces, numMat, terrainLayers_.size(), outOfRange,
+            terrainNodes_.size(), terrainTriIndices_.size(), terrainBatch_.size(),
             hasWater ? 1 : 0, (void*)falloffTex_, (void*)shadowTex_,
             ghostLayers, ghostFaces);
     return true;
+}
+
+// ===========================================================================
+//  FRONT F_TERRAIN (B5) — CULL QUADTREE/FRUSTUM DU TERRAIN, PAR FRAME.
+//  Reproduit à l'octet le bloc de collecte/batch de Terrain_Render 0x698670 (passe a5=1,
+//  0x698ce7-0x698e3c), vérifié en IDA (decompile + disasm 0x698d36) le 2026-07-17 :
+//    reset leafCount/faceSeen/matCounter (0x698cf9/0x698cff/0x698d1b) -> descente quadtree
+//    (MapColl_CollectLeafFaces 0x694b50) -> par feuille, par face collectée : anti-doublon
+//    (0x698d8c), backface dot(planeN,eye)>=planeD (0x698dd4, eye=g_CameraPos), sphère marge x2
+//    (Cam_FrustumTestSphere2x 0x69f0e0 @0x698de9), batch 120o groupé par matériau (0x698e21).
+//  Le résultat (terrainBatch_ + matCounter_) est consommé par renderTerrain() en DrawPrimitiveUP.
+//  ⚠ Optimisation CONFORME au binaire : le cull ne retire que des faces NON visibles (hors frustum
+//  ou face arrière) -> mêmes faces visibles à l'écran qu'un dessin plat, en moins de triangles.
+// ===========================================================================
+void WorldGeometryRenderer::cullTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj,
+                                        const D3DXVECTOR3& eye) {
+    if (terrainNodes_.empty() || terrainFaces_.empty() || matBase_.empty()) return;
+
+    // 6 plans du frustum (repère monde) reconstruits depuis view*proj (cf. ExtractFrustum) :
+    // équivalents à g_GfxRenderer+334 utilisés par Cam_FrustumTestAABB/Sphere2x.
+    D3DXMATRIX vp;
+    D3DXMatrixMultiply(&vp, &view, &proj);
+    const FrustumPlanes fr = ExtractFrustum(vp);
+
+    // Reset des tampons par frame (Terrain_Render 0x698cf9/0x698cff/0x698d1b).
+    std::fill(matCounter_.begin(), matCounter_.end(), 0u);
+    std::fill(faceSeen_.begin(), faceSeen_.end(), static_cast<uint8_t>(0));
+    terrainLeafScratch_.clear();
+
+    // Descente quadtree frustum-cull depuis la racine (nœud 0) -> feuilles visibles.
+    CollectLeaves(terrainNodes_, fr, 0, terrainLeafScratch_); // MapColl_CollectLeafFaces((a1),0) 0x698d27
+
+    // Par feuille, par face référencée (Terrain_Render 0x698d36-0x698e3c).
+    for (int leafIdx : terrainLeafScratch_) {
+        if (leafIdx < 0 || static_cast<size_t>(leafIdx) >= terrainNodes_.size()) continue;
+        const asset::CollisionQuadNode& node = terrainNodes_[leafIdx];
+        const uint32_t refBase  = node.trisIndex; // offset dans terrainTriIndices_ (node+28 à l'origine)
+        const uint32_t refCount = node.trisNum;   // node+24
+        if (static_cast<size_t>(refBase) + refCount > terrainTriIndices_.size()) continue; // garde OOB
+        for (uint32_t k = 0; k < refCount; ++k) {
+            const uint32_t faceIdx = terrainTriIndices_[refBase + k];         // node.faceRefIndex[k] 0x698d7a
+            if (faceIdx >= faceSeen_.size()) continue;
+            if (faceSeen_[faceIdx]) continue;                                 // anti-doublon 0x698d8c
+            faceSeen_[faceIdx] = 1;                                           // 0x698d98
+            const asset::CollisionFace& face = terrainFaces_[faceIdx];
+
+            // (2) BACKFACE : dot(planeN, eye) < planeD -> face à l'opposé de l'œil -> skip. 0x698dd4
+            //     eye = g_CameraPos ; planeN = face.plane[0..2] ; planeD = face.plane[3].
+            const float dotp = eye.x * face.plane[0] + eye.y * face.plane[1] + eye.z * face.plane[2];
+            if (dotp < face.plane[3]) continue;
+
+            // (3) FRUSTUM SPHÈRE (marge x2). 0x698de9
+            if (!FrustumTestSphere2x(fr, face.sphereCenter, face.sphereRadius)) continue;
+
+            // (4) BATCH : copie 120o (3 sommets = &face.v0) groupé par matériau. 0x698e21
+            const uint32_t m = face.materialIndex;                           // face+0  0x698dfe
+            if (m >= terrainNumMaterials_) continue;                          // materialIndex hors bornes
+            const uint32_t slot  = matBase_[m] + matCounter_[m];             // base[m] + curseur[m]
+            const size_t   vbase = static_cast<size_t>(slot) * 3;            // 3 sommets/face
+            if (vbase + 3 > terrainBatch_.size()) continue;                  // garde (capacité)
+            std::memcpy(&terrainBatch_[vbase], &face.v0, sizeof(FfTerrainVertex) * 3); // 0x78 = 120o
+            ++matCounter_[m];                                                // 0x698e30
+        }
+    }
 }
 
 // ===========================================================================
@@ -747,9 +854,11 @@ void WorldGeometryRenderer::RenderSky(int screenW, int screenH) {
 //  le binaire ne dessine par aucune boucle) n'existent plus : buildTerrain les écarte avant tout
 //  upload GPU.
 //
-//  TODO perf (non implémenté) : cull quadtree + frustum par frame — MapColl_CollectLeafFaces
-//  0x694b50 + backface @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0. Ici on dessine TOUTES les
-//  couches (correct, non optimisé).
+//  MISE À JOUR FRONT F_TERRAIN (B5, 2026-07-17) — CULL QUADTREE/FRUSTUM PAR FRAME FAIT : cullTerrain()
+//  (appelée en tête de renderTerrain) remplit terrainBatch_/matCounter_ avec les seules faces visibles
+//  via MapColl_CollectLeafFaces 0x694b50 + backface @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0. Le
+//  dessin par couche est passé de DrawIndexedPrimitive (VB statique, toutes faces) à DrawPrimitiveUP
+//  (batch CPU, faces visibles) — miroir exact de Terrain_Render @0x698ff3. Mêmes faces visibles.
 //
 //  ÉCART CONNU, ASSUMÉ (eau dessinée une seule fois par couche) : les 3 boucles eau du binaire
 //  testent `cat==3` SEUL, chacune gatée par l'existence d'un cat3/sub{0,1,2}. Si une zone possède
@@ -760,8 +869,13 @@ void WorldGeometryRenderer::RenderSky(int screenW, int screenH) {
 //  5 zones mixtes (Z118/Z175/Z201/Z267/Z279) où le binaire double le dessin. Écart de 2e ordre,
 //  limité à ces 5 zones ; le corriger exigerait de dissocier « gate » et « boucle » (hors mission).
 // ===========================================================================
-void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj) {
+void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj,
+                                          const D3DXVECTOR3& eye) {
     if (!ready_ || terrainLayers_.empty()) return;
+
+    // FRONT F_TERRAIN (B5) — CULL QUADTREE/FRUSTUM D'ABORD : remplit terrainBatch_ + matCounter_ avec
+    // les seules faces visibles de cette frame (Terrain_Render collecte AVANT de dessiner, 0x698ce7).
+    cullTerrain(view, proj, eye);
 
     // Sauvegarde des états qu'on modifie (device partagé avec meshRenderer_).
     DWORD prevCull = D3DCULL_CCW, prevLighting = TRUE, prevAlphaTest = FALSE,
@@ -911,11 +1025,18 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
         if (water) bindWaterStates(layer.diffuse);
         else       dev_->SetTexture(0, layer.diffuse);
 
-        for (const FfLod& lod : layer.lods) {
-            if (!lod.vb || !lod.ib) continue;
-            dev_->SetStreamSource(0, lod.vb, 0, sizeof(FfTerrainVertex));
-            dev_->SetIndices(lod.ib);
-            dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, lod.vertexCount, 0, lod.faceCount);
+        // B5 — dessin du batch de la frame pour ce matériau : DrawPrimitiveUP(TRIANGLELIST,
+        // matCounter_[m] triangles, &terrainBatch_[3*matBase_[m]], stride 40). Miroir exact de
+        // Terrain_Render @0x698ff3 (device vtbl+332). matCounter_[m] == 0 -> matériau hors frustum
+        // cette frame (rien à dessiner). PrimitiveCount = nb de faces visibles du matériau.
+        const uint32_t m     = layer.materialIndex;
+        const uint32_t count = (m < matCounter_.size()) ? matCounter_[m] : 0;
+        if (count > 0 && m < matBase_.size()) {
+            const size_t vbase = static_cast<size_t>(matBase_[m]) * 3;
+            if (vbase < terrainBatch_.size()) {
+                dev_->DrawPrimitiveUP(D3DPT_TRIANGLELIST, count,
+                                      &terrainBatch_[vbase], sizeof(FfTerrainVertex));
+            }
         }
         if (water) unbindWaterStates();
     }
@@ -1004,10 +1125,12 @@ void WorldGeometryRenderer::unbindWaterStates() {
 //
 //  Gap G1 IMPLÉMENTÉ (2026-07-16) : le terrain .WG (WorldAssets::Faces()) est désormais dessiné
 //  par renderTerrain() (ancre IDA : Terrain_Render 0x698670, SetFVF 530 = XYZ|NORMAL|TEX2,
-//  world=identité, sommets 40o groupés par materialIndex, texture diffuse par matériau). Les
-//  objets .WO ne flottent plus sans sol. Restes documentés dans renderTerrain() (TODO précis) :
-//    - Cull quadtree/frustum par frame (perf) : MapColl_CollectLeafFaces 0x694b50 + backface
-//      @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0 (ici : dessine tout, correct/non optimisé).
+//  world=identité, sommets 40o groupés par materialIndex, texture diffuse par matériau).
+//  FRONT F_TERRAIN (B5, 2026-07-17) : le cull quadtree/frustum PAR FRAME est FAIT (cullTerrain() :
+//  MapColl_CollectLeafFaces 0x694b50 + backface @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0 ->
+//  batch CPU par matériau -> DrawPrimitiveUP @0x698ff3) ; mêmes faces visibles, moins de triangles.
+//  FRONT F_TERRAIN (B6, 2026-07-17) : les props .WO rejouent leur SWAY (renderObjects(), swap de
+//  frame par offset de stream). Les objets .WO ne flottent plus sans sol.
 //  G6 eau (catégorie 3, bump-env) et G8 lightmap .SHADOW (stage 1, uv1) sont désormais FAITS dans
 //  ce front (cf. bindWaterStates() @0x699206 : bump-map = falloff MapColl_CreateFalloffTexture
 //  0x694ca0 ; lightmap stage 1 MODULATE @0x698f54/@0x698f68) : la catégorie vient de
@@ -1018,57 +1141,118 @@ void WorldGeometryRenderer::unbindWaterStates() {
 
 void WorldGeometryRenderer::Render(const Camera& camera, int screenW, int screenH) {
     if (!ready_) return;
-    // BUG CORRIGÉ (audit 2026-07-14) : SkyRenderer::Render() pose SetVertexShader(nullptr)/
-    // SetPixelShader(nullptr) directement sur le device PARTAGÉ avec meshRenderer_. Or
-    // MeshRenderer::DrawSkinnedSubset() évite les re-bind VS/PS redondants via un cache
-    // purement local (currentPass_) qui ignore ces pokes externes : sans cette invalidation,
-    // dès la 2e frame le cache croit encore le VS/PS skinné bindé (valeur laissée par la
-    // frame précédente) et NE LES REBIND PLUS après le quad ciel -- tous les objets .WO se
-    // dessineraient alors sans aucun shader (silencieusement, DrawIndexedPrimitive sans VS/PS
-    // liés). Cf. Gfx/MeshRenderer.h::InvalidateShaderBindingCache().
+    // Depuis B5/B6, le terrain ET les props .WO passent par un chemin FIXED-FUNCTION natif (plus de
+    // DrawSkinnedSubset) : meshRenderer_ n'est plus utilisé pour dessiner. On conserve néanmoins cet
+    // appel (no-op défensif) pour garder cohérent le cache VS/PS de meshRenderer_ vis-à-vis des pokes
+    // SetVertexShader(nullptr)/SetPixelShader(nullptr) posés par SkyRenderer::Render() sur le device
+    // partagé (cf. Gfx/MeshRenderer.h::InvalidateShaderBindingCache()) — sûr si un futur chemin skinné
+    // réapparaît.
     meshRenderer_.InvalidateShaderBindingCache();
 
-    // Caméra : partagée par le sol (G1) et les props .WO. Posée AVANT renderTerrain() pour que
-    // le terrain utilise la même vue/projection (ancre IDA : Gfx_InitDevice/GXD_BeginScene).
+    // Caméra : partagée par le sol (B5) et les props .WO. view/proj + œil monde (backface du cull
+    // terrain, = g_CameraPos dans l'original, ancre 0x698dd4).
     D3DXMATRIX view, proj;
     camera.BuildViewMatrix(view);
     const float aspect = (screenH > 0)
         ? static_cast<float>(screenW) / static_cast<float>(screenH)
         : 1.0f;
     camera.BuildProjMatrix(proj, aspect);
-    meshRenderer_.SetCamera(view, proj);
+    const D3DXVECTOR3 eye = camera.Eye();
 
     // FRONT W3-F3 : le SOL .WG d'abord (fidèle à Scene_InGameRender : terrain avant props). FF, avec
-    // les MÊMES view/proj que les props. Dessiné même sans objet .WO dans la zone.
-    renderTerrain(view, proj);
+    // les MÊMES view/proj que les props. Dessiné même sans objet .WO dans la zone. B5 : cull par frame.
+    renderTerrain(view, proj, eye);
 
-    if (objects_.empty() || instances_.empty()) {
-        RenderFxBillboards(camera); // FX de zone même sans .WO (torches/feux/cascades)
-        return;                     // pas de props .WO : le sol + FX suffisent
-    }
-
-    // Boucle plate (chaque instance dessinée). CONFIRMED ex-VeryOldClient: RecursionForDraw
-    // (descente + cull). TODO terrain WO (perf/visuel) : l'original cull par distance + alpha-fade
-    // les .WO lointains -> voir SPEC TS2_WORLD_ROSETTA.md §3 G09 ; ancres IDA : Terrain_Render
-    // 0x698670 (distance-cull/fade) + Model_RenderWithShadow_0 0x6a4110 (frustum/part). Écart perf,
-    // PAS de placement erroné (ne pas implémenter ici — jalon compilé dédié).
-    const BonePalette noPalette{}; // invalide -> repli palette identite (1 os) de meshRenderer_.
-    for (const asset::AuxRecord& inst : instances_) {
-        if (inst.modelIndex >= modelRanges_.size()) continue; // modelIndex corrompu, cf. log Build()
-        const ModelRange& range = modelRanges_[inst.modelIndex];
-        if (range.count == 0) continue; // gabarit sans part uploadee (absent ou A>1 partout)
-
-        const D3DXMATRIX world = BuildInstanceWorldMatrix(inst);
-        for (size_t i = 0; i < range.count; ++i) {
-            const StaticObject& obj = objects_[range.start + i];
-            if (obj.mesh.empty || obj.mesh.lods.empty()) continue;
-            meshRenderer_.DrawSkinnedSubset(obj.mesh, 0, world, noPalette);
-        }
-    }
+    // FRONT F_TERRAIN (B6) : props .WO avec REJEU DU SWAY (frame par instance via l'offset de stream).
+    renderObjects(view, proj);
 
     // FRONT W3-F3 : FX de zone .WP APRÈS les props (passe a5=2 @0x698c6d : blend actif, depth-write
     // off). C'est le point d'entrée de rendu .WP réel (corrige WorldIntegration « non identifié »).
     RenderFxBillboards(camera);
+}
+
+// ===========================================================================
+//  FRONT F_TERRAIN (B6) — dessin des props .WO en FIXED-FUNCTION natif, AVEC REJEU DU SWAY.
+//  Reproduit Model_RenderParts 0x6a3720 + MeshPart_Render 0x6aed60 (vérifiés en IDA 2026-07-17) :
+//    - FVF 274 = 0x112 (XYZ|NORMAL|TEX1, stride 32) : SetFVF(274) @0x6a377f ;
+//    - matrice monde PAR INSTANCE = Rz*Ry*Rx*T (SetTransform(256,m) @0x6a3892) ;
+//    - frame = Crt_Dbl2Uint(animPhase) @0x6a3739, GATE [0, A-1] avec A = MeshPart[0]+252 @0x6a3756 ;
+//    - SWAP : SetStreamSource(0, vb, 32*frame*B, 32) @0x6aeea5 (B = a1[64]/+256) ; SetIndices(+292)
+//      @0x6aeedc ; DrawIndexedPrimitive(TRIANGLELIST, 0,0, B, 0, D) @0x6aef00 (D = a1[66]/+264).
+//  Le VB porte les A frames contiguës (uploadPart) : changer de frame = décaler l'offset, sans
+//  ré-upload. animPhase est avancé par TickWorldAnim (déjà appelé par SceneManager, wrap [0,A)).
+//
+//  ÉCARTS ASSUMÉS (build-safe, documentés) :
+//   - Rendu FF UNLIT, diffuse tex1 seule (comme le chemin terrain) : la sélection texture/état par
+//     part (a1[85]/+340 type, a1[101]/+404 matériaux, passes opaque/alpha de Model_RenderParts) et
+//     l'éclairage matériel de l'original ne sont pas reproduits (déjà TODO avant ce front). Seul le
+//     REJEU DE FRAME (objet de B6) est ajouté ; le placement/geométrie est inchangé.
+//   - CULLMODE=NONE : le binaire hérite du cull matériel du device (winding MOBJ non re-vérifié ici)
+//     -> NONE garantit que les props restent visibles (pas de régression), au prix d'un léger overdraw.
+//   - Cull distance + fondu alpha des .WO lointains (Terrain_Render 0x69977c/0x69979f, via
+//     Model_RenderWithShadow_0 0x6a4110) : NON reproduit ici (les valeurs a9/a10/a11 du site d'appel
+//     Scene_InGameRender ne sont pas disponibles en statique — cf. TS2_EXTRACT_TERRAIN_CULL.md §10).
+//     TODO ancre 0x698670 (boucles a1+108) : à câbler quand a10/a11 seront dumpés au runtime.
+// ===========================================================================
+void WorldGeometryRenderer::renderObjects(const D3DXMATRIX& view, const D3DXMATRIX& proj) {
+    if (!ready_ || objects_.empty() || instances_.empty()) return;
+
+    // Sauvegarde des états modifiés (device partagé).
+    DWORD prevLighting = TRUE, prevCull = D3DCULL_CCW;
+    dev_->GetRenderState(D3DRS_LIGHTING, &prevLighting);
+    dev_->GetRenderState(D3DRS_CULLMODE, &prevCull);
+
+    dev_->SetVertexShader(nullptr);
+    dev_->SetPixelShader(nullptr);
+    dev_->SetFVF(kFvfWo);                                 // 274 (0x112) @0x6a377f
+    dev_->SetTransform(D3DTS_VIEW, &view);
+    dev_->SetTransform(D3DTS_PROJECTION, &proj);
+    dev_->SetRenderState(D3DRS_LIGHTING, FALSE);          // FF unlit (texture diffuse pure)
+    dev_->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);   // build-safe (cf. bandeau)
+    // Stage 0 : diffuse = texture (SELECTARG1), sur uv0.
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP,  D3DTOP_SELECTARG1);
+    dev_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,  D3DTOP_SELECTARG1);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+
+    for (size_t idx = 0; idx < instances_.size(); ++idx) {
+        const asset::AuxRecord& inst = instances_[idx];
+        if (inst.modelIndex >= modelRanges_.size()) continue; // modelIndex corrompu, cf. log Build()
+        const ModelRange& range = modelRanges_[inst.modelIndex];
+        if (range.count == 0) continue;                       // gabarit sans part uploadée
+
+        // frame = Crt_Dbl2Uint(animPhase), gate [0, A-1] (Model_RenderParts 0x6a3739/0x6a3756).
+        // instancePhase_ est wrap [0,A) par TickWorldAnim -> Dbl2Uint (troncature vers 0) donne [0,A-1].
+        const uint32_t A     = (idx < instanceFrameCount_.size() && instanceFrameCount_[idx] > 0)
+                                   ? instanceFrameCount_[idx] : 1u;
+        const float    phase = (idx < instancePhase_.size()) ? instancePhase_[idx] : 0.0f;
+        uint32_t frame = (phase > 0.0f) ? static_cast<uint32_t>(phase) : 0u; // Crt_Dbl2Uint (troncature)
+        if (frame > A - 1) frame = A - 1;                     // gate (borne haute)
+
+        const D3DXMATRIX world = BuildInstanceWorldMatrix(inst);
+        dev_->SetTransform(D3DTS_WORLD, &world);              // SetTransform(256, m) vtbl+176 @0x6a3892
+
+        for (size_t i = 0; i < range.count; ++i) {
+            const StaticObject& obj = objects_[range.start + i];
+            if (!obj.vb || !obj.ib || obj.B == 0 || obj.D == 0) continue;
+            // Borne défensive : si A n'est pas uniforme entre parts, ne pas dépasser le VB de la part
+            // (l'original suppose A uniforme et ne re-borne pas -> lecture OOB possible ; on la garde).
+            const uint32_t pf = (frame < obj.A) ? frame : (obj.A - 1);
+            dev_->SetTexture(0, obj.diffuse);
+            // SWAP DE FRAME : offset stream = 32*frame*B (MeshPart_Render 0x6aeea5), stride 32.
+            dev_->SetStreamSource(0, obj.vb, 32u * pf * obj.B, 32u);
+            dev_->SetIndices(obj.ib);                                                   // vtbl+416 @0x6aeedc
+            dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, obj.B, 0, obj.D);       // vtbl+328 @0x6aef00
+        }
+    }
+
+    // Restauration.
+    dev_->SetTexture(0, nullptr);
+    dev_->SetRenderState(D3DRS_LIGHTING, prevLighting);
+    dev_->SetRenderState(D3DRS_CULLMODE, prevCull);
+    meshRenderer_.InvalidateShaderBindingCache();
 }
 
 // ===========================================================================
@@ -1163,9 +1347,9 @@ void WorldGeometryRenderer::TickWorldAnim(float dt) {
     wavePhase_ += dt;
 
     // Sway .WO : phase de flipbook par instance (aux+28 += dt*fps ; wrap par nb de frames A du
-    // gabarit). Ancre IDA : MapColl_UpdateObjectAnim @0x694a30/@0x694a4a. Donnée d'état prête ; la
-    // SÉLECTION de la frame au GPU (SetStreamSource(0, vb, 32*frame*B, stride)) reste un TODO ancre
-    // MeshPart_Render 0x6aed60 (uploadPart n'uploade que la frame 0 -> pose statique).
+    // gabarit). Ancre IDA : MapColl_UpdateObjectAnim @0x694a30/@0x694a4a. B6 (2026-07-17) : la phase
+    // est désormais CONSOMMÉE au dessin par renderObjects() -> frame = Crt_Dbl2Uint(instancePhase_[i])
+    // -> SetStreamSource(0, vb, 32*frame*B, 32) (MeshPart_Render 0x6aeea5). Plus de pose figée.
     constexpr float kAnimFps = 15.0f;
     if (instancePhase_.size() != instances_.size())
         instancePhase_.assign(instances_.size(), 0.0f);

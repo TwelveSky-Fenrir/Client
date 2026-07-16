@@ -255,6 +255,16 @@ public:
                   const D3DXVECTOR3& ambient,
                   const D3DXVECTOR3& diffuse);
 
+    // ----- Accès pour la passe d'OMBRE PLANAIRE (couche Scene) — additif F_ENTITY3D ------
+    // Direction de projection d'ombre = cache flt_18C53C0/C4/C8, dérivé de la lumière par
+    // GXD_SetupStencilShadowState 0x404F20 @0x404F26..0x404F62. La couche Scene interroge le
+    // plan-sol (WorldAssets::GetGroundPlaneForShadow) avec CETTE direction, exactement la même
+    // que DrawModelPlanarShadow injecte (négée) dans D3DXMatrixShadow -> cohérence pick/projection.
+    const D3DXVECTOR3& ShadowLightDir() const { return shadowLightDir_; }
+    // Couleur diffuse de la lumière (light+4 = this+1124/1128/1132) : SOURCE de l'alpha du
+    // TEXTUREFACTOR d'ombre (GXD_SetupStencilShadowState @0x405027..0x40507F : (r+g+b)/3 ×128 <<24).
+    const D3DXVECTOR3& LightDiffuse() const { return lightDiffuse_; }
+
     // Model_Render 0x40EBB0 : compose world = Scale*RotZ*RotY*RotX*Translate
     // (angles Euler en degrés) puis dessine tous les meshes au LOD demandé.
     //
@@ -329,6 +339,32 @@ public:
                          const D3DXVECTOR3&  scale,
                          const BonePalette&  palette,
                          float               boundRadius);
+
+    // Model_RenderPlanarShadow 0x40F720 — VRAIE ombre planaire projetée (chaîne VIVANTE [B],
+    // atteinte depuis Scene_InGameRender 0x52D0B0 via SObject_DrawAnimated2 0x4D91C0 ;
+    // DISTINCTE de la chaîne 0x40EEE0 morte que reproduit DrawModelShadow ci-dessus).
+    // Aplatit le mesh skinné sur le plan sol via j_D3DXMatrixShadow @0x40FB28, en PASSE 5 =
+    // VS09 (g_GxdSh09_VS 0x1945B18, via ShaderSet) + PixelShader NULL ; la couleur est écrite
+    // par le TEXTUREFACTOR/TSS du bracket d'états (GXD_SetupStencilShadowState 0x404F20), posé
+    // par la couche Scene AUTOUR des appels.
+    //   `groundShadowPlane` = {a, b, c, -d-0.1} DÉJÀ PRÊT — c'est collision::GroundPlane::shadowPlane
+    //     (v45 de 0x40F720 @0x40FACE..0x40FAFC), calculé par la couche Scene depuis la géométrie de
+    //     collision du monde. Le renderer Gfx REÇOIT le plan, il NE le calcule PAS (interdit de
+    //     dépendre de World ici).
+    //   La direction de lumière vient du membre shadowLightDir_ (négée -> light4 {−dir,0} =
+    //     lumière directionnelle, v38..v41 @0x40FB08..0x40FB24).
+    //   LOD B7 par distance NON implémenté À DESSEIN : le fondu v37 de 0x40F720 sature à 1.0
+    //     (fogNear/fogFar = 999999/1000000) -> LOD 0 systématique ; lod=0 est DÉJÀ fidèle
+    //     (cf. Scene/WorldRenderer.h §LOD). On dessine mesh.lods[0] (comme DrawModel lod=0), donc
+    //     la silhouette d'ombre = exactement la géométrie du corps.
+    //   No-op propre si aucun ShaderSet réel (VS09 absent du HLSL reconstruit) ou modèle vide :
+    //     l'ombre n'est pas dessinée plutôt qu'un rendu infidèle.
+    void DrawModelPlanarShadow(const SkinnedModel& model,
+                               const D3DXVECTOR3&  position,
+                               const D3DXVECTOR3&  rotationDeg,
+                               const D3DXVECTOR3&  scale,
+                               const BonePalette&  palette,
+                               const float         groundShadowPlane[4]);
 
     // BUG CORRIGÉ (audit 2026-07-14, cf. Gfx/WorldGeometryRenderer.cpp::Render()) :
     // DrawSkinnedSubset() évite les re-bind VS/PS redondants via `currentPass_`, un

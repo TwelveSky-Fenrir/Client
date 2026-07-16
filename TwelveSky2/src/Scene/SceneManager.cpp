@@ -479,6 +479,12 @@ void SceneManager::Change(Scene s) {
     if (s == Scene::InGame && world_ && !worldReady_ && renderer_) {
         worldReady_ = world_->Init(*renderer_, screenW_, screenH_);
         if (!worldReady_) TS2_WARN("WorldRenderer::Init a echoue (rendu monde indisponible).");
+        // (F_ENTITY3D B8) Source du plan-sol de l'ombre planaire (Model_RenderPlanarShadow 0x40F720,
+        // plan récupéré via Collision_SegPickA 0x420D60) : WorldRenderer interroge
+        // worldAssets_->GetGroundPlaneForShadow par entité. Même membre/durée de vie que le host
+        // GetGroundHeight (worldAssets_ construit une seule fois en Init L388, détruit au Shutdown
+        // AVEC world_ L403/409) -> aucun dangling. Sans ce câblage, la passe d'ombre est un no-op propre.
+        if (worldReady_ && worldAssets_) world_->SetCollisionSource(worldAssets_.get());
     }
     // Géométrie de monde statique (.WO) : chargement UNE SEULE FOIS à l'entrée en InGame,
     // pour le zoneId courant (game::g_World.zoneId). Pas de rechargement au changement de

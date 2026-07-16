@@ -281,38 +281,38 @@
 //      c'est INVSRCALPHA(6). Et le fondu v37 de 0x40F720, avec fogNear=999999/fogFar=1000000,
 //      sature TOUJOURS à 1.0 -> LOD 0 systématique.)
 //
-//     ÉTAT DU CÂBLAGE (assumé, et volontairement NON étendu par ce front) :
+//     ÉTAT DU CÂBLAGE — MISE À JOUR front F_ENTITY3D / branchement B8 (ombre planaire RÉELLE) :
 //       * showShadow -> toujours PAS de volume stencil : [A] est mort, cf. ci-dessus.
-//       * showReflection -> drawReflectionOverlay() reste RÉSERVÉ AUX MONSTRES
-//         (`reflectionEligible`, posé true seulement dans la boucle monstre de Render()).
-//         Le nom « reflet » est conservé côté C++ pour ne pas diverger de l'IDB, mais il
-//         désigne en réalité l'ombre planaire du monstre.
-//         ÉCART DE FIDÉLITÉ ASSUMÉ ET EXPLICITE : drawReflectionOverlay() redessine le
-//         modèle À LA MÊME TRANSFORMÉE, sans l'aplatissement D3DXMatrixShadow et sans le
-//         bracket d'états — ce n'est donc PAS encore l'ombre planaire du binaire, c'est
-//         une approximation. Reproduire [B] fidèlement exige le PLAN DU SOL issu de
-//         Collision_SegPickA 0x420D60 (géométrie de collision du monde), qui n'existe pas
-//         encore côté ClientSource et est HORS des fichiers possédés par ce front.
-//         -> TODO [ancres 0x40F720 + 0x420D60 + bracket 0x52D9DC/0x52DB15] : implémenter
-//            l'ombre planaire réelle (aplatissement + bracket + VS09) quand la source du
-//            plan sol existera ; étendre alors aux joueurs et PNJ, pas seulement aux
-//            monstres. Ne PAS « allumer » un aplatissement avec un plan sol inventé
-//            (y=constante) : ce serait une invention, pas de la fidélité.
-//         [DÉCISION ORCHESTRATEUR] Retirer purement drawReflectionOverlay() en attendant
-//            (au motif qu'il ne correspond à rien d'exact) est un CHANGEMENT VISUEL :
-//            laissé en place tel quel, non tranché unilatéralement par ce front.
-//       * PNJ — `Npc_DrawMeshGlow` 0x5801D0 : toujours NON câblé, mais pour la raison
-//         déjà en place (pas de source de données de rendu PNJ côté ClientSource :
-//         `g_NpcRenderArray` stride 88 est un tableau SÉPARÉ de `dword_17AB534` stride 152
-//         qui alimente game::NpcEntity), PAS parce que ce serait « un glow hors périmètre » :
-//         c'est en fait l'ombre planaire du PNJ (cf. [B]).
-//       * [NON VÉRIFIÉ] Sémantique exacte du champ +0xDC qui garde le méga-switch de
-//         Char_DrawWeaponEffectVariantB 0x56BF90 (fonction de 11 Ko, non décompilée ici) :
-//         il détermine QUELS SObjects attachés du joueur projettent une ombre. Ne pas
-//         supposer que la boucle joueur du bracket ombre le corps entier sans condition.
-//       * [NON VÉRIFIÉ] Valeur du STENCILREF pendant le bracket : jamais posée par 0x404F20
-//         -> héritée (probablement 0 par défaut D3D9). À dumper en dynamique le jour où [B]
-//         sera implémentée.
+//       * OMBRE PLANAIRE [B] -> DÉSORMAIS IMPLÉMENTÉE (ce front). La source du plan sol existe
+//         maintenant (Vague B4 : WorldAssets::GetGroundPlaneForShadow 0x40F720 -> collision::
+//         GroundPlane, via Collision_SegPickA 0x420D60). Le rendu vit dans une passe DÉDIÉE
+//         WorldRenderer::renderPlanarShadows() : bracket d'états ouvert UNE fois (Begin/End =
+//         GXD_Setup/EndStencilShadowState 0x404F20/0x4050D0), plan-sol interrogé par entité,
+//         aplatissement + VS09 dans gfx::MeshRenderer::DrawModelPlanarShadow (D3DXMatrixShadow
+//         @0x40FB28, PASSE 5, PS NULL). ÉTENDUE AUX 3 CATÉGORIES du bracket : JOUEURS (@0x52DA41,
+//         paperdoll aplati pièce par pièce), MONSTRES (@0x52DB09), PNJ DE DÉCOR (@0x52DAA2, via
+//         game::ZoneNpcs() = équivalent client-source de g_NpcRenderArray). L'ancienne
+//         approximation drawReflectionOverlay() (monstres seuls, sans aplatissement ni bracket)
+//         est SUPPRIMÉE. Repli propre si le plan ne résout pas OU si SetCollisionSource() n'a pas
+//         été posée (aucun dessin, aucun plan y=constante inventé). `reflectionEligible` n'est
+//         plus lu (la garde de visibilité showReflection est ré-évaluée dans la passe d'ombre).
+//         CÂBLAGE MAIN REQUIS : WorldRenderer::SetCollisionSource(worldAssets_) depuis
+//         Scene/SceneManager.cpp (cf. rapport de front). Sans lui, la passe est un no-op propre.
+//       * B7 — LOD d'ombre par distance : NON implémenté À DESSEIN. Le fondu v37 de 0x40F720
+//         sature à 1.0 (fogNear/fogFar = 999999/1000000) -> LOD 0 systématique ; lod=0 est DÉJÀ
+//         fidèle (cf. §LOD ci-dessus). L'activer serait infidèle.
+//       * [NON VÉRIFIÉ / APPROXIMATION DOCUMENTÉE] Gate de visibilité de l'ombre JOUEUR/PNJ : on
+//         réutilise showReflection (active && dist(self)<=300 && near-cull), PROUVÉ pour l'ombre
+//         MONSTRE (Char_DrawReflection). Le gate exact des ombres joueur (champ +0xDC, méga-switch
+//         11 Ko de Char_DrawWeaponEffectVariantB 0x56BF90 non décompilé) et PNJ n'est pas reversé
+//         -> approximation assumée, pas une invention de seuil.
+//       * [NON VÉRIFIÉ] Hauteur de modèle (a2) : EntityRenderInfo::drawSize reste 0 (non porté) ->
+//         repli kShadowModelHeight (GAP documenté dans WorldRenderer.cpp). Sert uniquement au
+//         segment de pick / maxDist ; le plan trouvé (donc la projection) n'en dépend pas.
+//       * [NON VÉRIFIÉ] STENCILREF pendant le bracket : jamais posé par 0x404F20 -> hérité
+//         (probablement 0 par défaut D3D9) — NON inventé (non posé). Anti-double-blend par
+//         STENCILFUNC=EQUAL/STENCILPASS=INCR : inerte si le depth-stencil n'a pas de bits stencil
+//         (dégradation propre : léger sur-assombrissement aux recouvrements, pas de crash).
 //
 // TODO(fidélité) : PlayerEntity/MonsterEntity (Game/GameState.h) ne portent pas
 // encore le nom/niveau/échelle/angle réels (payload réseau pas entièrement décodé
@@ -325,6 +325,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <windows.h>
 #include <d3d9.h>
@@ -341,6 +342,9 @@
 namespace ts2 {
 
 namespace gfx { class Renderer; }
+// F_ENTITY3D (branchement B8) : source du PLAN-SOL de l'ombre planaire. Forward-declaré ici
+// (pointeur non possédant, membre collisionSource_) ; le .cpp inclut World/WorldIntegration.h.
+namespace world { class WorldAssets; }
 
 // Oracle de nombre de frames d'animation (Passe 4 / vague W7, front motion-anim) — miroir de
 // Model_GetMotionFrameCount 0x4E5A70 (monstre) / Model_GetWeaponEffectFrameCount 0x4E5A40 (PNJ
@@ -390,6 +394,14 @@ public:
     // Référence NON possédante : valide tant que ce WorldRenderer vit (durée de vie scène InGame).
     const gfx::ShaderSet& BloomShaderSet() const { return shaderSet_; }
 
+    // F_ENTITY3D (branchement B8) — source du PLAN-SOL pour l'ombre planaire projetée
+    // (WorldAssets::GetGroundPlaneForShadow 0x40F720). Référence NON possédante, valide tant que
+    // le WorldAssets de la scène InGame vit (même durée de vie que ce WorldRenderer). Tant qu'elle
+    // n'est PAS posée (nullptr), la passe d'ombre planaire est un no-op propre (aucun dessin, aucun
+    // plan inventé). MÊME motif que host.GetGroundHeight : à câbler depuis Scene/SceneManager.cpp
+    // (worldAssets_). Cf. le rapport de front pour le site exact.
+    void SetCollisionSource(const world::WorldAssets* src) { collisionSource_ = src; }
+
 private:
     // -----------------------------------------------------------------------
     // Point d'extension modèle réel — CÂBLÉ sur Gfx/ModelCache (mission
@@ -423,16 +435,6 @@ private:
     // écart de matrice monde entre les deux chemins de dessin).
     void drawPlaceholderCube(const D3DXVECTOR3& pos, float scale, D3DCOLOR color,
                              float rotYDeg, const D3DXMATRIX& view, const D3DXMATRIX& proj);
-
-    // Passe reflet (Char_DrawReflection 0x581090) : MÊME transformée que le corps
-    // (cf. bandeau ci-dessus), redessinée sur le vrai mesh monstre quand il est
-    // résolu. N'est appelée par renderOne() QUE si DrawableEntity::reflectionEligible
-    // est vrai (monstres uniquement, cf. bandeau "VÉRIFICATION APPROFONDIE 2026-07-14") :
-    // cette fonction elle-même ne fait aucune hypothèse de type d'entité, la garde
-    // est posée au site d'appel comme kNpcFarCullDistanceSq.
-    void drawReflectionOverlay(const gfx::SkinnedModel* bodyModel, const D3DXVECTOR3& pos,
-                               float scale, float rotYDeg, const D3DXMATRIX& view,
-                               const D3DXMATRIX& proj);
 
     bool worldToScreen(const D3DXVECTOR3& world, const D3DXMATRIX& viewProj,
                        int& sx, int& sy) const;
@@ -548,6 +550,24 @@ private:
     void renderOne(const DrawableEntity& ent, const game::DrawCullContext& cull,
                   const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXMATRIX& viewProj);
 
+    // =======================================================================
+    // Passe OMBRE PLANAIRE PROJETÉE — Vague B / branchement B8 (front F_ENTITY3D).
+    // Reproduit le bracket d'ombre de Scene_InGameRender 0x52D0B0 (0x52D9DC..0x52DB15) : ouvre
+    // les états d'ombre UNE fois, interroge le plan-sol par entité (collisionSource_->
+    // GetGroundPlaneForShadow 0x40F720) et, si le plan résout, aplatit le corps skinné via
+    // meshRenderer_.DrawModelPlanarShadow ; referme les états. Étendue aux 3 catégories ombrées
+    // par le binaire (JOUEURS @0x52DA41 / MONSTRES @0x52DB09 / PNJ DE DÉCOR @0x52DAA2) — les PNJ
+    // gameplay (bodyMeshEligible=false) n'ont pas de corps -> pas d'ombre. Remplace l'ancienne
+    // approximation drawReflectionOverlay (monstres seuls, sans aplatissement ni bracket).
+    // No-op propre si collisionSource_==nullptr (repli : pas de dessin, pas de plan inventé).
+    void renderPlanarShadows(const std::vector<DrawableEntity>& drawables,
+                             const game::DrawCullContext& cull);
+    // GXD_SetupStencilShadowState 0x404F20 / GXD_EndStencilShadowState 0x4050D0 — états D3D du
+    // bracket (byte-exact, cf. Docs/TS2_EXTRACT_PLANAR_SHADOW.md §3.b/§5). Posés/restaurés UNE
+    // fois autour de la boucle d'ombre. STENCILREF non posé par 0x404F20 -> hérité (non inventé).
+    void beginPlanarShadowBracket();
+    void endPlanarShadowBracket();
+
     // FRONT FX-F4 (M1) : slots shaders REELS du npk GXDEffect (Shader03 VS03_SkinnedLit 0x409AB0
     // + Shader04 PS04_Tex 0x409CC0 + VS15 volume d'ombre 0x40ACB0), charges depuis
     // "./GXDEFFECT/GXDEffect.npk" (cle XTEA {1,4,4,1}, cf. Shader_LoadVS03 0x409AB0 : Npk_OpenFile
@@ -563,6 +583,9 @@ private:
     gfx::MeshRenderer meshRenderer_;
     gfx::Font         font_;
     std::unique_ptr<gfx::ModelCache> modelCache_; // cf. Init() pour le choix de gameDataDir="."
+    // F_ENTITY3D (B8) — source du plan-sol de l'ombre planaire (SetCollisionSource, posée par MAIN
+    // depuis SceneManager). NON possédante. nullptr -> passe d'ombre planaire désactivée (repli propre).
+    const world::WorldAssets* collisionSource_ = nullptr;
     IDirect3DDevice9* device_    = nullptr;
     // hWndParent 0x815184 (fenêtre principale) — nécessaire au ScreenToClient de
     // drawNameplatePass (@0x52FB6C). PAS de nouveau paramètre d'Init() ni de hook à poser

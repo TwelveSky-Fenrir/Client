@@ -21,6 +21,7 @@
 // aurait dupliqué les 5 Scene_RayHit* (0x5415E0/0x541680/0x541780/0x5418B0/0x541920) déjà
 // portés, ou fait inventer un picking (interdit).
 #include "World/TerrainPicker.h"
+#include "World/WorldIntegration.h" // F_ENTITY3D (B8) : world::WorldAssets + collision::GroundPlane (plan-sol ombre)
 #include "Config/GameOptions.h"   // config::g_Options (g_Opt_ShowHitMarkers/ShowNameplates 0x84DED0/D4) — W9
 #include "Game/StaticNpcLoader.h" // PNJ de decor (mission "PNJ DECOR VISIBLES A L'ECRAN", cf. Render())
 #include "Game/AnimationTick.h"       // ZoneNpc_AnimTickIsWired() / Monster_MotionTickIsWired() / IMotionFrameCountOracle — W7
@@ -110,6 +111,15 @@ D3DCOLOR ColorFromNameplateCode(int code) {
 // supplémentaire, un PNJ à >1000 unités du joueur local serait dessiné (cube
 // placeholder) alors que le client d'origine ne le ferait jamais.
 constexpr float kNpcFarCullDistanceSq = 1000.0f * 1000.0f;
+
+// F_ENTITY3D (B8) — hauteur de modèle (a2 de Model_RenderPlanarShadow 0x40F720) servant au
+// segment de pick du plan-sol (start = pos.y + h @0x40F995) et à sa portée (maxDist = h·2.5
+// @0x40FA39). GAP ASSUMÉ, PAS une constante prouvée : la vraie hauteur (bound du SObject) n'est
+// pas portée côté ClientSource (EntityRenderInfo::drawSize reste 0 — cf. WorldRenderer.h §LOD).
+// Le PLAN trouvé (donc la projection D3DXMatrixShadow) ne dépend PAS de h ; h ne borne que la
+// recherche : cette valeur (× scale entité) suffit à trouver le sol sous une entité au sol, sans
+// rien inventer de la géométrie. Cf. rapport de front.
+constexpr float kShadowModelHeight = 12.0f;
 
 // Offset (o) du champ "id d'objet de l'arme équipée" (u32 LE) à l'intérieur de
 // PlayerEntity::body (600 o, payload brut Pkt_SpawnCharacter 0x0f / 0x4646c0). Valable
@@ -418,35 +428,145 @@ void WorldRenderer::drawPlaceholderCube(const D3DXVECTOR3& pos, float scale, D3D
     device_->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
 }
 
-void WorldRenderer::drawReflectionOverlay(const gfx::SkinnedModel* bodyModel, const D3DXVECTOR3& pos,
-                                          float scale, float rotYDeg, const D3DXMATRIX& view,
-                                          const D3DXMATRIX& proj) {
-    if (!device_ || !bodyModel || bodyModel->Empty()) return;
-    (void)view;
-    (void)proj;
+// ===========================================================================
+//  Ombre PLANAIRE projetée — Vague B / branchement B8 (front F_ENTITY3D)
+//  Bracket Scene_InGameRender 0x52D0B0 (0x52D9DC..0x52DB15) + Model_RenderPlanarShadow 0x40F720.
+// ===========================================================================
+//
+// REMPLACE l'ancienne approximation drawReflectionOverlay() (monstres seuls, corps redessiné à la
+// même transformée SANS aplatissement ni bracket) par la VRAIE ombre : on interroge le plan-sol
+// (collisionSource_->GetGroundPlaneForShadow 0x40F720) puis on aplatit le corps skinné via
+// meshRenderer_.DrawModelPlanarShadow (D3DXMatrixShadow @0x40FB28, PASSE 5 = VS09 + PS NULL),
+// pour les 3 catégories que le binaire ombre dans le bracket : JOUEURS (Char_DrawWeaponEffectVariantB
+// @0x52DA41), MONSTRES (Char_DrawReflection @0x52DB09) et PNJ DE DÉCOR (Npc_DrawMeshGlow @0x52DAA2).
+// Les PNJ gameplay (bodyMeshEligible=false) n'ont pas de corps -> pas d'ombre, comme dans l'original.
 
-    // CORRIGÉ (Passe 4 / W5, front shadow-wiring) : `Char_DrawReflection` 0x581090 n'est PAS
-    // un « reflet »/2e passe translucide au même endroit — c'est le dessin de l'OMBRE PLANAIRE
-    // du monstre. La chaîne réelle est Char_DrawReflection 0x581090 -> SObject_DrawAnimated2
-    // 0x4D91C0 -> Model_RenderPlanarShadow 0x40F720, qui APLATIT le modèle sur le plan du sol
-    // via j_D3DXMatrixShadow @0x40FB28 (passe 5 = VS09, PS NULL). L'aplatissement vit dans
-    // 0x40F720, pas dans 0x581090 : l'analyse précédente s'était arrêtée un niveau trop tôt et
-    // en avait conclu, à tort, qu'il n'y avait « pas de silhouette aplatie au sol ».
-    //
-    // CE QUE FAIT CE CODE : une APPROXIMATION, pas l'ombre réelle. On redessine le modèle à la
-    // même transformée avec la pipeline skinnée standard — sans D3DXMatrixShadow, sans le
-    // bracket d'états GXD_SetupStencilShadowState 0x404F20 / GXD_EndStencilShadowState 0x4050D0
-    // (0x52D9DC..0x52DB15), sans VS09.
-    // TODO [ancres 0x40F720 + 0x420D60] : l'ombre planaire fidèle exige le plan du sol
-    // (a,b,c,d = floats +124/+128/+132/+136 de `a8[40] + 156*hitIdx`) rendu par
-    // Collision_SegPickA 0x420D60 — géométrie de collision du monde, absente de ClientSource et
-    // hors des fichiers possédés par ce front. Poser un plan y=constante inventé serait une
-    // INVENTION (règle « IDA = unique vérité ») : on s'abstient. Cf. bandeau WorldRenderer.h
-    // §Ombre/reflet [B] pour la preuve complète et la décision orchestrateur en attente.
-    gfx::BonePalette palette;
-    const float sz = (scale > 0.05f) ? scale : 1.0f;
-    meshRenderer_.DrawModel(*bodyModel, pos, D3DXVECTOR3(0.0f, rotYDeg, 0.0f),
-                            D3DXVECTOR3(sz, sz, sz), palette);
+// GXD_SetupStencilShadowState 0x404F20 — états D3D du DÉBUT du bracket (byte-exact, disasm relu
+// cette session : device=[esi+20Ch]=+524, SetRenderState=+228, SetTextureStageState=+268).
+void WorldRenderer::beginPlanarShadowBracket() {
+    if (!device_) return;
+    device_->SetRenderState(D3DRS_LIGHTING, FALSE);                    // (137,0) @0x404F7D
+    device_->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_FLAT);           // (9,1)   @0x404F92
+    device_->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);               // (14,0)  @0x404FA7
+    device_->SetRenderState(D3DRS_STENCILENABLE, TRUE);              // (52,1)  @0x404FBC
+    device_->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);        // (56,3)  @0x404FD1
+    device_->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INCR);   // (55,7)  @0x404FE6 masque anti-double-blend
+    device_->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);          // (27,1)  @0x404FFB
+    device_->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);     // (19,5)  @0x405010
+    device_->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA); // (20,6)  @0x405025
+    // TEXTUREFACTOR (60) : RGB=0, A = (u8)((diffuse.r+diffuse.g+diffuse.b)/3 · 128) << 24 — couleur
+    // = light diffuse (this+1124/1128/1132) ; /3.0 (dbl_7EDA38) · 128.0 (dbl_7EDA88) @0x405053..0x40507F.
+    // -> ombre NOIRE semi-transparente. STENCILREF jamais posé par 0x404F20 -> hérité (non inventé).
+    const D3DXVECTOR3& d = meshRenderer_.LightDiffuse();
+    int a = static_cast<int>(((d.x + d.y + d.z) / 3.0f) * 128.0f);
+    if (a < 0)   a = 0;
+    if (a > 255) a = 255;
+    device_->SetRenderState(D3DRS_TEXTUREFACTOR, static_cast<D3DCOLOR>(a) << 24); // (60,A<<24) @0x40507F
+    device_->SetTextureStageState(0, D3DTSS_COLOROP,   D3DTOP_SELECTARG1);        // (0,1,2)  @0x405096
+    device_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);            // (0,2,3)  @0x4050AD
+    device_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);            // (0,5,3)  @0x4050C6
+}
+
+// GXD_EndStencilShadowState 0x4050D0 — restauration (byte-exact, MÊME ordre, Docs §5).
+void WorldRenderer::endPlanarShadowBracket() {
+    if (!device_) return;
+    device_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);   // (0,5,2) @0x4050E8
+    device_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);   // (0,2,2) @0x4050FF
+    device_->SetTextureStageState(0, D3DTSS_COLOROP,   D3DTOP_MODULATE); // (0,1,4) @0x405116
+    device_->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFFFFFFFF);            // (60,-1) @0x40512B
+    device_->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ZERO);             // (20,1)  @0x405140
+    device_->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_ONE);              // (19,2)  @0x405155
+    device_->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);            // (27,0)  @0x40516A
+    device_->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);      // (55,1)  @0x40517F
+    device_->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);          // (56,8)  @0x405194
+    device_->SetRenderState(D3DRS_STENCILENABLE, FALSE);              // (52,0)  @0x4051A9
+    device_->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);                // (14,1)  @0x4051BE
+    device_->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);         // (9,2)   @0x4051D3
+    device_->SetRenderState(D3DRS_LIGHTING, TRUE);                     // (137,1) @0x4051ED
+}
+
+void WorldRenderer::renderPlanarShadows(const std::vector<DrawableEntity>& drawables,
+                                        const game::DrawCullContext& cull) {
+    // Prérequis : source du plan-sol posée (SetCollisionSource, par MAIN) + device. Repli propre
+    // sinon — AUCUN dessin, AUCUN plan y=constante inventé (règle « IDA = unique vérité »).
+    if (!collisionSource_ || !device_ || !modelCache_) return;
+
+    // Direction de projection d'ombre = celle que DrawModelPlanarShadow injecte (négée) dans
+    // D3DXMatrixShadow ; la MÊME sert au pick du plan-sol -> cohérence pick/projection.
+    const D3DXVECTOR3& shadowDir = meshRenderer_.ShadowLightDir();
+    const float lightDir[3] = { shadowDir.x, shadowDir.y, shadowDir.z };
+
+    // Bracket d'états ouvert UNE fois autour de toutes les entités (0x52D9DC).
+    beginPlanarShadowBracket();
+
+    for (const DrawableEntity& ent : drawables) {
+        if (!ent.bodyMeshEligible) continue; // PNJ gameplay : aucun corps -> aucune ombre
+
+        // Visibilité = gate de Char_DrawReflection/Char_DrawShadow (showReflection = active &&
+        // dist(pos, self) <= 300 && near-cull caméra) — PROUVÉ pour l'ombre MONSTRE ; réutilisé
+        // pour joueurs/PNJ (leur gate exact vit dans le méga-switch this+0xDC non décompilé,
+        // cf. WorldRenderer.h §Ombre — approximation documentée, pas une invention de seuil).
+        const game::EntityDrawFlags flags =
+            game::ComputeEntityDrawFlags(ent.renderState, cull, /*drawPass=*/1);
+        if (!flags.showReflection) continue;
+
+        const game::BodyMeshPlacement placement = game::ComputeBodyMeshPlacement(ent.renderState);
+        const D3DXVECTOR3 pos(placement.pos.x, placement.pos.y, placement.pos.z);
+        const float scale = (placement.scale > 0.0f) ? placement.scale : 1.0f;
+        const D3DXVECTOR3 rotDeg(0.0f, placement.angle, 0.0f);
+        const D3DXVECTOR3 scaleVec(scale, scale, scale);
+
+        // Plan-sol via segment [pieds+h -> +shadowDir] (Model_RenderPlanarShadow 0x40F720 :
+        // Collision_SegPickA 0x420D60 + maxDist = h·2.5 @0x40FA39). h = kShadowModelHeight·scale
+        // (GAP documenté en tête de fichier). Repli propre si le sol ne résout pas.
+        const float posArr[3]     = { pos.x, pos.y, pos.z };
+        const float modelHeight   = kShadowModelHeight * scale;
+        world::collision::GroundPlane gp;
+        if (!collisionSource_->GetGroundPlaneForShadow(posArr, modelHeight, lightDir,
+                                                       modelHeight * 2.5f, gp) || !gp.valid)
+            continue;
+
+        // Résolution du/des modèle(s) + palette — MÊME source que renderOne (le corps et son ombre
+        // partagent géométrie ET transformée), pour que la silhouette aplatie corresponde au corps.
+        if (ent.hasBody) {
+            // JOUEUR : paperdoll (pièces corps + arme, palette d'os partagée). Chaque pièce est
+            // aplatie séparément -> l'ombre est la composite (cf. Model_RenderPlanarShadow : un
+            // SObject_DrawAnimated2 par pièce, chaque appel une silhouette).
+            gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
+                *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
+                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                game::g_World.gameTimeSec);
+            if (!pd.valid) continue; // corps non résolu -> pas d'ombre (pas de cube d'ombre inventé)
+            for (const gfx::SkinnedModel* piece : pd.pieces)
+                meshRenderer_.DrawModelPlanarShadow(*piece, pos, rotDeg, scaleVec,
+                                                    pd.palette, gp.shadowPlane);
+        } else {
+            // MONSTRE / PNJ DE DÉCOR : un bodyModel + sa palette animée (même résolution que
+            // renderOne : ResolveMonsterModel/ResolveNpcModel + Motions().GetFor*).
+            const gfx::SkinnedModel* bodyModel = (ent.monsterDefId != 0)
+                ? ResolveMonsterModel(ent.monsterDefId)
+                : ResolveNpcModel(ent.npcDef);
+            if (!bodyModel || bodyModel->Empty()) continue; // modèle non résolu -> pas d'ombre
+
+            gfx::BonePalette palette; // repli identité si aucune MOTION ne résout (idem renderOne)
+            if (ent.monsterDefId != 0) {
+                if (const gfx::MotionPalette* mp = Motions().GetForMonster(ent.monsterDefId, ent.animType))
+                    palette = ent.hasAnimCursor
+                                ? gfx::MotionCache::SampleByCursor(*mp, ent.animCursor)
+                                : gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
+            } else if (ent.npcDef) {
+                if (const gfx::MotionPalette* mp = Motions().GetForNpc(*ent.npcDef, ent.animType))
+                    palette = ent.hasAnimCursor
+                                ? gfx::MotionCache::SampleByCursor(*mp, ent.animCursor)
+                                : gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
+            }
+            meshRenderer_.DrawModelPlanarShadow(*bodyModel, pos, rotDeg, scaleVec,
+                                                palette, gp.shadowPlane);
+        }
+    }
+
+    // Ferme le bracket : restaure les états (0x52DB15).
+    endPlanarShadowBracket();
 }
 
 // ===========================================================================
@@ -486,10 +606,10 @@ void WorldRenderer::drawEntityLabel(const std::string& text, const D3DXVECTOR3& 
 void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullContext& cull,
                               const D3DXMATRIX& view, const D3DXMATRIX& proj,
                               const D3DXMATRIX& viewProj) {
-    // Char_Draw 0x5805C0 : a2=1 (passe principale, cf. Scene_InGameRender).
-    // showShadow/showReflection : voir bandeau WorldRenderer.h — showShadow n'est
-    // JAMAIS dessiné (Char_DrawShadow 0x580CE0 = 0 xref, code mort confirmé) ;
-    // showReflection l'est, via drawReflectionOverlay ci-dessous.
+    // Char_Draw 0x5805C0 : a2=1 (passe principale, cf. Scene_InGameRender). renderOne ne dessine
+    // QUE le corps : l'ombre planaire (ex-showReflection) est désormais une passe DÉDIÉE, dessinée
+    // AVANT les corps (renderPlanarShadows, front F_ENTITY3D / B8) ; le libellé vit dans
+    // drawNameplatePass. showShadow (volume 0x580CE0) reste code mort, jamais dessiné.
     const game::EntityDrawFlags flags = game::ComputeEntityDrawFlags(ent.renderState, cull, /*drawPass=*/1);
     if (!flags.showBody) return; // inactif ou hors garde near-cull (IsBeyondCameraNearCull)
 
@@ -596,35 +716,16 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
     // l'identité. L'ancienne surimpression d'arme séparée (offset pos.y+0.6, aucun bone reversé)
     // est SUPPRIMÉE au profit de l'attache main par skinning (paperdoll).
 
-    // « Reflet » = en réalité l'OMBRE PLANAIRE du monstre (Char_DrawReflection 0x581090 ->
-    // SObject_DrawAnimated2 0x4D91C0 -> Model_RenderPlanarShadow 0x40F720, aplatissement
-    // j_D3DXMatrixShadow @0x40FB28). Nom « reflet » conservé pour rester aligné sur l'IDB.
-    // CORRIGÉ Passe 4 / W5 (front shadow-wiring) : l'affirmation précédente « pas de mirroir
-    // aplati au sol, juste une 2e passe translucide au même endroit » est FAUSSE — cf. bandeau
-    // WorldRenderer.h §Ombre/reflet [B].
-    // `xrefs_to(0x581090)` = un seul appelant dans tout le binaire, la boucle monstre de
-    // Scene_InGameRender 0x52D0B0 @0x52DB09 (`&dword_1766F74[280*i]`) -- jamais sur
-    // g_EntityArray (joueurs) ni le tableau PNJ : `ent.reflectionEligible` matérialise cette
-    // garde de type d'entité, en plus des gardes distance/near-cull de `flags.showReflection`.
-    // NUANCE IMPORTANTE : le binaire ombre BIEN les joueurs et les PNJ aussi, mais par d'AUTRES
-    // fonctions du même bracket 0x52D9DC..0x52DB15 (Char_DrawWeaponEffectVariantB @0x52DA41,
-    // Npc_DrawMeshGlow @0x52DAA2) -- pas par 0x581090. La garde monstre reste donc exacte POUR
-    // CET APPEL-CI ; ce n'est pas « seuls les monstres ont une ombre ».
-    // Ce qui est dessiné ici reste une APPROXIMATION (ni aplatissement ni bracket d'états) :
-    // détail + TODO dans drawReflectionOverlay().
-    if (ent.reflectionEligible && flags.showReflection) {
-        // Diagnostic one-shot (mission "EXTENSION OMBRE/REFLET", 2026-07-14) : confirme
-        // au runtime que la passe reflet se déclenche bel et bien pour au moins une
-        // entité (toujours un monstre, cf. garde ci-dessus) -- une seule ligne sur
-        // toute la durée de vie du process, jamais de spam par frame.
-        static bool s_reflectionOnceLogged = false;
-        if (!s_reflectionOnceLogged) {
-            s_reflectionOnceLogged = true;
-            TS2_LOG("WorldRenderer: reflet dessine (Char_DrawReflection, entite '%s') -- "
-                    "premiere occurrence, confirme le declenchement reel.", ent.name.c_str());
-        }
-        drawReflectionOverlay(bodyModel, pos, scale, rotDeg.y, view, proj);
-    }
+    // OMBRE PLANAIRE — DÉPLACÉE hors de renderOne (front F_ENTITY3D / B8). L'ancienne
+    // approximation « reflet » (drawReflectionOverlay, monstres seuls, corps redessiné sans
+    // aplatissement ni bracket) est REMPLACÉE par la vraie ombre projetée : Model_RenderPlanarShadow
+    // 0x40F720 (aplatissement D3DXMatrixShadow @0x40FB28, PASSE 5 = VS09 + PS NULL), dessinée pour
+    // JOUEURS + MONSTRES + PNJ DE DÉCOR dans une passe DÉDIÉE (renderPlanarShadows), bracketée UNE
+    // fois par les états d'ombre (GXD_Setup/EndStencilShadowState 0x404F20/0x4050D0) et exécutée
+    // AVANT les corps opaques — exactement comme le bracket 0x52D9DC..0x52DB15 de Scene_InGameRender
+    // (les ombres AVANT l'opaque). renderOne() ne dessine donc plus QUE le corps (fidèle : Char_Draw
+    // 0x5805C0 ne dessine ni ombre ni libellé). ent.reflectionEligible n'est plus lu ici (la garde
+    // de visibilité showReflection est ré-évaluée dans la passe d'ombre).
 
     // ///// SUPPRIMÉ — Passe 4 / vague W9, front nameplate-entity (gaps HUD-NP-01/02/05) /////
     // Ce site émettait `ComputeNameplateInfo(actor, /*drawMode=*/1, ent.notSelf, vctx, host)`
@@ -1005,6 +1106,13 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
 
     font_.BeginBatch();
 
+    // F_ENTITY3D (B8) : on COLLECTE d'abord toutes les entités à dessiner (players/monsters/npcs)
+    // dans un seul tampon, afin de dessiner les OMBRES PLANAIRES (renderPlanarShadows) AVANT les
+    // corps opaques (renderOne) — comme le bracket d'ombre 0x52D9DC..0x52DB15 précède l'opaque dans
+    // Scene_InGameRender 0x52D0B0. Les 4 boucles ci-dessous ne dessinent plus directement : elles
+    // remplissent `drawables` (mêmes gardes active/far-cull qu'avant -> mêmes entités).
+    std::vector<DrawableEntity> drawables;
+
     // Joueurs (index 0 = soi-même, cf. Game/GameState.h). Char_Draw s'applique à
     // toute entité active, y compris le joueur local -> pas de saut d'index ici ;
     // seul `notSelf` (a3 d'origine) distingue le joueur local pour la nameplate.
@@ -1069,7 +1177,8 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         // plan sol de Collision_SegPickA 0x420D60 (absent de ClientSource) et son étendue dépend
         // du gate this+0xDC [NON VÉRIFIÉ, méga-switch de 11 Ko non décompilé].
         // TODO [ancres 0x56BF90 + 0x40F720 + 0x420D60] : cf. bandeau WorldRenderer.h §Ombre [B].
-        renderOne(ent, cull, view, proj, viewProj);
+        // (Ombre joueur : DÉSORMAIS câblée via renderPlanarShadows, cf. bas de Render().)
+        drawables.push_back(std::move(ent));
     }
 
     // Monstres.
@@ -1124,7 +1233,7 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         // doit être posé à true -- les ombres joueur/PNJ passent par d'autres fonctions du même
         // bracket (@0x52DA41 / @0x52DAA2), non câblées.
         ent.reflectionEligible = true;
-        renderOne(ent, cull, view, proj, viewProj);
+        drawables.push_back(std::move(ent));
     }
 
     // NPC GAMEPLAY (game::g_World.npcs, alimenté par Pkt_SpawnNpc opcode 0x13) —
@@ -1188,7 +1297,8 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
             const char* nm = reinterpret_cast<const char*>(n.def) + 4; // ITEM_INFO.name
             ent.name.assign(nm, ::strnlen(nm, 25));
         }
-        renderOne(ent, cull, view, proj, viewProj);
+        // PNJ gameplay : bodyMeshEligible=false -> ni corps ni ombre (renderPlanarShadows saute).
+        drawables.push_back(std::move(ent));
     }
 
     // PNJ DE DÉCOR (game::ZoneNpcs(), Game/StaticNpcLoader.h) — SOURCE DISTINCTE de la
@@ -1269,14 +1379,22 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         ent.npcDef = n.def;
         // reflectionEligible reste false (défaut) : Char_DrawReflection 0x581090 n'est jamais
         // appelée sur un tableau PNJ -- même règle que la boucle PNJ gameplay.
-        // Nuance (Passe 4 / W5, front shadow-wiring) : le PNJ a bien une ombre planaire dans
-        // l'original, via Npc_DrawMeshGlow 0x5801D0 @0x52DAA2 dans le bracket ombre
-        // (0x52D9DC..0x52DB15) -> SObject_DrawAnimated2 0x4D91C0 -> Model_RenderPlanarShadow
-        // 0x40F720. Non câblée ici : elle lit `g_NpcRenderArray` (stride 88), tableau de rendu
-        // PNJ SÉPARÉ de `dword_17AB534` (stride 152) qui alimente game::NpcEntity -- source
-        // absente de ClientSource. Cf. bandeau WorldRenderer.h §Ombre/reflet [B].
-        renderOne(ent, cull, view, proj, viewProj);
+        // Ombre planaire du PNJ DE DÉCOR (Npc_DrawMeshGlow 0x5801D0 @0x52DAA2 dans le bracket
+        // 0x52D9DC..0x52DB15 -> SObject_DrawAnimated2 0x4D91C0 -> Model_RenderPlanarShadow 0x40F720) :
+        // DÉSORMAIS câblée (front F_ENTITY3D / B8), via renderPlanarShadows (bas de Render()).
+        // game::ZoneNpcs() EST l'équivalent client-source de g_NpcRenderArray (stride 88) que lit
+        // Npc_DrawMeshGlow -> la bonne source. reflectionEligible reste false (non lu par la passe).
+        drawables.push_back(std::move(ent));
     }
+
+    // ///// PASSE OMBRE PLANAIRE — Vague B / branchement B8 (front F_ENTITY3D) /////
+    // AVANT les corps opaques (bracket 0x52D9DC..0x52DB15 dessine les ombres avant l'opaque dans
+    // Scene_InGameRender 0x52D0B0). No-op propre si collisionSource_ non posée (plan-sol absent).
+    renderPlanarShadows(drawables, cull);
+
+    // ///// CORPS OPAQUES — renderOne par entité (Char_Draw 0x5805C0), APRÈS les ombres /////
+    for (const DrawableEntity& d : drawables)
+        renderOne(d, cull, view, proj, viewProj);
 
     // ///// PASSE LIBELLÉ — Passe 4 / vague W9, front nameplate-entity /////
     // APRÈS les 4 boucles de corps, comme dans Scene_InGameRender 0x52D0B0 où les libellés

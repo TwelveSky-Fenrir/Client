@@ -53,6 +53,7 @@ constexpr DWORD kFVF_XYZ         = 2;  // D3DFVF_XYZ (sommet d'ombre position se
 constexpr int kPass_SkinnedLit   = 2;
 constexpr int kPass_MultiTex2    = 3;
 constexpr int kPass_MultiTex3    = 4;
+constexpr int kPass_PlanarShadow = 5; // ombre planaire (VS09 g_GxdSh09_VS + PS NULL) — g_CurrentShaderPass=5 @0x40FB40
 constexpr int kPass_ShadowVolume = 8;
 
 // g_TextureDetailLevel 0x18C4F04 — CONSTANTE GELÉE À 2, pas une option.
@@ -970,6 +971,98 @@ void MeshRenderer::DrawModelShadow(const SkinnedModel& model,
         }
         // g_ShadowMethod==1 (stencil two-sided) : le régime proche ne fait que la 1ère passe
         //   (les états two-sided TWOSIDEDSTENCILMODE185 sont programmés dans le régime planaire).
+    }
+}
+
+// ===========================================================================
+//  Ombre PLANAIRE projetée — Model_RenderPlanarShadow 0x40F720 (chaîne VIVANTE [B])
+// ===========================================================================
+//
+// C'est la VRAIE ombre du jeu (≠ DrawModelShadow ci-dessus = volume 0x40EEE0 mort). Elle aplatit
+// le mesh skinné réel sur le plan sol via D3DXMatrixShadow, PASSE 5 = VS09 + PS NULL. Le plan sol
+// (a,b,c,-d-0.1) est fourni PRÊT par la couche Scene (collision::GroundPlane::shadowPlane), ce
+// module Gfx ne dépendant pas de World. Décompilation 0x40F720 relue byte-à-byte cette session.
+void MeshRenderer::DrawModelPlanarShadow(const SkinnedModel& model,
+                                         const D3DXVECTOR3&  position,
+                                         const D3DXVECTOR3&  rotationDeg,
+                                         const D3DXVECTOR3&  scale,
+                                         const BonePalette&  palette,
+                                         const float         groundShadowPlane[4]) {
+    if (!Ready() || model.Empty() || !groundShadowPlane) return;
+    // PASSE 5 lie VS09 (g_GxdSh09_VS 0x1945B18), slot RÉEL du npk (@0x40FB54). Le HLSL reconstruit
+    // n'a pas VS09 -> sans ShaderSet attaché, no-op propre (ombre non dessinée > rendu infidèle).
+    if (!shaderSet_) return;
+    const GxdShader& vs09 = shaderSet_->Get(GxdShaderId::VS09_Skinned);
+    if (!vs09.Valid()) return;
+
+    // 1) Matrice monde de l'entité = Scale*RotZ*RotY*RotX*Translate — MÊME composition que
+    //    DrawModel (Model_Render 0x40EBB0) et que g_WorldMatrix de 0x40F720 (@0x40F864..0x40F976 :
+    //    Translation/RotX/RotY/RotZ/Scaling + 4× Matrix_Multiply). Les entités ne tournent
+    //    qu'autour de Y -> l'ordre inter-axes est sans effet ; on aligne la composition sur
+    //    DrawModel pour que l'ombre soit exactement le corps aplati.
+    D3DXMATRIX mS, mRx, mRy, mRz, mT, tmp, world;
+    D3DXMatrixScaling(&mS, scale.x, scale.y, scale.z);
+    D3DXMatrixRotationX(&mRx, rotationDeg.x * kDeg2Rad);
+    D3DXMatrixRotationY(&mRy, rotationDeg.y * kDeg2Rad);
+    D3DXMatrixRotationZ(&mRz, rotationDeg.z * kDeg2Rad);
+    D3DXMatrixTranslation(&mT, position.x, position.y, position.z);
+    D3DXMatrixMultiply(&world, &mS,    &mRz);
+    D3DXMatrixMultiply(&tmp,   &world, &mRy);
+    D3DXMatrixMultiply(&world, &tmp,   &mRx);
+    D3DXMatrixMultiply(&tmp,   &world, &mT);
+    world = tmp;
+
+    // 2) Matrice d'aplatissement mShadow = D3DXMatrixShadow(light4, plane) (j_D3DXMatrixShadow
+    //    @0x40FB28). plane = {a,b,c,-d-0.1} DÉJÀ PRÊT (groundShadowPlane, v45 @0x40FACE..0x40FAFC).
+    //    light4 = { -shadowDir.x, -shadowDir.y, -shadowDir.z, 0 } (v38..v41 @0x40FB08..0x40FB24 :
+    //    flt_18C53C0/C4/C8 négés, w=0 -> lumière DIRECTIONNELLE).
+    D3DXVECTOR4 light4(-shadowLightDir_.x, -shadowLightDir_.y, -shadowLightDir_.z, 0.0f);
+    D3DXPLANE   plane(groundShadowPlane[0], groundShadowPlane[1],
+                      groundShadowPlane[2], groundShadowPlane[3]);
+    D3DXMATRIX  mShadow;
+    D3DXMatrixShadow(&mShadow, &light4, &plane);
+
+    // 3) WVP aplati = World · Shadow · View · Proj (3× Matrix_Multiply @0x40FB7D/@0x40FB97/@0x40FBB1 ;
+    //    viewProj_ = View·Proj -> (World·Shadow)·(View·Proj), associatif).
+    D3DXMATRIX worldShadow, wvp;
+    D3DXMatrixMultiply(&worldShadow, &world, &mShadow); // World·Shadow          @0x40FB7D
+    D3DXMatrixMultiply(&wvp, &worldShadow, &viewProj_); // ·View·Proj  @0x40FB97/@0x40FBB1
+
+    // 4) PASSE 5 = VS09 + PS NULL (cache g_CurrentShaderPass 0x194591C ; @0x40FB38..0x40FB66).
+    if (currentPass_ != kPass_PlanarShadow) {
+        currentPass_ = kPass_PlanarShadow;
+        dev_->SetVertexShader(vs09.vs); // method +368 = g_GxdSh09_VS
+        dev_->SetPixelShader(nullptr);  // method +428 (PS NULL : couleur = TFACTOR/TSS du bracket)
+    }
+
+    // 5) Constantes VS09 : palette d'os (mKeyMatrix = dword_1945B1C, method +88 @0x40FBF9) puis
+    //    WVP aplati (mWorldViewProjMatrix = dword_1945B20, method +84 @0x40FC1C) ;
+    //    SetTexture(0, NULL) (method +260 @0x40FC30).
+    const D3DXMATRIX* palMats = identityPalette_;
+    UINT boneCount = 1;
+    if (palette.Valid()) { palMats = palette.matrices; boneCount = palette.count; }
+    if (D3DXHANDLE hKey = vs09.Handle("mKeyMatrix"))
+        vs09.ct->SetMatrixArray(dev_, hKey, palMats, boneCount);
+    if (D3DXHANDLE hWvp = vs09.Handle("mWorldViewProjMatrix"))
+        vs09.ct->SetMatrix(dev_, hWvp, &wvp);
+    dev_->SetTexture(0, nullptr);
+
+    // 6) Déclaration de vertex skinné réelle (g_GxdSkinVtxDecl 0x1945918, posée @0x40FD4D).
+    IDirect3DVertexDeclaration9* useDecl = decl_;
+    if (IDirect3DVertexDeclaration9* d = shaderSet_->SkinnedVertexDecl()) useDecl = d;
+
+    // 7) Boucle de dessin par sous-partie skinnée, LOD 0 (@0x40FC42..0x40FD9D). Chaque part émet
+    //    une silhouette aplatie ; l'ombre composite = tous les parts. SetStreamSource(+400, stride
+    //    76) / SetIndices(+416) / SetVertexDeclaration(+348) / DrawIndexedPrimitive(+328,
+    //    4=TRIANGLELIST). (Le part masqué part[52]!=0 n'est pas modélisé côté C++ — idem DrawModel.)
+    for (const SkinnedMesh& mesh : model.meshes) {
+        if (mesh.empty || mesh.lods.empty()) continue;
+        const SkinnedLod& L = mesh.lods[0];
+        if (!L.vb || !L.ib || L.vertexCount == 0 || L.faceCount == 0) continue;
+        dev_->SetStreamSource(0, L.vb, 0, static_cast<UINT>(sizeof(GpuSkinVertex)));
+        dev_->SetIndices(L.ib);
+        dev_->SetVertexDeclaration(useDecl);
+        dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, L.vertexCount, 0, L.faceCount);
     }
 }
 
