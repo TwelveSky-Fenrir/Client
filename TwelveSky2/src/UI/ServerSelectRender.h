@@ -62,8 +62,9 @@
 // Le panneau central (sprite unk_929344, slot 1785 -> 001_01786.IMG, chargé RÉELLEMENT
 // via GetSprite() ; dimensions RÉELLES de la texture utilisées pour le centrage quand
 // elle est disponible — EXACTEMENT Sprite2D_GetWidth/Height(unk_929344) de l'original —,
-// repli sur les dimensions NOMINALES kPanelW/kPanelH pour le seul CENTRAGE si le
-// chargement échoue — le panneau n'est alors pas dessiné, jamais remplacé par un aplat)
+// repli sur les dimensions réelles connues kPanelW/kPanelH (737x755, en-tête IMG) pour
+// le seul CENTRAGE si le chargement échoue — le panneau n'est alors pas dessiné,
+// jamais remplacé par un aplat)
 // est CENTRÉ à l'écran :
 //   baseX = nWidth/2  - panelW/2   (v24, EA 0x519486)
 //   baseY = nHeight/2 - panelH/2   (v17, EA 0x5194A9)
@@ -116,8 +117,11 @@
 // SceneMgr, PAS modélisé dans ServerSelectState (scène ServerSelect réutilise this[3] pour
 // le latch du bouton retour, alors qu'Intro utilise this[3..152] pour logoFade — même
 // mémoire brute, interprétation différente par scène) : latch géré ICI localement
-// (purement visuel, cf. ServerSelectRender::OnActionButtonMouseDown/Up), DÉCOUPLÉ de la
-// logique de clic réelle qui reste dans Game::OnActionButtonReleased (TODO notice modale).
+// (cf. ServerSelectRender::OnActionButtonMouseDown/Up) : le latch this[3] est armé au down
+// et VALIDÉ au up (OnActionButtonMouseUp renvoie true si le curseur est toujours sur le
+// sprite), ce qui déclenche la confirmation de sortie modale dans LoginScene
+// (Scene_ServerSelectOnMouseUp 0x519AC0 -> UI_MsgBox_Open dword_1822438 action_id=1 ->
+// g_QuitFlag=1).
 //
 // Mode d'affichage (g_ServerModeFlag == dword_166918C, EXACTEMENT le même global que
 // ServerSelectFlow.h::ServerListMode, adresse 0x166918C) : si non nul -> panneau "un
@@ -165,19 +169,18 @@ namespace ts2::ui {
 // ---------------------------------------------------------------------------
 namespace serverselect_layout {
 
-// Dimensions NOMINALES du panneau/bouton retour, utilisées UNIQUEMENT pour le
-// POSITIONNEMENT (centrage du panneau, hit-test des boutons) quand la texture réelle
-// (cf. constantes de slots ci-dessous) n'est pas encore chargée — en fonctionnement
-// normal, Render() utilise les dimensions RÉELLES de gfx::GpuTexture::Width()/Height()
-// (équivalent Sprite2D_GetWidth/Height). Elles ne servent JAMAIS à dessiner un aplat de
-// repli (aucun n'existe). Choisies assez grandes pour contenir tous les offsets relevés
-// ci-dessous (max observé : offset X 694 + colonne "plein", max Y 692 + icône de barre).
-constexpr int kPanelW    = 800;
-constexpr int kPanelH    = 760;
-constexpr int kButtonW   = 140; // hit-test/visualisation nominale d'un bouton serveur
-constexpr int kButtonH   = 80;
-constexpr int kBackBtnW  = 96;  // atlas[4] (unk_8E8B50 + 148*4) : ancrage/hit-test du bouton retour
-constexpr int kBackBtnH  = 32;
+// Dimensions EXACTES des sprites consultés par Sprite2D_GetWidth/Height dans l'IDB :
+// - panneau unk_929344 : GetWidth 0x519486 / GetHeight 0x5194A9 -> 001_01786.IMG = 737x755.
+// - boutons serveur : Sprite2D_HitTest 0x51958C/0x5199E6 sur ButtonImageId(i) -> 153x23.
+// - bouton retour atlas[4] : UI_ProjectSpriteToScreen 0x5196D1/0x519A79/0x519AED -> 96x31.
+// Elles servent au positionnement/hit-test de repli quand la texture n'a pas encore été
+// chargée ; Render() préfère les dimensions runtime réelles quand GetSprite() a réussi.
+constexpr int kPanelW    = 737;
+constexpr int kPanelH    = 755;
+constexpr int kButtonW   = 153;
+constexpr int kButtonH   = 23;
+constexpr int kBackBtnW  = 96;
+constexpr int kBackBtnH  = 31;
 
 // ---------------------------------------------------------------------------
 // Slots d'atlas CONFIRMÉS par désassemblage (Docs/TS2_SERVERSELECT_REAL_ASSET_IP.md +
@@ -279,12 +282,15 @@ public:
     void Render(const UiContext& ctx, const game::ServerSelectState& state,
                 int cursorX, int cursorY, bool singleServerMode = false);
 
-    // Latch visuel du bouton retour (mirroir this[3] pour CETTE scène uniquement,
-    // Scene_ServerSelectOnMouseDown/Up 0x519780/0x519AC0). À appeler depuis les
-    // routeurs souris de la scène ServerSelect ; la VALIDATION du clic (ouverture de la
-    // confirmation modale) reste Game::OnActionButtonReleased (hors périmètre rendu).
+    // Latch du bouton d'action/sortie (mirroir this[3] pour CETTE scène uniquement,
+    // Scene_ServerSelectOnMouseDown/Up 0x519780/0x519AC0). À appeler depuis les routeurs
+    // souris de la scène ServerSelect. OnActionButtonMouseDown arme le latch si le curseur
+    // est sur le sprite (EA 0x519AAF : this[3]=1). OnActionButtonMouseUp désarme le latch
+    // (EA 0x519AFE : this[3]=0) et renvoie true si le clic est CONFIRMÉ (latch armé ET
+    // curseur toujours sur le sprite, Sprite2D_HitTest EA 0x519B1A) — l'appelant ouvre alors
+    // la confirmation de sortie (UI_MsgBox_Open, EA 0x519B3E).
     void OnActionButtonMouseDown(int cursorX, int cursorY, const UiContext& ctx);
-    void OnActionButtonMouseUp();
+    bool OnActionButtonMouseUp(int cursorX, int cursorY, const UiContext& ctx);
 
 private:
     // Résout un slot de l'atlas unk_8E8B50 (AssetMgr_InitAllSlots 0x4deb50, catégorie 1 ->

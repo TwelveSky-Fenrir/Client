@@ -26,6 +26,7 @@ gfx::GpuTexture* IntroRender::GetLogoSprite(const UiContext& ctx, int slotIndex)
 
     gfx::GpuTexture tex;
     char path[80];
+    // Sprite2D_BuildPath 0x4D6945 : catégorie 1 -> "001_%05d.IMG" avec a3+1.
     std::snprintf(path, sizeof(path), "G03_GDATA/D01_GIMAGE2D/001/001_%05d.IMG", slotIndex + 1);
     asset::ImgFile img;
     if (img.Load(path) && tex.CreateFromImgFile(device_, img)) {
@@ -47,18 +48,22 @@ void IntroRender::Render(const UiContext& ctx, const game::IntroState& state) {
     if (state.subState == 0)
         return;
 
-    // EA 0x518A0B-0x518A8F : logo courant, centré sur SA taille réelle (comme Sprite2D_Draw),
-    // plafonné à l'id 830 (slot d'atlas ; fichier réel = slot+1). Dessiné UNIQUEMENT en phase
-    // Panels. Si la texture réelle n'est pas disponible -> RIEN (aucun aplat/label inventé,
-    // fidèle au binaire qui ne dessine rien quand le sprite n'est pas chargé).
+    // EA 0x518A0B-0x518A8F : logo courant, centré sur SA taille logique puis dessiné par
+    // Sprite2D_Draw/UI_DrawSprite. À 1024×768 et avec les IMG réels 668×229, cela donne
+    // (178,270) : 1024/2-668/2 (EA 0x518A28/0x518A48) et 768/2-229/2 (EA 0x518A55/0x518A75).
+    // Dessiné UNIQUEMENT en phase Panels. Si la texture réelle n'est pas disponible -> RIEN
+    // (aucun aplat/label inventé, fidèle au binaire qui ne dessine rien quand le sprite échoue).
     const int logoId = intro_layout::LogoSpriteIndex(state.subState);
     gfx::GpuTexture* logo = GetLogoSprite(ctx, logoId);
     const bool hasRealLogo = logo && logo->Handle() && logo->Width() > 0 && logo->Height() > 0;
     if (hasRealLogo && ctx.phase == UiPhase::Panels && ctx.sprites && ctx.sprites->Ready()) {
+        // Scene_IntroRender 0x518A48/0x518A75 : Sprite2D_GetWidth/Height lisent les champs
+        // logiques +108/+112, pas la surface D3D9 arrondie ; UI_DrawSprite 0x6A3093..0x6A30C5
+        // passe ce rectangle source à ID3DXSprite::Draw.
+        const RECT src{0, 0, static_cast<LONG>(logo->Width()), static_cast<LONG>(logo->Height())};
         const int lx = ctx.screenW / 2 - static_cast<int>(logo->Width()) / 2;
         const int ly = ctx.screenH / 2 - static_cast<int>(logo->Height()) / 2;
-        ctx.sprites->DrawSpriteScaled(logo->Handle(), nullptr, lx, ly, 1.0f, 1.0f,
-                                      gfx::kSpriteWhite, /*compensatePos=*/true);
+        ctx.sprites->DrawSprite(logo->Handle(), &src, lx, ly, gfx::kSpriteWhite);
     }
 }
 

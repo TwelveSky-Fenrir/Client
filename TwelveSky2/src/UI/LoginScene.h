@@ -154,6 +154,8 @@ private:
     void ServerSelectUpdate();
     void ServerSelectRender();
     void ServerSelectOnMouseDown(int x, int y);
+    void ServerSelectOnMouseUp(int x, int y);   // Scene_ServerSelectOnMouseUp 0x519AC0 (confirme la sortie)
+    void ExitConfirmRender();                    // overlay Oui/Non de sortie (UI_MsgBox dword_1822438, EA 0x519B3E)
     RECT ServerRowRect(int i) const;
     // Lance le worker de statut serveur (fidèle à CreateThread(Net_ServerStatusThread
     // 0x518AB0) au passage sous-état Init->Idle) : interroge en TCP bloquant borné
@@ -299,6 +301,7 @@ private:
     // Écran Liste : slots (clic = sélection), Créer/Supprimer/Entrer/Quitter.
     Button enterBtn_, backBtn_;        // backBtn_ = "Quitter" (host.CloseConnectionAndQuit, fidèle)
     Button createBtn_, deleteBtn_;
+    Button restoreBtn_;                // Restaurer (slots 3086/3087/3088, Scene_CharSelectRender 0x51E354)
 
     // Écran Formulaire de création : 5 paires +/- (job/faction/visage/couleur/variant),
     // nom saisi (EditBox réutilisé de Widgets.h), Confirmer/Annuler.
@@ -311,6 +314,13 @@ private:
     // Confirmation de suppression (Oui/Non), ouverte par host.ShowDeleteConfirm().
     bool   deleteConfirmOpen_ = false;
     Button deleteYesBtn_, deleteNoBtn_;
+
+    // Confirmation Oui/Non de SORTIE du jeu (ServerSelect, bouton d'action slot 4). Mirroir
+    // de UI_MsgBox_Open(dword_1822438, 1, StrTable005[1], ...) ouvert par
+    // Scene_ServerSelectOnMouseUp 0x519B3E ; "Oui" -> Log "[ABNORMAL_END] ( 4 )" + g_QuitFlag=1
+    // (UI_MsgBox_OnLButtonUp case 1, EA 0x5C0BEC-0x5C0BFB) ; "Non" referme (UI_ConfirmPrompt_Close).
+    bool   exitConfirmOpen_ = false;
+    Button exitConfirmYesBtn_, exitConfirmNoBtn_;
 
     // --- Notice ---
     bool        noticeOpen_ = false;

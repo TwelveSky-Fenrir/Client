@@ -105,6 +105,26 @@ inline bool PtInRect(int px, int py, int x, int y, int w, int h) {
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
+inline int SpriteW(gfx::GpuTexture* tex, int fallback) {
+    return (tex && tex->Handle() && tex->Width() > 0) ? static_cast<int>(tex->Width()) : fallback;
+}
+
+inline int SpriteH(gfx::GpuTexture* tex, int fallback) {
+    return (tex && tex->Handle() && tex->Height() > 0) ? static_cast<int>(tex->Height()) : fallback;
+}
+
+inline void ProjectActionButton(const UiContext& ctx, int spriteW, int spriteH, int& outX, int& outY) {
+    // UI_ProjectSpriteToScreen 0x50F5D0, appelé par ServerSelect avec (imgId=4, 891,701)
+    // aux EA 0x5196D1/0x519A79/0x519AED : half = Sprite2D_GetWidth/Height(...)/2 en
+    // division ENTIÈRE, puis Crt_ftol(scale * (ref + half)) - half.
+    const float scaleX = static_cast<float>(ctx.screenW) / static_cast<float>(ts2::kRefWidth);
+    const float scaleY = static_cast<float>(ctx.screenH) / static_cast<float>(ts2::kRefHeight);
+    const int halfW = spriteW / 2;
+    const int halfH = spriteH / 2;
+    outX = static_cast<int>(scaleX * static_cast<float>(891 + halfW) + 0.5f) - halfW;
+    outY = static_cast<int>(scaleY * static_cast<float>(701 + halfH) + 0.5f) - halfH;
+}
+
 // Palier 0..7 d'une population, EXACTEMENT la chaîne de comparaisons de
 // ServerSelect_DrawLoadBar 0x51A440 (EA 0x51a70b-0x51a82f) : level = nombre de k in 1..7
 // tel que pop >= k*loadStep (this[13371+i], alimenté par le serveur via le record de
@@ -235,7 +255,11 @@ void ServerSelectRender::Render(const UiContext& ctx, const game::ServerSelectSt
             // (this[12371]) — PAS d'échappatoire maxPop<=0. Avec maxPop==0 (statut pas
             // encore reçu), 0<0 est faux, donc le binaire ne dessine JAMAIS l'état survolé.
             const bool notFull = sv.currentPopulation < sv.maxPopulation;
-            const bool hover = PtInRect(cursorX, cursorY, x, y, kButtonW, kButtonH);
+            gfx::GpuTexture* btnTex = GetSprite(ButtonImageId(i));
+            // Sprite2D_HitTest 0x51958C/0x5199E6 : rectangle natif du sprite ButtonImageId(i)
+            // (001_01787.IMG et variantes = 153x23 à 1024x768), pas un gabarit inventé.
+            const bool hover = PtInRect(cursorX, cursorY, x, y,
+                                        SpriteW(btnTex, kButtonW), SpriteH(btnTex, kButtonH));
 
             // Sprite2D_HitTest (EA 0x51958C) + garde population/capacité -> variante
             // "survolée/active" (imageId+1) sinon variante "relâchée" (imageId), EA
@@ -243,10 +267,10 @@ void ServerSelectRender::Render(const UiContext& ctx, const game::ServerSelectSt
             // ButtonImageId(i), variante hover = slot SUIVANT +1) ; s'il n'est pas chargé,
             // rien n'est dessiné — AUCUN aplat coloré ni libellé texte (le nom/la population
             // sont GRAVÉS dans le sprite du bouton ; la boucle du binaire ne trace aucun
-            // texte). NOTE : le hit-test nominal kButtonW/kButtonH n'est pas resserré ici
-            // (hors périmètre de cette mission), seul le dessin est fidèle.
+            // texte). Le hit-test ci-dessus partage les dimensions natives du même sprite :
+            // rendu et clic coïncident au pixel.
             const bool useHover = hover && populationKnown && notFull;
-            DrawAtlas(ctx, GetSprite(ButtonImageId(i) + (useHover ? 1 : 0)), x, y);
+            DrawAtlas(ctx, useHover ? GetSprite(ButtonImageId(i) + 1) : btnTex, x, y);
 
             // Barres de charge (EA 0x51964C -> ServerSelect_DrawLoadBar) — sprites RÉELS
             // (9 fichiers 001_01900..001_01908.IMG + 001_02600.IMG) uniquement.
@@ -264,17 +288,18 @@ void ServerSelectRender::Render(const UiContext& ctx, const game::ServerSelectSt
 
     // --- Bouton retour/action (UI_ProjectSpriteToScreen 0x50F5D0, ancre design (891,701),
     // 3 états RÉELS slots 4/5/6 -> 001_00005/6/7.IMG, unk_8E8DA0/unk_8E8E34/unk_8E8EC8) ---
-    const float scaleX = static_cast<float>(ctx.screenW) / static_cast<float>(ts2::kRefWidth);
-    const float scaleY = static_cast<float>(ctx.screenH) / static_cast<float>(ts2::kRefHeight);
-    const int backX = static_cast<int>(scaleX * (891.0f + kBackBtnW / 2.0f) + 0.5f) - kBackBtnW / 2;
-    const int backY = static_cast<int>(scaleY * (701.0f + kBackBtnH / 2.0f) + 0.5f) - kBackBtnH / 2;
-    const bool backHover = PtInRect(cursorX, cursorY, backX, backY, kBackBtnW, kBackBtnH);
+    gfx::GpuTexture* backNormal = GetSprite(kActionBtnNormalSlot);
+    const int backW = SpriteW(backNormal, kBackBtnW);
+    const int backH = SpriteH(backNormal, kBackBtnH);
+    int backX = 0, backY = 0;
+    ProjectActionButton(ctx, backW, backH, backX, backY);
+    const bool backHover = PtInRect(cursorX, cursorY, backX, backY, backW, backH);
     const int backSlot = actionButtonPressed_ ? kActionBtnPressedSlot
                         : backHover            ? kActionBtnHoverSlot
                                                 : kActionBtnNormalSlot;
     // Sprite `.IMG` réel de l'état courant uniquement ; s'il n'est pas chargé, rien n'est
     // dessiné (AUCUN aplat coloré ni cadre de repli).
-    DrawAtlas(ctx, GetSprite(backSlot), backX, backY);
+    DrawAtlas(ctx, backSlot == kActionBtnNormalSlot ? backNormal : GetSprite(backSlot), backX, backY);
 
     // Le binaire enchaîne ici sur UI_RenderAllDialogs (EA 0x51974E) : à l'appelant
     // d'invoquer UIManager::Instance().Render() APRÈS ce Render() pour préserver
@@ -282,18 +307,29 @@ void ServerSelectRender::Render(const UiContext& ctx, const game::ServerSelectSt
 }
 
 void ServerSelectRender::OnActionButtonMouseDown(int cursorX, int cursorY, const UiContext& ctx) {
-    const float scaleX = static_cast<float>(ctx.screenW) / static_cast<float>(ts2::kRefWidth);
-    const float scaleY = static_cast<float>(ctx.screenH) / static_cast<float>(ts2::kRefHeight);
-    const int backX = static_cast<int>(scaleX * (891.0f + serverselect_layout::kBackBtnW / 2.0f) + 0.5f)
-                     - serverselect_layout::kBackBtnW / 2;
-    const int backY = static_cast<int>(scaleY * (701.0f + serverselect_layout::kBackBtnH / 2.0f) + 0.5f)
-                     - serverselect_layout::kBackBtnH / 2;
-    if (PtInRect(cursorX, cursorY, backX, backY, serverselect_layout::kBackBtnW, serverselect_layout::kBackBtnH))
+    gfx::GpuTexture* backNormal = GetSprite(serverselect_layout::kActionBtnNormalSlot);
+    const int backW = SpriteW(backNormal, serverselect_layout::kBackBtnW);
+    const int backH = SpriteH(backNormal, serverselect_layout::kBackBtnH);
+    int backX = 0, backY = 0;
+    ProjectActionButton(ctx, backW, backH, backX, backY);
+    if (PtInRect(cursorX, cursorY, backX, backY, backW, backH))
         actionButtonPressed_ = true;
 }
 
-void ServerSelectRender::OnActionButtonMouseUp() {
+bool ServerSelectRender::OnActionButtonMouseUp(int cursorX, int cursorY, const UiContext& ctx) {
+    // Scene_ServerSelectOnMouseUp 0x519AC0 : désarme le latch (this[3]=0, EA 0x519AFE) puis,
+    // s'il était armé, re-teste le survol du sprite du bouton (Sprite2D_HitTest unk_8E8DA0,
+    // EA 0x519B1A). Renvoie true seulement si le clic complet (down+up) est resté sur le
+    // bouton -> l'appelant ouvre la confirmation de sortie (EA 0x519B3E).
+    const bool wasPressed = actionButtonPressed_;
     actionButtonPressed_ = false;
+    if (!wasPressed) return false;
+    gfx::GpuTexture* backNormal = GetSprite(serverselect_layout::kActionBtnNormalSlot);
+    const int backW = SpriteW(backNormal, serverselect_layout::kBackBtnW);
+    const int backH = SpriteH(backNormal, serverselect_layout::kBackBtnH);
+    int backX = 0, backY = 0;
+    ProjectActionButton(ctx, backW, backH, backX, backY);
+    return PtInRect(cursorX, cursorY, backX, backY, backW, backH);
 }
 
 } // namespace ts2::ui

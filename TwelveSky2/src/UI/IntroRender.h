@@ -1,9 +1,8 @@
 // UI/IntroRender.h — RENDU VISUEL de l'écran Intro/logos (ts2::ui).
 //
 // Réécriture fidèle de la GÉOMÉTRIE réelle de Scene_IntroRender 0x518880 (~560 o),
-// décompilée via idaTs2 (serveur HTTP JSON-RPC http://127.0.0.1:13337/mcp, méthode
-// "decompile" — le MCP `idaTs2` n'étant pas exposé en outil différé dans cette session ;
-// MÊME IDB, aucune donnée inventée).
+// décompilée via idaTs2 (Scene_IntroRender 0x518880 / Scene_IntroUpdate 0x517FE0 ;
+// IDB TwelveSky2.exe, lecture seule, aucune donnée inventée).
 //
 // === DÉCOUVERTE CLÉ (corrige une spéculation de Game/IntroFlow.h) ===
 // Scene_IntroRender NE LIT JAMAIS le tampon logoFade (this[3..152], 150 dwords) — il
@@ -37,14 +36,14 @@
 // % (slotIndex+1)` via asset::ImgFile::Load + gfx::GpuTexture::CreateFromImgFile (même
 // pattern que UI/PanelSkin.h / UI/InventoryWindow.cpp), mis en cache paresseux par
 // slotIndex dans `logoCache_` (au plus 33 entrées, une par sous-état 1..33 — subState 34
-// réutilise le slot 830 déjà en cache). Dessiné via SpriteBatch::DrawSpriteScaled, centré
-// sur SA taille réelle (668×229 sources, uploadées arrondies à la puissance de 2 par
-// GpuTexture::CreateFromImgFile — fidèle à cTexture_LoadFromImgFile 0x457A20), EXACTEMENT
-// comme Sprite2D_Draw d'origine sur `unk_8E8B50 + 148*v8`. ZÉRO repli : si le fichier est
+// réutilise le slot 830 déjà en cache). Dessiné via SpriteBatch::DrawSprite avec un RECT
+// source logique, pas toute la surface D3D9 arrondie : Sprite2D_Draw 0x4D6B72 appelle
+// UI_DrawSprite 0x6A3080 sur `this+104`, dont UI_DrawSprite 0x6A3093..0x6A30C5 construit
+// le RECT [0,width]×[0,height]. Centré sur SA taille réelle : 668×229 pour les fichiers
+// 001_00799..001_00831.IMG, donc (178,270) à 1024×768 par les divisions entières de
+// Scene_IntroRender 0x518A28/0x518A48 et 0x518A55/0x518A75. ZÉRO repli : si le fichier est
 // réellement absent/illisible au runtime, RIEN n'est dessiné (fidèle à Sprite2D_Draw qui
-// échoue en silence) — plus aucun aplat coloré ni libellé de diagnostic. Vérifié par
-// self-test GPU (Asset/AssetSelfTest.cpp) contre les 33 vrais fichiers
-// 001_00799..001_00831.IMG : tous chargés.
+// échoue en silence) — plus aucun aplat coloré ni libellé de diagnostic.
 #pragma once
 #include "UI/UIManager.h"    // ts2::ui::UiContext
 #include "Game/IntroFlow.h"  // ts2::game::IntroState
@@ -61,11 +60,11 @@ namespace intro_layout {
 
 // v8 = this[1] + 797, plafonné à 830 (EA 0x518A0B/0x518A15/0x518A17). Fidèle même pour
 // subState==0 (bien que Render ne l'appelle jamais dans ce cas — cf. Render ci-dessous).
-constexpr int kLogoSpriteBase = 798; // subState == 1 -> premier sprite de la séquence
-constexpr int kLogoSpriteCap  = 830; // plafond (subState >= 33)
+constexpr int kLogoSpriteBase = 798; // Scene_IntroRender 0x518A0B : subState==1 -> 1+797
+constexpr int kLogoSpriteCap  = 830; // Scene_IntroRender 0x518A15/0x518A17 : plafond
 
 inline int LogoSpriteIndex(int subState) {
-    const int v = subState + 797;
+    const int v = subState + 797; // Scene_IntroRender 0x518A0B
     return v > kLogoSpriteCap ? kLogoSpriteCap : v;
 }
 

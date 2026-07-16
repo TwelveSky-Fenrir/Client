@@ -137,6 +137,7 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
                                                                   // reste un placeholder (bouton
                                                                   // skinné, label non dessiné).
     createBtn_.SetLabel("Creer");  deleteBtn_.SetLabel("Supprimer");
+    restoreBtn_.SetLabel("Restaurer"); // texte placeholder ; sprite réel slots 3086/3087/3088 (0x51E354)
     createConfirmBtn_.SetLabel("Confirmer"); createCancelBtn_.SetLabel("Annuler");
     deleteYesBtn_.SetLabel("Oui"); deleteNoBtn_.SetLabel("Non");
     jobMinusBtn_.SetLabel("-");    jobPlusBtn_.SetLabel("+");
@@ -210,7 +211,7 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     // idle/hover/pressé dédiés dans l'atlas 001 (Docs/TS2_CHARSELECT_RE.md §4/§7, slots
     // confirmés EA par EA) — PAS la paire générique Confirm/Cancel. SetNormal = état idle
     // (ces boutons ONT un sprite idle distinct, contrairement aux boutons Login qui ne
-    // possèdent que survol/pressé). Seuls enterBtn_/createBtn_/deleteBtn_/backBtn_ sont
+    // possèdent que survol/pressé). restoreBtn_/enterBtn_/createBtn_/deleteBtn_/backBtn_ sont
     // LATCHÉS (hit-testés dans CharSelectOnMouseDown/Up) ; RENOMMER/ENTREPÔT/QUITTER, sans
     // membre Button ni hit-test, sont dessinés en sprites directs idle dans CharListRender().
     {
@@ -223,6 +224,7 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
         skinColBtn(createBtn_,  19,  20,  21); // CRÉER
         skinColBtn(deleteBtn_,  22,  23,  24); // SUPPRIMER
         skinColBtn(backBtn_,   963, 964, 965); // RETOUR
+        skinColBtn(restoreBtn_, 3086, 3087, 3088); // RESTAURER @ y=v117-37, EA 0x51E354/0x525B46
     }
 
     // Formulaire de création (écran CreateForm) : boutons -/+ = sprites UNIQUES d'atlas baked
@@ -813,11 +815,11 @@ void LoginScene::AbortLoginToServerSelect() {
 // (DrawFieldValue) reste dessiné à +(126,60)/(126,95). Boutons : OK +(298,126), Quitter +(374,126),
 // case ombres +(21,130).
 void LoginScene::LayoutLogin(int px, int py) {
-    idBox_.SetBounds(px + 118, py + 54, 319, 21); // g_hEditLoginId — zone EDIT réelle (319x21)
-    pwBox_.SetBounds(px + 118, py + 90, 319, 21); // g_hEditLoginPw — zone EDIT réelle (319x21)
-    okBtn_.SetBounds(px + 298, py + 126, kBtnW,  kBtnH);    // unk_8E9084
-    exitBtn_.SetBounds(px + 374, py + 126, kBtnW, kBtnH);   // unk_8E9240
-    optBtn_.SetBounds(px + 21,  py + 130, 16, 16);          // unk_9555BC (case ombres)
+    idBox_.SetBounds(px + 118, py + 54, 319, 21); // g_hEditLoginId — zone EDIT réelle (319x21), Scene_LoginOnMouseDown 0x51B658 refs dword_166901C..28
+    pwBox_.SetBounds(px + 118, py + 90, 319, 21); // g_hEditLoginPw — zone EDIT réelle (319x21), Scene_LoginOnMouseDown 0x51B695 refs dword_166902C..38
+    okBtn_.SetBounds(px + 298, py + 126, kBtnW,  kBtnH);    // unk_8E9084, render/hit EA 0x51B48D/0x51B80E
+    exitBtn_.SetBounds(px + 374, py + 126, kBtnW, kBtnH);   // unk_8E9240, render/hit EA 0x51B50F/0x51B85C
+    optBtn_.SetBounds(px + 21,  py + 130, 16, 16);          // unk_9555BC : rendu EA 0x51B571 ; hit IDA à y+131 EA 0x51B74D/0x51B8B6
 }
 
 // Scene_LoginUpdate 0x51A8D0 : machine à sous-états (this[1]).
@@ -1065,7 +1067,13 @@ void LoginScene::DrawFieldCaretSprite(const EditBox& box, int tx, int ty) {
 // Scene_LoginOnMouseDown 0x51B5D0 : gardé par this[1]==1 (idle).
 void LoginScene::LoginOnMouseDown(int x, int y) {
     if (loginSub_ != LoginSub::Idle) return;
-    LayoutLogin(screenW_ / 2 - kPanelW / 2, screenH_ / 2 - kPanelH / 2);
+    // Origine du panneau = taille RÉELLE du sprite 14, comme LoginRender/IDA
+    // (Scene_LoginOnMouseDown 0x51B5D0 : Sprite2D_GetWidth/Height unk_8E9368 aux EA 0x51B608/0x51B62B).
+    gfx::GpuTexture* panelTex = GetAtlasSprite(14);
+    const bool panelValid = panelTex && panelTex->Valid() && panelTex->Width() > 0 && panelTex->Height() > 0;
+    const int panelW = panelValid ? static_cast<int>(panelTex->Width())  : kPanelW;
+    const int panelH = panelValid ? static_cast<int>(panelTex->Height()) : kPanelH;
+    LayoutLogin(screenW_ / 2 - panelW / 2, screenH_ / 2 - panelH / 2);
 
     // Chaque EditBox se focalise si le clic tombe dedans, se défocalise sinon.
     idBox_.OnMouseDown(x, y);
@@ -1082,7 +1090,13 @@ void LoginScene::LoginOnMouseDown(int x, int y) {
 // Les callbacks SetOnClick (Init) déclenchent Trigger / retour ServerSelect / toggle.
 void LoginScene::LoginOnMouseUp(int x, int y) {
     if (loginSub_ != LoginSub::Idle) return;
-    LayoutLogin(screenW_ / 2 - kPanelW / 2, screenH_ / 2 - kPanelH / 2);
+    // Même origine réelle que le rendu : Scene_LoginOnMouseUp 0x51B780,
+    // Sprite2D_GetWidth/Height unk_8E9368 aux EA 0x51B7B8/0x51B7D7.
+    gfx::GpuTexture* panelTex = GetAtlasSprite(14);
+    const bool panelValid = panelTex && panelTex->Valid() && panelTex->Width() > 0 && panelTex->Height() > 0;
+    const int panelW = panelValid ? static_cast<int>(panelTex->Width())  : kPanelW;
+    const int panelH = panelValid ? static_cast<int>(panelTex->Height()) : kPanelH;
+    LayoutLogin(screenW_ / 2 - panelW / 2, screenH_ / 2 - panelH / 2);
 
     okBtn_.OnMouseUp(x, y);   // -> onClick : loginSub_ = Trigger (sous-état 2)
     exitBtn_.OnMouseUp(x, y); // -> onClick : pending_ = ServerSelect (scene_id = 2)
@@ -1173,20 +1187,23 @@ RECT LoginScene::CharSlotRect(int i) const {
 }
 
 // Écran Liste : colonne principale de boutons (Docs/TS2_CHARSELECT_RE.md §7). Origine
-// v126 = nWidth-140, v117 = nHeight-301 ; pas vertical de 37 px. Seuls les 4 boutons
-// LATCHÉS ont un membre Button et sont hit-testés (CharSelectOnMouseDown/Up) ; RENOMMER
-// (v117+111) / ENTREPÔT (v117+148) / QUITTER (v117+222) sont dessinés en sprites directs
-// idle dans CharListRender() (pas de membre ni de hit-test — cf. commentaire là-bas).
+// v126 = nWidth-140, v117 = nHeight-301 ; pas vertical de 37 px. Les boutons de cette
+// colonne sont rendus/hit-testés aux mêmes offsets que Scene_CharSelectRender/
+// OnMouseDown/Up : RESTAURER v117-37 (EA 0x51E354/0x525B46), ENTRER v117 (0x51DF53/
+// 0x52508E), CRÉER v117+37 (0x51DFEB/0x52522A), SUPPRIMER v117+74 (0x51E079/
+// 0x52545C), RETOUR v117+185 (0x51E225/0x525A1F). RENOMMER (v117+111), ENTREPÔT
+// (v117+148) et QUITTER (v117+222) restent dessinés en sprites directs.
 void LoginScene::LayoutCharSelect() {
     // Hit rect = gabarit nominal (dims réelles = celles du sprite .IMG, non extractibles
     // statiquement) ; borné sous le pas de 37 px pour éviter le recouvrement des zones.
     constexpr int kColBtnW = 128, kColBtnH = 34;
     const int v126 = screenW_ - 140;
     const int v117 = screenH_ - 301;
-    enterBtn_.SetBounds (v126, v117,       kColBtnW, kColBtnH); // ENTRER    (16/17/18)
-    createBtn_.SetBounds(v126, v117 + 37,  kColBtnW, kColBtnH); // CRÉER     (19/20/21)
-    deleteBtn_.SetBounds(v126, v117 + 74,  kColBtnW, kColBtnH); // SUPPRIMER (22/23/24)
-    backBtn_.SetBounds  (v126, v117 + 185, kColBtnW, kColBtnH); // RETOUR    (963/964/965)
+    restoreBtn_.SetBounds(v126, v117 - 37,  kColBtnW, kColBtnH); // RESTAURER (3086/3087/3088), EA 0x51E354
+    enterBtn_.SetBounds  (v126, v117,       kColBtnW, kColBtnH); // ENTRER    (16/17/18),       EA 0x51DF53
+    createBtn_.SetBounds (v126, v117 + 37,  kColBtnW, kColBtnH); // CRÉER     (19/20/21),       EA 0x51DFEB
+    deleteBtn_.SetBounds (v126, v117 + 74,  kColBtnW, kColBtnH); // SUPPRIMER (22/23/24),       EA 0x51E079
+    backBtn_.SetBounds   (v126, v117 + 185, kColBtnW, kColBtnH); // RETOUR    (963/964/965),    EA 0x51E225
 }
 
 // Écran Formulaire de création : 5 paires -/+ (job/faction/visage/couleur/variant),
@@ -1287,6 +1304,7 @@ void LoginScene::CharListRender() {
     deleteBtn_.OnMouseMove(mp.x, mp.y);
     enterBtn_.OnMouseMove(mp.x, mp.y);
     backBtn_.OnMouseMove(mp.x, mp.y);
+    restoreBtn_.OnMouseMove(mp.x, mp.y);
 
     // Ancres réelles (doc §5.1 / §7).
     constexpr int kPanelTop = 19;         // panneau liste unk_931680 @ (nWidth-194, 19)
@@ -1325,7 +1343,7 @@ void LoginScene::CharListRender() {
         for (int i = 0; i < game::kMaxCharSlots; ++i) {
             const game::CharSlotInfo& slot = charState_.slots[static_cast<size_t>(i)];
             if (!slot.occupied) continue;            // slot vide -> pas de fiche dessinée
-            const RECT r = CharSlotRect(i);          // (panneauX, y_i) — mêmes coords que le hit-test
+            const RECT r = CharSlotRect(i);          // fiche @ (panneauX, y_i), EA 0x51D5A7 ; hit sélection = r+(25,16)
             // Fond de fiche selon le tier (doc §5.1). Décidables ici : normal (2013) et
             // renaissance (niveau>=113 -> 2018). Les tiers intermédiaire (2729, rec+0x3C) et
             // max (4343, rec+0x164C) dépendent de champs de fiche NON exposés par
@@ -1342,6 +1360,7 @@ void LoginScene::CharListRender() {
 
         // Boutons LATCHÉS de la colonne principale : sprites idle/hover/pressé dédiés câblés
         // en Init() ; DrawSkin dessine l'état courant à la taille native du sprite.
+        restoreBtn_.DrawSkin(sprites_); // RESTAURER @ (v126, v117-37), Scene_CharSelectRender 0x51E370/0x51E38A/0x51E3A4
         enterBtn_.DrawSkin(sprites_);
         createBtn_.DrawSkin(sprites_);
         deleteBtn_.DrawSkin(sprites_);
@@ -1530,11 +1549,23 @@ void LoginScene::CharSelectOnMouseDown(int x, int y) {
 
     LayoutCharSelect();
     for (int i = 0; i < game::kMaxCharSlots; ++i) {
-        if (RectContains(CharSlotRect(i), x, y)) {
+        const RECT row = CharSlotRect(i);
+        int hw = 64, hh = 28; // repli : zone de surbrillance si l'asset manque
+        if (gfx::GpuTexture* t = GetAtlasSprite(1657)) {
+            if (t->Width() > 0 && t->Height() > 0) {
+                hw = static_cast<int>(t->Width());
+                hh = static_cast<int>(t->Height());
+            }
+        }
+        // Hit-test de sélection = sprite unk_924944 (slot 1657) @ (panneauX+25, 19+50+i*44),
+        // pas toute la fiche : Scene_CharSelectOnMouseDown 0x520F40, EA 0x522688.
+        const RECT hit = MakeRect(row.left + 25, row.top + 16, hw, hh);
+        if (RectContains(hit, x, y)) {
             game::SelectCharacterSlot(charState_, i);
             return;
         }
     }
+    restoreBtn_.OnMouseDown(x, y); // RESTAURER : Scene_CharSelectOnMouseDown EA 0x522935 (slot 3086)
     createBtn_.OnMouseDown(x, y);
     deleteBtn_.OnMouseDown(x, y);
     enterBtn_.OnMouseDown(x, y);
@@ -1559,6 +1590,7 @@ void LoginScene::CharSelectOnMouseUp(int x, int y) {
         createConfirmBtn_.OnMouseUp(x, y); createCancelBtn_.OnMouseUp(x, y);
         return;
     }
+    restoreBtn_.OnMouseUp(x, y); // RESTAURER : Scene_CharSelectOnMouseUp EA 0x525B46 (action restauration hors flux porté)
     createBtn_.OnMouseUp(x, y);
     deleteBtn_.OnMouseUp(x, y);
     enterBtn_.OnMouseUp(x, y);

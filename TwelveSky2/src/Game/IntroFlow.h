@@ -59,14 +59,14 @@ namespace ts2::game {
 // ---------------------------------------------------------------------------
 // Constantes du flux réel (valeurs extraites du désassemblage, PAS arbitraires).
 // ---------------------------------------------------------------------------
-constexpr int kIntroWaitFrames      = 90; // 0x5A — sous-état 0 : attente initiale (3,0 s @ 30 FPS)
-constexpr int kIntroLogoStepFrames  = 3;  // durée de chaque micro-état de logo (0,1 s @ 30 FPS)
-constexpr int kIntroLogoStepCount   = 33; // 0x21 — nombre de micro-états séquentiels (sous-états 1..33)
-constexpr int kIntroFinalHoldFrames = 90; // 0x5A — sous-état 34 (0x22) : maintien final (3,0 s @ 30 FPS)
-constexpr int kIntroFadeSlotCount   = 150; // 0x96 — taille du tampon this[3..152] (offset +12)
+constexpr int kIntroWaitFrames      = 90; // Scene_IntroUpdate 0x518023 : 0x5A, attente initiale
+constexpr int kIntroLogoStepFrames  = 3;  // Scene_IntroUpdate 0x51809E..0x518798 : seuil de chaque micro-état
+constexpr int kIntroLogoStepCount   = 33; // Scene_IntroUpdate 0x518792/0x51879F : dernier case 0x21 -> 0x22
+constexpr int kIntroFinalHoldFrames = 90; // Scene_IntroUpdate 0x5187C8 : 0x5A, maintien final
+constexpr int kIntroFadeSlotCount   = 150; // Scene_IntroUpdate 0x518042/0x518063 : boucle i<150, this[3+i]=0
 
 // Sous-état atteint après les 33 micro-états de logo (dernier maintien avant transition).
-constexpr int kIntroFinalSubState = kIntroLogoStepCount + 1; // 34 (0x22)
+constexpr int kIntroFinalSubState = kIntroLogoStepCount + 1; // Scene_IntroUpdate 0x51879F : 34 (0x22)
 
 // Nombre total de frames de la séquence complète (référence/diagnostic).
 constexpr int kIntroTotalFrames =
