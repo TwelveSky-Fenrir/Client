@@ -5,6 +5,8 @@
 #include "Game/GameDatabase.h"
 #include "Game/NameplateLogic.h"
 #include "Game/StaticNpcLoader.h" // PNJ de decor (mission "PNJ DECOR VISIBLES A L'ECRAN", cf. Render())
+#include "Gfx/MotionCache.h"      // palette d'os animee (miroir g_ModelMotionArray 0x8E8B30) — W3-F1
+#include "Gfx/PlayerPaperdoll.h"  // paperdoll joueur (calque Char_RenderModel 0x527020) — W3-F1
 #include "Core/Log.h"
 #include <cstring>
 
@@ -17,6 +19,16 @@ namespace {
 
 template <class T>
 void SafeRelease(T*& p) { if (p) { p->Release(); p = nullptr; } }
+
+// Cache CPU des palettes d'os animees (miroir de g_ModelMotionArray 0x8E8B30). WorldRenderer.h
+// n'etant PAS editable (aucun membre ajoutable), on l'instancie en statique de fichier — duree de
+// vie process, DONNEES 100 % CPU (aucun device D3D requis, cf. MotionCache). gameDataDir="." :
+// meme convention et meme raison que modelCache_ (le CWD process est deja bascule sur gameDataDir
+// des App::Init, bien avant tout rendu — cf. WorldRenderer::Init).
+gfx::MotionCache& Motions() {
+    static gfx::MotionCache m(".");
+    return m;
+}
 
 // Palette approximative des codes couleur de NameplateLogic (game::kNameColor*).
 // HORS PÉRIMÈTRE : la vraie palette vit côté assets UI (littéraux passés à
@@ -232,7 +244,13 @@ void WorldRenderer::drawPlaceholderCube(const D3DXVECTOR3& pos, float scale, D3D
     device_->SetTextureStageState(0, D3DTSS_ALPHAOP,   D3DTOP_SELECTARG1);
     device_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
 
+    // Filet de debug (bullet 4, tâche W3-F1) : le cube n'est plus qu'un REPLI de traçabilité
+    // (jamais dessiné quand un modèle/palette résout) -> rendu en fil de fer pour signaler
+    // visuellement « modèle non résolu » sans masquer la scène. AUCUNE ancre IDA : le cube
+    // n'existe pas dans le binaire d'origine — repli de debug, pas de fidélité.
+    device_->SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME);
     cubeMesh_->DrawSubset(0);
+    device_->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
 
     // Restaure l'état de texturage standard (modulation texture*diffuse) attendu
     // par les prochains blits sprite/mesh de la frame.
@@ -318,54 +336,71 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
     // cube) ; PNJ GAMEPLAY (ent.npcDef nul) -> pas de modèle de corps connu -> cube
     // systématique. monsterDefId et npcDef ne sont jamais renseignés simultanément
     // (cf. DrawableEntity), monsterDefId a priorité par construction ici.
+    // bodyModel : MONSTRE / PNJ DE DÉCOR uniquement (les joueurs passent par le paperdoll
+    // ci-dessous). Conservé aussi pour la passe reflet plus bas (Char_DrawReflection 0x581090,
+    // monstres seulement). Pour un joueur (monsterDefId==0 && npcDef==nul) -> nullptr.
     const gfx::SkinnedModel* bodyModel = (ent.monsterDefId != 0)
         ? ResolveMonsterModel(ent.monsterDefId)
         : ResolveNpcModel(ent.npcDef);
-    gfx::PlayerBodyModel playerBody;
-    if (ent.hasBody) {
-        playerBody = ResolvePlayerBodyModel(ent.bodyRace, ent.bodyGender,
-                                            ent.bodyCostumeSlot0, ent.bodyCostumeSlot1);
-    }
-    const bool slot0Ready = playerBody.slot0 && !playerBody.slot0->Empty();
-    const bool slot1Ready = playerBody.slot1 && !playerBody.slot1->Empty();
 
     const D3DXVECTOR3 rotDeg(0.0f, placement.angle, 0.0f);
     const D3DXVECTOR3 scaleVec(scale, scale, scale);
-    gfx::BonePalette palette; // TODO(anim) : pas de MotionPalette branchée ici -> palette identité
+
+    // Palette d'os ANIMÉE (remplace l'ancienne palette IDENTITÉ) — échantillonnée par
+    // g_World.gameTimeSec. Reprend la séquence Char_Draw 0x5805C0 -> SObject_DrawEx 0x4D9330
+    // (Motion_GetData 0x4D78C0 = motionSlot+136) -> Model_Render 0x40EBB0 (frame = ftol(animTime),
+    // borné 0..frameCount-1). animType idle=0 : pose de base de Char_Draw ; la vraie horloge
+    // (entity+7) est pilotée par la FSM Char_UpdateAnimationFrame 0x571880, JAMAIS câblée sur les
+    // entités de rendu (cf. GameState.h) -> échantillonnage 30 fps par g_World.gameTimeSec (idiome
+    // Char_RenderModel 0x528d38). TODO [ancre 0x571880] : animType réel depuis la FSM d'action.
+    gfx::BonePalette palette; // repli identité si aucune MOTION ne résout
+    if (ent.monsterDefId != 0) {
+        // Model_GetNpcMotionSlot 0x4E5960 (monstre, stride 3276).
+        if (const gfx::MotionPalette* mp = Motions().GetForMonster(ent.monsterDefId, /*anim idle*/0))
+            palette = gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
+    } else if (ent.npcDef) {
+        // Model_GetNpcMeshSlot 0x4E5910 (PNJ de décor, stride 468).
+        if (const gfx::MotionPalette* mp = Motions().GetForNpc(*ent.npcDef, /*anim idle*/0))
+            palette = gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
+    }
+
     // PNJ GAMEPLAY : bodyMeshEligible=false -> AUCUN corps ni cube (l'original ne dessine
     // jamais de mesh pour dword_17AB534, cf. DrawableEntity::bodyMeshEligible). Seule la
     // nameplate plus bas est émise pour ces entités.
     if (ent.bodyMeshEligible) {
-        if (bodyModel && !bodyModel->Empty()) {
+        if (ent.hasBody) {
+            // JOUEUR — PlayerPaperdoll (calque Char_RenderModel 0x527020) : UNE palette d'os
+            // animée PARTAGÉE (PcModel_ResolveEquipSlot 0x4E46A0) + liste ordonnée de pièces
+            // (corps SLOT0 flt_F59A7C / SLOT1 flt_F5B21C + arme). Remplace l'ancien corps
+            // 2-pièces inline ET l'ancien hack d'arme (wpos = pos.y + scale*0.6). L'arme est
+            // désormais une pièce dessinée à la MÊME transformée + MÊME palette que le corps
+            // (Char_RenderModel 0x527bfe : arme skinnée au bone de main via v37), pas un offset.
+            gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
+                *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
+                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                game::g_World.gameTimeSec);
+            if (pd.valid) {
+                for (const gfx::SkinnedModel* piece : pd.pieces)
+                    meshRenderer_.DrawModel(*piece, pos, rotDeg, scaleVec, pd.palette);
+            } else {
+                // Repli : ni corps ni arme résolus -> filet de debug (cf. drawPlaceholderCube).
+                drawPlaceholderCube(pos, scale, ent.placeholderColor, rotDeg.y, view, proj);
+            }
+        } else if (bodyModel && !bodyModel->Empty()) {
+            // MONSTRE / PNJ DE DÉCOR — modèle réel + palette animée résolue ci-dessus.
             meshRenderer_.DrawModel(*bodyModel, pos, rotDeg, scaleVec, palette);
-        } else if (slot0Ready || slot1Ready) {
-            // Les 2 pièces sont dessinées ENSEMBLE à la même transformée par le pipeline
-            // d'origine (Char_DrawWeaponTrailEffect, cf. bandeau WorldRenderer.h) : SLOT0
-            // (catalogue flt_F59A7C) + SLOT1 (catalogue flt_F5B21C), chacune dessinée
-            // indépendamment si son stem a résolu (l'autre peut manquer sans bloquer celle-ci).
-            if (slot0Ready) meshRenderer_.DrawModel(*playerBody.slot0, pos, rotDeg, scaleVec, palette);
-            if (slot1Ready) meshRenderer_.DrawModel(*playerBody.slot1, pos, rotDeg, scaleVec, palette);
         } else {
-            // Traçabilité visuelle même sans le vrai modèle (cf. WorldRenderer.h) : cube de
-            // dernier recours si monstre non résolu ET les DEUX pièces de corps joueur ont
-            // échoué. N'atteint JAMAIS un PNJ gameplay (bodyMeshEligible=false ci-dessus).
+            // Traçabilité visuelle même sans le vrai modèle (cf. WorldRenderer.h) : filet de
+            // dernier recours si le modèle monstre/PNJ n'a pas résolu. N'atteint JAMAIS un PNJ
+            // gameplay (bodyMeshEligible=false ci-dessus).
             drawPlaceholderCube(pos, scale, ent.placeholderColor, rotDeg.y, view, proj);
         }
     }
-
-    // Arme réelle (self + distant, mission ModelCache, cf. bandeau) : SURIMPRESSION du
-    // corps déjà dessiné ci-dessus (modèle SLOT0/SLOT1 réel si résolu, sinon cube — jamais
-    // en remplacement, aucun point d'attache de main reversé). Décalée en hauteur (~ la
-    // main) pour rester visuellement distincte du corps.
-    if (ent.weaponItemId != 0) {
-        if (const gfx::SkinnedModel* weaponModel = ResolveWeaponModel(ent.weaponItemId)) {
-            if (!weaponModel->Empty()) {
-                gfx::BonePalette wpal; // idem : pas de palette d'anim branchée ici
-                const D3DXVECTOR3 wpos(pos.x, pos.y + scale * 0.6f, pos.z);
-                meshRenderer_.DrawModel(*weaponModel, wpos, rotDeg, scaleVec, wpal);
-            }
-        }
-    }
+    // NOTE FIDÉLITÉ : monstre = chemin le mieux ancré (Char_Draw 0x5805C0 EST le dessin monstre
+    // en jeu). Joueur = extrapolation de Char_RenderModel 0x527020 (dessin corps joueur en jeu non
+    // localisé statiquement) — palette animée appliquée en jeu comme choix honnête, supérieure à
+    // l'identité. L'ancienne surimpression d'arme séparée (offset pos.y+0.6, aucun bone reversé)
+    // est SUPPRIMÉE au profit de l'attache main par skinning (paperdoll).
 
     // Reflet (Char_DrawReflection 0x581090, RÉSERVÉ AUX MONSTRES -- vérification
     // approfondie 2026-07-14, mission "EXTENSION OMBRE/REFLET", cf. bandeau

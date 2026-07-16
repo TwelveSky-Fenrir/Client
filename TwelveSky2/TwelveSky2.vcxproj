@@ -181,6 +181,8 @@
     <ClCompile Include="src\Gfx\GxdRenderer.cpp" />
     <ClCompile Include="src\Gfx\IconTextureCache.cpp" />
     <ClCompile Include="src\Gfx\MeshRenderer.cpp" />
+    <ClCompile Include="src\Gfx\MotionCache.cpp" />
+    <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp" />
     <ClCompile Include="src\Gfx\ModelCache.cpp" />
     <ClCompile Include="src\Gfx\Renderer.cpp" />
     <ClCompile Include="src\Gfx\ShaderSet.cpp" />
@@ -324,6 +326,8 @@
     <ClInclude Include="src\Gfx\GxdRenderer.h" />
     <ClInclude Include="src\Gfx\IconTextureCache.h" />
     <ClInclude Include="src\Gfx\MeshRenderer.h" />
+    <ClInclude Include="src\Gfx\MotionCache.h" />
+    <ClInclude Include="src\Gfx\PlayerPaperdoll.h" />
     <ClInclude Include="src\Gfx\ModelCache.h" />
     <ClInclude Include="src\Gfx\Renderer.h" />
     <ClInclude Include="src\Gfx\ShaderSet.h" />

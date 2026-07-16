@@ -55,9 +55,21 @@ public:
     // HasRealAtmosphere()==false pour que l'appelant puisse le distinguer/logguer.
     void SetAtmosphere(const asset::AtmosphereFile& atm);
 
-    // Dessine le gradient plein écran. Cf. bandeau ci-dessus pour la place dans la frame
-    // (en tout premier, avant la géométrie de monde). Sans effet si Init() n'a pas réussi.
+    // Dessine le ciel. Cf. bandeau ci-dessus pour la place dans la frame (en tout premier,
+    // avant la géométrie de monde). Sans effet si Init() n'a pas réussi.
+    // Repli fidèle Env_RenderSkyCube 0x6a8f60 si une skybox cube est alimentée (HasSkyCube()),
+    // sinon gradient plein écran PLACEHOLDER (cf. §modèle jour/nuit dans le .cpp).
     void Render(int screenW, int screenH);
+
+    // --- Skybox cube 6 faces (repli fidèle Env_RenderSkyCube 0x6a8f60) --------------------
+    // Ces setters modélisent des champs runtime NON possédés par ce front (objet sky de zone,
+    // g_GfxRenderer+136/+140/+792) — cf. règle #6. Tant qu'ils ne sont pas câblés (TODO côté
+    // front World/zone/asset), skyRadius_ reste 0 -> HasSkyCube()==false -> gradient PLACEHOLDER.
+    void SetSkyCubeTextures(IDirect3DTexture9* const faces[6]); // objet sky zone (desc. face 52o, this+13)
+    void SetSkyRadius(float r);          // flt_7FFEA0 = g_GfxRenderer+136 (rayon ciel ; cube actif si >0)
+    void SetCameraPosition(float x, float y, float z); // g_CameraPos 0x800130 = g_GfxRenderer+792
+    void SetFogActive(bool on);          // dword_7FFEA4 = g_GfxRenderer+140 (fog à désactiver autour)
+    bool HasSkyCube() const;             // true si skyRadius_>0 && >=1 texture de face
 
     // --- Diagnostics (tests, logs de sanité) --------------------------------------------
     bool     HasRealAtmosphere() const { return hasRealAtmosphere_; }
@@ -70,6 +82,11 @@ public:
 
 private:
     void recomputeColors();
+
+    // Skybox cube : reconstruit les 24 sommets si le rayon a changé (cache this+210), puis
+    // dessine les 6 faces. Ancres Env_RenderSkyCube 0x6a8f60 (détail dans le .cpp).
+    void rebuildCubeVertices();
+    void renderCube();
 
     // Instantané des réglages GLOBAUX de SilverLining.config (lus 1×/session par cAtmosphere_Initialize
     // 0x793390) ; les données PAR ZONE (heure/lat/lon/flags) arrivent séparément via SetAtmosphere() (.ATM,
@@ -112,6 +129,17 @@ private:
     ConfigSnapshot config_;
     uint32_t zenithColor_  = 0xFF335C99; // recalculés par recomputeColors() dès Init()/SetAtmosphere()
     uint32_t horizonColor_ = 0xFF9CB8DE;
+
+    // --- État runtime de la skybox cube (Env_RenderSkyCube 0x6a8f60) ----------------------
+    // Valeurs par défaut => cube inactif => gradient PLACEHOLDER (aucune régression).
+    struct SkyCubeVertex { float x, y, z, u, v; }; // 20 o, FVF D3DFVF_XYZ|D3DFVF_TEX1 (0x102) @0x6a934f
+
+    IDirect3DTexture9* faceTex_[6] = { nullptr };  // objet sky zone this+13 (desc. face 52o, 1er dword = texture)
+    float  skyRadius_   = 0.0f;   // flt_7FFEA0 = g_GfxRenderer+136 (R ; jamais écrit statiquement => 0 par défaut)
+    float  camPos_[3]   = { 0.0f, 0.0f, 0.0f }; // g_CameraPos 0x800130 = g_GfxRenderer+792 (translation monde @0x6a936e)
+    bool   fogActive_   = false;  // dword_7FFEA4 = g_GfxRenderer+140 (fog actif => à désactiver @0x6a933c)
+    float  cubeCacheRadius_ = -1.0f; // this+210 (byte 0x348) : cache de reconstruction @0x6a8f88/@0x6a92c6
+    SkyCubeVertex cubeVerts_[24];    // this+211 (6 faces × 4 sommets)
 };
 
 } // namespace ts2::gfx

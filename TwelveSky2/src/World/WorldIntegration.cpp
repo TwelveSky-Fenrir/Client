@@ -245,9 +245,9 @@ bool WorldAssets::FreeZoneSound(void* user) {
     return true;
 }
 // CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWG. Ancre IDA : MapColl_LoadMapFile 0x697b30.
-// TODO terrain WG (surface non rendue) : chargé + parsé (EOF-exact) mais consommé par AUCUN
-// renderer (Faces() sans appelant de dessin) -> voir SPEC TS2_WORLD_ROSETTA.md §3 G05
-// (Terrain_Render 0x698670, 2x/frame depuis Scene_InGameRender 0x52d0b0). Landing = WorldGeometryRenderer.
+// RÉELLEMENT rendu (FRONT W3-F3) : Faces() est consommé par Gfx/WorldGeometryRenderer::buildTerrain()
+// (chemin FF FVF 530, Terrain_Render 0x698670, 2x/frame depuis Scene_InGameRender 0x52d0b0). La
+// catégorie/eau vient de textures[m].trailer[0/1] (Tex_LoadCompressedFromHandle 0x6a9cf0).
 bool WorldAssets::LoadMapFileWG(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wg_ = std::make_unique<asset::WorldChunk>();
@@ -261,8 +261,9 @@ bool WorldAssets::LoadObjectsWO(void* user, const char* path) {
     return self->wo_->Load(self->gameDataDir_ + "\\" + path);
 }
 // CONFIRMED ex-VeryOldClient: LoadWP (mPSystem). Ancre IDA : MapColl_LoadObjectsB 0x6983b0.
-// TODO hors-FRONT 4 : parsé (FxNodes()) mais JAMAIS rendu (torches/feux/cascades invisibles) ->
-// X01 (FRONT 8), point d'entrée de rendu WP non identifié dans l'IDB, cf. TS2_WORLD_ROSETTA.md §3.Z.
+// RÉELLEMENT rendu (FRONT W3-F3) : FxNodes() est consommé par Gfx/WorldGeometryRenderer::buildFx()
+// + RenderFxBillboards(). Le point d'entrée de rendu .WP EST Terrain_Render a5=2 @0x698c6d
+// (Gfx_BeginUnlitPass 0x69e470 -> Particle_RenderBillboards 0x6a70b0) — l'« X01 non identifié » était FAUX.
 bool WorldAssets::LoadObjectsWP(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wp_ = std::make_unique<asset::WorldChunk>();
@@ -271,12 +272,16 @@ bool WorldAssets::LoadObjectsWP(void* user, const char* path) {
 // CONFIRMED ex-VeryOldClient: mShadowTexture (dispatch case 5). Ancre IDA : Tex_LoadFromFile 0x6a9910.
 // PLAUSIBLE (VeryOldClient) — non prouvé IDA : décodage = DDS plain (loader distinct de
 // Tex_LoadCompressedDDS 0x6a2e80 des minimaps ; interne de 0x6a9910 non décompilé cette passe).
-// TODO terrain SHADOW : texture chargée dans shadow_ mais JAMAIS appliquée (lightmap stage 1 / uv1)
-// -> voir SPEC TS2_WORLD_ROSETTA.md §3 G06 (dépend du rendu terrain G05).
+// DÉSORMAIS APPLIQUÉE (FRONT W3-F3) : la lightmap est liée au stage 1 (uv1, MODULATE) par le chemin
+// FF de Gfx/WorldGeometryRenderer (Terrain_Render @0x698f54/@0x698f68). On conserve ici les octets
+// DDS bruts (shadowBytes_) pour que le renderer crée la texture GPU sans inclure Asset/Texture.h.
 bool WorldAssets::LoadShadowTexture(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
+    const std::string full = self->gameDataDir_ + "\\" + path;
     self->shadow_ = std::make_unique<asset::Texture>();
-    return self->shadow_->LoadDDS(self->gameDataDir_ + "\\" + path);
+    self->shadowBytes_.clear();
+    asset::ReadWholeFile(full, self->shadowBytes_); // octets DDS bruts pour le renderer (best-effort)
+    return self->shadow_->LoadDDS(full);
 }
 // CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (WM1/2/3 -> mRANGE1/2/3). Ancre IDA :
 // MapColl_LoadFaces 0x694510. TODO terrain WM (hauteur de sol) : le chunk est chargé (framing GXD

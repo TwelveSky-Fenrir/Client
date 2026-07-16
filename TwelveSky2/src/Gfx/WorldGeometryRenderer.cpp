@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <limits>
 
 #pragma comment(lib, "d3d9.lib")
@@ -19,6 +20,107 @@ namespace {
 
 template <class T>
 void SafeRelease(T*& p) { if (p) { p->Release(); p = nullptr; } }
+
+// FVF fixed-function du terrain : 0x212 = 530 = D3DFVF_XYZ|NORMAL|TEX2 (2 jeux d'UV, stride 40).
+// Ancre IDA : Terrain_Render 0x698670 SetFVF(530) @0x698e6d.
+constexpr DWORD kFvfTerrain = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX2; // 0x212
+static_assert(kFvfTerrain == 0x212, "FVF terrain doit valoir 530 (0x212)");
+// FVF fixed-function des billboards FX unlit : 0x142 = 322 = D3DFVF_XYZ|DIFFUSE|TEX1 (stride 24).
+// Ancre IDA : Gfx_BeginUnlitPass 0x69e470 SetFVF(322).
+constexpr DWORD kFvfBillboard = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1; // 0x142
+static_assert(kFvfBillboard == 0x142, "FVF billboard doit valoir 322 (0x142)");
+
+// Catégorie de matériau EAU (trailer[0]==3). Ancre IDA : MapColl_LoadMapFile @0x698033
+// (cherche mat+40==3 -> déclenche wave/falloff). Rang de dessin pour reproduire l'ordre exact de
+// Terrain_Render(a5=1) : cat2 -> cat4 -> cat1/sub0 -> eau cat3/sub0 -> cat1/sub1(alphatest) ->
+// eau cat3/sub1 -> (autres opaques). Ancres : boucles @0x698f7b..@0x69914d..@0x6990d8.
+int TerrainLayerRank(uint32_t category, uint32_t subOrder) {
+    if (category == 2) return 0;
+    if (category == 4) return 1;
+    if (category == 1 && subOrder == 0) return 2;
+    if (category == 3 && subOrder == 0) return 3; // eau
+    if (category == 1 && subOrder == 1) return 4; // alpha-test
+    if (category == 3 && subOrder == 1) return 5; // eau alpha-test
+    return 6;                                     // reste : opaque, dessiné en dernier
+}
+
+// Empaquette un float dans le DWORD attendu par SetTextureStageState/SetRenderState (bit-copie).
+inline DWORD F2DW(float f) { DWORD d; std::memcpy(&d, &f, 4); return d; }
+
+// Génère la texture de vagues V8U8 NxN (bump map du/dv signé). Port STRUCTUREL de
+// cWorldMesh_MakeWaterWaveTexture 0x451220 : D3DXCreateTexture(dim,dim,1,0,D3DFMT_V8U8=60,MANAGED),
+// remplissage par somme de 3 sin/cos (amplitudes -64/16/-32, angles 360*r / (x+y)*180 / (x-y)*90).
+// La quantification exacte du binaire (Crt_ftol tronqué + Math_CIsqrt) est APPROXIMÉE ici ; le port
+// byte-exact reste un TODO ancre 0x451220 (impact purement visuel sur l'ondulation). `dim` est lu au
+// runtime depuis cWorldMesh+0 dans l'original ; non disponible en statique -> 64 par défaut (choix de
+// résolution, pas une valeur du protocole/format).
+IDirect3DTexture9* MakeWaterWaveTexture(IDirect3DDevice9* dev, UINT dim) {
+    if (!dev || dim == 0) return nullptr;
+    IDirect3DTexture9* tex = nullptr;
+    // D3DFMT_V8U8 = 60 (signed du/dv), 1 mip, usage 0, pool MANAGED (survit à Reset).
+    if (FAILED(D3DXCreateTexture(dev, dim, dim, 1, 0, D3DFMT_V8U8, D3DPOOL_MANAGED, &tex)) || !tex)
+        return nullptr;
+    D3DLOCKED_RECT lr;
+    if (FAILED(tex->LockRect(0, &lr, nullptr, 0))) { tex->Release(); return nullptr; }
+    auto* row = static_cast<uint8_t*>(lr.pBits);
+    const float N = static_cast<float>(dim);
+    for (UINT y = 0; y < dim; ++y) {
+        int8_t* texel = reinterpret_cast<int8_t*>(row);
+        for (UINT x = 0; x < dim; ++x) {
+            const float dx = static_cast<float>(x) / N - 0.5f;
+            const float dy = static_cast<float>(y) / N - 0.5f;
+            const float r2 = dx * dx + dy * dy;
+            const float aR  = 360.0f * r2;          // v25
+            const float aD1 = (dy + dx) * 180.0f;   // v22
+            const float aD2 = (dx - dy) * 90.0f;    // v24
+            // du (3 termes sin), dv (3 termes cos) — ftol = troncature vers 0.
+            const float du = std::trunc(std::sin(aR)  * -64.0f * -r2)
+                           - std::trunc(std::sin(aD2) *  16.0f)
+                           - std::trunc(std::sin(aD1) * -32.0f);
+            const float dv = std::trunc(std::cos(aR)  * -64.0f * -r2)
+                           - std::trunc(std::cos(aD2) *  16.0f)
+                           - std::trunc(std::cos(aD1) * -32.0f);
+            texel[0] = static_cast<int8_t>(std::max(-128.0f, std::min(127.0f, du)));
+            texel[1] = static_cast<int8_t>(std::max(-128.0f, std::min(127.0f, dv)));
+            texel += 2;
+        }
+        row += lr.Pitch;
+    }
+    tex->UnlockRect(0);
+    return tex;
+}
+
+// Génère la texture de falloff radial V8U8 NxN. Port de MapColl_CreateFalloffTexture 0x694ca0 :
+// valeur = round(-sqrt((x/N-0.5)^2+(y/N-0.5)^2) * 1.442695040888963407) écrite en du ET dv.
+IDirect3DTexture9* MakeFalloffTexture(IDirect3DDevice9* dev, UINT dim) {
+    if (!dev || dim == 0) return nullptr;
+    IDirect3DTexture9* tex = nullptr;
+    if (FAILED(D3DXCreateTexture(dev, dim, dim, 1, 0, D3DFMT_V8U8, D3DPOOL_MANAGED, &tex)) || !tex)
+        return nullptr;
+    D3DLOCKED_RECT lr;
+    if (FAILED(tex->LockRect(0, &lr, nullptr, 0))) { tex->Release(); return nullptr; }
+    auto* row = static_cast<uint8_t*>(lr.pBits);
+    const float N = static_cast<float>(dim);
+    constexpr float kInvLn2 = 1.442695040888963407f; // 1/ln(2), littéral exact du binaire @0x694ca0
+    for (UINT y = 0; y < dim; ++y) {
+        int8_t* texel = reinterpret_cast<int8_t*>(row);
+        for (UINT x = 0; x < dim; ++x) {
+            const float dx = static_cast<float>(x) / N - 0.5f;
+            const float dy = static_cast<float>(y) / N - 0.5f;
+            const float v = std::nearbyint(-std::sqrt(dx * dx + dy * dy) * kInvLn2); // frndint
+            const int8_t b = static_cast<int8_t>(std::max(-128.0f, std::min(127.0f, v)));
+            texel[0] = b; texel[1] = b;
+            texel += 2;
+        }
+        row += lr.Pitch;
+    }
+    tex->UnlockRect(0);
+    return tex;
+}
+
+// Résolution par défaut des textures procédurales d'eau (cf. note MakeWaterWaveTexture : le binaire
+// lit la dimension au runtime depuis cWorldMesh+0 ; 64 est un choix de résolution build-safe).
+constexpr UINT kWaterTexDim = 64;
 
 // Taille de l'en-tête fixe du bloc géométrie GXD d'un WorldMeshPart (Asset/WorldChunk.cpp,
 // ReadMeshPart : A/B/C/D lus à l'offset 120, soit 136 o d'en-tête au total).
@@ -44,29 +146,13 @@ GpuSkinVertex ConvertMobjVertex(const uint8_t* src) {
     return v;
 }
 
-// Gap G1 (terrain .WG) : convertit un TerrainVertex 40o (FVF 530 = XYZ|NORMAL|TEX2, ancre IDA
-// Terrain_Render SetFVF(530) @0x698e6d) vers le GpuSkinVertex 76o de MeshRenderer, avec poids
-// (1,0,0,0) / os 0 (repli palette identité) et tangent/binormal à zéro (jamais lus par kSkinnedVS).
-// La position est en repère MONDE (world=identité au rendu terrain, cf. Terrain_Render : aucune
-// SetTransform WORLD, seule la matrice de texture stage 0 est posée @0x698f25). uv0 (diffuse,
-// stage 0) -> texcoord0. uv1 (lightmap/.SHADOW, stage 1) est IGNORÉ ici : le pipeline skinné
-// réutilisé n'a qu'un seul jeu de coordonnées de texture -> voir TODO G8 dans renderTerrain().
-GpuSkinVertex ConvertTerrainVertex(const asset::TerrainVertex& src) {
-    GpuSkinVertex v{};
-    v.position[0] = src.position[0]; v.position[1] = src.position[1]; v.position[2] = src.position[2];
-    v.blendWeight[0] = 1.0f;
-    v.blendWeight[1] = v.blendWeight[2] = v.blendWeight[3] = 0.0f;
-    v.blendIndices = 0;
-    v.tangent[0] = v.tangent[1] = v.tangent[2] = 0.0f;
-    v.binormal[0] = v.binormal[1] = v.binormal[2] = 0.0f;
-    v.normal[0] = src.normal[0]; v.normal[1] = src.normal[1]; v.normal[2] = src.normal[2];
-    v.texcoord[0] = src.uv0[0];  v.texcoord[1] = src.uv0[1]; // uv0 = diffuse (stage 0)
-    return v;
-}
-
 // Contrainte INDEX16 : au plus 65536 sommets adressables par lot. On borne les lots terrain à
 // 65535 sommets = 21845 faces (3 sommets/face, 65535 % 3 == 0) pour rester dans DrawIndexedPrimitive.
 constexpr uint32_t kTerrainMaxVertsPerBatch = 65535u; // 21845 faces * 3
+
+// FVF terrain -> FfTerrainVertex 40o : le vertex disque asset::TerrainVertex (pos/normal/uv0/uv1)
+// est BIT-À-BIT identique -> aucune conversion, copie directe (memcpy dans buildTerrain).
+static_assert(sizeof(asset::TerrainVertex) == 40, "TerrainVertex disque = 40o (memcpy direct FF)");
 
 } // namespace
 
@@ -106,17 +192,31 @@ void WorldGeometryRenderer::releaseObjects() {
     objects_.clear();
     modelRanges_.clear();
     instances_.clear();
-    releaseTerrain(); // Gap G1 : libère aussi les lots/textures du sol .WG
+    instancePhase_.clear();
+    releaseTerrain(); // libère aussi les couches/textures du sol .WG + eau + lightmap
+    releaseFx();      // libère les billboards FX de zone .WP + leurs textures
 }
 
-// Gap G1 : libère les VB/IB des lots terrain puis les textures diffuses (possédées une seule
-// fois, réfs non-possédantes dans TerrainBatch::diffuse).
+// Libère les VB/IB des couches terrain, les textures diffuses (possédées), les textures d'eau
+// procédurales et la lightmap.
 void WorldGeometryRenderer::releaseTerrain() {
-    for (TerrainBatch& b : terrainBatches_) { SafeRelease(b.lod.vb); SafeRelease(b.lod.ib); }
-    terrainBatches_.clear();
+    for (TerrainLayer& l : terrainLayers_)
+        for (FfLod& lod : l.lods) { SafeRelease(lod.vb); SafeRelease(lod.ib); }
+    terrainLayers_.clear();
     for (IDirect3DTexture9*& t : terrainTextures_) SafeRelease(t);
     terrainTextures_.clear();
+    SafeRelease(waveTex_);
+    SafeRelease(falloffTex_);
+    SafeRelease(shadowTex_);
+    wavePhase_ = 0.0f;
     terrainFaceCount_ = 0;
+}
+
+// Libère les textures GPU des nœuds FX de zone (.WP) et vide la liste de billboards.
+void WorldGeometryRenderer::releaseFx() {
+    for (IDirect3DTexture9*& t : fxTextures_) SafeRelease(t);
+    fxTextures_.clear();
+    fxBillboards_.clear();
 }
 
 // D3DPOOL_MANAGED : survit à un Reset() sans re-upload (même politique que MeshRenderer::Upload).
@@ -139,6 +239,23 @@ IDirect3DTexture9* WorldGeometryRenderer::createTextureFromBlock(IDirect3DDevice
         D3DPOOL_MANAGED, D3DX_DEFAULT, D3DX_DEFAULT, 0, nullptr, nullptr, &out);
     if (FAILED(hr)) {
         TS2_WARN("WorldGeometryRenderer: creation texture WO echouee (0x%08lX)", hr);
+        return nullptr;
+    }
+    return out;
+}
+
+// Crée une texture depuis un fichier DDS complet en mémoire (lightmap .SHADOW brute, exposée par
+// WorldAssets::ShadowBytes()). Ancre IDA : Tex_LoadFromFile 0x6a9910 (DDS DXT1/3/5).
+IDirect3DTexture9* WorldGeometryRenderer::createTextureFromDds(IDirect3DDevice9* dev,
+                                                               const std::vector<uint8_t>& dds) {
+    if (!dev || dds.empty()) return nullptr;
+    IDirect3DTexture9* out = nullptr;
+    HRESULT hr = D3DXCreateTextureFromFileInMemoryEx(
+        dev, dds.data(), static_cast<UINT>(dds.size()),
+        D3DX_DEFAULT, D3DX_DEFAULT, D3DX_DEFAULT, 0, D3DFMT_UNKNOWN,
+        D3DPOOL_MANAGED, D3DX_DEFAULT, D3DX_DEFAULT, 0, nullptr, nullptr, &out);
+    if (FAILED(hr)) {
+        TS2_WARN("WorldGeometryRenderer: creation lightmap .SHADOW echouee (0x%08lX)", hr);
         return nullptr;
     }
     return out;
@@ -247,10 +364,12 @@ bool WorldGeometryRenderer::Build(const world::WorldAssets& assets) {
     skyRenderer_.ApplyConfig(assets.SilverLining());
     skyRenderer_.SetAtmosphere(assets.Atmosphere());
 
-    // Gap G1 « le sol » : construit les lots GPU du terrain .WG AVANT les gardes .WO ci-dessous,
-    // pour que le sol soit dessiné même quand la zone n'a pas de chunk .WO (ancre IDA :
+    // FRONT W3-F3 « le sol » : construit les couches FF du terrain .WG (+ eau + lightmap) AVANT les
+    // gardes .WO ci-dessous, pour que le sol soit dessiné même sans chunk .WO (ancre IDA :
     // Terrain_Render 0x698670, appelé par Scene_InGameRender 0x52d0b0 AVANT les objets .WO).
     buildTerrain(assets);
+    // FX de zone .WP : billboards placés (indépendants des .WO — construits même sans .WO).
+    buildFx(assets);
 
     const asset::WorldChunk* chunk = assets.Objects();
     if (!chunk) {
@@ -292,6 +411,18 @@ bool WorldGeometryRenderer::Build(const world::WorldAssets& assets) {
     // Terrain_Render 0x698670 -> Model_RenderWithShadow_0 0x6a4110 @0x698bdd (consommateur du tableau).
     instances_ = wo->auxRecords;
 
+    // FRONT W3-F3 : état de sway par instance (phase 0, borne de wrap = nb de frames A du gabarit).
+    // Ancre IDA : MapColl_UpdateObjectAnim 0x694a00 (frameCount = part.A). Tické par TickWorldAnim.
+    instancePhase_.assign(instances_.size(), 0.0f);
+    instanceFrameCount_.assign(instances_.size(), 1u);
+    for (size_t i = 0; i < instances_.size(); ++i) {
+        const uint32_t mi = instances_[i].modelIndex;
+        if (mi < wo->models.size() && wo->models[mi].present && !wo->models[mi].parts.empty()) {
+            const uint32_t A = wo->models[mi].parts[0].A;
+            instanceFrameCount_[i] = (A > 0) ? A : 1u;
+        }
+    }
+
     // ---- log de sanité : preuve que Render() va bien utiliser N positions distinctes ----
     size_t outOfRange = 0, emptyModelInstances = 0;
     float minP[3] = { (std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)(),
@@ -320,27 +451,25 @@ bool WorldGeometryRenderer::Build(const world::WorldAssets& assets) {
 }
 
 // ===========================================================================
-//  Gap G1 — construction des lots GPU du terrain .WG (« le sol »).
+//  FRONT W3-F3 — construction des couches FIXED-FUNCTION du terrain .WG (« le sol »).
 //
-//  Ancre IDA : Terrain_Render 0x698670 (« render quadtree terrain tile/water/land layers
-//  with reflections »), appelé 2×/frame depuis Scene_InGameRender 0x52d0b0 (@0x52d9be pass 1,
-//  @0x52ead8 pass 2), AVANT les objets .WO. Source de données : WorldAssets::Faces() ->
-//  asset::MapFaceChunk (mesh.tris = CollisionFace 156o, textures[] par matériau, décodés
-//  byte-exact par le stage DECODE). Modèle de rendu de l'original :
-//    - a1+88  = tableau de faces (156o) ; face.materialIndex@0 (qmemcpy 120o depuis face+4
-//               @0x698e21, saut du materialIndex) ;
-//    - a1+16  = tableau matériaux (stride 52) : +40 catégorie, +44 sous-flag, +48 texture ;
-//    - a1+144 = offset de départ par matériau (== MapFaceChunk::materialIndices) ;
-//    - a1+160 = compteur de sommets par matériau (rempli au cull) ;
+//  Ancre IDA : Terrain_Render 0x698670 (« render quadtree terrain tile/water/land layers with
+//  reflections »), appelé 2×/frame depuis Scene_InGameRender 0x52d0b0, AVANT les objets .WO.
+//  Source : WorldAssets::Faces() -> asset::MapFaceChunk (mesh.tris = CollisionFace 156o,
+//  textures[] par matériau). Modèle de rendu de l'original :
+//    - a1+88  = faces (156o) ; face.materialIndex@0 ; 120o=3*40 sommets copiés (qmemcpy @0x698e21) ;
+//    - a1+16  = matériaux (stride 52) : +40 CATÉGORIE (trailer[0]), +44 subOrder (trailer[1]),
+//               +48 texture (rempli par Tex_LoadCompressedFromHandle 0x6a9cf0) ;
 //    - SetFVF(530) @0x698e6d, DrawPrimitiveUP(TRIANGLELIST, count, VB+120*start, stride 40).
-//  Ici on GROUPE les faces par materialIndex et on pré-construit des VB/IB statiques (le sol
-//  est statique), dessinés via meshRenderer_ (world=identité, palette identité) — réutilisation
-//  de l'infra .WO. Simplifications assumées (TODO précis, cf. renderTerrain()) : pas de cull
-//  quadtree/frustum par frame, pas de multi-passe par catégorie (eau G6 / lightmap G8), pas de
-//  matrice de texture animée. Le sol s'affiche, texturé par matériau — c'est le livrable G1.
+//  Ici : GROUPE les faces par matériau -> une TerrainLayer(diffuse, category, subOrder) par matériau,
+//  TRIÉES par rang (catégorie, subOrder) pour reproduire l'ordre de dessin de Terrain_Render(a5=1).
+//  Sommets FfTerrainVertex 40o (= asset::TerrainVertex bit-à-bit, uv0=diffuse stage0, uv1=lightmap
+//  stage1) uploadés par memcpy. Crée aussi les textures d'eau procédurales (si une couche cat==3
+//  existe, fidèle @0x698043) et la lightmap .SHADOW. Le cull quadtree/frustum par frame reste un
+//  TODO perf (on dessine tout — correct, non optimisé).
 // ===========================================================================
 bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
-    // releaseObjects() (appelé par Build avant nous) a déjà purgé terrainBatches_/terrainTextures_.
+    // releaseObjects() (appelé par Build avant nous) a déjà purgé terrainLayers_/terrainTextures_.
     if (!dev_) return false; // build-safe : device absent
     const asset::WorldChunk* chunk = assets.Faces();
     if (!chunk) return false;                       // pas de .WG chargé pour cette zone
@@ -355,70 +484,132 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
         return true; // .WG vide : rien à dessiner, pas une erreur
     }
 
-    // 1) Une texture diffuse par matériau (ordre .WG). textures[m].present==false => nullptr
-    //    (matériau non texturé : l'original bind mat+48 possiblement nul, cf. 0x69930b). Le DDS
-    //    est déjà décodé (ReadTextureBlock), on le crée directement (pas de ré-inflate).
+    // 1) Une texture diffuse par matériau (ordre .WG). textures[m].present==false => nullptr.
     terrainTextures_.assign(numMat, nullptr);
     for (uint32_t m = 0; m < numMat && m < wg->textures.size(); ++m)
         terrainTextures_[m] = createTextureFromBlock(dev_, wg->textures[m]);
 
-    // 2) Regroupe les sommets par materialIndex (face.materialIndex@0 -> a1+144/a1+160/a1+16).
-    //    Chaque face fournit 3 TerrainVertex (v0/v1/v2), convertis en GpuSkinVertex 76o.
-    std::vector<std::vector<GpuSkinVertex>> perMat(numMat);
+    // 2) Regroupe les sommets FF 40o par materialIndex (face.materialIndex@0). Chaque face fournit
+    //    3 TerrainVertex (v0/v1/v2) copiés tels quels (memcpy — layout identique à FfTerrainVertex).
+    std::vector<std::vector<FfTerrainVertex>> perMat(numMat);
     size_t outOfRange = 0;
     for (const asset::CollisionFace& f : mesh.tris) {
         const uint32_t m = f.materialIndex;
         if (m >= numMat) { ++outOfRange; continue; } // materialIndex hors bornes -> ignoré
-        std::vector<GpuSkinVertex>& dst = perMat[m];
-        dst.push_back(ConvertTerrainVertex(f.v0));
-        dst.push_back(ConvertTerrainVertex(f.v1));
-        dst.push_back(ConvertTerrainVertex(f.v2));
+        std::vector<FfTerrainVertex>& dst = perMat[m];
+        FfTerrainVertex v;
+        std::memcpy(&v, &f.v0, sizeof(FfTerrainVertex)); dst.push_back(v);
+        std::memcpy(&v, &f.v1, sizeof(FfTerrainVertex)); dst.push_back(v);
+        std::memcpy(&v, &f.v2, sizeof(FfTerrainVertex)); dst.push_back(v);
     }
 
-    // 3) Pour chaque matériau, découpe en lots <=65535 sommets (INDEX16) et crée VB/IB statiques.
-    //    IB = index séquentiels 0,1,2,... (TRIANGLELIST non partagé, comme DrawPrimitiveUP d'origine).
+    // 3) Une TerrainLayer par matériau (catégorie/subOrder = trailer[0]/trailer[1] de la texture),
+    //    découpée en FfLod <=65535 sommets (INDEX16, index séquentiels comme DrawPrimitiveUP).
     size_t totalFaces = 0, failed = 0;
+    bool hasWater = false;
     for (uint32_t m = 0; m < numMat; ++m) {
-        const std::vector<GpuSkinVertex>& verts = perMat[m];
+        const std::vector<FfTerrainVertex>& verts = perMat[m];
+        if (verts.size() < 3) continue;
+
+        TerrainLayer layer;
+        layer.diffuse  = terrainTextures_[m]; // réf non-possédante
+        // trailer[0]=catégorie, trailer[1]=subOrder (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0).
+        layer.category = (m < wg->textures.size()) ? wg->textures[m].trailer[0] : 0;
+        layer.subOrder = (m < wg->textures.size()) ? wg->textures[m].trailer[1] : 0;
+        if (layer.category == 3) hasWater = true;
+
         for (size_t base = 0; base < verts.size(); base += kTerrainMaxVertsPerBatch) {
             const UINT vcount = static_cast<UINT>(
                 (std::min)(static_cast<size_t>(kTerrainMaxVertsPerBatch), verts.size() - base));
             if (vcount < 3) break; // pas un triangle complet
 
-            TerrainBatch batch;
-            batch.diffuse           = terrainTextures_[m]; // réf non-possédante
-            batch.lod.vertexCount   = vcount;
-            batch.lod.faceCount     = vcount / 3u;
+            FfLod lod;
+            lod.vertexCount = vcount;
+            lod.faceCount   = vcount / 3u;
 
-            const UINT vbBytes = vcount * static_cast<UINT>(sizeof(GpuSkinVertex));
-            HRESULT hr = dev_->CreateVertexBuffer(vbBytes, 0, 0, D3DPOOL_MANAGED, &batch.lod.vb, nullptr);
+            const UINT vbBytes = vcount * static_cast<UINT>(sizeof(FfTerrainVertex));
+            HRESULT hr = dev_->CreateVertexBuffer(vbBytes, 0, kFvfTerrain, D3DPOOL_MANAGED, &lod.vb, nullptr);
             if (FAILED(hr)) { TS2_ERR("buildTerrain: CreateVertexBuffer echoue (0x%08lX)", hr); ++failed; continue; }
             void* p = nullptr;
-            if (SUCCEEDED(batch.lod.vb->Lock(0, vbBytes, &p, 0))) {
+            if (SUCCEEDED(lod.vb->Lock(0, vbBytes, &p, 0))) {
                 std::memcpy(p, verts.data() + base, vbBytes);
-                batch.lod.vb->Unlock();
+                lod.vb->Unlock();
             }
 
             const UINT ibBytes = vcount * static_cast<UINT>(kIndexStride); // 1 index u16/sommet
-            hr = dev_->CreateIndexBuffer(ibBytes, 0, D3DFMT_INDEX16, D3DPOOL_MANAGED, &batch.lod.ib, nullptr);
-            if (FAILED(hr)) { TS2_ERR("buildTerrain: CreateIndexBuffer echoue (0x%08lX)", hr); SafeRelease(batch.lod.vb); ++failed; continue; }
-            if (SUCCEEDED(batch.lod.ib->Lock(0, ibBytes, &p, 0))) {
+            hr = dev_->CreateIndexBuffer(ibBytes, 0, D3DFMT_INDEX16, D3DPOOL_MANAGED, &lod.ib, nullptr);
+            if (FAILED(hr)) { TS2_ERR("buildTerrain: CreateIndexBuffer echoue (0x%08lX)", hr); SafeRelease(lod.vb); ++failed; continue; }
+            if (SUCCEEDED(lod.ib->Lock(0, ibBytes, &p, 0))) {
                 uint16_t* idx = static_cast<uint16_t*>(p);
                 for (UINT i = 0; i < vcount; ++i) idx[i] = static_cast<uint16_t>(i);
-                batch.lod.ib->Unlock();
+                lod.ib->Unlock();
             }
 
-            totalFaces += batch.lod.faceCount;
-            terrainBatches_.push_back(batch);
+            totalFaces += lod.faceCount;
+            layer.lods.push_back(lod);
         }
+        if (!layer.lods.empty()) terrainLayers_.push_back(std::move(layer));
     }
     terrainFaceCount_ = totalFaces;
 
-    TS2_LOG("WorldGeometryRenderer::buildTerrain (G1) : %zu faces terrain sur %u materiaux -> "
-            "%zu lots GPU (%zu faces materialIndex hors bornes ignorees, %zu lots en echec) ; "
-            "sol .WG pret (world=identite, FVF-equiv XYZ|NORMAL|TEX0). Cull quadtree/frustum, eau "
-            "(G6) et lightmap .SHADOW (G8) = TODO, cf. renderTerrain().",
-            totalFaces, numMat, terrainBatches_.size(), outOfRange, failed);
+    // 4) Tri des couches par rang (catégorie, subOrder) — reproduit l'ordre de Terrain_Render(a5=1).
+    std::stable_sort(terrainLayers_.begin(), terrainLayers_.end(),
+                     [](const TerrainLayer& a, const TerrainLayer& b) {
+                         return TerrainLayerRank(a.category, a.subOrder) <
+                                TerrainLayerRank(b.category, b.subOrder);
+                     });
+
+    // 5) Eau : wave + falloff procédurales créées UNE FOIS si une couche cat==3 existe (fidèle
+    //    @0x698043). Ancres : cWorldMesh_MakeWaterWaveTexture 0x451220 / MapColl_CreateFalloffTexture
+    //    0x694ca0. falloffTex_ chargée mais non encore utilisée dans la passe (radial, réservée).
+    if (hasWater) {
+        waveTex_    = MakeWaterWaveTexture(dev_, kWaterTexDim);
+        falloffTex_ = MakeFalloffTexture(dev_, kWaterTexDim);
+    }
+
+    // 6) Lightmap .SHADOW (stage 1, uv1) — texture GPU depuis les octets DDS bruts exposés par
+    //    WorldAssets (le vertex FF possède bien uv1 : le TODO G8 « 1 seul TEXCOORD » disparaît).
+    shadowTex_ = createTextureFromDds(dev_, assets.ShadowBytes());
+
+    TS2_LOG("WorldGeometryRenderer::buildTerrain (W3-F3) : %zu faces sur %u materiaux -> %zu couches "
+            "FF (%zu hors bornes, %zu lots echec) ; eau=%d (wave=%p falloff=%p) lightmap=%p ; sol .WG "
+            "pret (FVF 530, world=identite). Cull quadtree/frustum = TODO perf.",
+            totalFaces, numMat, terrainLayers_.size(), outOfRange, failed,
+            hasWater ? 1 : 0, (void*)waveTex_, (void*)falloffTex_, (void*)shadowTex_);
+    return true;
+}
+
+// ===========================================================================
+//  FRONT W3-F3 — construction des billboards FX de zone (.WP). Ancre IDA : MapColl_LoadObjectsB
+//  0x6983b0 (fxbRecords : nodeIndex+pos+rot) + Fx_NodeLoadFromHandle 0x6a69f0 (texture du nœud).
+//  Sous-ensemble build-safe : 1 billboard placé par instance, à sa position, texture du nœud FX
+//  résolue via AuxFxRecord::nodeIndex -> FxChunk::nodes[]. Le sim complet de particules
+//  (Particle_Init 0x6a7020 / Particle_UpdateEmit 0x6a7530) reste un TODO ancre.
+// ===========================================================================
+bool WorldGeometryRenderer::buildFx(const world::WorldAssets& assets) {
+    if (!dev_) return false;
+    const asset::WorldChunk* chunk = assets.FxNodes();
+    if (!chunk) return false;
+    const asset::FxChunk* wp = chunk->AsFx();
+    if (!wp || wp->empty || wp->nodes.empty()) return true; // pas de FX : rien à dessiner
+
+    // Texture GPU par nœud FX (nullptr si absente) — POSSÉDÉES par fxTextures_.
+    fxTextures_.assign(wp->nodes.size(), nullptr);
+    for (size_t i = 0; i < wp->nodes.size(); ++i)
+        fxTextures_[i] = createTextureFromBlock(dev_, wp->nodes[i].tex);
+
+    // Un billboard par instance placée (fxbRecords), texture = celle de son nœud.
+    size_t outOfRange = 0;
+    for (const asset::AuxFxRecord& rec : wp->fxbRecords) {
+        if (rec.nodeIndex >= fxTextures_.size()) { ++outOfRange; continue; }
+        FxBillboard bb;
+        bb.pos[0] = rec.pos[0]; bb.pos[1] = rec.pos[1]; bb.pos[2] = rec.pos[2];
+        bb.texture = fxTextures_[rec.nodeIndex]; // réf non-possédante
+        fxBillboards_.push_back(bb);
+    }
+    TS2_LOG("WorldGeometryRenderer::buildFx (W3-F3) : %zu noeuds FX, %zu billboards places (%zu "
+            "nodeIndex hors bornes). Sim particules complet = TODO ancre (Particle_UpdateEmit 0x6a7530).",
+            wp->nodes.size(), fxBillboards_.size(), outOfRange);
     return true;
 }
 
@@ -461,56 +652,140 @@ void WorldGeometryRenderer::RenderSky(int screenW, int screenH) {
 }
 
 // ===========================================================================
-//  Gap G1 — dessin du sol .WG. Ancre IDA : Terrain_Render 0x698670. Appelée par Render() APRÈS
-//  la caméra et AVANT les objets .WO (ordre fidèle : Scene_InGameRender dessine le terrain
-//  @0x52d9be avant les props/entités). world=identité (sommets déjà en repère MONDE) ; chaque
-//  lot est dessiné via meshRenderer_ (pipeline skinné réutilisé, palette identité 1 os).
+//  FRONT W3-F3 — dessin du sol .WG en FIXED-FUNCTION (FVF 530). Ancre IDA : Terrain_Render 0x698670,
+//  ordre de dessin de la passe a5=1. Appelée par Render() APRÈS la caméra et AVANT les .WO (ordre
+//  fidèle : Scene_InGameRender dessine le terrain @0x52d9be avant les props). world=identité.
 //
-//  CULLMODE=NONE encadré (sauvegarde/restaure la valeur courante du device) : garantit la
-//  VISIBILITÉ du sol quel que soit l'ordre d'enroulement des faces terrain (l'original gère son
-//  propre état de cull dans Terrain_PushRenderState 0x69cb80 / backface par face @0x698dd4 ;
-//  le sens d'enroulement du .WG vs le CULLMODE du device partagé n'étant pas prouvé ici, on
-//  neutralise le backface pour ne jamais faire disparaître le sol — le z-buffer masque la face
-//  arrière). Le cull par distance/frustum reste un TODO perf (cf. plus bas).
+//  Séquence reproduite : SetFVF(530) @0x698e6d ; matrice texture stage0 = identité @0x698f25 ;
+//  CULLMODE=NONE @0x698f37 (backface CPU dans l'original, neutralisé ici) ; lightmap stage 1
+//  MODULATE (=4, PAS MODULATE2X) @0x698f54 + SetTexture(1) @0x698f68 (uv1 — le vertex FF a 2 jeux
+//  d'UV, le TODO G8 disparaît) ; couches triées par (catégorie, subOrder) ; eau cat==3 en bump-env
+//  (bindWaterStates) ; alpha-test sur subOrder==1 (ALPHAREF=128 @0x6993d4). États sauvés/restaurés
+//  pour ne pas polluer meshRenderer_ (qui rebinde ses shaders ensuite).
 //
-//  TODO (précis, non implémentés — hors « le sol s'affiche ») :
-//   - Cull quadtree + frustum par frame (perf) : MapColl_CollectLeafFaces 0x694b50 (descente +
-//     Cam_FrustumTestAABB 0x69f230) puis, par face, backface `dot(camPos, planeN) >= planeD`
-//     @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0 (sphere face @+140/rayon @+152). Ici on
-//     dessine TOUTES les faces (correct, non optimisé) — nécessiterait un VB/IB dynamique/frame.
-//   - G6 eau (matériau catégorie 3) : bump-env D3DTOP_BUMPENVMAPLUMINANCE @0x699206 + wave
-//     texture cWorldMesh_MakeWaterWaveTexture 0x451220 + falloff MapColl_CreateFalloffTexture
-//     0x694ca0. Non faisable via le pipeline skinné (pas de bump-env) ET la CATÉGORIE de matériau
-//     (+40 dans a1+16) n'est pas décodée par le stage DECODE -> TODO.
-//   - G8 lightmap .SHADOW (stage 1, uv1) : SetTextureStageState(1,COLOROP,MODULATE2X) @0x698f54 +
-//     SetTexture(1, shadowTex) @0x698f68, coordonnées uv1 (TerrainVertex.uv1). Le GpuSkinVertex
-//     réutilisé n'a qu'un TEXCOORD0 et kSkinnedPS échantillonne une seule texture -> TODO (la
-//     texture .SHADOW EST chargée dans WorldAssets::shadow_, prête à câbler à une 2e passe).
+//  TODO perf (non implémenté) : cull quadtree + frustum par frame — MapColl_CollectLeafFaces
+//  0x694b50 + backface @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0. Ici on dessine TOUTES les
+//  couches (correct, non optimisé).
 // ===========================================================================
-void WorldGeometryRenderer::renderTerrain() {
-    if (!ready_ || terrainBatches_.empty()) return;
+void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj) {
+    if (!ready_ || terrainLayers_.empty()) return;
 
-    // Sauvegarde/neutralise le backface cull le temps du terrain (cf. bandeau ci-dessus).
-    DWORD prevCull = D3DCULL_CCW;
+    // Sauvegarde des états qu'on modifie (device partagé avec meshRenderer_).
+    DWORD prevCull = D3DCULL_CCW, prevLighting = TRUE, prevAlphaTest = FALSE,
+          prevAlphaRef = 0, prevAlphaFunc = D3DCMP_ALWAYS;
     dev_->GetRenderState(D3DRS_CULLMODE, &prevCull);
-    dev_->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev_->GetRenderState(D3DRS_LIGHTING, &prevLighting);
+    dev_->GetRenderState(D3DRS_ALPHATESTENABLE, &prevAlphaTest);
+    dev_->GetRenderState(D3DRS_ALPHAREF, &prevAlphaRef);
+    dev_->GetRenderState(D3DRS_ALPHAFUNC, &prevAlphaFunc);
 
-    D3DXMATRIX kIdentity;
-    D3DXMatrixIdentity(&kIdentity);       // world = identité (Terrain_Render : pas de SetTransform WORLD)
-    const BonePalette noPalette{};        // -> repli palette identité (1 os) de meshRenderer_
+    // Fixed-function : pas de VS/PS, FVF terrain, transforms world=identité + view/proj caméra.
+    dev_->SetVertexShader(nullptr);
+    dev_->SetPixelShader(nullptr);
+    dev_->SetFVF(kFvfTerrain);
+    D3DXMATRIX ident; D3DXMatrixIdentity(&ident);
+    dev_->SetTransform(D3DTS_WORLD, &ident);              // Terrain_Render : pas de SetTransform WORLD
+    dev_->SetTransform(D3DTS_VIEW, &view);
+    dev_->SetTransform(D3DTS_PROJECTION, &proj);
+    dev_->SetTransform(D3DTS_TEXTURE0, &ident);           // matrice texture stage 0 identité @0x698f25
 
-    for (const TerrainBatch& b : terrainBatches_) {
-        if (!b.lod.vb || !b.lod.ib) continue;
-        // SkinnedMesh transitoire (réfs non-possédantes : sa destruction ne libère rien).
-        SkinnedMesh sm;
-        sm.lods.push_back(b.lod);
-        sm.diffuse   = b.diffuse;
-        sm.blendMode = 0;                 // sol opaque (catégorie/blend non décodés -> opaque, cf. G6)
-        sm.empty     = false;
-        meshRenderer_.DrawSkinnedSubset(sm, 0, kIdentity, noPalette);
+    dev_->SetRenderState(D3DRS_LIGHTING, FALSE);          // FF sans éclairage (texture pure)
+    dev_->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);   // backface CPU dans l'original @0x698f37
+    dev_->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+
+    // Stage 0 : diffuse = texture (SELECTARG1), sur uv0.
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP,  D3DTOP_SELECTARG1);
+    dev_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,  D3DTOP_SELECTARG1);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+
+    // Lightmap stage 1 (uv1) si présente : MODULATE(4), pas MODULATE2X. @0x698f54 / @0x698f68.
+    if (shadowTex_) {
+        dev_->SetTexture(1, shadowTex_);
+        dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE); // = 4
+        dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        dev_->SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_CURRENT);
+        dev_->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);          // uv1
+    } else {
+        dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     }
 
-    dev_->SetRenderState(D3DRS_CULLMODE, prevCull); // restaure l'état de cull du device partagé
+    // Dessin des couches, déjà triées par rang (catégorie, subOrder).
+    for (const TerrainLayer& layer : terrainLayers_) {
+        const bool alphaTest = (layer.subOrder == 1);
+        dev_->SetRenderState(D3DRS_ALPHATESTENABLE, alphaTest ? TRUE : FALSE);
+        if (alphaTest) {
+            dev_->SetRenderState(D3DRS_ALPHAREF, 128);                    // @0x6993d4
+            dev_->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+        }
+        const bool water = (layer.category == 3);
+        if (water) bindWaterStates(layer.diffuse);
+        else       dev_->SetTexture(0, layer.diffuse);
+
+        for (const FfLod& lod : layer.lods) {
+            if (!lod.vb || !lod.ib) continue;
+            dev_->SetStreamSource(0, lod.vb, 0, sizeof(FfTerrainVertex));
+            dev_->SetIndices(lod.ib);
+            dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, lod.vertexCount, 0, lod.faceCount);
+        }
+        if (water) unbindWaterStates();
+    }
+
+    // Restauration : ne pas polluer meshRenderer_.
+    dev_->SetTexture(1, nullptr);
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);       // valeur FF par défaut
+    dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev_->SetRenderState(D3DRS_ALPHATESTENABLE, prevAlphaTest);
+    dev_->SetRenderState(D3DRS_ALPHAREF, prevAlphaRef);
+    dev_->SetRenderState(D3DRS_ALPHAFUNC, prevAlphaFunc);
+    dev_->SetRenderState(D3DRS_LIGHTING, prevLighting);
+    dev_->SetRenderState(D3DRS_CULLMODE, prevCull);
+    meshRenderer_.InvalidateShaderBindingCache();          // le prochain DrawSkinnedSubset rebinde VS/PS
+}
+
+// Passe eau bump-env d'une couche cat==3. Ancre IDA : Terrain_Render @0x699206-0x6992b7. waveTex_
+// (V8U8) en stage 0 comme carte de perturbation BUMPENVMAPLUMINANCE(23) ; eau diffuse en stage 1
+// (MODULATE + ALPHAOP=SELECTARG1). Matrice bump animée : MAT00=cos(t)*s, MAT01=-sin(t)*s,
+// MAT10=sin(t)*s, MAT11=cos(t)*s (t = wavePhase_*10), BUMPENVLSCALE=1.0.
+void WorldGeometryRenderer::bindWaterStates(IDirect3DTexture9* waterDiffuse) {
+    if (!waveTex_) { dev_->SetTexture(0, waterDiffuse); return; } // repli : eau texture simple
+    // s = échelle : l'original utilise a10 (farDist runtime) — non disponible statiquement ->
+    // kWaterBumpScale (petit, build-safe). TODO ancre 0x699206 pour l'échelle exacte.
+    constexpr float kWaterBumpScale = 0.05f;
+    const float t = wavePhase_ * 10.0f;
+    const float c = std::cos(t) * kWaterBumpScale;
+    const float s = std::sin(t) * kWaterBumpScale;
+    dev_->SetTexture(0, waveTex_);
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_BUMPENVMAPLUMINANCE); // = 23
+    dev_->SetTextureStageState(0, D3DTSS_BUMPENVMAT00, F2DW(c));
+    dev_->SetTextureStageState(0, D3DTSS_BUMPENVMAT01, F2DW(-s));
+    dev_->SetTextureStageState(0, D3DTSS_BUMPENVMAT10, F2DW(s));
+    dev_->SetTextureStageState(0, D3DTSS_BUMPENVMAT11, F2DW(c));
+    dev_->SetTextureStageState(0, D3DTSS_BUMPENVLSCALE, F2DW(1.0f));           // @0x6992b7
+    dev_->SetTexture(1, waterDiffuse);
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE);
+    dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_CURRENT);
+    dev_->SetTextureStageState(1, D3DTSS_ALPHAOP,  D3DTOP_SELECTARG1);         // ALPHAOP(4)=SELECTARG1(2)
+    dev_->SetTextureStageState(1, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 0);
+}
+
+// Restaure les états de stage après une couche eau (retour au chemin diffuse + lightmap éventuelle).
+void WorldGeometryRenderer::unbindWaterStates() {
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP,  D3DTOP_SELECTARG1);
+    dev_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    dev_->SetTexture(1, shadowTex_);                        // ré-installe la lightmap (ou nullptr)
+    if (shadowTex_) {
+        dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE);
+        dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        dev_->SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_CURRENT);
+        dev_->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);
+    } else {
+        dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    }
 }
 
 //  Render — dessine d'abord le SOL .WG (Gap G1, renderTerrain()) puis une matrice monde PAR
@@ -524,10 +799,11 @@ void WorldGeometryRenderer::renderTerrain() {
 //  objets .WO ne flottent plus sans sol. Restes documentés dans renderTerrain() (TODO précis) :
 //    - Cull quadtree/frustum par frame (perf) : MapColl_CollectLeafFaces 0x694b50 + backface
 //      @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0 (ici : dessine tout, correct/non optimisé).
-//    - G6 eau (catégorie 3, bump-env) : cWorldMesh_MakeWaterWaveTexture 0x451220 + falloff
-//      0x694ca0 (catégorie de matériau non décodée + pipeline skinné sans bump-env -> TODO).
-//    - G8 lightmap .SHADOW (stage 1, uv1) : Terrain_Render 0x698670 stage 1 (1 seul TEXCOORD
-//      dans le pipeline réutilisé -> TODO ; texture déjà chargée dans WorldAssets::shadow_).
+//  G6 eau (catégorie 3, bump-env) et G8 lightmap .SHADOW (stage 1, uv1) sont désormais FAITS dans
+//  ce front (cf. bindWaterStates() @0x699206 + MakeWaterWaveTexture 0x451220 / falloff 0x694ca0 ;
+//  lightmap stage 1 MODULATE @0x698f54/@0x698f68) : la catégorie vient de textures[m].trailer[0]
+//  et le vertex FF possède bien uv1. Restes = échelle exacte du bump eau (a10 runtime, TODO ancre
+//  0x699206) et quantification exacte de la wave (TODO ancre 0x451220), purement visuels.
 // ===========================================================================
 
 void WorldGeometryRenderer::Render(const Camera& camera, int screenW, int screenH) {
@@ -552,11 +828,14 @@ void WorldGeometryRenderer::Render(const Camera& camera, int screenW, int screen
     camera.BuildProjMatrix(proj, aspect);
     meshRenderer_.SetCamera(view, proj);
 
-    // Gap G1 : le SOL .WG d'abord (fidèle à l'ordre de Scene_InGameRender : terrain avant props).
-    // Dessiné même s'il n'y a aucun objet .WO dans la zone (return anticipé ci-dessous).
-    renderTerrain();
+    // FRONT W3-F3 : le SOL .WG d'abord (fidèle à Scene_InGameRender : terrain avant props). FF, avec
+    // les MÊMES view/proj que les props. Dessiné même sans objet .WO dans la zone.
+    renderTerrain(view, proj);
 
-    if (objects_.empty() || instances_.empty()) return; // pas de props .WO : le sol seul suffit
+    if (objects_.empty() || instances_.empty()) {
+        RenderFxBillboards(camera); // FX de zone même sans .WO (torches/feux/cascades)
+        return;                     // pas de props .WO : le sol + FX suffisent
+    }
 
     // Boucle plate (chaque instance dessinée). CONFIRMED ex-VeryOldClient: RecursionForDraw
     // (descente + cull). TODO terrain WO (perf/visuel) : l'original cull par distance + alpha-fade
@@ -576,6 +855,124 @@ void WorldGeometryRenderer::Render(const Camera& camera, int screenW, int screen
             meshRenderer_.DrawSkinnedSubset(obj.mesh, 0, world, noPalette);
         }
     }
+
+    // FRONT W3-F3 : FX de zone .WP APRÈS les props (passe a5=2 @0x698c6d : blend actif, depth-write
+    // off). C'est le point d'entrée de rendu .WP réel (corrige WorldIntegration « non identifié »).
+    RenderFxBillboards(camera);
+}
+
+// ===========================================================================
+//  FRONT W3-F3 — passe FX de zone (.WP) : billboards unlit. Ancre IDA : Terrain_Render a5=2
+//  @0x698c6d -> Gfx_BeginUnlitPass 0x69e470 (LIGHTING off, ALPHABLEND on, stage0 ALPHAOP=MODULATE,
+//  FVF 322=XYZ|DIFFUSE|TEX1, matrice texture0 identité) -> Particle_RenderBillboards 0x6a70b0
+//  (quads camera-facing 24o/sommet, DrawPrimitiveUP(TRIANGLELIST, 2*n, ..., 24)).
+//  SOUS-ENSEMBLE build-safe : 1 quad camera-facing par instance placée (base right/up dérivée de la
+//  matrice vue). Le sim complet (base flt_8001D4..E8 runtime + Particle_Init/UpdateEmit) = TODO ancre.
+// ===========================================================================
+void WorldGeometryRenderer::RenderFxBillboards(const Camera& camera) {
+    if (!ready_ || fxBillboards_.empty()) return;
+
+    DWORD prevLighting = TRUE, prevBlend = FALSE, prevZWrite = TRUE, prevCull = D3DCULL_CCW,
+          prevSrc = D3DBLEND_ONE, prevDst = D3DBLEND_ZERO;
+    dev_->GetRenderState(D3DRS_LIGHTING, &prevLighting);
+    dev_->GetRenderState(D3DRS_ALPHABLENDENABLE, &prevBlend);
+    dev_->GetRenderState(D3DRS_ZWRITEENABLE, &prevZWrite);
+    dev_->GetRenderState(D3DRS_CULLMODE, &prevCull);
+    dev_->GetRenderState(D3DRS_SRCBLEND, &prevSrc);
+    dev_->GetRenderState(D3DRS_DESTBLEND, &prevDst);
+
+    // Gfx_BeginUnlitPass 0x69e470 : (137,0) [SPECULARENABLE], (14,0)=LIGHTING off, (27,1)=ALPHABLEND on.
+    dev_->SetVertexShader(nullptr);
+    dev_->SetPixelShader(nullptr);
+    dev_->SetFVF(kFvfBillboard);                                   // 322 @0x69e4-SetFVF
+    dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(137), 0); // état 137 (rôle exact non prouvé, fidèle IDA)
+    dev_->SetRenderState(D3DRS_LIGHTING, FALSE);                   // (14,0)
+    dev_->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);           // (27,1)
+    dev_->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+    dev_->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    dev_->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);              // a5=2 : depth-write off
+    dev_->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP,  D3DTOP_MODULATE);
+    dev_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,  D3DTOP_MODULATE); // (0, ALPHAOP(4), MODULATE(4))
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    D3DXMATRIX ident; D3DXMatrixIdentity(&ident);
+    dev_->SetTransform(D3DTS_WORLD, &ident);
+    dev_->SetTransform(D3DTS_TEXTURE0, &ident);
+
+    // Base camera-facing depuis la matrice vue (right/up monde = colonnes de la rotation).
+    D3DXMATRIX view; camera.BuildViewMatrix(view);
+    D3DXVECTOR3 right(view._11, view._21, view._31);
+    D3DXVECTOR3 up(view._12, view._22, view._32);
+    D3DXVec3Normalize(&right, &right);
+    D3DXVec3Normalize(&up, &up);
+    // Demi-taille du quad : la vraie base flt_8001D4..E8 est calculée au runtime depuis la vue
+    // (Particle_RenderBillboards) et non disponible statiquement -> défaut build-safe. TODO ancre 0x6a70b0.
+    constexpr float kHalf = 8.0f;
+
+    struct BbVert { float x, y, z; DWORD color; float u, v; };
+    static_assert(sizeof(BbVert) == 24, "vertex billboard = 24 o (FVF 322)");
+    const DWORD kWhite = 0xFFFFFFFF;
+    for (const FxBillboard& bb : fxBillboards_) {
+        if (!bb.texture) continue;
+        const D3DXVECTOR3 c(bb.pos[0], bb.pos[1], bb.pos[2]);
+        const D3DXVECTOR3 r = right * kHalf, u2 = up * kHalf;
+        const D3DXVECTOR3 p0 = c - r + u2, p1 = c + r + u2, p2 = c + r - u2, p3 = c - r - u2;
+        auto set = [&](BbVert& d, const D3DXVECTOR3& p, float u, float v) {
+            d.x = p.x; d.y = p.y; d.z = p.z; d.color = kWhite; d.u = u; d.v = v;
+        };
+        BbVert q[6];
+        set(q[0], p0, 0, 0); set(q[1], p1, 1, 0); set(q[2], p2, 1, 1); // tri 1
+        set(q[3], p0, 0, 0); set(q[4], p2, 1, 1); set(q[5], p3, 0, 1); // tri 2
+        dev_->SetTexture(0, bb.texture);
+        dev_->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2, q, sizeof(BbVert));
+    }
+
+    // Restauration.
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    dev_->SetRenderState(D3DRS_ZWRITEENABLE, prevZWrite);
+    dev_->SetRenderState(D3DRS_ALPHABLENDENABLE, prevBlend);
+    dev_->SetRenderState(D3DRS_SRCBLEND, prevSrc);
+    dev_->SetRenderState(D3DRS_DESTBLEND, prevDst);
+    dev_->SetRenderState(D3DRS_LIGHTING, prevLighting);
+    dev_->SetRenderState(D3DRS_CULLMODE, prevCull);
+    meshRenderer_.InvalidateShaderBindingCache();
+}
+
+// ===========================================================================
+//  FRONT W3-F3 — tick d'animation du monde. Ancre IDA : MapColl_UpdateObjectAnim 0x694A00
+//  (site Scene_InGameUpdate 0x52c94b, kAnimFps=15.0). À appeler par SceneManager chaque frame :
+//    if (worldGeom_) worldGeom_.TickWorldAnim(dtSeconds);
+//  (SceneManager non possédé ici -> commentaire d'intégration, pas d'édition.)
+// ===========================================================================
+void WorldGeometryRenderer::TickWorldAnim(float dt) {
+    // Eau : accumulateur de temps (t = wavePhase_*10 dans bindWaterStates). Origine : v92 Terrain_Render.
+    wavePhase_ += dt;
+
+    // Sway .WO : phase de flipbook par instance (aux+28 += dt*fps ; wrap par nb de frames A du
+    // gabarit). Ancre IDA : MapColl_UpdateObjectAnim @0x694a30/@0x694a4a. Donnée d'état prête ; la
+    // SÉLECTION de la frame au GPU (SetStreamSource(0, vb, 32*frame*B, stride)) reste un TODO ancre
+    // MeshPart_Render 0x6aed60 (uploadPart n'uploade que la frame 0 -> pose statique).
+    constexpr float kAnimFps = 15.0f;
+    if (instancePhase_.size() != instances_.size())
+        instancePhase_.assign(instances_.size(), 0.0f);
+    for (size_t i = 0; i < instancePhase_.size(); ++i) {
+        instancePhase_[i] += dt * kAnimFps;
+        const uint32_t frames = (i < instanceFrameCount_.size()) ? instanceFrameCount_[i] : 1u;
+        if (frames > 1) {
+            const float span = static_cast<float>(frames);
+            while (instancePhase_[i] >= span) instancePhase_[i] -= span; // wrap (cf. boucle @0x694a5e)
+        } else {
+            instancePhase_[i] = 0.0f;
+        }
+    }
+
+    // Tick des systèmes de particules .WP : le sim complet (Particle_Init 0x6a7020 /
+    // Particle_UpdateEmit 0x6a7530) n'est pas porté -> les billboards restent en pose placée.
+    // TODO ancre 0x694a00 (branche fxbRecords : Particle_Init/UpdateEmit par fxb+28).
 }
 
 } // namespace ts2::gfx

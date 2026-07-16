@@ -22,8 +22,10 @@
 #include "World/WorldMap.h"
 #include "Asset/AtmosphereFile.h"
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ts2::asset { class WorldChunk; struct Texture; class WSound; }
 namespace ts2::audio { class SoundBank; }
@@ -91,17 +93,26 @@ public:
     // G03 (Char_Update 0x581e10 ...). Requêtes raycast/sweep/slide = G04 (MapColl_RaycastNearest 0x6960c0).
     const asset::WorldChunk* Collision(CollisionSlot slot) const;
     // Terrain .WG — CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWG. Ancre IDA : MapColl_LoadMapFile
-    // 0x697b30. TODO terrain WG (surface non rendue) : parsé (EOF-exact) mais consommé par AUCUN
-    // renderer -> les objets .WO flottent sans sol. Voir SPEC TS2_WORLD_ROSETTA.md §3 G05
-    // (Terrain_Render 0x698670, vertex 40o FVF 530) ; lightmap .SHADOW = G06 ; eau = G07.
+    // 0x697b30 (loader réel des faces + matériaux/textures). RÉELLEMENT rendu par Gfx/
+    // WorldGeometryRenderer (chemin fixed-function FVF 530, Terrain_Render 0x698670, appelé AVANT les
+    // .WO par Scene_InGameRender @0x52d9be). La CATÉGORIE/eau vient de textures[m].trailer[0]/trailer[1]
+    // (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0 : mat+40=cat, mat+44=subOrder). G01/G02 collision faits.
     const asset::WorldChunk* Faces()   const { return wg_.get(); }
     // Objets statiques .WO — CONFIRMED ex-VeryOldClient: LoadWO (mMObject). Ancre IDA :
     // MapColl_LoadObjectsA 0x6980d0. RÉELLEMENT rendu par Gfx/WorldGeometryRenderer (placement OK).
     const asset::WorldChunk* Objects() const { return wo_.get(); }
     // FX de zone .WP — CONFIRMED ex-VeryOldClient: LoadWP (mPSystem). Ancre IDA :
-    // MapColl_LoadObjectsB 0x6983b0. TODO hors-FRONT 4 : parsé mais JAMAIS consommé (point d'entrée
-    // de rendu WP non identifié dans l'IDB) -> X01 (FRONT 8), cf. TS2_WORLD_ROSETTA.md §3.Z. Ne pas inventer.
+    // MapColl_LoadObjectsB 0x6983b0. RÉELLEMENT rendu par Gfx/WorldGeometryRenderer::RenderFxBillboards()
+    // : le point d'entrée de rendu .WP EST Terrain_Render a5=2 @0x698c6d (Gfx_BeginUnlitPass 0x69e470 ->
+    // Particle_RenderBillboards 0x6a70b0) — l'ancien « point d'entrée non identifié » était FAUX.
     const asset::WorldChunk* FxNodes() const { return wp_.get(); }
+
+    // Lightmap .SHADOW de la zone (fichier DDS brut complet), consommée par
+    // Gfx/WorldGeometryRenderer::buildTerrain() -> stage 1 (uv1, MODULATE). Vide si absente/non chargée.
+    // Ancre IDA : Tex_LoadFromFile 0x6a9910 (charge) ; Terrain_Render @0x698f68 (bind stage 1).
+    const std::vector<uint8_t>& ShadowBytes() const { return shadowBytes_; }
+    // Objet texture .SHADOW décodé (asset::Texture, cf. LoadShadowTexture case 5) — nullptr si absent.
+    const asset::Texture* Shadow() const { return shadow_.get(); }
 
     // État d'atmosphère RÉEL de la zone courante (fichier Z%03d.ATM, parsé byte-exact par
     // Asset/AtmosphereFile.h — case 7 de World_LoadZoneResource). Atmosphere().Valid()==false
@@ -165,10 +176,12 @@ private:
     std::unique_ptr<asset::WorldChunk> wg_;
     std::unique_ptr<asset::WorldChunk> wo_;
     std::unique_ptr<asset::WorldChunk> wp_;
-    // .SHADOW chargée (case 5) mais JAMAIS liée au stage 1 (lightmap sur uv1) : TODO terrain SHADOW,
-    // voir SPEC TS2_WORLD_ROSETTA.md §3 G06 ; ancre IDA : Terrain_Render 0x698670 (stage 1 = UV set 1).
-    // Dépend du rendu terrain G05 (aucun terrain rendu -> ombre jamais appliquée).
+    // .SHADOW chargée (case 5) et DÉSORMAIS liée au stage 1 (lightmap sur uv1) par le chemin FF de
+    // Gfx/WorldGeometryRenderer (ancre IDA : Terrain_Render @0x698f54/@0x698f68). `shadow_` = objet
+    // décodé (asset::Texture) ; `shadowBytes_` = octets DDS bruts du fichier, fournis au renderer via
+    // ShadowBytes() (le renderer crée la texture GPU sans dépendre d'Asset/Texture.h).
     std::unique_ptr<asset::Texture>    shadow_;
+    std::vector<uint8_t>               shadowBytes_;
     std::array<std::unique_ptr<asset::Texture>, 3> minimaps_;
     std::unique_ptr<asset::WSound>     wsound_;
     std::unique_ptr<audio::SoundBank>  soundBank_;

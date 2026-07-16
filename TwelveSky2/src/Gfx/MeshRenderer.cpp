@@ -31,8 +31,23 @@ constexpr DWORD kBLEND_SrcAlpha = 5;  // D3DBLEND_SRCALPHA
 constexpr DWORD kCMP_GreaterEqual = 5; // D3DCMP_GREATEREQUAL
 constexpr DWORD kCMP_Always       = 8; // D3DCMP_ALWAYS
 
-// Identifiant de passe shader interne (arbitraire, joue le rôle de g_CurrentShaderPass).
-constexpr int kPass_SkinnedLit = 2;
+// États du volume d'ombre stencil (numéros bruts relevés dans Model_RenderWithShadow 0x40EEE0).
+constexpr DWORD kRS_CullMode     = 22; // D3DRS_CULLMODE
+constexpr DWORD kRS_StencilZFail = 54; // D3DRS_STENCILZFAIL
+constexpr DWORD kCULL_CW         = 2;  // D3DCULL_CW
+constexpr DWORD kCULL_CCW        = 3;  // D3DCULL_CCW
+constexpr DWORD kSTENCILOP_Incr  = 7;  // D3DSTENCILOP_INCR
+constexpr DWORD kSTENCILOP_Decr  = 8;  // D3DSTENCILOP_DECR
+constexpr DWORD kFVF_XYZ         = 2;  // D3DFVF_XYZ (sommet d'ombre position seule, stride 12)
+
+// Identifiant de passe shader (joue le rôle de g_CurrentShaderPass 0x194591C, valeurs d'origine :
+// 2 = skinné VS03/PS04 ; 8 = volume d'ombre VS15/PS NULL).
+constexpr int kPass_SkinnedLit   = 2;
+constexpr int kPass_ShadowVolume = 8;
+
+// Plafond du volume d'ombre : l'original garde v45 > 29976 -> abort (tableaux 30000 sommets).
+constexpr UINT kShadowVolMaxVerts = 30000;
+constexpr UINT kShadowVolGuard    = 29976;
 
 constexpr float kDeg2Rad = 0.017453292519943295f; // 0.017453292 (×π/180)
 
@@ -175,7 +190,47 @@ void MeshRenderer::Shutdown() {
     SafeRelease(ctVs_);
     SafeRelease(ctPs_);
     SafeRelease(decl_);
+    // shaderSet_ n'est PAS possédé (chargé/libéré par ShaderSet côté appelant) : on lâche juste
+    // la référence, sans Release().
+    shaderSet_ = nullptr;
     dev_ = nullptr;
+}
+
+// ----- Câblage sur les shaders réels du npk (Shader_LoadVS03 0x409AB0 / PS04 0x409CC0) --------
+// Le swap est purement interne : DrawSkinnedSubset route ses binds/constantes vers ces slots au
+// lieu du HLSL reconstruit. Récupère aussi la VRAIE borne de mKeyMatrix[] (Elements), car
+// Model_DrawSkinnedSubset ne clampe pas côté client (SetMatrixArray count=nBones, 0x40d4e8).
+void MeshRenderer::AttachShaderSet(const ShaderSet* shaders) {
+    shaderSet_ = nullptr;
+    boneArraySize_ = kMaxBones;
+    if (!shaders) return;
+
+    const GxdShader& vs = shaders->Get(GxdShaderId::VS03_SkinnedLit);
+    const GxdShader& ps = shaders->Get(GxdShaderId::PS04_Tex);
+    if (!vs.Valid() || !ps.Valid()) {
+        TS2_WARN("AttachShaderSet : Shader03/04 npk invalides -> fallback HLSL reconstruit");
+        return;
+    }
+    shaderSet_ = shaders;
+
+    // Vraie borne = D3DXCONSTANT_DESC.Elements de mKeyMatrix dans le Shader03 réel.
+    D3DXHANDLE h = vs.Handle("mKeyMatrix");
+    if (h && vs.ct) {
+        D3DXCONSTANT_DESC d;
+        UINT n = 1;
+        if (SUCCEEDED(vs.ct->GetConstantDesc(h, &d, &n)) && d.Elements > 0)
+            boneArraySize_ = d.Elements;
+    }
+    TS2_LOG("MeshRenderer cable sur shaders npk reels (VS03/PS04) ; mKeyMatrix[%u]", boneArraySize_);
+}
+
+void MeshRenderer::SetShadowParams(bool enabled, int method, float fogNear, float fogFar,
+                                   const D3DXVECTOR3& lightDir) {
+    shadowsEnabled_ = enabled;
+    shadowMethod_   = method;
+    fogNear_        = fogNear;
+    fogFar_         = fogFar;
+    shadowLightDir_ = lightDir;
 }
 
 // Déclaration de vertex 76 o — copie EXACTE de g_GxdVertexDecl (0x814A58).
@@ -307,12 +362,29 @@ bool MeshRenderer::Upload(const asset::SObject& src, SkinnedModel& out) {
                 TS2_ERR("CreateIndexBuffer echoue (0x%08lX)", hr);
             }
 
-            dst.lods.push_back(lod);
+            // Rétention des données CPU pour le volume d'ombre (Model_BuildShadowVolume 0x40DC70) :
+            // skin 32 o/sommet (mesh+700), topologie (mesh+704) et adjacence (mesh+708). Sans elles,
+            // DrawModelShadow ne peut pas skinner/silhouetter -> l'ombre-volume du mesh est ignorée.
+            const UINT skinBytes = ss.vertexCount * static_cast<UINT>(asset::SObjectSubset::kSkinStride);
+            if (skinBytes != 0 && ss.skin.size() >= skinBytes &&
+                ss.indexCopy1.size() >= ibBytes && ss.indexCopy2.size() >= ibBytes) {
+                lod.skinCpu.assign(ss.skin.begin(), ss.skin.begin() + skinBytes);
+                lod.idxTopo.assign(ss.indexCopy1.begin(), ss.indexCopy1.begin() + ibBytes);
+                lod.idxAdj.assign(ss.indexCopy2.begin(), ss.indexCopy2.begin() + ibBytes);
+            }
+
+            dst.lods.push_back(std::move(lod));
         }
 
         // Texture diffuse (matDiffuse) depuis le bloc tex[0].
         dst.diffuse   = createDiffuse(dev_, sm.tex[0]);
-        dst.blendMode = 0; // GXD_Material +0x2C non exposé par le parseur SObject -> opaque par défaut.
+        // TODO [ancre 0x40CA40] blendMode = GXD_Material +0x2C (Model_DrawSkinnedSubset, v61+44 :
+        //   1=alpha-test, 2=additif). Source = u32 processMode/alphaMode en queue du bloc tex[0]
+        //   (Tex_ReadPacked 0x417740, struct 56 o). BLOQUÉ : asset::SObjectTexture (Asset/Model.h,
+        //   front Asset) ne conserve pas ce trailer -> reste 0 (opaque). La chaîne aval
+        //   applyBlendMode/resetBlendMode est déjà bit-exacte ; dès que sm.tex[0] expose le champ,
+        //   une seule ligne (dst.blendMode = sm.tex[0].<champ>) active alpha-test/additif.
+        dst.blendMode = 0;
         out.meshes.push_back(std::move(dst));
     }
 
@@ -361,6 +433,12 @@ void MeshRenderer::SetCamera(const D3DXMATRIX& view, const D3DXMATRIX& proj) {
     view_ = view;
     proj_ = proj;
     D3DXMatrixMultiply(&viewProj_, &view_, &proj_); // view * proj
+
+    // Position caméra monde = translation de l'inverse de la vue (== g_CameraEye dword_18C51C0).
+    // DrawModelShadow s'en sert pour la distance modèle<->caméra (0x40ef8e).
+    D3DXMATRIX invView;
+    if (D3DXMatrixInverse(&invView, nullptr, &view_))
+        eye_ = D3DXVECTOR3(invView._41, invView._42, invView._43);
 }
 
 void MeshRenderer::SetLight(const D3DXVECTOR3& dirWorld,
@@ -415,16 +493,48 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
     const SkinnedLod& L = mesh.lods[lod];
     if (!L.vb || !L.ib || L.vertexCount == 0 || L.faceCount == 0) return;
 
+    // 0) Source de shaders : slots RÉELS du npk (Shader03 VS03_SkinnedLit 0x409AB0 + Shader04
+    //    PS04_Tex 0x409CC0) si un ShaderSet est attaché, sinon HLSL reconstruit (fallback).
+    //    Uniformes/handles prouvés identiques (0x409c23..0x409c8f) -> swap purement interne.
+    IDirect3DVertexShader9*      useVS   = vs_;
+    IDirect3DPixelShader9*       usePS   = ps_;
+    ID3DXConstantTable*          useCT   = ctVs_;
+    D3DXHANDLE                   hKey    = hKeyMatrix_;
+    D3DXHANDLE                   hWvp    = hWorldViewProj_;
+    D3DXHANDLE                   hDir    = hLightDirection_;
+    D3DXHANDLE                   hAmb    = hLightAmbient_;
+    D3DXHANDLE                   hDif    = hLightDiffuse_;
+    UINT                         useSamp = sampler0_;
+    IDirect3DVertexDeclaration9* useDecl = decl_;
+    bool                         realShader = false;
+    if (shaderSet_) {
+        const GxdShader& gvs = shaderSet_->Get(GxdShaderId::VS03_SkinnedLit);
+        const GxdShader& gps = shaderSet_->Get(GxdShaderId::PS04_Tex);
+        if (gvs.Valid() && gps.Valid()) {
+            realShader = true;
+            useVS = gvs.vs;   usePS = gps.ps;   useCT = gvs.ct;
+            hKey  = gvs.Handle("mKeyMatrix");
+            hWvp  = gvs.Handle("mWorldViewProjMatrix");
+            hDir  = gvs.Handle("mLightDirection");
+            hAmb  = gvs.Handle("mLightAmbient");
+            hDif  = gvs.Handle("mLightDiffuse");
+            const int s = gps.Sampler("mTexture0");             // registre de mTexture0 (0x409e34)
+            useSamp = (s >= 0) ? static_cast<UINT>(s) : 0;
+            // Déclaration de vertex réelle g_GxdSkinVtxDecl (0x1945918, dérivée de 0x814A58).
+            if (IDirect3DVertexDeclaration9* d = shaderSet_->SkinnedVertexDecl()) useDecl = d;
+        }
+    }
+
     // 1) États de mélange du matériau (v14 = blendMode).
     applyBlendMode(mesh.blendMode);
 
     // 2) Bind du programme skinné (évite les re-bind redondants via currentPass_).
     if (currentPass_ != kPass_SkinnedLit) {
-        dev_->SetVertexShader(vs_);
-        dev_->SetPixelShader(ps_);
+        dev_->SetVertexShader(useVS);
+        dev_->SetPixelShader(usePS);
         currentPass_ = kPass_SkinnedLit;
     }
-    dev_->SetVertexDeclaration(decl_); // g_SkinVertexDecl (method +348)
+    dev_->SetVertexDeclaration(useDecl); // g_SkinVertexDecl (method +348)
 
     // 3) WVP = world * view * proj (v84 dans l'original).
     D3DXMATRIX wvp;
@@ -446,18 +556,21 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
     if (palette.Valid()) {
         palMats   = palette.matrices;
         boneCount = palette.count;
-        if (boneCount > kMaxBones) boneCount = kMaxBones; // borne vs_2_0 (256 registres)
+        // Model_DrawSkinnedSubset ne clampe PAS (0x40d4e8) : sur shader réel, on passe nBones tel
+        // quel (D3DX borne lui-même à mKeyMatrix.Elements = boneArraySize_). Sur le fallback HLSL,
+        // mKeyMatrix[40] impose la borne kMaxBones pour ne pas déborder le tableau.
+        if (!realShader && boneCount > kMaxBones) boneCount = kMaxBones;
     }
-    ctVs_->SetMatrixArray(dev_, hKeyMatrix_, palMats, boneCount);
+    if (hKey) useCT->SetMatrixArray(dev_, hKey, palMats, boneCount);
 
     // 6) WVP + lumière (SetMatrix +84, SetFloatArray +72).
-    ctVs_->SetMatrix(dev_, hWorldViewProj_, &wvp);
-    if (hLightDirection_) ctVs_->SetFloatArray(dev_, hLightDirection_, &lightObj.x, 3);
-    if (hLightAmbient_)   ctVs_->SetFloatArray(dev_, hLightAmbient_,   &lightAmbient_.x, 3);
-    if (hLightDiffuse_)   ctVs_->SetFloatArray(dev_, hLightDiffuse_,   &lightDiffuse_.x, 3);
+    if (hWvp) useCT->SetMatrix(dev_, hWvp, &wvp);
+    if (hDir) useCT->SetFloatArray(dev_, hDir, &lightObj.x, 3);
+    if (hAmb) useCT->SetFloatArray(dev_, hAmb, &lightAmbient_.x, 3);
+    if (hDif) useCT->SetFloatArray(dev_, hDif, &lightDiffuse_.x, 3);
 
     // 7) Texture diffuse (method +260 SetTexture, registre mTexture0).
-    if (mesh.diffuse) dev_->SetTexture(sampler0_, mesh.diffuse);
+    if (mesh.diffuse) dev_->SetTexture(useSamp, mesh.diffuse);
 
     // 8) Flux + indices + dessin (SetStreamSource +400 stride 76, SetIndices +416,
     //    DrawIndexedPrimitive +328 : TRIANGLELIST, nbVtx, nbTri).
@@ -492,6 +605,241 @@ void MeshRenderer::resetBlendMode(uint32_t blendMode) {
         dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_AlphaBlendEnable), FALSE);
         dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_ZWriteEnable), TRUE);
     }
+}
+
+// ===========================================================================
+//  Ombres — Model_RenderWithShadow 0x40EEE0 / Model_BuildShadowVolume 0x40DC70
+// ===========================================================================
+
+void MeshRenderer::DrawModelShadow(const SkinnedModel& model,
+                                   const D3DXVECTOR3&  position,
+                                   const D3DXVECTOR3&  rotationDeg,
+                                   const D3DXVECTOR3&  scale,
+                                   const BonePalette&  palette,
+                                   float               boundRadius) {
+    // 1) Gate g_ShadowsEnabled (0x40eef8) + entités présentes. Le volume d'ombre passe par VS15
+    //    (g_GxdSh15_VS) : sans ShaderSet réel attaché, le HLSL reconstruit n'a pas ce shader -> no-op.
+    if (!Ready() || !shadowsEnabled_ || model.Empty()) return;
+    if (!shaderSet_) return;
+    const GxdShader& sh15 = shaderSet_->Get(GxdShaderId::VS15_WorldVP);
+    if (!sh15.Valid()) return;
+
+    // 2) Matrice monde = Scale*RotZ*RotY*RotX*Translate (deg->rad ×0.017453292 ; 0x40f3b7..0x40f4c3).
+    D3DXMATRIX mS, mRx, mRy, mRz, mT, tmp, world;
+    D3DXMatrixScaling(&mS, scale.x, scale.y, scale.z);
+    D3DXMatrixRotationX(&mRx, rotationDeg.x * kDeg2Rad);
+    D3DXMatrixRotationY(&mRy, rotationDeg.y * kDeg2Rad);
+    D3DXMatrixRotationZ(&mRz, rotationDeg.z * kDeg2Rad);
+    D3DXMatrixTranslation(&mT, position.x, position.y, position.z);
+    D3DXMatrixMultiply(&world, &mS,    &mRz);
+    D3DXMatrixMultiply(&tmp,   &world, &mRy);
+    D3DXMatrixMultiply(&world, &tmp,   &mRx);
+    D3DXMatrixMultiply(&tmp,   &world, &mT);
+    world = tmp;
+
+    // 3) Distance modèle<->caméra (0x40ef8e : dist = |position - eye|). Le test de frustum sphère
+    //    (Frustum_IntersectsSphere 0x406660, centre = position + Y·boundRadius·0.5) n'est qu'une
+    //    optimisation de culling -> écarté ici sans changer le rendu.
+    D3DXVECTOR3 delta = position - eye_;
+    const float dist = D3DXVec3Length(&delta);
+
+    if (dist > fogNear_) {
+        // ---- LOIN (0x40efde) : ombre planaire projetée ----
+        // TODO [ancre 0x40F720] Model_RenderPlanarShadow : projection planaire + masque stencil
+        //   anti-double-blend (TEXTUREFACTOR60 = luminance diffuse moyenne ×64 <<24, SRCALPHA/
+        //   INVSRCALPHA, DEPTHBIAS195=1e-5 anti z-fight). Non réversée/possédée ici (géométrie
+        //   projetée séparée) : régime laissé en attente pour ne pas programmer un état device
+        //   sans le draw associé.
+        return;
+    }
+
+    // ---- PROCHE (0x40efc6) : VOLUME D'OMBRE STENCIL ----
+    // WVP = world · view · proj (0x40f50f/0x40f523 ; viewProj_ = view·proj).
+    D3DXMATRIX wvp;
+    D3DXMatrixMultiply(&wvp, &world, &viewProj_);
+
+    // Passe 8 = VS15 + PS NULL (cache g_CurrentShaderPass ; 0x40f4d0..0x40f4fe).
+    if (currentPass_ != kPass_ShadowVolume) {
+        currentPass_ = kPass_ShadowVolume;
+        dev_->SetVertexShader(sh15.vs); // method +368 = g_GxdSh15_VS
+        dev_->SetPixelShader(nullptr);  // method +428 (PS NULL : écritures depth/stencil seules)
+    }
+    if (D3DXHANDLE h = sh15.Handle("mWorldViewProjMatrix"))
+        sh15.ct->SetMatrix(dev_, h, &wvp); // g_GxdSh15_hWorldViewProj (method +84 ; 0x40f55b)
+    dev_->SetTexture(0, nullptr);          // method +260 (0x40f56f)
+
+    // Direction lumière d'ombre en espace objet : négée, transformée par inverse(world), normalisée
+    // (flt_18C53C0/C4/C8 ; 0x40f580..0x40f5cc).
+    D3DXMATRIX invWorld;
+    D3DXMatrixInverse(&invWorld, nullptr, &world);
+    D3DXVECTOR3 lightObj(-shadowLightDir_.x, -shadowLightDir_.y, -shadowLightDir_.z);
+    D3DXVec3TransformNormal(&lightObj, &lightObj, &invWorld);
+    D3DXVec3Normalize(&lightObj, &lightObj);
+
+    // Boucle des meshes (0x40f5e5..0x40f703). Régime proche : le fondu v30 sature à 1.0 (0x40f367)
+    // -> LOD 0 (0x40dca3). Chaque mesh non-billboard skinne + silhouette + extrude sa géométrie.
+    // NB : a9 (longueur d'extrusion, fournie par l'appelant de Model_RenderWithShadow, hors périmètre)
+    //   est approximée par le diamètre englobant boundRadius — extrusion >= taille du modèle.
+    for (const SkinnedMesh& mesh : model.meshes) {
+        if (mesh.empty || mesh.lods.empty()) continue;
+        const SkinnedLod& L = mesh.lods[0];
+        if (!buildShadowVolume(L, palette, lightObj, boundRadius)) continue;
+
+        const UINT triCount = shadowVolVertCount_ / 3;
+        if (triCount == 0) continue;
+        const UINT stride = 3 * sizeof(float); // sommet d'ombre = position seule (12 o)
+
+        // 1ère passe : FVF XYZ + DrawPrimitiveUP (cull hérité) — 0x40f639/0x40f668.
+        dev_->SetFVF(kFVF_XYZ); // method +356
+        dev_->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triCount, shadowVol_.data(), stride); // method +332
+
+        if (shadowMethod_ == 0) {
+            // z-fail (Carmack reverse) : CW+INCR redraw, puis DECR+CCW (0x40f685..0x40f6f0).
+            dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_CullMode),     kCULL_CW);
+            dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_StencilZFail), kSTENCILOP_Incr);
+            dev_->DrawPrimitiveUP(D3DPT_TRIANGLELIST, triCount, shadowVol_.data(), stride);
+            dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_StencilZFail), kSTENCILOP_Decr);
+            dev_->SetRenderState(static_cast<D3DRENDERSTATETYPE>(kRS_CullMode),     kCULL_CCW);
+        }
+        // g_ShadowMethod==1 (stencil two-sided) : le régime proche ne fait que la 1ère passe
+        //   (les états two-sided TWOSIDEDSTENCILMODE185 sont programmés dans le régime planaire).
+    }
+}
+
+// Model_BuildShadowVolume 0x40DC70 — skinning CPU des sommets + silhouette extrudée.
+// Opère sur les données CPU retenues (SkinnedLod::skinCpu/idxTopo/idxAdj). Écrit shadowVol_
+// (XYZ interleavé, stride 12) et shadowVolVertCount_ ; renvoie false si abandon (0x40dc87/0x40dd37/
+// 0x40e1bd) ou données absentes.
+bool MeshRenderer::buildShadowVolume(const SkinnedLod&  L,
+                                     const BonePalette& palette,
+                                     const D3DXVECTOR3& lightDirObj,
+                                     float              extrude) {
+    // Mesh vide / billboard / données CPU absentes -> 0 (0x40dc87).
+    if (L.vertexCount == 0 || L.faceCount == 0) return false;
+    if (L.skinCpu.empty() || L.idxTopo.empty() || L.idxAdj.empty()) return false;
+    if (!palette.Valid()) return false;
+    // Garde LOD (0x40dd37) : > 10000 sommets ou faces -> abandon.
+    if (L.vertexCount > 10000 || L.faceCount > 10000) return false;
+
+    const UINT nVtx   = L.vertexCount;
+    const UINT nFace  = L.faceCount;
+    const D3DXMATRIX* bones = palette.matrices; // tranche de frame MOTION (base + frame·nBones)
+    const UINT nBones = palette.count;
+
+    // Redimensionne les tampons scratch (globaux d'origine, plafonds identiques).
+    if (worldPos_.size() < static_cast<size_t>(nVtx) * 3)
+        worldPos_.resize(static_cast<size_t>(nVtx) * 3);
+    if (faceLightFacing_.size() < nFace)
+        faceLightFacing_.resize(nFace);
+    if (shadowVol_.size() < static_cast<size_t>(kShadowVolMaxVerts) * 3)
+        shadowVol_.resize(static_cast<size_t>(kShadowVolMaxVerts) * 3);
+
+    // --- 1) Skinning CPU (0x40dd76..0x40e004) : SkinVertex 32 o = pos[3]@+0, poids[4]@+12/16/20/24,
+    //        boneIdx u32@+28 (4× u8). out = Σ_i w_i · (M[bone_i]·pos), transform row-vector affine. ---
+    const uint8_t* skin = L.skinCpu.data();
+    for (UINT i = 0; i < nVtx; ++i) {
+        const uint8_t* v = skin + static_cast<size_t>(i) * 32;
+        float px, py, pz, w[4];
+        uint32_t packed;
+        std::memcpy(&px, v + 0, 4);
+        std::memcpy(&py, v + 4, 4);
+        std::memcpy(&pz, v + 8, 4);
+        std::memcpy(&w[0], v + 12, 4);
+        std::memcpy(&w[1], v + 16, 4);
+        std::memcpy(&w[2], v + 20, 4);
+        std::memcpy(&w[3], v + 24, 4);
+        std::memcpy(&packed, v + 28, 4);
+
+        float ox = 0.0f, oy = 0.0f, oz = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            UINT b = (packed >> (8 * k)) & 0xFFu;
+            if (b >= nBones) b = 0; // garde (indices d'os hors palette — jamais atteint sur data valide)
+            const D3DXMATRIX& m = bones[b];
+            // == v105/106/107 : _11*px+_21*py+_31*pz+_41 (translation incluse).
+            const float tx = px * m._11 + py * m._21 + pz * m._31 + m._41;
+            const float ty = px * m._12 + py * m._22 + pz * m._32 + m._42;
+            const float tz = px * m._13 + py * m._23 + pz * m._33 + m._43;
+            ox += w[k] * tx; oy += w[k] * ty; oz += w[k] * tz;
+        }
+        worldPos_[static_cast<size_t>(i) * 3 + 0] = ox;
+        worldPos_[static_cast<size_t>(i) * 3 + 1] = oy;
+        worldPos_[static_cast<size_t>(i) * 3 + 2] = oz;
+    }
+
+    const uint16_t* topo = reinterpret_cast<const uint16_t*>(L.idxTopo.data());
+    const uint16_t* adj  = reinterpret_cast<const uint16_t*>(L.idxAdj.data());
+    auto WP = [&](UINT idx) -> const float* { return &worldPos_[static_cast<size_t>(idx) * 3]; };
+
+    // --- 2) Face facing (0x40e02c..0x40e122) : normale = eA×eB, éclairée si N·lightDir > 0. ---
+    for (UINT f = 0; f < nFace; ++f) {
+        const uint16_t i0 = topo[f * 3 + 0];
+        const uint16_t i1 = topo[f * 3 + 1];
+        const uint16_t i2 = topo[f * 3 + 2];
+        const float* p0 = WP(i0);
+        const float* p1 = WP(i1);
+        const float* p2 = WP(i2);
+        const float ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2]; // eA = p1-p0
+        const float bx = p2[0] - p1[0], by = p2[1] - p1[1], bz = p2[2] - p1[2]; // eB = p2-p1
+        const float nx = bz * ay - by * az; // v96
+        const float ny = az * bx - bz * ax; // v97
+        const float nz = ax * by - bx * ay; // v98
+        faceLightFacing_[f] =
+            (nx * lightDirObj.x + lightDirObj.y * ny + lightDirObj.z * nz > 0.0f) ? 1 : 0;
+    }
+
+    // --- 3) Silhouette + extrusion (0x40e156..0x40e635). ---
+    shadowVolVertCount_ = 0;
+    const float ex = lightDirObj.x * extrude; // v53
+    const float ey = lightDirObj.y * extrude; // v52
+    const float ez = lightDirObj.z * extrude; // v50
+    float* vol = shadowVol_.data();
+    auto emit = [&](float x, float y, float z) {
+        const size_t o = static_cast<size_t>(shadowVolVertCount_) * 3;
+        vol[o + 0] = x; vol[o + 1] = y; vol[o + 2] = z;
+        ++shadowVolVertCount_;
+    };
+
+    for (UINT f = 0; f < nFace; ++f) {
+        if (faceLightFacing_[f] != 1) continue;
+        if (shadowVolVertCount_ > kShadowVolGuard) return false; // v45 > 29976 (0x40e1bd)
+
+        const uint16_t i0 = topo[f * 3 + 0];
+        const uint16_t i1 = topo[f * 3 + 1];
+        const uint16_t i2 = topo[f * 3 + 2];
+        const float* p0 = WP(i0);
+        const float* p1 = WP(i1);
+        const float* p2 = WP(i2);
+
+        // Front cap = la face éclairée (p0, p1, p2) — 0x40e1fb..0x40e2b6.
+        emit(p0[0], p0[1], p0[2]);
+        emit(p1[0], p1[1], p1[2]);
+        emit(p2[0], p2[1], p2[2]);
+
+        // Arêtes de silhouette : voisin absent (==nFace) ou non éclairé -> quad extrudé.
+        //   nearA = [p1,p2,p0], nearB = [p0,p1,p2] (tables d'indices &v100/&v99 ; 0x40e30b/0x40e34b).
+        const float* nearA[3] = { p1, p2, p0 };
+        const float* nearB[3] = { p0, p1, p2 };
+        for (int e = 0; e < 3; ++e) {
+            const uint16_t nb = adj[f * 3 + e]; // adjacence : voisin par arête (0x40e2e6)
+            if (nb >= nFace || !faceLightFacing_[nb]) {
+                const float* a = nearA[e];
+                const float* b = nearB[e];
+                // quad = 2 triangles (a, b, b_far, a, b_far, a_far) — 0x40e314..0x40e4d6.
+                emit(a[0],       a[1],       a[2]);
+                emit(b[0],       b[1],       b[2]);
+                emit(b[0] - ex,  b[1] - ey,  b[2] - ez);
+                emit(a[0],       a[1],       a[2]);
+                emit(b[0] - ex,  b[1] - ey,  b[2] - ez);
+                emit(a[0] - ex,  a[1] - ey,  a[2] - ez);
+            }
+        }
+
+        // Back cap extrudé (p0_far, p2_far, p1_far) — 0x40e507..0x40e608.
+        emit(p0[0] - ex, p0[1] - ey, p0[2] - ez);
+        emit(p2[0] - ex, p2[1] - ey, p2[2] - ez);
+        emit(p1[0] - ex, p1[1] - ey, p1[2] - ez);
+    }
+    return true;
 }
 
 } // namespace ts2::gfx

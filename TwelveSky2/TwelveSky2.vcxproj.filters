@@ -330,6 +330,12 @@
     <ClCompile Include="src\Gfx\MeshRenderer.cpp">
       <Filter>Source Files\Gfx</Filter>
     </ClCompile>
+    <ClCompile Include="src\Gfx\MotionCache.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
     <ClCompile Include="src\Gfx\ModelCache.cpp">
       <Filter>Source Files\Gfx</Filter>
     </ClCompile>
@@ -753,6 +759,12 @@
       <Filter>Header Files\Gfx</Filter>
     </ClInclude>
     <ClInclude Include="src\Gfx\MeshRenderer.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\MotionCache.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\PlayerPaperdoll.h">
       <Filter>Header Files\Gfx</Filter>
     </ClInclude>
     <ClInclude Include="src\Gfx\ModelCache.h">

@@ -1,0 +1,50 @@
+// Gfx/PlayerPaperdoll.cpp — implementation. Voir PlayerPaperdoll.h pour la preuve IDA
+// (Char_RenderModel 0x527020 : v37 palette partagee, corps 2 pieces + arme skinnee au bone de main).
+#include "Gfx/PlayerPaperdoll.h"
+#include "Game/GameDatabase.h" // game::GetItemInfo (resolution modele arme via ITEM_INFO)
+
+namespace ts2::gfx {
+
+PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motions,
+                                         int race, int gender, int costume0, int costume1,
+                                         uint32_t weaponItemId, float gameTimeSec) {
+    PaperdollResult r;
+
+    // 1) Palette d'os PARTAGEE — Char_RenderModel 0x527020 : v37 = PcModel_ResolveEquipSlot
+    //    0x4E46A0(g_ModelMotionArray, race, gender, weaponPose, animState, 1,0,0). Une seule
+    //    palette pour toutes les pieces (corps + arme).
+    //    weaponType/animState laisses en defaut idle (0,0).
+    //    TODO [ancre 0x4E46A0] weaponPose : provient du switch a8=weaponItemId de
+    //    PcModel_ResolveEquipSlot (~500 cas non reverses) ; animState : de la FSM
+    //    Char_UpdateAnimationFrame 0x571880, non cablee sur les entites de rendu (cf. GameState.h).
+    const int weaponType = 0;
+    const int animState  = 0;
+    if (const gfx::MotionPalette* mp = motions.GetForPlayer(race, gender, weaponType, animState))
+        r.palette = MotionCache::SampleByGameTime(*mp, gameTimeSec);
+    // sinon r.palette reste invalide (identite cote MeshRenderer) — degrade honnete, pas d'invention.
+
+    // 2) Corps de base 2 pieces — ModelCache::GetForPlayerBody (deja cable sur flt_F59A7C SLOT0 /
+    //    flt_F5B21C SLOT1 de Char_RenderModel). Chaque piece est independamment nullptr/vide.
+    const gfx::PlayerBodyModel body = models.GetForPlayerBody(race, gender, costume0, costume1);
+    if (body.slot0 && !body.slot0->Empty()) r.pieces.push_back(body.slot0);
+    if (body.slot1 && !body.slot1->Empty()) r.pieces.push_back(body.slot1);
+
+    // 3) Arme — Char_RenderModel 0x527bfe : MEME palette v37, MEME transformee que le corps.
+    //    Resolue via ITEM_INFO.model (ModelCache::GetForItem, slot 0), meme chemin que l'ancien
+    //    WorldRenderer. Ajoutee en piece -> skinnee au bone de main par la palette du corps.
+    if (weaponItemId != 0) {
+        if (const game::ItemInfo* it = game::GetItemInfo(weaponItemId))
+            if (const gfx::SkinnedModel* w = models.GetForItem(*it, /*slot=*/0))
+                if (!w->Empty()) r.pieces.push_back(w);
+    }
+
+    // TODO [ancre 0x527020] les 12 autres slots d'equipement (casque/armure/bottes/accessoires)
+    // via catalogues flt_F5xxxx indexes MobDb_GetEntry(mITEM,a4[slot]) 0x4C3C00 +196 (stride 144) :
+    // ~40 adresses de base de catalogue non resolvables par l'API stem actuelle de ModelCache, et
+    // le body distant ne porte que l'arme (@body+148, GameState.h). Laisse en TODO ancre.
+
+    r.valid = !r.pieces.empty();
+    return r;
+}
+
+} // namespace ts2::gfx

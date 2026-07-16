@@ -22,7 +22,10 @@
 namespace ts2::asset {
 
 // Sous-format détecté (par extension). WM et WJ partagent la même structure.
-enum class WorldChunkType { Unknown, WM, WJ, WG, WO, WP };
+// SOBJECT_B = maillage « Format B » multi-part (W*.SOBJECT) — NON routé par extension
+// (l'extension .SOBJECT est ambiguë avec le SObject skinné) : à passer explicitement à
+// LoadFromMemory. Ancre IDA : cMesh_ReadFromStream 0x436CA0.
+enum class WorldChunkType { Unknown, WM, WJ, WG, WO, WP, SOBJECT_B };
 
 // -------------------------------------------------------------------------
 // Bloc texture compressé (Tex_LoadCompressedFromHandle).
@@ -214,24 +217,95 @@ struct ObjectChunk {
 };
 
 // -------------------------------------------------------------------------
-// Nœud FX (Fx_NodeLoadFromHandle) : texture + piste anim + 144o de champs fixes.
+// Nœud FX (Fx_NodeLoadFromHandle 0x6a69f0) : texture + piste anim + 144o de champs
+// émetteur. La structure runtime fait 232 o ; sur DISQUE, après la texture (this+1) et la
+// piste d'anim (this+14), 18 ReadFile lisent séquentiellement 144 o [runtime +72, +216) :
+//   +72 u32, +76 u32, +80 u32, +84 u32, +88 u32, +92 (12o), +104 u32, +108 (12o),
+//   +120 (12o), +132 u32, +136 u32, +140 (16o), +156 (16o), +172 (12o), +184 (12o),
+//   +196 (12o), +208 u32, +212 u32  (= 144 o exactement, confirmé Fx_NodeLoadFromHandle).
+// `fields` conserve le blob brut 144 o (fidélité + parseur validé 455/455 inchangé) ; la vue
+// typée ci-dessous re-décode les champs nommés (offset dans `fields` = runtime - 72). Les
+// noms (lifetime/rate/shape/box/…) suivent l'usage prouvé côté émission (Particle_Init
+// 0x6a7020 / Particle_UpdateEmit 0x6a7530) ; leur interprétation float/u32 est cohérente
+// mais la SÉMANTIQUE exacte de la queue (+132..+215) n'est pas prouvée -> laissée dans `fields`.
 // -------------------------------------------------------------------------
 struct FxNode {
     bool present = false;
-    TextureBlock tex;                       // Tex_LoadCompressedFromHandle
-    AnimTrack    anim;                      // Anim_LoadQuatTrackFromHandle
-    std::vector<uint8_t> fields;            // 144 octets de champs fixes
+    TextureBlock tex;                       // this+1  (byte 4)  Tex_LoadCompressedFromHandle
+    AnimTrack    anim;                      // this+14 (byte 56) Anim_LoadQuatTrackFromHandle
+    std::vector<uint8_t> fields;            // 144 octets bruts [runtime +72, +216)
+
+    // --- Vue typée décodée (ancre Fx_NodeLoadFromHandle 0x6a69f0) ---
+    float    lifetime     = 0.0f;           // +72
+    float    kfFps        = 0.0f;           // +76  (cadence keyframes)
+    float    rate         = 0.0f;           // +80  (débit d'émission)
+    uint32_t shape        = 0;              // +84  (forme d'émission, ∈ [1..6])
+    float    speed        = 0.0f;           // +88
+    float    box[3]       = {0,0,0};        // +92  (boîte d'émission xyz)
+    float    particleLife = 0.0f;           // +104
+    float    minRange[3]  = {0,0,0};        // +108
+    float    maxRange[3]  = {0,0,0};        // +120
+    float    accelMin[3]  = {0,0,0};        // +172
+    float    accelMax[3]  = {0,0,0};        // +184
+    // Queue +132/+136/+140(16o)/+156(16o)/+196(12o)/+208/+212 : présente dans `fields`, rôle
+    // non prouvé (lue par Particle_UpdateEmit 0x6a7530) -> TODO ancre 0x6a7530 avant de typer.
 };
 
 // -------------------------------------------------------------------------
-// Fichier .WP — nœuds FX + placements + records B.
+// Instance FX placée en zone (.WP, enregistrement « B »). 28 o sur disque (4+12+12),
+// 76 o à l'exécution. Ancre IDA : MapColl_LoadObjectsB 0x6983b0 (@0x698602 lit 4/12/12) ;
+// tick MapColl_UpdateObjectAnim 0x694A00 (stride 76 ; fxb+28 = état système particules,
+// fxb+0 = nodeIndex, fxb+4 = pos, fxb+16 = rot passés à Particle_Init/UpdateEmit).
+// -------------------------------------------------------------------------
+struct AuxFxRecord {
+    uint32_t nodeIndex = 0;                  // +0  index dans FxChunk::nodes[]
+    float    pos[3] = {0, 0, 0};             // +4  position monde
+    float    rot[3] = {0, 0, 0};             // +16 rotation (degrés ; kDegToRad = pi/180)
+    // +28..+75 = état système particules (runtime, non disque — init Particle_Init 0x6a7020)
+};
+
+// -------------------------------------------------------------------------
+// Fichier .WP — nœuds FX + placements + records B (instances placées).
 // -------------------------------------------------------------------------
 struct FxChunk {
     bool     empty = false;                 // numFx == 0
     std::vector<FxNode> nodes;              // this+28 : num_fx
     std::vector<uint8_t> placements;        // this+30 : 100 octets * num_fx
     uint32_t numFxb = 0;                    // this+31
-    std::vector<uint8_t> fxbRecords;        // 28 octets disque (4+12+12) * num_fxb
+    std::vector<AuxFxRecord> fxbRecords;    // instances placées (28o disque : nodeIndex+pos+rot)
+};
+
+// -------------------------------------------------------------------------
+// Maillage « Format B » — une PART (W*.SOBJECT). Ancre IDA : cMesh_ReadFromStream 0x436CA0.
+// Disque : [present u32] (si 0 -> part absente, fin du walker) ; puis bloc GXD
+// [rawSize u32][packedSize u32][zlib] (RÈGLE #4 : zlib pur, JAMAIS XTEA) décompressé en Heap ;
+//   Heap[0..136)   = header (numVerts@120, C@124, numFaces@132)
+//   Heap[136..176) = subHeader (40 o)
+//   Heap[176 ..)   = stream 0 (32 o/vertex, numVerts)      -> a1+348
+//   Heap[176+32*B) = stream 1 (32 o/vertex, numVerts)      -> a1+352
+//   puis 6*numFaces o d'indices (INDEX16)                  -> a1+356
+// (positions compactées a1+360 = 12 premiers o/vertex ; normales a1+364 = vertex+12 : dérivées
+//  du stream 0, non relues sur disque). Puis textures Tex_ReadPacked (framing = imageSize/
+// rawSize/packedSize/zlib + trailer 8o, IDENTIQUE à ReadTextureBlock, prouvé Tex_ReadPacked
+// 0x417740) : tex1 (a1+368), tex2 (a1+424), [numMat u32] (a1+480), numMat sous-textures (56o
+// runtime chacune, a1+484). Cas spécial B==4&&C==4&&D==2 = quad billboard (AABB des 4 verts).
+// -------------------------------------------------------------------------
+struct MeshFormatBPart {
+    bool     present = false;
+    uint8_t  header[136]    = {};   // Heap[0..136)   numVerts@120 / C@124 / numFaces@132
+    uint8_t  subHeader[40]  = {};   // Heap[136..176)
+    uint32_t numVerts = 0, C = 0, numFaces = 0;
+    std::vector<uint8_t> vb0;       // 32*numVerts (stream 0)
+    std::vector<uint8_t> vb1;       // 32*numVerts (stream 1)
+    std::vector<uint8_t> ib;        // 6*numFaces  (INDEX16)
+    TextureBlock tex1;              // a1+368
+    TextureBlock tex2;              // a1+424
+    std::vector<TextureBlock> materials; // a1+484 (numMat entrées)
+};
+
+// Maillage « Format B » complet = walker multi-part (boucle tant que present != 0).
+struct MeshFormatBChunk {
+    std::vector<MeshFormatBPart> parts;
 };
 
 // -------------------------------------------------------------------------
@@ -253,6 +327,7 @@ public:
     const MapFaceChunk*      AsFace()      const { return face_      ? &*face_      : nullptr; } // WG
     const ObjectChunk*       AsObjects()   const { return objects_   ? &*objects_   : nullptr; } // WO
     const FxChunk*           AsFx()        const { return fx_        ? &*fx_        : nullptr; } // WP
+    const MeshFormatBChunk*  AsMeshB()     const { return meshB_     ? &*meshB_     : nullptr; } // SOBJECT_B
 
     // Résumé lisible (compteurs), utile pour comparer à la sortie du parseur Python.
     std::string Describe() const;
@@ -265,6 +340,7 @@ private:
     std::optional<MapFaceChunk>      face_;
     std::optional<ObjectChunk>       objects_;
     std::optional<FxChunk>           fx_;
+    std::optional<MeshFormatBChunk>  meshB_;
 };
 
 // Déduit le sous-format à partir de l'extension du chemin (.WM/.WJ/.WG/.WO/.WP).

@@ -222,15 +222,34 @@ Model ReadModel(ByteReader& r) {
     return md;
 }
 
-// read_fxnode : [present u32] ; si !=0 -> texture + piste anim + 144o de champs.
+// read_fxnode : [present u32] ; si !=0 -> texture + piste anim + 144o de champs émetteur.
+// Ancre IDA : Fx_NodeLoadFromHandle 0x6a69f0 (18 ReadFile après texture+anim = 144 o disque).
 FxNode ReadFxNode(ByteReader& r) {
     FxNode fn;
     const uint32_t present = r.U32();
     if (present == 0) return fn;
-    fn.tex    = ReadTextureBlock(r);         // Tex_LoadCompressedFromHandle
-    fn.anim   = ReadAnimTrack(r);            // Anim_LoadQuatTrackFromHandle
-    fn.fields = ReadBlob(r, 144);            // 144 octets de champs fixes
+    fn.tex    = ReadTextureBlock(r);         // this+1  Tex_LoadCompressedFromHandle 0x6a9cf0
+    fn.anim   = ReadAnimTrack(r);            // this+14 Anim_LoadQuatTrackFromHandle 0x6aae20
+    fn.fields = ReadBlob(r, 144);            // [runtime +72, +216) : blob brut (parseur inchangé)
     fn.present = true;
+
+    // Vue typée décodée depuis `fields` (offset = runtime - 72). Les 144 o sont lus dans l'ordre
+    // exact de Fx_NodeLoadFromHandle 0x6a69f0 ; seuls les champs à sémantique cohérente sont
+    // exposés (la queue +132.. reste dans `fields`, cf. WorldChunk.h).
+    const uint8_t* f = fn.fields.data();
+    auto rf = [f](size_t off) { float v; std::memcpy(&v, f + off, 4); return v; };
+    auto ru = [f](size_t off) { uint32_t v; std::memcpy(&v, f + off, 4); return v; };
+    fn.lifetime     = rf(0);    // +72
+    fn.kfFps        = rf(4);    // +76
+    fn.rate         = rf(8);    // +80
+    fn.shape        = ru(12);   // +84
+    fn.speed        = rf(16);   // +88
+    fn.box[0] = rf(20); fn.box[1] = rf(24); fn.box[2] = rf(28);          // +92
+    fn.particleLife = rf(32);   // +104
+    fn.minRange[0] = rf(36); fn.minRange[1] = rf(40); fn.minRange[2] = rf(44); // +108
+    fn.maxRange[0] = rf(48); fn.maxRange[1] = rf(52); fn.maxRange[2] = rf(56); // +120
+    fn.accelMin[0] = rf(100); fn.accelMin[1] = rf(104); fn.accelMin[2] = rf(108); // +172
+    fn.accelMax[0] = rf(112); fn.accelMax[1] = rf(116); fn.accelMax[2] = rf(120); // +184
     return fn;
 }
 
@@ -320,7 +339,22 @@ ObjectChunk ParseWO(ByteReader& r) {
     return out;
 }
 
-// parse_WP : [numFx u32] + nœuds FX + placements + [numFxb u32] + records B.
+// Décode les instances FX placées (28 o/instance : nodeIndex u32 + pos 12o + rot 12o).
+// Ancre IDA : MapColl_LoadObjectsB 0x6983b0 @0x698602 (ReadFile +0/4, +4/12, +16/12).
+std::vector<AuxFxRecord> ReadAuxFxRecords(ByteReader& r, uint32_t numFxb) {
+    std::vector<AuxFxRecord> out;
+    out.reserve(numFxb);
+    for (uint32_t i = 0; i < numFxb; ++i) {
+        AuxFxRecord rec;
+        rec.nodeIndex = r.U32();                                        // +0
+        rec.pos[0] = r.F32(); rec.pos[1] = r.F32(); rec.pos[2] = r.F32(); // +4
+        rec.rot[0] = r.F32(); rec.rot[1] = r.F32(); rec.rot[2] = r.F32(); // +16
+        out.push_back(rec);
+    }
+    return out;
+}
+
+// parse_WP : [numFx u32] + nœuds FX + placements + [numFxb u32] + records B (instances placées).
 FxChunk ParseWP(ByteReader& r) {
     FxChunk out;
     const uint32_t numFx = r.U32();          // this+28
@@ -334,10 +368,64 @@ FxChunk ParseWP(ByteReader& r) {
         out.nodes.push_back(ReadFxNode(r));
     out.placements = ReadBlob(r, 100ull * numFx);     // this+30 : 100o/fx
     const uint32_t numFxb = r.U32();                  // this+31
-    out.fxbRecords = ReadBlob(r, 28ull * numFxb);     // 28o disque (4+12+12)
+    out.fxbRecords = ReadAuxFxRecords(r, numFxb);     // 28o disque (nodeIndex+pos+rot)
     out.numFxb = numFxb;
     if (!r.Eof())
         throw AssetError("WP : octets restants à EOF");
+    return out;
+}
+
+// read_meshpart_B : reproduit UNE part de cMesh_ReadFromStream 0x436CA0 (Format B). Renvoie
+// present==false quand le flag de tête est 0 (fin du walker). RÈGLE #4 : le bloc géométrie est
+// du zlib PUR (ReadGxdBlock), jamais XTEA/GXCW. Textures = ReadTextureBlock (framing identique
+// à Tex_ReadPacked 0x417740, prouvé).
+MeshFormatBPart ReadMeshFormatBPart(ByteReader& r) {
+    MeshFormatBPart mp;
+    const uint32_t present = r.U32();        // a1+188
+    if (present == 0) return mp;             // fin de walker
+
+    uint32_t raw = 0, packed = 0;
+    std::vector<uint8_t> heap = ReadGxdBlock(r, raw, packed); // [rawSize][packedSize][zlib]
+    if (heap.size() < 176)
+        throw AssetError("meshB : bloc géométrie trop court (<176)");
+    std::memcpy(mp.header, heap.data() + 0, 136);        // qmemcpy(a1+192, Heap, 0x88)
+    std::memcpy(mp.subHeader, heap.data() + 136, 40);    // qmemcpy(a1+144, Heap+136, 0x28)
+    std::memcpy(&mp.numVerts, mp.header + 120, 4);       // a1+312
+    std::memcpy(&mp.C,        mp.header + 124, 4);       // a1+316
+    std::memcpy(&mp.numFaces, mp.header + 132, 4);       // a1+324
+
+    const size_t vbBytes = 32ull * mp.numVerts;
+    const size_t ibBytes = 6ull * mp.numFaces;
+    // Heap+176 = stream 0 ; Heap+176+32*B = stream 1 ; puis 6*D indices.
+    if (heap.size() < 176 + 2 * vbBytes + ibBytes)
+        throw AssetError("meshB : bloc géométrie incohérent (streams/indices hors limites)");
+    const uint8_t* p = heap.data() + 176;
+    mp.vb0.assign(p, p + vbBytes);          p += vbBytes;   // a1+348 (Crt_Memcpy Heap+176)
+    mp.vb1.assign(p, p + vbBytes);          p += vbBytes;   // a1+352 (Heap+176+32*B)
+    mp.ib.assign(p, p + ibBytes);                            // a1+356 (6*D)
+
+    mp.tex1 = ReadTextureBlock(r);          // Tex_ReadPacked(a1+368)
+    mp.tex2 = ReadTextureBlock(r);          // Tex_ReadPacked(a1+424)
+    const uint32_t numMat = r.U32();        // a1+480
+    mp.materials.reserve(numMat);
+    for (uint32_t i = 0; i < numMat; ++i)
+        mp.materials.push_back(ReadTextureBlock(r)); // a1+484 (56o runtime chacune)
+
+    mp.present = true;
+    return mp;
+}
+
+// parse_SOBJECT_B : walker multi-part. Boucle ReadMeshFormatBPart tant que present != 0
+// (chaque part auto-délimitée par son propre flag de tête). Ancre IDA : cMesh_ReadFromStream
+// 0x436CA0 rappelé en boucle par l'appelant du client d'origine.
+MeshFormatBChunk ParseMeshFormatB(ByteReader& r) {
+    MeshFormatBChunk out;
+    for (;;) {
+        MeshFormatBPart part = ReadMeshFormatBPart(r);
+        if (!part.present) break;   // flag 0 -> plus de part
+        out.parts.push_back(std::move(part));
+        if (r.Eof()) break;         // flux épuisé (le flag 0 final peut être absent en fin de fichier)
+    }
     return out;
 }
 
@@ -351,6 +439,7 @@ void WorldChunk::Reset() {
     face_.reset();
     objects_.reset();
     fx_.reset();
+    meshB_.reset();
 }
 
 bool WorldChunk::Load(const std::string& path) {
@@ -385,6 +474,9 @@ bool WorldChunk::LoadFromMemory(const std::vector<uint8_t>& data, WorldChunkType
                 break;
             case WorldChunkType::WP:
                 fx_ = ParseWP(r);
+                break;
+            case WorldChunkType::SOBJECT_B:
+                meshB_ = ParseMeshFormatB(r);
                 break;
             default:
                 TS2_ERR("WorldChunk : type non supporté");
@@ -440,6 +532,15 @@ std::string WorldChunk::Describe() const {
                     fx_->numFxb, fx_->empty ? " (empty)" : "");
             }
             break;
+        case WorldChunkType::SOBJECT_B:
+            if (meshB_) {
+                uint32_t totalVerts = 0, totalFaces = 0;
+                for (const auto& p : meshB_->parts) { totalVerts += p.numVerts; totalFaces += p.numFaces; }
+                std::snprintf(buf, sizeof(buf),
+                    "SOBJECT_B parts=%u totalVerts=%u totalFaces=%u",
+                    static_cast<uint32_t>(meshB_->parts.size()), totalVerts, totalFaces);
+            }
+            break;
         default:
             std::snprintf(buf, sizeof(buf), "WorldChunk vide/inconnu");
             break;
@@ -469,6 +570,7 @@ const char* WorldChunkTypeName(WorldChunkType t) {
         case WorldChunkType::WG: return "WG";
         case WorldChunkType::WO: return "WO";
         case WorldChunkType::WP: return "WP";
+        case WorldChunkType::SOBJECT_B: return "SOBJECT_B";
         default:                 return "?";
     }
 }

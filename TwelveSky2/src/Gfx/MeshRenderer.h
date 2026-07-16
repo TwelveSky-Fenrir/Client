@@ -18,6 +18,7 @@
 // ex-VeryOldClient: pDevice @+524 de TW2AddIn::GXD (v2), == g_GfxRenderer+604 (device partagé).
 #pragma once
 #include "Gfx/Renderer.h"
+#include "Gfx/ShaderSet.h" // slots shaders reels du npk (VS03/PS04/VS15) — lecture seule (W3-F2)
 #include "Asset/Model.h"
 #include <d3dx9.h>
 #include <cstddef>
@@ -87,6 +88,15 @@ struct SkinnedLod {
     IDirect3DIndexBuffer9*  ib          = nullptr; // INDEX16, 6 o/face
     UINT                    vertexCount = 0;
     UINT                    faceCount   = 0;
+
+    // Données CPU retenues pour le volume d'ombre (Model_BuildShadowVolume 0x40DC70) :
+    //   skinCpu  = SObjectSubset::skin        (32 o/sommet : pos12 + poids16 + boneIdx u32 ; mesh+700 v6[175])
+    //   idxTopo  = SObjectSubset::indexCopy1  (6 o/face = 3× u16 : topologie triangles ; mesh+704 v6[176])
+    //   idxAdj   = SObjectSubset::indexCopy2  (6 o/face = 3× u16 : adjacence par arête ; mesh+708 v6[177])
+    // Retenus tels quels (octets) car BuildShadowVolume skinne sur CPU + parcourt la silhouette.
+    std::vector<uint8_t> skinCpu; // 32 * vertexCount
+    std::vector<uint8_t> idxTopo; // 6  * faceCount
+    std::vector<uint8_t> idxAdj;  // 6  * faceCount
 };
 
 // Un mesh du modèle (SObjectMesh 888 o). Les "subsets" du parseur = niveaux de LOD.
@@ -130,6 +140,22 @@ public:
     // Reproduit Mesh_ReadFromFile 0x40BC50 (côté upload GPU).
     bool Upload(const asset::SObject& src, SkinnedModel& out);
 
+    // ----- Câblage sur les shaders RÉELS du npk (GXDEffect.npk) — additif (W3-F2) -------
+    // Bascule le chemin skinné (passe 2) du HLSL reconstruit kSkinnedVS/kSkinnedPS vers les
+    // vrais Shader03 (VS03_SkinnedLit 0x409AB0) + Shader04 (PS04_Tex 0x409CC0) chargés par
+    // ShaderSet.cpp depuis ./GXDEFFECT/GXDEffect.npk. VS15 (0x40ACB0) sert aussi au volume
+    // d'ombre stencil (DrawModelShadow). `shaders` n'est PAS possédé (durée de vie côté appelant).
+    // Additif : si jamais appelé, DrawSkinnedSubset retombe sur le HLSL reconstruit (fallback).
+    void AttachShaderSet(const ShaderSet* shaders);
+
+    // ----- Paramètres d'ombre runtime (Model_RenderWithShadow 0x40EEE0) — additif ------
+    //   enabled  = g_ShadowsEnabled 0x18C4F14
+    //   method   = g_ShadowMethod   0x18C4F18 (0 = z-fail Carmack ; 1 = stencil two-sided)
+    //   fogNear/fogFar = flt_18C4F08 / flt_18C4F0C (seuil volume↔planaire + fondu du volume)
+    //   lightDir = flt_18C53C0/C4/C8 (direction lumière d'ombre, négée au calcul)
+    void SetShadowParams(bool enabled, int method, float fogNear, float fogFar,
+                         const D3DXVECTOR3& lightDir);
+
     // Caméra : matrices vue/projection de l'Object B (+748 / +648).
     void SetCamera(const D3DXMATRIX& view, const D3DXMATRIX& proj);
 
@@ -154,6 +180,19 @@ public:
                            const D3DXMATRIX&  world,
                            const BonePalette& palette);
 
+    // Model_RenderWithShadow 0x40EEE0 : rendu de l'ombre d'un modèle skinné (additif, W3-F2).
+    //   PROCHE (dist caméra <= fogNear) -> VOLUME D'OMBRE STENCIL (passe 8 = VS15 + PS NULL) :
+    //     Model_BuildShadowVolume 0x40DC70 (silhouette extrudée, FVF XYZ), z-fail si method==0.
+    //   LOIN  (dist > fogNear) -> ombre planaire projetée (Model_RenderPlanarShadow 0x40F720).
+    //   Nécessite un ShaderSet réel attaché (VS15) : sans lui, no-op (le HLSL reconstruit ne
+    //   contient pas le shader de volume d'ombre). `boundRadius` = a2 (diamètre englobant).
+    void DrawModelShadow(const SkinnedModel& model,
+                         const D3DXVECTOR3&  position,
+                         const D3DXVECTOR3&  rotationDeg,
+                         const D3DXVECTOR3&  scale,
+                         const BonePalette&  palette,
+                         float               boundRadius);
+
     // BUG CORRIGÉ (audit 2026-07-14, cf. Gfx/WorldGeometryRenderer.cpp::Render()) :
     // DrawSkinnedSubset() évite les re-bind VS/PS redondants via `currentPass_`, un
     // cache PUREMENT LOCAL à cette instance. Si du code EXTÉRIEUR pose directement
@@ -177,6 +216,14 @@ private:
     void applyBlendMode(uint32_t blendMode);
     void resetBlendMode(uint32_t blendMode);
 
+    // Skinning CPU + silhouette extrudée d'un LOD (Model_BuildShadowVolume 0x40DC70).
+    // Remplit shadowVol_ (XYZ interleavé, stride 12) + shadowVolVertCount_ ; renvoie false si
+    // données CPU absentes, LOD > 10000 vtx/faces, ou débordement (>29976 sommets émis).
+    bool buildShadowVolume(const SkinnedLod&  lod,
+                           const BonePalette& palette,
+                           const D3DXVECTOR3& lightDirObj,
+                           float              extrude);
+
     IDirect3DDevice9*            dev_  = nullptr;
     IDirect3DVertexDeclaration9* decl_ = nullptr; // g_SkinVertexDecl (0x1945918) — ex-VeryOldClient: mDECLForSKIN2 (cible=global de fichier, PAS membre)
 
@@ -196,6 +243,9 @@ private:
     D3DXMATRIX  view_;
     D3DXMATRIX  proj_;
     D3DXMATRIX  viewProj_;
+    // Position caméra monde (dérivée de l'inverse de view_) — g_CameraEye dword_18C51C0/C4/C8,
+    // utilisée par DrawModelShadow pour choisir volume vs ombre planaire (0x40ef8e).
+    D3DXVECTOR3 eye_ = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
     // ex-VeryOldClient: mLight (v2 / Object B @+1120) — Amb 0.3 / Diff 0.7 / Dir (-1,-1,1).
     // PLAUSIBLE (P-9) : floats corroborés par v2 ; prouvés bit-exact IDA au chunk device (0x402711).
     // Discriminant v1/v2 : bien 0.3/0.7 (v2), PAS 0.4/0.5 (v1).
@@ -210,6 +260,30 @@ private:
 
     // Palette de secours (identité) si aucune palette valide n'est fournie.
     D3DXMATRIX identityPalette_[kMaxBones];
+
+    // ----- Câblage shaders réels npk (AttachShaderSet) — additif W3-F2 ------------------
+    // Slots réels chargés du npk (Shader03/04/15). Non possédé. Si nullptr -> fallback HLSL.
+    const ShaderSet* shaderSet_ = nullptr;
+    // Vraie borne du tableau mKeyMatrix[] déclarée par Shader03.fx (D3DXCONSTANT_DESC.Elements) ;
+    // Model_DrawSkinnedSubset ne clampe PAS côté client (0x40d4e8) -> c'est le shader qui borne.
+    UINT boneArraySize_ = kMaxBones;
+
+    // ----- État d'ombre runtime (Model_RenderWithShadow 0x40EEE0) — additif -------------
+    bool        shadowsEnabled_ = false;                        // g_ShadowsEnabled 0x18C4F14
+    int         shadowMethod_   = 0;                            // g_ShadowMethod   0x18C4F18
+    float       fogNear_        = 0.0f;                         // flt_18C4F08 (seuil volume/planaire)
+    float       fogFar_         = 1.0f;                         // flt_18C4F0C (fin du fondu)
+    D3DXVECTOR3 shadowLightDir_ = D3DXVECTOR3(0.0f, -1.0f, 0.0f); // flt_18C53C0/C4/C8
+
+    // Tampons scratch du volume d'ombre (globaux d'origine -> membres, mêmes plafonds) :
+    //   worldPos_        = positions skinnées monde, stride 3 (flt_18C69D4)
+    //   faceLightFacing_ = 1 octet/face : face éclairée ? (g_FaceLightFacing 0x18E3E94)
+    //   shadowVol_       = sommets d'ombre XYZ interleavés, stride 3 (g_ShadowVolumeX 0x18EDAD8)
+    //   shadowVolVertCount_ = nombre de sommets émis (g_ShadowVolumeVertCount 0x18EDAD4)
+    std::vector<float>   worldPos_;
+    std::vector<uint8_t> faceLightFacing_;
+    std::vector<float>   shadowVol_;
+    UINT                 shadowVolVertCount_ = 0;
 };
 
 } // namespace ts2::gfx

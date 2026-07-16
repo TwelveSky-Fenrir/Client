@@ -187,18 +187,27 @@
 //  IDA existants) ; les manques restants (sway réel, tex2/materials, terrain/eau, FX,
 //  éphéméride/keyframes .ATM réelles) étaient déjà honnêtement documentés avant cet audit.
 //
-//  MISE À JOUR 2026-07-16 (STAGE RENDER — Gap G1 « le sol ») : le point 3 de l'audit ci-dessus
-//  (« TERRAIN / SOL VISIBLE non rendu ») est RÉSOLU pour la surface diffuse. buildTerrain() +
-//  renderTerrain() (cf. .cpp) consomment enfin WorldAssets::Faces() (asset::MapFaceChunk décodé
-//  typé : CollisionFace 156o + TerrainVertex 40o) : les faces .WG sont groupées par materialIndex
-//  et dessinées via meshRenderer_ (world=identité, texture diffuse par matériau), fidèle à
-//  Terrain_Render 0x698670 (SetFVF 530 = XYZ|NORMAL|TEX2 @0x698e6d, batch/matériau, appelé AVANT
-//  les .WO par Scene_InGameRender @0x52d9be). Les props .WO ne flottent plus sans sol. RESTES
-//  (TODO précis, ancres dans renderTerrain()) : cull quadtree/frustum par frame (perf, dessine
-//  tout pour l'instant — correct), G6 eau/bump-env (catégorie de matériau non décodée + pipeline
-//  skinné sans BUMPENVMAP), G8 lightmap .SHADOW au stage 1 (uv1 ; le vertex réutilisé n'a qu'un
-//  TEXCOORD0 — texture .SHADOW déjà chargée dans WorldAssets::shadow_, prête à câbler). L'eau et
-//  l'ombre nécessitent un chemin fixed-function multitexture dédié (jalon ultérieur).
+//  MISE À JOUR 2026-07-16 (FRONT W3-F3 — chemin terrain FIXED-FUNCTION dédié) : le rendu du terrain
+//  passe désormais par un chemin FF NATIF (plus meshRenderer_/shaders), fidèle à Terrain_Render
+//  0x698670 (passe a5=1). buildTerrain()/renderTerrain() (cf. .cpp) :
+//    - VB FVF 530 (0x212 = XYZ|NORMAL|TEX2, stride 40) uploadé par memcpy depuis asset::TerrainVertex
+//      (aucune conversion) — SetFVF(530) @0x698e6d ;
+//    - couches groupées par matériau et TRIÉES par (catégorie=trailer[0], subOrder=trailer[1]) =
+//      textures[m].trailer[*] (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0), reproduisant l'ordre
+//      cat2 -> cat4 -> cat1 -> eau cat3 -> alpha-test sub1 ;
+//    - LIGHTMAP .SHADOW au stage 1 sur uv1 : MODULATE (=4, PAS MODULATE2X — commentaire corrigé)
+//      @0x698f54 + SetTexture(1) @0x698f68 (le vertex FF possède bien uv1 -> le TODO « 1 seul
+//      TEXCOORD » a DISPARU ; texture créée depuis WorldAssets::ShadowBytes()) ;
+//    - EAU (catégorie 3) : passe bump-env D3DTOP_BUMPENVMAPLUMINANCE @0x699206 avec matrice bump
+//      animée (wavePhase_) + waveTex_ (cWorldMesh_MakeWaterWaveTexture 0x451220) / falloffTex_
+//      (MapColl_CreateFalloffTexture 0x694ca0), V8U8 procédurales générées au Build.
+//  FX de zone .WP : RenderFxBillboards() (passe a5=2 @0x698c6d : Gfx_BeginUnlitPass 0x69e470 ->
+//  Particle_RenderBillboards 0x6a70b0) dessine 1 billboard placé par instance (sous-ensemble
+//  build-safe). Sway .WO : TickWorldAnim() avance la phase de flipbook par instance (état possédé,
+//  MapColl_UpdateObjectAnim 0x694A00). RESTES (TODO ancres) : cull quadtree/frustum par frame ;
+//  échelle exacte du bump eau (a10 runtime) ; sélection GPU de la frame de sway (MeshPart_Render
+//  0x6aed60, uploadPart n'uploade que la frame 0) ; sim complet de particules (Particle_UpdateEmit
+//  0x6a7530). Skybox/atmosphère = FRONT W3-F4 (SkyRenderer), hors périmètre ici.
 #pragma once
 #include "Gfx/Renderer.h"
 #include "Gfx/MeshRenderer.h"
@@ -252,6 +261,21 @@ public:
     // RenderSky() pour pouvoir se placer à la fois avant le décor et après les entités.
     void Render(const Camera& camera, int screenW, int screenH);
 
+    // FRONT W3-F3 — passe FX de zone (.WP) : billboards unlit (Gfx_BeginUnlitPass 0x69e470 ->
+    // Particle_RenderBillboards 0x6a70b0), correspond à Terrain_Render a5=2 @0x698c6d (le point
+    // d'entrée de rendu .WP EST là — corrige WorldIntegration « point non identifié »). Appelée par
+    // Render() APRÈS le terrain et les props .WO (blend actif, depth-write off). Camera-facing via
+    // la matrice vue.
+    void RenderFxBillboards(const Camera& camera);
+
+    // FRONT W3-F3 — tick d'animation du monde (à appeler par SceneManager chaque frame, cf.
+    // MapColl_UpdateObjectAnim 0x694A00, site Scene_InGameUpdate 0x52c94b, kAnimFps=15.0) :
+    //   - wavePhase_ += dt (matrice bump-env eau) ;
+    //   - phase de flipbook sway par instance .WO (aux+28 += dt*15, wrap par nb de frames A) ;
+    //   - tick des systèmes de particules .WP (données prêtes ; sim complet = TODO ancre).
+    // SceneManager (non possédé) doit l'appeler ; commentaire d'intégration seulement, pas d'édition.
+    void TickWorldAnim(float dt);
+
     size_t UploadedPartCount() const { return objects_.size(); }
     // Parts A>1 réellement ignorées (échec de taille/corruption uniquement, cf. uploadPart()) —
     // depuis la résolution du format multi-ancre (bandeau .h point 5, MISE À JOUR 2026-07-14),
@@ -266,11 +290,13 @@ public:
     // N positions distinctes (une par instance) et pas une seule matrice globale.
     size_t PlannedDrawCallCount() const;
 
-    // --- Terrain .WG (Gap G1 « le sol », ancre IDA : Terrain_Render 0x698670) : logs de sanité. ---
-    // Nombre de lots GPU terrain (chunks <=65535 sommets, groupés par matériau) réellement
-    // uploadés, et total de faces terrain (3 sommets/face, 120o/face copiés @0x698e21).
-    size_t TerrainBatchCount() const { return terrainBatches_.size(); }
+    // --- Terrain .WG (FRONT W3-F3, ancre IDA : Terrain_Render 0x698670) : logs de sanité. ---
+    // Nombre de couches GPU terrain (groupées par matériau, triées par catégorie/subOrder) et total
+    // de faces terrain (3 sommets/face, 120o/face copiés @0x698e21).
+    size_t TerrainBatchCount() const { return terrainLayers_.size(); }
     size_t TerrainFaceCount()  const { return terrainFaceCount_; }
+    // Billboards FX de zone (.WP) prêts à dessiner (1 par instance placée à texture résolue).
+    size_t FxBillboardCount()  const { return fxBillboards_.size(); }
 
 private:
     struct StaticObject {
@@ -283,52 +309,115 @@ private:
         size_t count = 0;
     };
 
-    // Lot de dessin terrain (Gap G1) : un morceau (<=65535 sommets, contrainte INDEX16) des
-    // faces d'UN matériau, prêt pour un DrawIndexedPrimitive via meshRenderer_. La texture est
-    // une réf NON-possédante dans terrainTextures_ (libérée une seule fois par releaseTerrain()).
-    // Ancre IDA : Terrain_Render 0x698670 (batch par matériau, DrawPrimitiveUP stride 40 @0x698ff3).
-    struct TerrainBatch {
-        SkinnedLod         lod;              // VB(76o)/IB(INDEX16) — possédés par ce lot
-        IDirect3DTexture9* diffuse = nullptr; // réf dans terrainTextures_ (NON possédée ici)
+    // FRONT W3-F3 — chemin terrain FIXED-FUNCTION natif (remplace le chemin skinné G1).
+    // FVF 0x212 = 530 = D3DFVF_XYZ|NORMAL|TEX2 (2 jeux d'UV), stride 40. Ancre IDA :
+    // Terrain_Render 0x698670 SetFVF(530) @0x698e6d. Le vertex est BIT-À-BIT asset::TerrainVertex
+    // (pos12+normal12+uv0 8+uv1 8) -> uploadé par memcpy, aucune conversion (uv1 = lightmap stage 1).
+    struct FfTerrainVertex { float pos[3]; float normal[3]; float uv0[2]; float uv1[2]; };
+    static_assert(sizeof(FfTerrainVertex) == 40, "FfTerrainVertex doit faire 40 octets (FVF 530)");
+
+    // Un LOD terrain FF : VB natif (stride 40) + IB16 (index séquentiels, comme le DrawPrimitiveUP
+    // d'origine). Découpe <=65535 sommets conservée (INDEX16).
+    struct FfLod {
+        IDirect3DVertexBuffer9* vb = nullptr;
+        IDirect3DIndexBuffer9*  ib = nullptr;
+        UINT                    vertexCount = 0;
+        UINT                    faceCount   = 0;
+    };
+
+    // Couche terrain = faces d'UN matériau, étiquetée par (catégorie, subOrder) =
+    // textures[m].trailer[0]/trailer[1] (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0 : mat+40=cat,
+    // mat+44=subOrder). L'ordre de dessin de Terrain_Render (a5=1) est reproduit en triant les
+    // couches par un rang dérivé de (catégorie, subOrder). Catégorie 3 = EAU (pass bump-env).
+    struct TerrainLayer {
+        IDirect3DTexture9* diffuse  = nullptr; // réf dans terrainTextures_ (NON possédée)
+        uint32_t           category = 0;       // trailer[0]
+        uint32_t           subOrder = 0;       // trailer[1]
+        std::vector<FfLod> lods;               // VB/IB possédés par la couche
+    };
+
+    // Billboard FX de zone (.WP) — SOUS-ENSEMBLE build-safe de Particle_RenderBillboards 0x6a70b0 :
+    // 1 quad camera-facing par instance placée AuxFxRecord, à sa position, texture du nœud FX.
+    // (Le sim complet de particules — Particle_Init/UpdateEmit + base flt_8001D4..E8 runtime — reste
+    // un TODO ancre, cf. RenderFxBillboards() dans le .cpp.)
+    struct FxBillboard {
+        float              pos[3]  = {0, 0, 0};
+        IDirect3DTexture9* texture = nullptr;  // réf dans fxTextures_ (NON possédée)
     };
 
     void releaseObjects();
     bool uploadPart(const asset::WorldMeshPart& part, StaticObject& out);
-    // Gap G1 : construit les lots GPU du terrain .WG (WorldAssets::Faces()) — faces groupées par
-    // materialIndex, sommets TerrainVertex 40o -> GpuSkinVertex 76o (repère MONDE, world=identité).
-    // Build-safe : no-op si device/.WG absent. Ancre IDA : Terrain_Render 0x698670.
+    // FRONT W3-F3 : construit les couches FF du terrain .WG (WorldAssets::Faces()) — faces groupées
+    // par matériau, triées par (catégorie=trailer[0], subOrder=trailer[1]), sommets FfTerrainVertex
+    // 40o (repère MONDE). Crée aussi wave/falloff (eau) et récupère la lightmap. Build-safe : no-op
+    // si device/.WG absent. Ancre IDA : Terrain_Render 0x698670.
     bool buildTerrain(const world::WorldAssets& assets);
     void releaseTerrain();
-    // Gap G1 : dessine tous les lots terrain via meshRenderer_ (world=identité, palette identité),
-    // CULLMODE=NONE encadré (sauvegarde/restaure) pour garantir la visibilité du sol. Le cull par
-    // quadtree/frustum de l'original reste un TODO (cf. .cpp). Appelée par Render() AVANT les .WO.
-    void renderTerrain();
+    // Dessine les couches terrain en FIXED-FUNCTION (FVF 530), ordre fidèle à Terrain_Render(a5=1) :
+    // couches opaques par (cat,sub), passe eau bump-env (cat 3), alpha-test (sub 1), lightmap stage 1
+    // (uv1). CULLMODE=NONE encadré. Appelée par Render() AVANT les .WO. Ancre IDA : 0x698670.
+    void renderTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj);
+    // Passe eau d'UNE couche cat==3 : matrice bump-env animée (cos/sin de wavePhase_) + waveTex_ en
+    // BUMPENVMAPLUMINANCE stage 0, diffuse eau stage 1. Ancre IDA : Terrain_Render @0x699206-0x6992b7.
+    void bindWaterStates(IDirect3DTexture9* waterDiffuse);
+    void unbindWaterStates();
+
+    // FRONT W3-F3 : construit les billboards FX de zone (.WP) + leurs textures GPU depuis
+    // WorldAssets::FxNodes(). Build-safe : no-op si device/.WP absent. Ancre IDA : MapColl_LoadObjectsB
+    // 0x6983b0 (fxbRecords) + Fx_NodeLoadFromHandle 0x6a69f0 (texture du nœud).
+    bool buildFx(const world::WorldAssets& assets);
+    void releaseFx();
+
     static IDirect3DTexture9* createTextureFromBlock(IDirect3DDevice9* dev,
                                                       const asset::TextureBlock& tex);
+    // Crée une IDirect3DTexture9 depuis un fichier DDS complet en mémoire (lightmap .SHADOW brute
+    // exposée par WorldAssets::ShadowBytes()). nullptr si vide/échec.
+    static IDirect3DTexture9* createTextureFromDds(IDirect3DDevice9* dev,
+                                                   const std::vector<uint8_t>& dds);
     // Construit World = Rz(rot.z)*Ry(rot.y)*Rx(rot.x)*T(pos), cf. bandeau .h point 4.
     static D3DXMATRIX BuildInstanceWorldMatrix(const asset::AuxRecord& inst);
 
     IDirect3DDevice9*           dev_ = nullptr;
     MeshRenderer                 meshRenderer_;
     SkyRenderer                  skyRenderer_;  // ciel dérivé du .ATM réel (cf. bandeau MISE À JOUR)
-    // TODO terrain WO (tick d'anim non câblé) : ces 3 états (objects_/modelRanges_/instances_) sont
-    // LA SOURCE (auxRecords/models) qu'attend l'avance de phase d'anim des sous-objets .WO, aujourd'hui
-    // non reliée. Voir SPEC TS2_WORLD_ROSETTA.md §3 G08 ; ancre IDA : MapColl_UpdateObjectAnim 0x694a00
-    // (site d'appel unique Scene_InGameUpdate 0x52c600 @0x52c94b, kAnimFps=15.0). À EXPOSER (hors passe).
+    // FRONT W3-F3 : ces 3 états (objects_/modelRanges_/instances_) sont LA SOURCE (auxRecords/models)
+    // consommée par l'avance de phase de sway (instancePhase_ ci-dessous, tickée par TickWorldAnim).
+    // Ancre IDA : MapColl_UpdateObjectAnim 0x694a00 (site Scene_InGameUpdate 0x52c94b, kAnimFps=15.0).
     std::vector<StaticObject>    objects_;      // parts GPU uploadées, groupées par gabarit
     std::vector<ModelRange>      modelRanges_;  // modelRanges_[modelIndex] -> plage dans objects_
     std::vector<asset::AuxRecord> instances_;   // copie de ObjectChunk::auxRecords ; CONFIRMED ex-VeryOldClient: MOBJECTINFO
+    // Phase de flipbook de sway PAR INSTANCE .WO (aux+28 runtime), état possédé ici (RÈGLE #6) :
+    // avancée à dt*kAnimFps par TickWorldAnim, wrap par le nb de frames A du gabarit. Ancre IDA :
+    // MapColl_UpdateObjectAnim 0x694a00 (@0x694a30 aux+28 += dt*fps ; wrap par model.part.frameCount).
+    std::vector<float>           instancePhase_;
+    // Nombre de frames de flipbook (A) du gabarit de chaque instance (borne de wrap du sway).
+    // Ancre IDA : MapColl_UpdateObjectAnim @0x694a4a (frameCount = *(model.part+252) = part.A).
+    std::vector<uint32_t>        instanceFrameCount_;
     size_t                       skippedMultiAnchor_ = 0;     // parts ignorées (échec réel, cf. pt.5)
     size_t                       multiAnchorStaticCount_ = 0; // parts A>1 rendues en pose statique
 
-    // --- Terrain .WG (Gap G1) : le SOL. Source = WorldAssets::Faces() (asset::MapFaceChunk),
-    // décodé typé (CollisionFace 156o + TerrainVertex 40o) par le stage DECODE. terrainTextures_
-    // = une texture diffuse par matériau (nullptr si absente) ; terrainBatches_ = lots GPU
-    // (chunks <=65535 sommets) groupés par matériau. Ancre IDA : Terrain_Render 0x698670
-    // (a1+88=faces, face.materialIndex@0 -> texture a1+16[+48], vertex 40o FVF 530). ---
+    // --- Terrain .WG (FRONT W3-F3) : le SOL. Source = WorldAssets::Faces() (asset::MapFaceChunk).
+    // terrainTextures_ = une texture diffuse par matériau (POSSÉDÉE) ; terrainLayers_ = couches FF
+    // triées par (catégorie, subOrder), chacune référençant une diffuse. Ancre IDA : Terrain_Render
+    // 0x698670 (a1+16 matériaux stride 52 : +40 cat, +44 subOrder, +48 texture ; vertex 40o FVF 530). ---
     std::vector<IDirect3DTexture9*> terrainTextures_; // POSSÉDÉES (une par matériau, ordre .WG)
-    std::vector<TerrainBatch>       terrainBatches_;   // lots prêts à dessiner (réfs textures ci-dessus)
+    std::vector<TerrainLayer>       terrainLayers_;    // couches triées prêtes à dessiner (FF)
     size_t                          terrainFaceCount_ = 0; // total faces terrain uploadées (sanité)
+
+    // Eau (cat 3) : textures procédurales générées UNE FOIS au Build si une couche cat==3 existe.
+    // waveTex_  = V8U8 NxN (cWorldMesh_MakeWaterWaveTexture 0x451220) ; falloffTex_ = V8U8 radial
+    // (MapColl_CreateFalloffTexture 0x694ca0). wavePhase_ = accumulateur temps (t = wavePhase_*10).
+    IDirect3DTexture9*           waveTex_    = nullptr;
+    IDirect3DTexture9*           falloffTex_ = nullptr;
+    float                        wavePhase_  = 0.0f;
+
+    // Lightmap .SHADOW (stage 1, uv1) — texture GPU créée au Build depuis WorldAssets::ShadowBytes().
+    // Ancre IDA : Terrain_Render @0x698f54 (SetTextureStageState(1,COLOROP,MODULATE=4)) / @0x698f68.
+    IDirect3DTexture9*           shadowTex_ = nullptr;
+
+    // FX de zone (.WP) : billboards placés + textures GPU des nœuds FX (POSSÉDÉES).
+    std::vector<FxBillboard>        fxBillboards_;
+    std::vector<IDirect3DTexture9*> fxTextures_; // POSSÉDÉES (une par nœud FX, nullptr si absente)
 
     bool                         ready_ = false;
 };
