@@ -48,11 +48,18 @@
 //     Complète l'orchestration avec les blocs NON couverts par ActionFsm : timers FX
 //     secondaires (data-driven, même table-engine que Player_UpdateLocalAnim), rotation
 //     faciale lissée (540°/s, byte-exact, AUCUNE dépendance asset), aura spéciale, marque de
-//     guilde, requête d'arrêt AutoPlay. Le SWITCH terminal (0x5727BF, 55 handlers Char_*/
+//     guilde, requête d'arrêt AutoPlay. Le SWITCH terminal (0x5727BF, 81 cas Char_*/
 //     Combat_TickAttackState, chacun piloté par une durée d'anim ASSET, hors périmètre) est
 //     exposé via UN SEUL hook opaque `TickStateHandler` — même politique que
 //     Game/ActionStateMachine.h::IAnimFrameOracle (cf. tête de ce fichier pour la
-//     justification : rendu 3D/motion = hors périmètre gameplay).
+//     justification : rendu 3D/motion = hors périmètre gameplay). Un routeur PARTIEL de ce
+//     switch (6 cas PROUVÉS sur 81) est fourni en §7 ci-dessous : Char_DispatchStateTick.
+//
+//     ///// CORRECTION FACTUELLE — Passe 4 / vague W11, front w11-combat-fsm (2026-07-16) /////
+//     « 55 handlers » (ici et en AnimationTick.cpp) était FAUX : le switch en compte 81.
+//     Preuve à l'instruction près : `cmp [ebp+var_6C], 5Fh ; switch 96 cases` @0x5727B2,
+//     puis `ja def_5727BF ; default case, cases 8,24-29,47,53,59,77-80,84` @0x5727B6
+//     => 96 valeurs (0x00..0x5F) − 15 valeurs `default` = 81 cas vivants.
 //   - Camera_UpdateCollision        0x538580 — caméra 3e personne : recalcule l'œil en
 //     maintenant le même bras (œil-cible) qu'à la frame précédente autour de la nouvelle
 //     cible (joueur local, y+10), puis corrige par collision terrain (Terrain_SweepSphere
@@ -172,9 +179,15 @@ struct CharAnimTickResult {
 // Game/ActionStateMachine.h::ActionFsm::pendingCastInterrupt). `modelOracle` = même oracle
 // que Player_UpdateLocalAnim (tables de timers FX secondaires). `stateHandler`, s'il est
 // fourni, est appelé APRÈS l'interruption de cast avec l'état COURANT (post-interruption)
-// pour faire avancer le switch terminal (0x5727BF, 55 handlers asset-driven, hors
-// périmètre) — nul -> aucune progression d'anim au-delà de ce que ce module couvre déjà
-// (contact/interrupt/FX/rotation), la FSM reste "gelée" sur son état courant.
+// pour faire avancer le switch terminal (0x5727BF, 81 cas asset-driven) — nul -> aucune
+// progression d'anim au-delà de ce que ce module couvre déjà (contact/interrupt/FX/
+// rotation), la FSM reste "gelée" sur son état courant.
+// L'appel de `stateHandler` avec l'état RELU après l'interruption de cast est FIDÈLE : le
+// binaire recharge *(this+244) juste avant le switch (`mov edx, [ecx+0F4h]` @0x5727A9,
+// 0xF4 = 244), en aval du bloc d'interruption 0x57275A.
+// ⚠️ CÂBLAGE (gap CTF-01/CTF-02) : ce paramètre vaut `nullptr` à l'unique site d'appel réel
+// (Scene/SceneManager.cpp:1133, 2e `nullptr` = 10e argument) -> le switch n'est JAMAIS
+// dispatché. Voir §7 (Char_DispatchStateTick) pour le routeur prêt à y être posé.
 void Char_UpdateAnimationFrame(CharAnimState& anim, const CombatActorState& actor,
                                 const GameWorld& world, const IAnimFrameOracle* hitOracle,
                                 bool isLocalSimulation, bool isSelf, bool pendingCastInterrupt,
@@ -480,5 +493,106 @@ bool ZoneNpc_AnimTickIsWired();
 // NOTE : Fx_MeleeSwingUpdate(slot) 0x57FE90 (@0x5dc0a8, son positionnel) n'est PAS reproduit ici —
 // hors périmètre audio/FX de ce front. TODO [ancre 0x57FE90].
 void ZoneNpc_OnDialogueOpen(int zoneNpcIndex, float playerX, float playerZ);
+
+// =====================================================================================
+// 7. Routeur PARTIEL du switch terminal JOUEUR — Char_UpdateAnimationFrame 0x571880,
+//    switch @0x5727BF (Passe 4 / vague W11, front w11-combat-fsm — gap CTF-02)
+// =====================================================================================
+//
+// POURQUOI CE BLOC EXISTE. Game/ActionStateMachine.cpp porte 4 primitives de tick d'état
+// (TickTimedState / TickCastState / TickGuardBegin / TickGuardLoop) écrites, ancrées EA par
+// EA... et que PERSONNE N'APPELLE (grep exhaustif de ClientSource : 1 seule occurrence
+// chacune = leur propre définition). C'est le défaut « code juste que personne n'appelle ».
+// Le chemin binaire correspondant est VIVANT et atteignable par le joueur — `reaches`
+// (WinMain 0x4609C0 -> Char_CastAnimTick_5762F0 0x5762F0) = true, profondeur 5, non tronqué :
+//     WinMain 0x4609C0 -> App_FrameTick 0x4625D0 -> cSceneMgr_Update 0x517BF0
+//                      -> Scene_InGameUpdate 0x52C600 -> Char_UpdateAnimationFrame 0x571880
+//                      -> 0x5762F0
+// => la règle « une fonction MORTE du binaire doit rester morte » NE s'applique PAS ici.
+//
+// COUVERTURE : 6 cas PROUVÉS sur 81. Chacune des 6 fonctions d'origine ci-dessous a
+// EXACTEMENT UN appelant dans tout le binaire (`xrefs_to` -> xref_count == 1), et cet
+// appelant est à chaque fois ce switch — la correspondance case -> primitive est donc
+// bijective et sans ambiguïté. Les libellés de case sont ceux d'IDA elle-même
+// (`jumptable 005727BF case N`), relus cette session, pas une déduction :
+//     case 4  @0x572834 -> Char_AnimEndToIdle_5761A0   0x5761A0  -> TickTimedState(-> Move)
+//     case 5  @0x57284C -> Char_CastAnimTick_5762F0    0x5762F0  -> TickCastState
+//     case 6  @0x572864 -> Char_CastAnimTick_5764D0    0x5764D0  -> TickCastState (corps identique)
+//     case 7  @0x57287C -> Char_CastAnimTick_5766B0    0x5766B0  -> TickCastState (corps identique)
+//     case 91 @0x572EEE -> Char_ActionTick_GuardBegin  0x57F260  -> TickGuardBegin
+//     case 92 @0x572F03 -> Char_ActionTick_GuardLoop   0x57F410  -> TickGuardLoop
+// Les 75 autres cas -> `default:` no-op EXPLICITE (cf. TODO dans le .cpp). Ce n'est PAS le
+// `default` du binaire (lui n'a que 15 valeurs muettes) : c'est l'aveu que ces cas n'ont pas
+// encore de primitive portée. Ils restent donc gelés, exactement comme aujourd'hui.
+//
+// DÉGRADATION (aucun hook n'est obligatoire, rien ne bloque jamais) — MÊME politique que
+// Monster_DispatchMotionTick (§5) et MorphDuration : ON NE FABRIQUE JAMAIS UNE DURÉE.
+//   - GetMotionFrameCount nul OU count<=0 : durée « inconnue » -> le curseur AVANCE mais
+//     aucune transition n'est émise (les familles timed/guard tournent sans jamais finir).
+//   - GetCastRateWithinBounds nul : le taux d'arme est INCONNU. Or c'est un MULTIPLICATEUR
+//     du pas de frame (et non une borne) : faute de valeur, le curseur de cast N'AVANCE PAS.
+//     Asymétrie ASSUMÉE avec le cas ci-dessus, et pour la même raison (ne rien inventer) —
+//     l'état de cast reste gelé, c'est-à-dire le comportement actuel : aucune régression.
+struct CharStateTickHost {
+    // PcModel_ResolveSlotAndApply 0x4E5A00 -> NOMBRE DE FRAMES de l'anim courante. Appelée en
+    // TÊTE des 4 handlers, avant l'avance de frame (@0x5761AC/@0x5762FC/@0x57F26C/@0x57F41C).
+    // Arguments d'origine (identiques dans les 4) :
+    //     PcModel_ResolveSlotAndApply(g_ModelMotionArray, this+92 /*modelIndex*/,
+    //         this+96 /*modelVariant*/, this+240 /*animSlot*/, this+244 /*state*/,
+    //         this+108, this+112, (*(this+576) ? 0 : *(this+220)), a2 == 0)
+    // NB : le 8e argument reproduit EXACTEMENT l'idiome `altWeaponSet ? 0 : weaponAnimSlot`
+    // déjà utilisé pour `altIndex` dans ActionFsm::UpdateContactDetection — recoupement
+    // indépendant qui valide les deux lectures.
+    // ⚠️ TODO [ancre 0x4E5A00] : `this+240` (animSlot) et `this+108`/`this+112` N'ONT PAS de
+    // champ porteur dans game::CharAnimState (Game/GameState.h — hors périmètre de ce front).
+    // L'implémenteur du hook ne peut donc PAS reconstituer l'appel d'origine à l'identique ;
+    // relation prouvée pour combler +240 le jour où le champ existe : +240 == 2 * weaponClass
+    // (cf. @0x57629B et Game/ActionStateMachine.cpp::TickTimedState). Renvoyer <=0 tant que
+    // le slot ne résout pas -> traité comme « durée inconnue » (cf. dégradation ci-dessus).
+    std::function<int(const CharAnimState& anim, bool isLocalSimulation)> GetMotionFrameCount;
+
+    // Char_CalcWeaponRatePct 0x4CD900(this+328, this+116) @0x5763BE, puis test des bornes
+    // OUVERTES @0x5763FA : `v6 > Char_CalcAnimBoundMin99(this, this+328)
+    //                    && v6 < Char_CalcAnimBoundMax121(this, this+328)`.
+    // Renvoie true si le taux est dans les bornes (le curseur de cast avance alors de
+    // dt*rate*0.3), et écrit le taux dans outRatePct. Utilisé UNIQUEMENT par les cas 5/6/7.
+    // ⚠️ TODO [ancres 0x4CD900 / 0x57FB30 / 0x57FBB0] : aucune des trois n'est portée pour une
+    // entité ARBITRAIRE. Game/StatFormulas.h:71 porte bien CalcWeaponRatePct, mais avec la
+    // signature `(const SelfState&, const GameDatabases&)` = SOI uniquement, alors que le
+    // binaire la paramètre par entité (this+328, this+116). Les deux bornes se décompilent en
+    // `floor(GemStat_WeaponRateFactor(*(entity+144)) * base)` avec base = 99.0 (0x57FB30) /
+    // 121.0 (0x57FBB0), HALVÉE si `*(entity+428) > 0` (@0x57FB49 / @0x57FBC9).
+    std::function<bool(const CharAnimState& anim, double& outRatePct)> GetCastRateWithinBounds;
+};
+
+// Routeur du switch terminal @0x5727BF, à poser dans le paramètre `stateHandler` de
+// Char_UpdateAnimationFrame (§2). `state` = état COURANT relu après l'interruption de cast
+// (c'est ce que fournit déjà Char_UpdateAnimationFrame). `anim` est muté en place (state /
+// animFrame / guardSubstate / hitCheckActive). `isLocalSimulation` = !a2 d'origine, propagé
+// jusqu'aux primitives car il GARDE des transitions (cf. TickGuardBegin : le saut
+// GuardLoop->GuardEnd est imbriqué dans `if (!a4)` @0x57F371).
+// No-op pour les 75 cas non couverts (cf. TODO du .cpp) et pour les 15 valeurs `default`
+// du binaire (8 ; 24-29 ; 47 ; 53 ; 59 ; 77-80 ; 84) — fidèle pour ces dernières.
+//
+// À CÂBLER (HORS DE MES FICHIERS — front voisin, cf. rapport W11) :
+//   Scene/SceneManager.cpp:1133, 10e argument (2e `nullptr`) de game::Char_UpdateAnimationFrame,
+//   dans la lambda host.UpdateEntityAnimFrame ouverte :1109. Remplacer ce `nullptr` par :
+//       [&p, isSelf](game::CharActionState st, float sdt) {
+//           game::Char_DispatchStateTick(p.anim, st, sdt, isSelf, s_charStateHost);
+//       }
+//   (`s_charStateHost` = un game::CharStateTickHost ; le laisser DÉFAUT est légitime et sans
+//   régression — cf. dégradation ci-dessus.) Tant que ce `nullptr` reste en place, ce routeur
+//   n'est appelé par personne : CTF-02 n'est PAS clos, il est seulement déplacé d'un cran.
+void Char_DispatchStateTick(CharAnimState& anim, CharActionState state, float dt,
+                             bool isLocalSimulation, const CharStateTickHost& host);
+
+// Pendant exact de Monster_MotionTickIsWired()/ZoneNpc_AnimTickIsWired() pour la FSM JOUEUR :
+// vrai dès qu'un Char_DispatchStateTick a réellement tourné au moins une fois. GARDE DE
+// NON-RÉGRESSION DE CÂBLAGE, PAS un comportement du binaire — elle permet à un consommateur
+// (p. ex. Gfx/PlayerPaperdoll.cpp:20-23, qui échantillonne aujourd'hui par horloge globale via
+// MotionCache::SampleByGameTime) de ne basculer sur CharAnimState::animFrame QUE s'il est
+// réellement alimenté, au lieu de figer tous les joueurs à la frame 0. Cf. l'aveu de gel
+// documenté en Gfx/MotionCache.h:90-95. À retirer quand le câblage est verrouillé par un test.
+bool Char_StateTickIsWired();
 
 } // namespace ts2::game

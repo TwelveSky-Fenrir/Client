@@ -123,8 +123,9 @@
 //     "render quadtree terrain tile/water/land layers with reflections"), appelée 2×/frame
 //     depuis Scene_InGameRender (offsets 0x90e et 0x1a28 — donc AVANT même les objets .WO
 //     dans le pipeline d'origine). Consomme le fichier .WG (Z%03d.WG, format quadtree G3W/
-//     WM², chargé par MapColl_LoadMapFile 0x697b30 ; wave texture générée par
-//     cWorldMesh_MakeWaterWaveTexture 0x451220 pendant le chargement). CONSTAT CRITIQUE :
+//     WM², chargé par MapColl_LoadMapFile 0x697b30 ; TWS-01 : le bump-map d'eau est la texture de
+//     FALLOFF de MapColl_CreateFalloffTexture 0x694ca0 — cWorldMesh_MakeWaterWaveTexture 0x451220
+//     est du code MORT, jamais appelé par le binaire livré). CONSTAT CRITIQUE :
 //     Asset/WorldChunk.cpp PARSE ce fichier .WG (asset::WorldChunk::AsFace(), exposé par
 //     World/WorldIntegration.h::WorldAssets::Faces()) mais AUCUN fichier de ClientSource/
 //     ne consomme jamais Faces()/AsFace() (grep exhaustif, 0 résultat hors Asset/ et
@@ -199,8 +200,9 @@
 //      @0x698f54 + SetTexture(1) @0x698f68 (le vertex FF possède bien uv1 -> le TODO « 1 seul
 //      TEXCOORD » a DISPARU ; texture créée depuis WorldAssets::ShadowBytes()) ;
 //    - EAU (catégorie 3) : passe bump-env D3DTOP_BUMPENVMAPLUMINANCE @0x699206 avec matrice bump
-//      animée (wavePhase_) + waveTex_ (cWorldMesh_MakeWaterWaveTexture 0x451220) / falloffTex_
-//      (MapColl_CreateFalloffTexture 0x694ca0), V8U8 procédurales générées au Build.
+//      animée (wavePhase_) + falloffTex_ (MapColl_CreateFalloffTexture 0x694ca0), V8U8 256x256
+//      procédurale générée au Build. TWS-01 : c'est bien la FALLOFF (*(a1+20) @0x69928f), pas une
+//      texture de vagues — 0x451220 est mort et non porté.
 //  FX de zone .WP : RenderFxBillboards() (passe a5=2 @0x698c6d : Gfx_BeginUnlitPass 0x69e470 ->
 //  Particle_RenderBillboards 0x6a70b0) dessine 1 billboard placé par instance (sous-ensemble
 //  build-safe). Sway .WO : TickWorldAnim() avance la phase de flipbook par instance (état possédé,
@@ -390,8 +392,8 @@ private:
     // couches opaques par (cat,sub), passe eau bump-env (cat 3), alpha-test (sub 1), lightmap stage 1
     // (uv1). CULLMODE=NONE encadré. Appelée par Render() AVANT les .WO. Ancre IDA : 0x698670.
     void renderTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj);
-    // Passe eau d'UNE couche cat==3 : matrice bump-env animée (cos/sin de wavePhase_) + waveTex_ en
-    // BUMPENVMAPLUMINANCE stage 0, diffuse eau stage 1. Ancre IDA : Terrain_Render @0x699206-0x6992b7.
+    // Passe eau d'UNE couche cat==3 : matrice bump-env animée (cos/sin de wavePhase_) + falloffTex_ en
+    // BUMPENVMAPLUMINANCE stage 0 (TWS-01), diffuse eau stage 1. Ancre IDA : Terrain_Render @0x699206-0x6992b7.
     void bindWaterStates(IDirect3DTexture9* waterDiffuse);
     void unbindWaterStates();
 
@@ -437,10 +439,11 @@ private:
     std::vector<TerrainLayer>       terrainLayers_;    // couches triées prêtes à dessiner (FF)
     size_t                          terrainFaceCount_ = 0; // total faces terrain uploadées (sanité)
 
-    // Eau (cat 3) : textures procédurales générées UNE FOIS au Build si une couche cat==3 existe.
-    // waveTex_  = V8U8 NxN (cWorldMesh_MakeWaterWaveTexture 0x451220) ; falloffTex_ = V8U8 radial
-    // (MapColl_CreateFalloffTexture 0x694ca0). wavePhase_ = accumulateur temps (t = wavePhase_*10).
-    IDirect3DTexture9*           waveTex_    = nullptr;
+    // Eau (cat 3) : texture procédurale générée UNE FOIS au Build si une couche cat==3 existe.
+    // TWS-01/TWS-02 : falloffTex_ = V8U8 256x256 radial, port de MapColl_CreateFalloffTexture 0x694ca0
+    // (seul écrivain vivant de *(a1+20), le bump-map stage 0 lié @0x69928f). Il n'y a PAS de waveTex_ :
+    // son générateur cWorldMesh_MakeWaterWaveTexture 0x451220 a 2 appelants à 0 xref (code mort) et le
+    // binaire ne crée jamais de texture de vagues. wavePhase_ = accumulateur temps (t = wavePhase_*10).
     IDirect3DTexture9*           falloffTex_ = nullptr;
     float                        wavePhase_  = 0.0f;
 

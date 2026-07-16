@@ -100,48 +100,23 @@ int TerrainLayerRank(uint32_t category, uint32_t subOrder) {
 // Empaquette un float dans le DWORD attendu par SetTextureStageState/SetRenderState (bit-copie).
 inline DWORD F2DW(float f) { DWORD d; std::memcpy(&d, &f, 4); return d; }
 
-// Génère la texture de vagues V8U8 NxN (bump map du/dv signé). Port STRUCTUREL de
-// cWorldMesh_MakeWaterWaveTexture 0x451220 : D3DXCreateTexture(dim,dim,1,0,D3DFMT_V8U8=60,MANAGED),
-// remplissage par somme de 3 sin/cos (amplitudes -64/16/-32, angles 360*r / (x+y)*180 / (x-y)*90).
-// La quantification exacte du binaire (Crt_ftol tronqué + Math_CIsqrt) est APPROXIMÉE ici ; le port
-// byte-exact reste un TODO ancre 0x451220 (impact purement visuel sur l'ondulation). `dim` est lu au
-// runtime depuis cWorldMesh+0 dans l'original ; non disponible en statique -> 64 par défaut (choix de
-// résolution, pas une valeur du protocole/format).
-IDirect3DTexture9* MakeWaterWaveTexture(IDirect3DDevice9* dev, UINT dim) {
-    if (!dev || dim == 0) return nullptr;
-    IDirect3DTexture9* tex = nullptr;
-    // D3DFMT_V8U8 = 60 (signed du/dv), 1 mip, usage 0, pool MANAGED (survit à Reset).
-    if (FAILED(D3DXCreateTexture(dev, dim, dim, 1, 0, D3DFMT_V8U8, D3DPOOL_MANAGED, &tex)) || !tex)
-        return nullptr;
-    D3DLOCKED_RECT lr;
-    if (FAILED(tex->LockRect(0, &lr, nullptr, 0))) { tex->Release(); return nullptr; }
-    auto* row = static_cast<uint8_t*>(lr.pBits);
-    const float N = static_cast<float>(dim);
-    for (UINT y = 0; y < dim; ++y) {
-        int8_t* texel = reinterpret_cast<int8_t*>(row);
-        for (UINT x = 0; x < dim; ++x) {
-            const float dx = static_cast<float>(x) / N - 0.5f;
-            const float dy = static_cast<float>(y) / N - 0.5f;
-            const float r2 = dx * dx + dy * dy;
-            const float aR  = 360.0f * r2;          // v25
-            const float aD1 = (dy + dx) * 180.0f;   // v22
-            const float aD2 = (dx - dy) * 90.0f;    // v24
-            // du (3 termes sin), dv (3 termes cos) — ftol = troncature vers 0.
-            const float du = std::trunc(std::sin(aR)  * -64.0f * -r2)
-                           - std::trunc(std::sin(aD2) *  16.0f)
-                           - std::trunc(std::sin(aD1) * -32.0f);
-            const float dv = std::trunc(std::cos(aR)  * -64.0f * -r2)
-                           - std::trunc(std::cos(aD2) *  16.0f)
-                           - std::trunc(std::cos(aD1) * -32.0f);
-            texel[0] = static_cast<int8_t>(std::max(-128.0f, std::min(127.0f, du)));
-            texel[1] = static_cast<int8_t>(std::max(-128.0f, std::min(127.0f, dv)));
-            texel += 2;
-        }
-        row += lr.Pitch;
-    }
-    tex->UnlockRect(0);
-    return tex;
-}
+// ---------------------------------------------------------------------------------------------
+//  TWS-01 (Passe 4 / W11) — TEXTURE DE VAGUES = CODE MORT, VOLONTAIREMENT NON PORTÉE.
+//  Re-prouvé dans IDA (idaTs2, lecture seule) : le binaire ne crée JAMAIS de texture de vagues
+//  dans le chemin de terrain VIVANT. Le SEUL créateur d'une telle texture, cWorldMesh_MakeWaterWave
+//  Texture 0x451220, n'a que deux appelants — cWorldMesh_LoadG3W 0x449800 et
+//  cWorldMesh_LoadQuadtreeWM2 0x44d440 — et CHACUN a 0 xref (code ET data ; absents des vtables) :
+//  tout le sous-arbre est injoignable depuis WinMain 0x4609C0. La carte de perturbation liée par
+//  Terrain_Render au stage 0 (`SetTexture(0, *(a1+20))` @0x69928f, sous COLOROP=BUMPENVMAPLUMINANCE
+//  @0x699206) est en réalité la TEXTURE DE FALLOFF radiale : *(a1+20) == this+5 == octet 20, écrit
+//  UNIQUEMENT par MapColl_CreateFalloffTexture 0x694ca0 (@0x694cac `v2 = this + 5`), appelée @0x698043
+//  par MapColl_LoadMapFile 0x697b30 sous la gate « matériau catégorie 3 » @0x698033. Identité d'objet
+//  prouvée deux fois : 0x697b30 (__thiscall) écrit *(this+3)/*(this+4) stride 52, gate +40==3, que
+//  Terrain_Render relit à l'identique -> même classe -> this+5 ≡ a1+20. Le port précédent commettait
+//  DEUX fautes cumulées : (1) il réanimait le code mort 0x451220 (appel MakeWaterWaveTexture au Build)
+//  et (2) il liait cette mauvaise texture au lieu du falloff. Les deux sont corrigés ici -> on ne
+//  porte donc PAS de générateur de vagues (RÈGLE #7 : une fonction morte du binaire reste morte).
+// ---------------------------------------------------------------------------------------------
 
 // Génère la texture de falloff radial V8U8 NxN. Port de MapColl_CreateFalloffTexture 0x694ca0 :
 // valeur = round(-sqrt((x/N-0.5)^2+(y/N-0.5)^2) * 1.442695040888963407) écrite en du ET dv.
@@ -171,9 +146,16 @@ IDirect3DTexture9* MakeFalloffTexture(IDirect3DDevice9* dev, UINT dim) {
     return tex;
 }
 
-// Résolution par défaut des textures procédurales d'eau (cf. note MakeWaterWaveTexture : le binaire
-// lit la dimension au runtime depuis cWorldMesh+0 ; 64 est un choix de résolution build-safe).
-constexpr UINT kWaterTexDim = 64;
+// Dimension de la texture de falloff/bump-env de l'eau. PROUVÉE (TWS-02) = 256, PAS un choix
+// build-safe : MapColl_Construct 0x693080 @0x6930b1 (`mov dword ptr [esi], 100h`) et
+// MapColl_ResetHeader 0x693120 @0x693129 posent MapColl+0 = 256, consommé par
+// MapColl_CreateFalloffTexture 0x694ca0 @0x694cd3 (D3DXCreateTexture(dev, *this, *this, ...)) en
+// largeur ET hauteur, et par ses bornes de boucle @0x694d08/@0x694d1a. La valeur n'est JAMAIS lue
+// du fichier .WG : MapColl_LoadMapFile 0x697b30 écrit this+1..+4,+21,+22,+33..+41 mais jamais *this
+// (décompilation intégrale vérifiée) -> 256 est une constante statique du constructeur, pas une
+// donnée runtime. (L'ancien bandeau « cWorldMesh+0 au runtime -> 64 par défaut » était faux sur les
+// deux points : mauvais objet — cWorldMesh est mort, cf. TWS-01 — et valeur disponible en statique.)
+constexpr UINT kWaterTexDim = 256;
 
 // Taille de l'en-tête fixe du bloc géométrie GXD d'un WorldMeshPart (Asset/WorldChunk.cpp,
 // ReadMeshPart : A/B/C/D lus à l'offset 120, soit 136 o d'en-tête au total).
@@ -263,8 +245,7 @@ void WorldGeometryRenderer::releaseTerrain() {
     terrainLayers_.clear();
     for (IDirect3DTexture9*& t : terrainTextures_) SafeRelease(t);
     terrainTextures_.clear();
-    SafeRelease(waveTex_);
-    SafeRelease(falloffTex_);
+    SafeRelease(falloffTex_); // TWS-01 : plus de waveTex_ (générateur mort 0x451220 non porté)
     SafeRelease(shadowTex_);
     wavePhase_ = 0.0f;
     terrainFaceCount_ = 0;
@@ -469,8 +450,29 @@ bool WorldGeometryRenderer::Build(const world::WorldAssets& assets) {
     // Terrain_Render 0x698670 -> Model_RenderWithShadow_0 0x6a4110 @0x698bdd (consommateur du tableau).
     instances_ = wo->auxRecords;
 
-    // FRONT W3-F3 : état de sway par instance (phase 0, borne de wrap = nb de frames A du gabarit).
-    // Ancre IDA : MapColl_UpdateObjectAnim 0x694a00 (frameCount = part.A). Tické par TickWorldAnim.
+    // FRONT W3-F3 : état de sway par instance (borne de wrap = nb de frames A du gabarit).
+    // Ancre IDA : MapColl_UpdateObjectAnim 0x694a00 (@0x694a4d avance aux+28, wrap par frameCount =
+    // part.A = *(...+252)). Tické par TickWorldAnim.
+    //
+    // TWS-03 (Passe 4 / W11) — SEEDING ALÉATOIRE +28/+32 DÉLIBÉRÉMENT NON REPRODUIT (refutation de la
+    // prescription phase-1). Fait PROUVÉ dans IDA : MapColl_LoadObjectsA 0x6980d0 lit un record de 28 o
+    // DISQUE (u32 idx@+0, float3@+4, float3@+16) puis, en boucle @0x698340-0x69837d (stride runtime 36),
+    // SÈME les 8 octets restants avec DEUX tirages : *(base+28) = Math_RandRangeFloat(0,100) @0x69835d et
+    // *(base+32) idem @0x698370 — donc +28/+32 ne viennent PAS du disque (corrobore
+    // World/WorldIntegration.cpp:235). instancePhase_ ≡ +28 (double emploi graine + curseur d'anim,
+    // mapping correct). MAIS le seeding n'est PAS appliqué ici, pour DEUX raisons re-prouvées :
+    //   1) Math_RandRangeFloat 0x69cb10 tire via Rng_Next 0x7603fd = le rand() CRT PARTAGÉ, i.e. le
+    //      MÊME flux que net::DefaultRng() (nonces réseau, cf. Net/Login.cpp:34 / CharSelectPackets.cpp:58).
+    //      Injecter 2×N tirages au chargement de zone PERTURBERAIT ce flux SANS reproduire la timeline
+    //      rand() globale du binaire (intro/menus/… non portés dans l'ordre) -> divergence des nonces,
+    //      pire que le manque. La fidélité bit-exacte des nonces (CLAUDE.md) est déjà inatteignable ; on
+    //      ne l'aggrave pas pour une graine cosmétique.
+    //   2) Aucun consommateur de la graine n'est porté : le GPU dessine toujours la frame 0 (pose
+    //      statique, cf. bandeau .h point 5) et +32 n'alimente que Model_RenderWithShadow_0 0x6a4110
+    //      arg 6, non porté. La graine n'aurait donc AUCUN effet observable. Pas d'instanceSeed2_ non
+    //      plus (ce serait un état écrit-jamais-lu = l'anti-motif que la campagne traque).
+    // -> phase initiale 0 conservée (documentée), pas de tirage RNG. TODO si un jour la sélection GPU
+    //    de frame + la timeline rand() globale sont portées : semer via net::DefaultRng() à ce moment.
     instancePhase_.assign(instances_.size(), 0.0f);
     instanceFrameCount_.assign(instances_.size(), 1u);
     for (size_t i = 0; i < instances_.size(); ++i) {
@@ -630,11 +632,11 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
     std::stable_sort(terrainLayers_.begin(), terrainLayers_.end(),
                      [](const TerrainLayer& a, const TerrainLayer& b) { return a.rank < b.rank; });
 
-    // 5) Eau : wave + falloff procédurales créées UNE FOIS si une couche cat==3 existe (fidèle
-    //    @0x698043). Ancres : cWorldMesh_MakeWaterWaveTexture 0x451220 / MapColl_CreateFalloffTexture
-    //    0x694ca0. falloffTex_ chargée mais non encore utilisée dans la passe (radial, réservée).
+    // 5) Eau (TWS-01/TWS-02) : la texture de FALLOFF radiale (V8U8 256x256) est créée UNE FOIS si une
+    //    couche cat==3 existe, miroir fidèle de MapColl_LoadMapFile @0x698043 -> MapColl_CreateFalloff
+    //    Texture 0x694ca0 (seul écrivain vivant de *(a1+20), le bump-map stage 0). PAS de texture de
+    //    vagues : son générateur 0x451220 est mort (cf. bandeau TWS-01 ci-dessus).
     if (hasWater) {
-        waveTex_    = MakeWaterWaveTexture(dev_, kWaterTexDim);
         falloffTex_ = MakeFalloffTexture(dev_, kWaterTexDim);
     }
 
@@ -643,13 +645,13 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
     shadowTex_ = createTextureFromDds(dev_, assets.ShadowBytes());
 
     TS2_LOG("WorldGeometryRenderer::buildTerrain (W3-F3) : %zu faces sur %u materiaux -> %zu couches "
-            "FF (%zu hors bornes, %zu lots echec) ; eau=%d (wave=%p falloff=%p) lightmap=%p ; sol .WG "
+            "FF (%zu hors bornes, %zu lots echec) ; eau=%d (falloff=%p) lightmap=%p ; sol .WG "
             "pret (FVF 530, world=identite). Cull quadtree/frustum = TODO perf. "
             "Filtre categories (Terrain_Render 0x698670) : %zu couches / %zu faces ecartees car "
             "jamais dessinees par le binaire (attendu 0 sur donnees reelles -- si != 0, re-verifier "
             "la table TerrainLayerRank AVANT de conclure).",
             totalFaces, numMat, terrainLayers_.size(), outOfRange, failed,
-            hasWater ? 1 : 0, (void*)waveTex_, (void*)falloffTex_, (void*)shadowTex_,
+            hasWater ? 1 : 0, (void*)falloffTex_, (void*)shadowTex_,
             ghostLayers, ghostFaces);
     return true;
 }
@@ -944,12 +946,13 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
     meshRenderer_.InvalidateShaderBindingCache();          // le prochain DrawSkinnedSubset rebinde VS/PS
 }
 
-// Passe eau bump-env d'une couche cat==3. Ancre IDA : Terrain_Render @0x699206-0x6992b7. waveTex_
-// (V8U8) en stage 0 comme carte de perturbation BUMPENVMAPLUMINANCE(23) ; eau diffuse en stage 1
-// (MODULATE + ALPHAOP=SELECTARG1). Matrice bump animée : MAT00=cos(t)*s, MAT01=-sin(t)*s,
-// MAT10=sin(t)*s, MAT11=cos(t)*s (t = wavePhase_*10), BUMPENVLSCALE=1.0.
+// Passe eau bump-env d'une couche cat==3. Ancre IDA : Terrain_Render @0x699206-0x6992b7. TWS-01 :
+// la carte de perturbation liée au stage 0 est la texture de FALLOFF (falloffTex_, écrivain vivant
+// MapColl_CreateFalloffTexture 0x694ca0 -> *(a1+20), lu @0x69928f), en BUMPENVMAPLUMINANCE(23) ; eau
+// diffuse en stage 1 (MODULATE + ALPHAOP=SELECTARG1). Matrice bump animée : MAT00=cos(t)*s,
+// MAT01=-sin(t)*s, MAT10=sin(t)*s, MAT11=cos(t)*s (t = wavePhase_*10), BUMPENVLSCALE=1.0.
 void WorldGeometryRenderer::bindWaterStates(IDirect3DTexture9* waterDiffuse) {
-    if (!waveTex_) { dev_->SetTexture(0, waterDiffuse); return; } // repli : eau texture simple
+    if (!falloffTex_) { dev_->SetTexture(0, waterDiffuse); return; } // repli : eau texture simple
     // ÉCHELLE DU BUMP — TODO ancre 0x699206 RÉSOLU (2026-07-16), volontairement NON appliqué :
     // le binaire utilise `a10` BRUT comme échelle de la matrice bump-env (vérifié @0x6991e5
     // `v94 = cos(v62) * a10` / @0x6991f2 `sin(v109) * a10`, idem @0x699508 et @0x698925), où
@@ -964,7 +967,7 @@ void WorldGeometryRenderer::bindWaterStates(IDirect3DTexture9* waterDiffuse) {
     const float t = wavePhase_ * 10.0f;
     const float c = std::cos(t) * kWaterBumpScale;
     const float s = std::sin(t) * kWaterBumpScale;
-    dev_->SetTexture(0, waveTex_);
+    dev_->SetTexture(0, falloffTex_); // TWS-01 : *(a1+20) @0x69928f = falloff, PAS une texture de vagues
     dev_->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_BUMPENVMAPLUMINANCE); // = 23
     dev_->SetTextureStageState(0, D3DTSS_BUMPENVMAT00, F2DW(c));
     dev_->SetTextureStageState(0, D3DTSS_BUMPENVMAT01, F2DW(-s));
@@ -1006,10 +1009,11 @@ void WorldGeometryRenderer::unbindWaterStates() {
 //    - Cull quadtree/frustum par frame (perf) : MapColl_CollectLeafFaces 0x694b50 + backface
 //      @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0 (ici : dessine tout, correct/non optimisé).
 //  G6 eau (catégorie 3, bump-env) et G8 lightmap .SHADOW (stage 1, uv1) sont désormais FAITS dans
-//  ce front (cf. bindWaterStates() @0x699206 + MakeWaterWaveTexture 0x451220 / falloff 0x694ca0 ;
-//  lightmap stage 1 MODULATE @0x698f54/@0x698f68) : la catégorie vient de textures[m].trailer[0]
-//  et le vertex FF possède bien uv1. Restes = échelle exacte du bump eau (a10 runtime, TODO ancre
-//  0x699206) et quantification exacte de la wave (TODO ancre 0x451220), purement visuels.
+//  ce front (cf. bindWaterStates() @0x699206 : bump-map = falloff MapColl_CreateFalloffTexture
+//  0x694ca0 ; lightmap stage 1 MODULATE @0x698f54/@0x698f68) : la catégorie vient de
+//  textures[m].trailer[0] et le vertex FF possède bien uv1. TWS-01 (W11) : la « texture de vagues »
+//  0x451220 est du CODE MORT (2 appelants à 0 xref), le binaire ne la crée jamais -> non portée.
+//  Restes = échelle exacte du bump eau (a10 runtime, TODO ancre 0x699206), purement visuel.
 // ===========================================================================
 
 void WorldGeometryRenderer::Render(const Camera& camera, int screenW, int screenH) {

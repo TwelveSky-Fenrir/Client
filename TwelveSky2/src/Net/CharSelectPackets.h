@@ -97,8 +97,10 @@ inline constexpr int kCharRecFieldJob     = 36;   // int32
 //   data_refs(0x16693A8) = fiche de liste +40 -> 5 réfs, TOUTES en lecture (0x51C52E,
 //     0x51C598, 0x51C622, 0x51C691 dans Scene_CharSelectUpdate ; 0x5251D8 dans
 //     Scene_CharSelectOnMouseUp).
-// => Rendre la LISTE avec +36 (= job) affiche le MAUVAIS modèle 3D. Cf.
-// ReadCharRecordListFields ci-dessous, l'accès à utiliser côté rendu de la liste.
+// => Rendre la LISTE avec +36 (= job) affiche le MAUVAIS modèle 3D. Le rendu de la liste
+// passe par gfx::CharPreview3D::BuildFromRecord (fiche BRUTE, branche LISTE @0x527452) ;
+// côté données, +40 est porté par game::CharSlotInfo::race (peuplé par ParseCharRecord).
+// ⚠️ PAS par ReadCharRecordListFields, qui n'a aucun appelant (cf. son bandeau ci-dessous).
 inline constexpr int kCharRecFieldRace    = 40;   // int32 — g_LocalElementSecondary 0x1673198
 // +44 : GENRE (0..1) — nom historique « faction » conservé pour ne pas casser
 // game::CharSlotInfo::faction (Game/CharSelectFlow.h, hors de ce front). PcModel_ResolveEquipSlot
@@ -137,10 +139,22 @@ inline constexpr int32_t kCharRecJobSentinelValue = 3;
 
 // --- Champs de la fiche consommés par le RENDU DE LA LISTE (écran this[15714]==1) ---
 // Vue en LECTURE SEULE des champs que Char_RenderModel 0x527020 lit dans sa branche
-// LISTE (arg_4 == 0). Existe parce que game::CharSlotInfo (Game/CharSelectFlow.h, HORS
-// de ce front) n'expose NI la race (+40), NI l'arme de départ (+216), NI la sentinelle
-// (+36==3) : son champ `job` porte +36, qui n'est PAS la race de la liste (cf. l'ancre
-// de kCharRecFieldRace). Le rendu de la liste doit lire ICI, pas dans CharSlotInfo::job.
+// LISTE (arg_4 == 0).
+//
+// 🔴 API SANS AUCUN APPELANT — NE PAS LA CÂBLER SUR LE RENDU.
+// Le motif justifiant cette struct (« game::CharSlotInfo n'expose pas la race +40 ») est
+// PÉRIMÉ : CharSlotInfo::race EXISTE (Game/CharSelectFlow.h:168) et ParseCharRecord la
+// remplit désormais depuis +40 (cf. le bloc d'ancres de ParseCharRecord ci-dessous, qui
+// referme le « TODO K1 » cité par ce même champ). Et le rendu 3D de la liste ne passe pas
+// ici : il lit la fiche BRUTE via gfx::CharPreview3D::BuildFromRecord (branche LISTE
+// @0x527452), avec ses propres constantes d'offset.
+// => Les 2 surcharges ci-dessous ont ZÉRO appelant dans tout src/ (vérifié par grep).
+// TODO [ancre 0x527536] : décision d'orchestrateur — soit SUPPRIMER ces 2 surcharges +
+// cette struct (aucun consommateur), soit faire consommer à Gfx/CharPreview3D.cpp les
+// constantes kCharRecField* de CE header au lieu de ses kRecOff* locaux, pour n'avoir
+// qu'UNE source de vérité d'offsets. Deux jeux de constantes décrivant la MÊME fiche
+// finiront par diverger. Câbler cette API sur le rendu créerait un 3e chemin : ne pas le
+// faire.
 struct CharRecordListFields {
     int32_t race                 = 0;     // +40 — a2 de PcModel_ResolveEquipSlot @0x527536
     int32_t gender               = 0;     // +44 — a3 de PcModel_ResolveEquipSlot @0x52752F
@@ -162,11 +176,19 @@ bool ReadCharRecordListFields(int32_t slot, CharRecordListFields& out);
 // par défaut (le binaire ne les exploite jamais dans ce cas — aucun octet à zéro n'est
 // interprété comme job/faction/etc pour un emplacement libre).
 //
-// ⚠️ `out.job` porte +36 (correct : +36 EST le champ job, cf. kCharRecFieldJob). Ce
-// n'est PAS la race du rendu de la LISTE : celle-ci est en +40 et n'est PAS exposée par
-// game::CharSlotInfo (struct hors de ce front). Le rendu de la liste doit passer par
-// ReadCharRecordListFields ci-dessus. Cf. l'ancre de kCharRecFieldRace (0x527536 vs
-// 0x527051) pour la preuve.
+// ⚠️ `out.job` porte +36 (correct : +36 EST le champ job, cf. kCharRecFieldJob) et n'est
+// PAS la race : celle-ci est en +40 et est portée par `out.race` (peuplée depuis
+// kCharRecFieldRace — cf. l'ancre de kCharRecFieldRace, 0x527536 vs 0x527051, pour la
+// preuve que les deux champs coexistent avec des rôles distincts).
+//
+// `out.race` (+40) est REMPLI PAR LE SERVEUR uniquement (écho op17 @0x52A71E ;
+// data_refs(0x16709E0) = 0 réf côté formulaire de création). Ses DEUX consommateurs C++ :
+//   · Game/CharSelectFlow.cpp::ListMotionFrameCount -> MotionFrameCount(rec.race, …),
+//     miroir de `mov ecx, ds:dword_16693A8[eax]` @0x51C52E ->
+//     PcModel_ResolveSlotAndApply 0x4E5A00 @0x51C53A ;
+//   · UI/LoginScene.cpp::PublishSelfFromSlot -> g_World.self.elementSecondary, miroir du
+//     bloc+0x28 posé par Crt_Memcpy(g_SelfCharInvBlock 0x1673170, fiche, 0x2768) @0x51C707
+//     (= g_LocalElementSecondary 0x1673198).
 void ParseCharRecord(const uint8_t* rec, game::CharSlotInfo& out);
 
 // Peuple `slots` à partir des 3 fiches persistées par Net_LoginRequest

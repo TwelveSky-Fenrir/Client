@@ -127,6 +127,43 @@ inline void ClearCellGuarded(uint32_t rowAddr, uint32_t colAddr) {
         g_Client.inv.ClearCell(static_cast<uint32_t>(r), static_cast<uint32_t>(c));
 }
 
+// --- Tableaux « aux » PAR CELLULE -------------------------------------------
+// Le binaire n'a PAS trois scalaires globaux : il a TROIS TABLEAUX indexés par
+// cellule. Ancre Net_OnItemEnchantDispatch 0x4A7410 :
+//   0x4A7535 `imul ecx, 300h`  -> ligne   = 0x300 o = 192 dwords (64 col x 3 dw)
+//   0x4A7541 `imul edx, 0Ch`   -> cellule = 0x0C  o =   3 dwords
+//   0x4A7547 g_InvAux[ecx+edx] / 0x4A7566 dword_1674ABC[..] / 0x4A7585 dword_1674AC0[..]
+// Le commentaire de tête IDA de g_InvAux 0x1674AB8 le dit mot pour mot :
+// « inventaire auxiliaire SoA, cellule 0x0C (3 dw), ligne 0x300. base+row*0x300+col*0x0C ».
+//
+// InventoryState (Game/ClientRuntime.h:85 — NON possédé par ce front) n'expose que
+// trois scalaires GLOBAUX aux0/aux1/aux2 : la cellule courante y écrase celle de
+// TOUTE autre cellule (128 triplets fondus en 1). On passe donc par l'échappatoire
+// Var(adresseOrigine) bénie par le header lui-même (ClientRuntime.h:10-12), selon le
+// précédent EXACT déjà en place dans Net/GameHandlers_InvCells.cpp:71-105 et
+// Game/WarehouseSystem.cpp:13-20 — on réutilise le modèle, on n'en invente pas un 3e.
+constexpr uint32_t kInvAuxBase  = 0x1674AB8; // g_InvAux
+constexpr uint32_t kInvAux1Base = 0x1674ABC; // dword_1674ABC
+constexpr uint32_t kInvAux2Base = 0x1674AC0; // dword_1674AC0
+
+// Décalage en OCTETS de la cellule (row,col) dans les 3 tableaux aux.
+// NON GARDÉ sur row/col < 0 — contrairement à InvCells.cpp:84/110 — parce que le
+// handler 0xa8 s'appuie sur un OOB D'ORIGINE qu'il faut reproduire (cf. WriteAuxAt).
+// L'arithmétique non signée (complément à deux) reproduit exactement l'adresse
+// calculée par le `imul` signé du binaire une fois ajoutée à la base.
+inline uint32_t InvAuxOff(int32_t row, int32_t col) {
+    return 4u * static_cast<uint32_t>(192 * row + 3 * col);
+}
+
+// Écrit les 3 aux de la cellule (row,col). Les 3 écritures partagent le même index,
+// recalculé à chaque fois par le binaire (0x4A7535/0x4A7554/0x4A7573).
+inline void WriteAuxAt(int32_t row, int32_t col, int32_t a0, int32_t a1, int32_t a2) {
+    const uint32_t off = InvAuxOff(row, col);
+    g_Client.Var(kInvAuxBase  + off) = a0;
+    g_Client.Var(kInvAux1Base + off) = a1;
+    g_Client.Var(kInvAux2Base + off) = a2;
+}
+
 // Réinitialise l'état de déplacement en attente. `depth` = nombre de champs remis
 // à -1 dans l'ordre ED8, EDC, EE0, EE4 — le binaire N'EN REMET PAS TOUJOURS 4 (voir
 // la carte en tête de fichier). Défaut = 2 (ED8+EDC), le profil très majoritaire :
@@ -245,9 +282,16 @@ void RegisterInvDispatchHandlers(NetSystem& sys) {
         // (0x4a7598) ENTRE les écritures aux et les écritures de cellule.
         // aux : 0x4a7547/0x4a7566/0x4a7585.
         auto ApplyAux = [&]() {
-            g_Client.inv.aux0 = p.aux0;   // g_InvAux[192*row + 3*col]      <- v35
-            g_Client.inv.aux1 = p.aux1;   // dword_1674ABC[192*row + 3*col] <- v37
-            g_Client.inv.aux2 = p.aux2;   // dword_1674AC0[192*row + 3*col] <- v36
+            // Indexé par les globals PENDING (g_PendingMove_SrcRow0 0x1822ED8 /
+            // dword_1822EF0), et NON par le row/col du paquet : le binaire lit ces
+            // globals (0x4A752F/0x4A753B). Ils sont VALIDES ici — leur reset
+            // (0x4A7664/0x4A766E) est POSTÉRIEUR aux 3 écritures aux.
+            //   g_InvAux[192*row + 3*col]      <- v35   0x4A7547
+            //   dword_1674ABC[192*row + 3*col] <- v37   0x4A7566
+            //   dword_1674AC0[192*row + 3*col] <- v36   0x4A7585
+            WriteAuxAt(g_Client.pendingMoveRow, g_Client.pendingMoveCol,
+                       static_cast<int32_t>(p.aux0), static_cast<int32_t>(p.aux1),
+                       static_cast<int32_t>(p.aux2));
         };
         // cellule : 0x4a75b8..0x4a765d (AFFECTATION) ; reset : 0x4a7664/0x4a766e (2 champs).
         auto ApplyCellAndReset = [&]() {
@@ -607,7 +651,34 @@ void RegisterInvDispatchHandlers(NetSystem& sys) {
             ResetPendingMove(4);             // 4 champs — 0x4ae40f..0x4ae42d
             g_Client.inv.currency -= 100;    // g_Currency & dword_1687254[0]
             if (p.status == 1) {
-                g_Client.inv.aux0 = g_Client.inv.aux1 = g_Client.inv.aux2 = 0; // vide g_InvAux/1674ABC/1674AC0
+                // BUG D'ORIGINE — À REPRODUIRE, NE PAS « CORRIGER » (règle de fidélité).
+                // Ancre : le reset de la LIGNE à -1 (0x4AE67F `mov ds:g_PendingMove_SrcRow0,
+                // 0FFFFFFFFh`) PRÉCÈDE la relecture de ce même global par les 3 écritures aux
+                // (0x4AE6A7 / 0x4AE6C6 / 0x4AE6E5, chacune suivie de `imul ..., 300h` = -768),
+                // alors que la COLONNE dword_1822EF0 n'est PAS reset (le reset ne touche que
+                // les 4 LIGNES ED8/EDC/EE0/EE4 — cf. commentaire IDA de 0x1822ED8). Les 3
+                // écritures (0x4AE6BB / 0x4AE6DA / 0x4AE6FA) tapent donc g_InvAux[-192 + 3*col],
+                // soit la plage OOB [0x16747B8, 0x1674AAC) qui contient g_StallSlots 0x16747F8
+                // (« Stalle boutique perso : 28 slots de 4 dwords ») : l'original corrompt la
+                // stalle perso à chaque upgrade status==1.
+                //
+                // PIÈGE HEX-RAYS : le pseudocode ne folde le -192 que sur la PREMIÈRE écriture
+                // (`g_InvAux[3*dword_1822EF0[0] - 192]`) et laisse les deux autres sous la forme
+                // `192*g_PendingMove_SrcRow0[0] + 3*col`, ce qui donne l'illusion que seule la
+                // 1re est OOB. Au niveau INSTRUCTION les trois relisent le global à -1 : les
+                // trois sont OOB. C'est le désassemblage qui fait foi.
+                //
+                // Deux propriétés rendent la reproduction sûre côté C++ : (1) Var() est une map
+                // adressée par CLÉ -> l'OOB n'écrase aucune mémoire C++, il atterrit sur la clé
+                // d'origine exacte ; (2) le calcul non signé boucle en complément à deux et
+                // donne pile la bonne adresse : 0x1674AB8 + 0xFFFFFD00 = 0x16747B8.
+                // NE PAS réutiliser les helpers gardés de InvCells.cpp:84/110 (`if (row < 0)
+                // return;`) : ils SUPPRIMERAIENT le bug d'origine.
+                //
+                // pendingMoveRow vaut -1 ici par construction (ResetPendingMove(4) ci-dessus,
+                // miroir de 0x4AE67F) : on relit le champ plutôt que d'écrire -1 en dur, pour
+                // reproduire le MÉCANISME (relecture après reset) et pas seulement son effet.
+                WriteAuxAt(g_Client.pendingMoveRow, g_Client.pendingMoveCol, 0, 0, 0);
                 g_Client.msg.System(Str(730));
             } else if (p.status == 0xFFFFFFFFu) {
                 g_Client.msg.System(Str(2310));
@@ -675,9 +746,15 @@ void RegisterInvDispatchHandlers(NetSystem& sys) {
                         static_cast<uint32_t>(g_Client.Var(0x1822F20)),
                         static_cast<uint32_t>(g_Client.Var(0x1822F24)),
                         static_cast<uint32_t>(g_Client.Var(0x1822F28)), nodes);
-                    g_Client.inv.aux0 = Bits_SetByteN(1, static_cast<int8_t>(n), 0u);
-                    g_Client.inv.aux1 = 0;
-                    g_Client.inv.aux2 = 0;
+                    // Indexé par les globals PENDING, VALIDES ici : leur reset
+                    // (0x4AF431/0x4AF43B) est POSTÉRIEUR à ces écritures.
+                    // La VALEUR 0u passée à Bits_SetByteN est prouvée, pas supposée : le
+                    // binaire met la cellule à 0 (0x4AF39E) puis RELIT cette même cellule
+                    // (0x4AF3BE) pour la passer en 3e argument -> l'entrée vaut donc 0.
+                    // Seul l'INDEX était faux ici.
+                    WriteAuxAt(g_Client.pendingMoveRow, g_Client.pendingMoveCol,
+                               static_cast<int32_t>(Bits_SetByteN(1, static_cast<int8_t>(n), 0u)),
+                               0, 0);
                 }
                 ResetPendingMove();                            // 0x4af431 / 0x4af43b (2 champs)
                 // Reset conditionnel supplémentaire piloté par actionType (0x4af449-0x4af467).

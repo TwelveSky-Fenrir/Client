@@ -7,6 +7,7 @@
 #include "Net/SendPackets.h"      // net::Net_SendWarpRequest / Net_SendOp116 / Net_SendOp126
 #include "Net/NetClient.h"        // net::GlobalNetClient() == &g_NetClient 0x8156A0
 #include "UI/NpcDialogWindow.h"
+#include "UI/TeleportWindow.h"    // page 76 ouverte par le service code 76 (0x4C)
 #include "UI/PanelSkin.h"
 #include "Game/ClientRuntime.h"   // game::g_Client (Var/VarF/msg), game::Str(id)
 #include "Game/GameState.h"       // game::g_World.self (level/levelBonus/currency/element)
@@ -334,6 +335,7 @@ void NpcDialogWindow::DispatchService(int code) {
     case 0x35:  ClassChangeValidate();   return;  // 0x5df9d1 UI_ClassChange_Validate    0x60A310
     case 0x37:  SendOp116AndClose();     return;  // 0x5df9eb UI_NpcMenu_..SendOp116AndClose 0x60FA60
     case 0x3E:  FactionAdvanceCommit();  return;  // 0x5dfa39 UI_FactionAdvance_Commit   0x612C20
+    case 0x4C:  OpenTeleportPage();      return;  // 0x5dfad4 (case 76) cTeleportWin_Init 0x627BA0
 
     // ----------------------------------------------------------------------------------
     // Services ÉMETTEURS non portés — la PREUVE du layout existe (cf. rapport de front),
@@ -352,21 +354,42 @@ void NpcDialogWindow::DispatchService(int code) {
         // câblage appartient au front MsgBox. Builder Net_SendOp37 : PRÉSENT (SendPackets.h:132).
         return;
     case 0x18:
-        // TODO [ancre UI_NpcMenu_ExecuteWarp 0x5F5470] : = Warp_ProcessKeyword(dword_168618C
-        // [g_LocalElement]) (0x5f548d). Warp_ProcessKeyword 0x5F54E0 N'EST PAS PORTÉE (seule
-        // Warp_SendTeleport 0x5F5CE0 l'est, Game/MapWarp.h:187) et dépend des tables de mots-clés
-        // unk_168619C/16861A9/16861B6/byte_16861C3[52*elem] + du buffer dword_16746A8, non
-        // modélisés. Émettrait Op20 (via Warp_SendTeleport, zones 138/139/165/166) ou Op107
-        // (case 2, @0x5f57ce). Builders Net_SendWarpRequest/Net_SendOp107 : PRÉSENTS
-        // (SendPackets.h:254/:83). Blocage = fonction de gameplay absente, pas builder absent.
+        // NE PAS PORTER — gap BLOQUÉ (état non modélisé), pas « prêt à câbler ». RE-PROUVÉ dans
+        // IDA (Warp_ProcessKeyword 0x5F54E0 décompilée) : UI_NpcMenu_ExecuteWarp 0x5F5470
+        // @0x5f548d = Warp_ProcessKeyword(dword_168618C[g_LocalElement]) ; switch @0x5f5513, SEULS
+        // cases 0/2/6/9/12 agissent (default @0x5f5b2e -> 0). Ce n'est PAS une « table de
+        // mots-clés » (lecture erronée corrigée) mais une ÉCHELLE DE GUERRE DE CLAN : chaque
+        // branche compare le nom de clan local dword_16746A8 (WARP-03) aux crans T1
+        // byte_16861C3[52*elem]/unk_16861B6/16861A9/168619C (WARP-01/02) et T2 unk_168626C ;
+        // succès -> Warp_LookupDest 0x5F5B60 puis LABEL_59 Warp_SendTeleport(g_LocalElement, pos)
+        // @0x5f5aee -> zones {138,139,165,166}. Le TRANSPORT est porté (game::Warp_SendTeleport,
+        // Game/MapWarp.h:187) ; le BLOCAGE est l'ÉTAT : dword_16746A8 et T1/T2 n'ont AUCUN
+        // écrivain côté C++ (Net/GameHandlers_PartyGuild.cpp / Net/WorldEntityDispatch.cpp, hors
+        // de mes fichiers). Porter maintenant lirait des tables VIDES.
+        // ⚠️ RISQUE D'ÉMISSION prouvé (motif de l'abstention) — case 2, branche @0x5f5740 : si
+        // T2[elem]=="" et dword_16746B8==0 (rang, non écrit), Str_NameListContainsMismatch(
+        // byte_1822730, 5, dword_16746A8) @0x5f578c (3e arg = le nom de clan LOCAL, == "" hors
+        // clan) MATCHE dès qu'un slot de la liste est vide -> émet
+        // Net_SendOp107 @0x5f57ce, un paquet que le binaire N'ÉMET PAS dans un état réel.
+        // ⚠️ WARP-09 (à corriger le jour du câblage) : Str_NameListContainsMismatch 0x5CCCF0
+        // renvoie 1 sur CORRESPONDANCE (`!Crt_Strcmp(this+13*i+8, a3)` @0x5ccd3a ; garde
+        // `count>7 -> 0` @0x5ccd07) — le nom IDA dit l'INVERSE de son comportement.
         return;
     case 0x30:
-        // TODO [ancre UI_ClanWarp_Commit 0x608B30] : Op20(6, 291) (@0x608ce9) sous garde faction
-        // PUIS garde clan `!Crt_Strcmp(dword_16746A8,&String) || (Crt_Strcmp(byte_1686138,
-        // dword_16746A8) && Crt_Strcmp(byte_1686145,dword_16746A8))` -> str005[1474]. Les buffers
-        // de nom de clan dword_16746A8 / byte_1686138 / byte_1686145 ne sont modélisés nulle part
-        // (seulement cités en commentaire par Game/NameplateLogic.h:42-47). Zone 291 >= 128 ->
-        // exigerait Net_SendWarpRequest (i32). Builder : PRÉSENT.
+        // NE PAS PORTER — gap BLOQUÉ (buffers de nom de clan non modélisés). RE-PROUVÉ dans IDA
+        // (UI_ClanWarp_Commit 0x608B30 décompilée) : garde faction `*(*(this+2)+1312)-2 ==
+        // g_LocalElement` @0x608b4e sinon str005[143] ; PUIS garde clan `!Crt_Strcmp(dword_16746A8,
+        // &String) || (Crt_Strcmp(byte_1686138,dword_16746A8) && Crt_Strcmp(byte_1686145,
+        // dword_16746A8))` @0x608bd1 sinon str005[1474]. dword_16746A8/byte_1686138/byte_1686145
+        // (noms de clan ; byte_1686145 - byte_1686138 = 13) n'ont AUCUN écrivain côté C++ -> garde
+        // « membre/officier du clan » inévaluable. Corps armé : v8=291 ; Motion_GetComboOffsetTable(
+        // g_LocalElement, 291, v7) @0x608c1e AVEC repli GInfo2_GetVec3(flt_1555D08, 291, v7)
+        // @0x608c34 (contraste : la page téléport payante 0x627D50, elle, n'a AUCUN repli — le
+        // case 291 dépend RÉELLEMENT de byte_1686138 vs dword_16746A8, à la différence des mapIds
+        // 313/316/331/334 qui résolvent une constante) ; mode 6 ; Op20(6, 291) @0x608ce9 (zone 291
+        // >= 128 -> alias i32) ; `return UI_NpcWin_CloseRestore(this)` @0x608cf1 HORS du
+        // `if (!g_MorphInProgress)` (fermeture inconditionnelle) ; AUCUN latch g_GmCmdCooldownLatch.
+        // Builder Net_SendWarpRequest : PRÉSENT.
         return;
     case 0x32:
         // TODO [ancre UI_ClanDisband_Commit 0x608EC0] : Net_SendOp79(&g_AutoPlayMgr, 14, v7)
@@ -388,6 +411,25 @@ void NpcDialogWindow::DispatchService(int code) {
         // TODO [ancre UI_NpcMenu_OnLUp 0x5DF640 @0x5df72c] : déléguer chaque code à la fenêtre
         // du front propriétaire quand ces pages seront portées.
         return;
+    }
+}
+
+// ============================================================================
+// Code 76 (0x4C) — bascule vers la page 76 (téléportation payante)
+// UI_NpcMenu_OnLUp 0x5DF640 @0x5dfad4 (jumptable 005DF72C case 76) -> cTeleportWin_Init 0x627BA0
+// ============================================================================
+void NpcDialogWindow::OpenTeleportPage() {
+    // Le binaire NE crée pas de nouvel objet : cTeleportWin_Init(this) fait *(this+180)=76
+    // (@0x627bac) sur le MÊME objet cNpcWin ; les dispatchers OnLDown/OnLUp/Draw routent alors
+    // vers les handlers cTeleportWin_* et la page 0 (ce menu) n'est plus dessinée. Côté C++,
+    // page 0 et page 76 sont deux classes distinctes -> on OUVRE la TeleportWindow (qui purge
+    // ses 4 verrous, = cTeleportWin_Init) et on FERME ce menu, ce qui reproduit fidèlement le
+    // remplacement de page (les deux pages sont mutuellement exclusives dans le binaire).
+    // teleport_ est injecté par l'hôte (UI/GameWindows) via SetTeleportWindow ; nullptr tant que
+    // le câblage n'est pas fait -> no-op (ni ouverture, ni fermeture prématurée du menu).
+    if (teleport_) {
+        teleport_->Open();
+        Close();
     }
 }
 

@@ -258,6 +258,8 @@
     <ClCompile Include="src\UI\ShareBoxWindow.cpp" />
     <ClCompile Include="src\UI\StoragePwWindow.cpp" />
     <ClCompile Include="src\UI\FloatingNotices.cpp" />
+    <ClCompile Include="src\Gfx\CharPreview3D.cpp" />
+    <ClCompile Include="src\UI\TeleportWindow.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h" />
@@ -404,6 +406,8 @@
     <ClInclude Include="src\UI\ShareBoxWindow.h" />
     <ClInclude Include="src\UI\StoragePwWindow.h" />
     <ClInclude Include="src\UI\FloatingNotices.h" />
+    <ClInclude Include="src\Gfx\CharPreview3D.h" />
+    <ClInclude Include="src\UI\TeleportWindow.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

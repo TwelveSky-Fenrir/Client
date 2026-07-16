@@ -33,8 +33,26 @@
 // StrTable005_Get) : valueStrBase=-1 -> repli numérique "%d" (fidèle : c'est réellement
 // la seule info textuelle absente du panneau d'origine).
 //
-// « Sauvegarder » écrit sur disque (config::g_Options.Save()), « Annuler » recharge
-// l'état disque (config::g_Options.Load()), écrasant les modifications en mémoire.
+// PERSISTANCE (OPT-01) : le binaire n'a AUCUN bouton « Sauvegarder ». CHAQUE mutation
+// d'option (clic -/+, case, fin de drag de volume) appelle Options_SaveBin 0x4C2280 —
+// point unique LABEL_270 @0x66E819 de UI_OptionsWnd_OnClick 0x66D140 pour les -/+, et
+// @0x66DC9C/@0x66DCB9 pour les 2 sliders. Le bloc 92 o est réécrit intégralement à
+// chaque clic. La persistance est donc IMPLICITE ; Options_Save_STUB 0x4C2130 (appelé
+// par App_Shutdown) est un corps vide -> le clic est l'UNIQUE chemin de sauvegarde.
+//
+// PIED DE PANNEAU (OPT-02/03) : à la place du couple Sauvegarder/Annuler (une invention
+// du portage), le binaire porte DEUX boutons de pied (y+596), testés juste après Fermer :
+//   - « Déconnexion » (this+5, x+148 = GAUCHE, sprite unk_901470, @0x66D2AC) :
+//       Net_CloseSocket(&g_NetClient) + g_SceneMgr=2 + g_SceneSubState=0 + dword_1676188=0
+//       + Close (@0x66D2C4..@0x66D2EA). Porté via ::ts2::Notice_DispatchOkAction(2) (même
+//       quadruplet @0x5C04DF, retour ServerSelect différé — pas de changement de scène en
+//       direct, contrainte d'architecture ClientSource).
+//   - « Quitter le jeu » (this+4, x+202 = DROITE, sprite unk_8F4C68, @0x66D236) :
+//       Log_WriteLine "[ABNORMAL_END] ( 5 )" + g_QuitFlag=1 + Close (@0x66D253..@0x66D265).
+//       g_QuitFlag=1 (0x815590) modélisé par PostQuitMessage(0) (idiome projet établi,
+//       cf. UI/LoginScene.cpp:232-233, App/App.cpp WM_DESTROY).
+// Aucun de ces 3 boutons (Fermer/Quitter/Déconnexion) ne sauvegarde : seules les mutations
+// d'option le font.
 //
 // Aucune de ces 23 valeurs ne transite par le réseau (ce sont des préférences locales
 // client, cf. commentaire GameOptions.h) : il n'y a donc aucun TODO(send) ici.
@@ -59,7 +77,8 @@ struct OptionsFieldDef {
 };
 
 // Fenêtre Options : liste verticale scrollable des 23 champs de config::g_Options,
-// plus Sauvegarder / Annuler / Fermer. Hérite de ts2::ui::Dialog (contrat UIManager).
+// plus les 3 boutons du binaire (Fermer / Déconnexion / Quitter le jeu). Persistance
+// implicite à chaque mutation (OPT-01). Hérite de ts2::ui::Dialog (contrat UIManager).
 class OptionsWindow : public Dialog {
 public:
     OptionsWindow();
@@ -76,16 +95,17 @@ private:
     struct Rect { int x, y, w, h; };
 
     // Cible actuellement « armée » (bouton enfoncé, en attente du relâchement dessus).
+    // ExitGame/Logout = pied de panneau (OPT-02) ; Slider = drag d'un volume (OPT-04).
     enum class Target {
-        None, Close, Save, Cancel, ScrollUp, ScrollDown,
-        RowCheckbox, RowMinus, RowPlus,
+        None, Close, ExitGame, Logout, ScrollUp, ScrollDown,
+        RowCheckbox, RowMinus, RowPlus, Slider,
     };
 
     // Géométrie recalculée à chaque frame à partir des dimensions écran (centrage),
     // exactement comme MsgBoxDialog::Layout — le hit-test (routé entre deux frames)
     // s'appuie sur lastScreenW_/lastScreenH_ mémorisées au dernier Render.
     void Layout(int screenW, int screenH, Rect& panel, Rect& close,
-                Rect& save, Rect& cancel, Rect& list, Rect& scrollUp, Rect& scrollDown) const;
+                Rect& logout, Rect& exitGame, Rect& list, Rect& scrollUp, Rect& scrollDown) const;
     // Rectangle de la ligne `row` (index dans kFields) dans le repère de `list`,
     // en tenant compte du défilement courant. Renvoie false si hors zone visible.
     bool RowRect(const Rect& list, int row, Rect& out) const;
@@ -93,14 +113,17 @@ private:
     Rect RowCheckboxRect(const Rect& row) const;
     Rect RowMinusRect(const Rect& row) const;
     Rect RowPlusRect(const Rect& row) const;
+    // Piste horizontale d'un slider de volume (OPT-04). Largeur 94 px, miroir du binaire
+    // (dbl_7BAF20=94.0 ; UI_OptionsWnd_Render 0x66EAC0, clamp [winX+0x80, winX+0xDE] @0x66FED0).
+    Rect RowSliderTrackRect(const Rect& row) const;
 
     int  VisibleRowCount(const Rect& list) const;
     int  MaxScroll(const Rect& list) const;
     void ClampScroll(const Rect& list);
 
     // Applique l'action de la cible armée si le relâchement tombe dessus.
-    void ActivateIfHit(const Rect& panel, const Rect& close, const Rect& save,
-                        const Rect& cancel, const Rect& list,
+    void ActivateIfHit(const Rect& panel, const Rect& close, const Rect& logout,
+                        const Rect& exitGame, const Rect& list,
                         const Rect& scrollUp, const Rect& scrollDown, int x, int y);
 
     static bool In(const Rect& r, int x, int y) {
@@ -123,6 +146,9 @@ private:
     static constexpr int kRowH     = 20;
     static constexpr int kCloseBtn = 18;
     static constexpr int kScrollBtnH = 18;
+    // Largeur de la piste des sliders de volume (OPT-04) — reprend la constante 94.0
+    // du binaire (dbl_7BAF20, UI_OptionsWnd_Render 0x66EAC0).
+    static constexpr int kTrackW = 94;
 
     // --- Palette (ARGB, cf. contrat UI) ---
     static constexpr D3DCOLOR kColBg       = Argb(224, 32, 32, 40);

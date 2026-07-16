@@ -36,6 +36,9 @@
 #include "Game/SocialSystem.h" // game::g_Achievements/PostAchievementNotice (AchievementNotice 0x99)
 #include "Game/GameDatabase.h" // game::GetItemInfo — MobDb_GetEntry(mITEM, id) 0x4C3C00 (0xae cas 3)
 #include "Game/StringTables.h" // game::g_Strings.zoneNames = StrTable003 (0x4C1AD0) — 0x61 sous-op 1
+#include "Game/GameState.h"    // game::g_World.self.elementSecondary / g_World.players — 0x28
+#include "Game/QuestSystem.h"  // game::g_QuestProgress (g_CurQuestId/g_QuestObj*) — 0x28
+#include "Game/ExtraDatabases.h" // game::g_ExtraDb.quest (mQUEST 0x8E71E4) + QuestDefRecord — 0x28
 
 #include <cstdarg>
 #include <cstdint>
@@ -61,6 +64,57 @@ constexpr uint32_t kPendingStopReq   = 0xE0000072u; // g_PendingStopRequest (inv
 //  celui que lisent les builders Net_Send* ; désormais écrit directement, cf. 0x18.)
 // Base synthétique pour le fond du switch SetGameVar (une clé par varId).
 constexpr uint32_t kGameVarBase      = 0xE0160000u; // dword sélectionné par varId
+
+// NpcTbl_FindIdByType 0x4C83E0 — MISNOMER de l'IDB : ce n'est PAS une table NPC. Son `this`
+// est mQUEST 0x8E71E4 (`mov ecx, offset mQUEST` au site d'appel @0x48F17C) et son stride est
+// 8444 = sizeof(QuestDefRecord) — la table EST intégralement modélisée (Game/ExtraDatabases.h:98,
+// static_assert(sizeof==8444), chargée depuis 005_00006.IMG par ExtraDatabases.cpp:159).
+// Le TODO(state) qui prétendait cette table « absente du modèle client » était donc FAUX.
+//
+// Jumeau DÉJÀ porté : NpcTbl_FindByTypeAndId 0x4C8340 -> game::FindQuestDefByElementAndId
+// (Game/ExtraDatabases.cpp:282) — même table, même stride, mêmes prédicats (a) et (b) ; ne
+// diffèrent que le 3e prédicat (rec[160]==0 ici, rec[60]==questId là-bas) et le retour
+// (fieldB ici, le record là-bas). Transcription littérale calquée dessus.
+//
+// Implémenté LOCALEMENT (et non à côté de son jumeau dans Game/ExtraDatabases.*) car ce
+// front ne possède pas ces fichiers — relocalisation = nettoyage d'une passe ultérieure.
+//
+// Décompilation de référence (0x4C83E0) :
+//   for (i = 0; i < *this; ++i)
+//     if (Crt_Strcmp(rec+4, "") && *(rec+56) == a2+1 && !*(rec+160)) return *(rec+60);
+//   return 0;
+// FIDÉLITÉ : aucune garde de table-chargée (le binaire n'en a pas) — sur une table vide
+// (count == 0) la boucle ne s'exécute pas et la fonction renvoie 0, comportement naturel.
+int FindFirstQuestIdOfElement(int element0) {
+    const game::DataTable& t = game::g_ExtraDb.quest;
+    for (uint32_t i = 0; i < t.count; ++i) {                       // i < *this @0x4C83E9
+        const uint8_t* raw = t.record(i);
+        if (!raw) break;
+        const auto* rec = reinterpret_cast<const game::QuestDefRecord*>(raw);
+        // (a) Crt_Strcmp(rec+4, "") != 0 @0x4C8456 : nom NON vide (String 0x7EC95F == "").
+        if (rec->name[0] == '\0') continue;
+        // (b) rec[56] == a2 + 1 (le +1 porte sur l'ARGUMENT, jamais sur le champ).
+        if (rec->fieldA != static_cast<uint32_t>(element0 + 1)) continue;
+        // (c) rec[160] == 0.
+        if (rec->fieldK != 0) continue;
+        return static_cast<int>(rec->fieldB);                      // return rec[60] @0x4C8473
+    }
+    return 0;                                                      // @0x4C847C
+}
+
+// dword_168728C[0] = g_PlayerArray 0x1687234 + 0x58 -> entity+88 -> body+64 (body @ entity+0x18)
+// = champ `element` du slot joueur 0 (SELF). Corroboré par Scene/WorldRenderer.cpp:175
+// (kNpBodyElement = 88-24) et World/TerrainPicker.cpp:108 (kBodyElement = 88-24, nommé
+// « dword_168728C (record+88) »). Écriture directe u32 LE sur .body.data(), motif déjà
+// établi dans Net/ (CharStatDeltaDispatch.cpp). Le binaire indexe un tableau statique sans
+// garde ; g_World.players est un std::vector -> garde `!empty()` requise (n'altère aucun
+// comportement observable : dans le flux, le slot self existe toujours quand ce paquet arrive).
+void SetSelfBodyElement(int element) {
+    if (game::g_World.players.empty()) return;
+    uint8_t* b = game::g_World.players[0].body.data();
+    const uint32_t v = static_cast<uint32_t>(element);
+    std::memcpy(b + 64, &v, sizeof v);   // entity+88 = body+64
+}
 
 // Lecture non alignée d'un u32 depuis un tampon d'octets (comme le memcpy d'origine).
 inline uint32_t Rd32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, sizeof v); return v; }
@@ -296,32 +350,62 @@ void RegisterMiscHandlers(NetSystem& sys) {
     });
 
     // 0x28 ToggleObserver — bascule le mode observateur (élément 3) + retour ville.
+    // Pkt_ToggleObserver 0x48F080 (enregistré @0x4634F9 : (0x8464A8-0x846408)/4 = 40 = 0x28).
+    // Les DEUX ex-TODO(state) de ce handler reposaient sur des prémisses FAUSSES, réfutées à
+    // la décompilation (désormais disponible ; l'adresse « 0x462... » qu'ils citaient était
+    // elle-même erronée) :
+    //   · « table NPC .IMG absente du modèle client » -> NpcTbl_FindIdByType 0x4C83E0 scanne
+    //     mQUEST, table PORTÉE ; cf. FindFirstQuestIdOfElement ci-dessus.
+    //   · « ne pas deviner quels champs sont remis à zéro » -> les 4 champs sont explicites
+    //     (0x48F0E9/F3/FD/107) et tous modélisés dans game::QuestProgressState.
     OnPacket<ToggleObserver>(sys, 0x28, [](const ToggleObserver& p) {
-        if (p.resultCode == 0) {
-            g_GmCmdCooldownLatch = 0;
-            if (g_LocalElement == 3) {
+        // (0x48F099) `g_GmCmdCooldownLatch = 0` est INCONDITIONNEL : il précède le `jz`
+        // @0x48F0AD, donc il s'applique AUSSI aux resultCode 1 et >= 2. (Le binaire le
+        // réécrit @0x48F0CB dans la branche 0 — redondance d'origine conservée ci-dessous.)
+        g_GmCmdCooldownLatch = 0;                                   // /*0x48f099*/
+        if (p.resultCode == 0) {                                    // /*0x48f0ad*/
+            g_GmCmdCooldownLatch = 0;                               // /*0x48f0cb (redondant)*/
+            if (g_LocalElement == 3) {                              // /*0x48f0c5*/
                 // Déjà observateur -> revenir à l'élément secondaire.
-                g_LocalElement = static_cast<uint32_t>(g_Client.Var(0x1673198)); // g_LocalElementSecondary
-                --g_Client.Var(0x16747E8);   // dword_16747E8
-                g_Client.msg.System(Str(1443));
-                // TODO(state): recalcul quête (NpcTbl_FindIdByType — table NPC .IMG absente
-                //   du modèle client, cf. Game/QuestSystem.h) + reset objectif (mêmes limites
-                //   que le TODO symétrique ci-dessous).
+                // ORDRE DU BINAIRE : le décrément PRÉCÈDE l'affectation de l'élément.
+                --g_Client.Var(0x16747E8);                          // /*0x48f15f*/
+                // g_LocalElementSecondary 0x1673198. Source de vérité = le champ modélisé
+                // game::g_World.self.elementSecondary (écrit par UI/LoginScene.cpp:2498, lu
+                // par 8+ consommateurs : VendorTrade/ItemSystem/SkillCombat/AutoPlay/...).
+                // L'ancienne lecture `g_Client.Var(0x1673198)` visait un 2e store parallèle
+                // que PERSONNE n'écrit (grep exhaustif : 1 seule occurrence, cette lecture)
+                // -> sortir du mode observateur mettait l'élément du joueur à 0. Aggravant :
+                // net::g_LocalElement est une RÉFÉRENCE sur g_World.self.element
+                // (Net/NetClient.h:117), donc la corruption se propageait aux portes de
+                // combat, à la résolution de quête et au picking terrain.
+                g_LocalElement = static_cast<uint32_t>(game::g_World.self.elementSecondary); // /*0x48f16a*/
+                game::g_QuestProgress.npcQuestId =
+                    FindFirstQuestIdOfElement(game::g_World.self.elementSecondary); // /*0x48f181*/
+                game::g_QuestProgress.objectiveMode     = 0;        // g_QuestObjMode   /*0x48f186*/
+                game::g_QuestProgress.objectiveType     = 0;        // g_QuestObjType   /*0x48f190*/
+                game::g_QuestProgress.objectiveTarget   = 0;        // g_QuestObjParam1 /*0x48f19a*/
+                game::g_QuestProgress.objectiveProgress = 0;        // g_QuestObjParam2 /*0x48f1a4*/
+                SetSelfBodyElement(game::g_World.self.elementSecondary); // dword_168728C[0] /*0x48f1b3*/
+                g_Client.msg.System(Str(1443));                     // /*0x48f1c9-0x48f137*/
             } else {
-                g_LocalElement = 3;          // devenir observateur
-                g_Client.msg.System(Str(260));
-                // TODO(state): reset objectif de quête — RE/net_handler_notes.md ne précise
-                //   pas quels champs de QuestProgressState (Game/QuestSystem.h) sont remis à
-                //   zéro (juste « reset objectif de quête ») ; ne pas deviner sans confirmation
-                //   IDA (Pkt_ToggleObserver 0x462... — décompilation détaillée non disponible
-                //   dans cette passe, serveur IDA inaccessible).
+                g_LocalElement = 3;                                 // devenir observateur /*0x48f0d5*/
+                game::g_QuestProgress.npcQuestId        = 0;        // g_CurQuestId     /*0x48f0df*/
+                game::g_QuestProgress.objectiveMode     = 0;        // g_QuestObjMode   /*0x48f0e9*/
+                game::g_QuestProgress.objectiveType     = 0;        // g_QuestObjType   /*0x48f0f3*/
+                game::g_QuestProgress.objectiveTarget   = 0;        // g_QuestObjParam1 /*0x48f0fd*/
+                game::g_QuestProgress.objectiveProgress = 0;        // g_QuestObjParam2 /*0x48f107*/
+                SetSelfBodyElement(3);                              // dword_168728C[0] /*0x48f111*/
+                g_Client.msg.System(Str(260));                      // /*0x48f12c-0x48f137*/
             }
             // Retour ville de faction (résolution + globals d'armement ; l'envoi réseau réel
             // reste un TODO(send) interne à Game/MapWarp.cpp, cf. en-tête d'inclusion).
-            BeginWarpToFactionTown(static_cast<int32_t>(g_LocalElement), false, 0, &g_CoordResolver);
-        } else {  // resultCode==1 : refus
-            g_Client.msg.System(Str(966));
+            BeginWarpToFactionTown(static_cast<int32_t>(g_LocalElement), false, 0, &g_CoordResolver); // /*0x48f143*/
+        } else if (p.resultCode == 1) {                             // /*0x48f0b3, cmp 1 ; jz*/
+            // Refus. Le binaire n'affiche Str(966) que pour resultCode == 1 EXACTEMENT.
+            g_Client.msg.System(Str(966));                          // /*0x48f1f8-0x48f203*/
         }
+        // resultCode >= 2 : NO-OP TOTAL (`jmp loc_48F208` -> `return result`). Aucun message,
+        // aucun changement d'état — hormis le latch inconditionnel ci-dessus. /*0x48f208*/
     });
 
     // 0x39 PvpTallyUpdate — incrémente les compteurs victoire/défaite.

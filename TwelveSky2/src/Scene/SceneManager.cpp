@@ -333,8 +333,25 @@ void SceneManager::Init(gfx::Renderer& renderer, net::NetSystem& net, void* noti
     g_SceneSubState = 0;   // miroir du champ +4 de cSceneMgr (état neuf) // 0x1676184
 
     // Scènes shell de connexion (ServerSelect/Login/CharSelect).
+    //
+    // 7e argument `&renderer` — APERÇU 3D DU PERSONNAGE EN CHARSELECT (scène 4).
+    // Char_RenderModel 0x527020 est appelé EXACTEMENT 4 fois dans tout le binaire (xrefs
+    // re-vérifiées cette session : 4/4), toutes depuis Scene_CharSelectRender 0x51CED0, en
+    // DEUX paires (passe 1 puis passe 2) :
+    //   écran LISTE    (this[15714]==1) : @0x51D361 (pass=1) · @0x51D3CC (pass=2)
+    //   écran CRÉATION (this[15714]==2) : @0x51D429 (pass=1) · @0x51D480 (pass=2)
+    // gfx::MeshRenderer::Init() exige un `gfx::Renderer&` (il n'en lit que Device(), mais
+    // on ne peut pas fabriquer un Renderer depuis un IDirect3DDevice9* — Renderer::Init
+    // crée son PROPRE device). SANS ce 7e argument, LoginScene::gfxRenderer_ reste nul
+    // (LoginScene.cpp:98) -> la garde `if (gfxRenderer_ && charMesh_.Init(*gfxRenderer_))`
+    // (LoginScene.cpp:312) échoue -> charModels_/charMotions_ ne sont jamais créés et
+    // charPreviewReady_ reste false -> CharSelectRenderPreview3D() sort à sa 1re ligne
+    // (LoginScene.cpp:1458) : les 4 Char_RenderModel ne dessinent RIEN et l'écran
+    // CharSelect n'affiche AUCUN personnage, alors que le binaire en dessine un.
+    // `renderer` est déjà en portée ici (renderer.Device() est passé en 1er argument).
     login_ = std::make_unique<ui::LoginScene>();
-    if (!login_->Init(renderer.Device(), &net, static_cast<HWND>(notifyHwnd), screenW, screenH, serverModeFlag))
+    if (!login_->Init(renderer.Device(), &net, static_cast<HWND>(notifyHwnd), screenW, screenH,
+                      serverModeFlag, &renderer))
         TS2_WARN("LoginScene::Init a echoue (rendu login indisponible).");
 
     // HUD en jeu : construit à la volée en entrant en scène InGame.

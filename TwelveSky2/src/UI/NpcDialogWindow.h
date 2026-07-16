@@ -60,6 +60,10 @@
 
 namespace ts2::ui {
 
+// Page 76 (téléportation payante) — objet cNpcWin distinct côté C++ (cf. UI/TeleportWindow.h).
+// Ouverte par DispatchService(76) ; l'instance est injectée par l'hôte (GameWindows).
+class TeleportWindow;
+
 class NpcDialogWindow : public Dialog {
 public:
     NpcDialogWindow();
@@ -92,6 +96,12 @@ public:
     // (saturation 0x5dff4f) ; 0..4 = page de NpcDefRecord::textGrid affichée.
     int  GreetingIndex() const { return greetingIdx_; }
 
+    // Injecte la page 76 (téléportation) que le service code 76 doit ouvrir. Dans le binaire
+    // la « page » n'est qu'un champ du MÊME objet cNpcWin (*(this+180)) ; côté C++ c'est une
+    // classe distincte, d'où ce lien posé par l'hôte (UI/GameWindows). nullptr toléré (le
+    // service code 76 devient un no-op tant que le lien n'est pas câblé).
+    void SetTeleportWindow(TeleportWindow* w) { teleport_ = w; }
+
 private:
     struct Rect { int x, y, w, h; };
 
@@ -107,6 +117,8 @@ private:
     void   DispatchService(int code);
     // UI_NpcMenu_PickGreeting 0x5DFF00 (code 1) — purement local, n'émet rien.
     void   PickGreeting();
+    // Code 76 (@0x5dfad4 case 76 -> cTeleportWin_Init 0x627BA0) : bascule vers la page 76.
+    void   OpenTeleportPage();
 
     // --- Handlers de service portés (un par case du switch, EA en tête d'implémentation) ---
     void   CastReturn();            // code 4    UI_NpcMenu_CastReturn                0x5E19E0 -> Op20
@@ -121,6 +133,10 @@ private:
     bool   CheckNpcFaction();
     // Msg_AppendSystemLine(g_ChatManager, StrTable005_Get(g_LangId, id), g_SysMsgColor).
     static void SysMsg(int strId);
+
+    // Page 76 à ouvrir sur service code 76 (posée par l'hôte via SetTeleportWindow ; le binaire
+    // fait *(this+180)=76 sur le MÊME objet — ici, deux classes distinctes). nullptr => no-op.
+    TeleportWindow* teleport_ = nullptr;
 
     const game::NpcDefRecord* npcDef_ = nullptr;      // this+2   (0x5db54d)
     int32_t serviceCodes_[kMaxServices] = {};          // this+170..179 (0x5db652/66c/fa6)

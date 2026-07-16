@@ -413,25 +413,36 @@ bool WorldMap::LoadMap(const std::string& mapName, const std::string& drmKey) {
     // *(atmosphere+644) = 1  (marqueur interne de l'objet atmosphère) — `mov byte ptr [eax+284h], 1`
     // @0x411765 avec eax = [ebx+8] = l'objet cAtmosphere (0x284 = 644).
     //
-    // BEW-03 / CONFLICT C-03 (TS2_WORLD_ROSETTA.md §2) — RÉSOLU ICI (re-prouvé à l'octet en IDA) :
-    //   World_LoadMap @0x41176E : `mov byte ptr [ebx+4], 1` avec ebx = this = g_WorldEnv 0x18C67C4
-    //     -> l'octet écrit est EXACTEMENT 0x18C67C8 = g_WorldEnvAtmInitFlag (nom IDA du flag).
-    //   World_LoadZoneResource case 7 @0x4DD202 : `mov dl, ds:g_WorldEnvAtmInitFlag` ... @0x4DD217
-    //     `jnz short loc_4DD23B` -> flag armé = saut de World_LoadMap, on va droit au .ATM.
-    //   Le commentaire IDA de World_LoadMap le dit : « appelé UNE FOIS par World_LoadZoneResource
-    //   case 7 (gardé par byte_18C67C8) ».
-    // Le port C++ avait SPLIT cet octet unique en deux membres (`valid_` posé ici, `atmosphereLoaded_`
-    // testé case 7 mais jamais armé) -> le court-circuit `||` restait toujours faux et LoadMap était
-    // relancé À CHAQUE zone (réallocation cAtmosphere 648 o, re-validation licence SilverLining, météo
-    // remise à défaut). On arme donc les DEUX membres avec la même écriture : ils re-désignent le même
-    // octet 0x18C67C8, sans casser les lecteurs existants de `valid_` (qui porte d'autres sémantiques).
-    // TODO [World_UnloadMap 0x411A80] : non porté à ce jour (aucun symbole côté C++, grep vide) — c'est
-    // lui qui remet cet octet à 0 dans la cible. Tant qu'il n'existe pas, `atmosphereLoaded_` reste armé
-    // pour la session, ce qui EST le comportement de la cible entre load et unload.
-    valid_ = true;                       // this+4 = 1  @0x41176E (= byte_18C67C8 0x18C67C8)
-    atmosphereLoaded_ = true;            // MÊME octet @0x41176E : arme le court-circuit case 7 @0x4DD217
+    // EW-02 (Passe 4 / W11) — le « correctif C-03 » qui armait le flag était un PIÈGE, ANNULÉ ICI
+    // (chaîne re-prouvée intégralement dans IDA, idaTs2 lecture seule). L'octet du flag
+    // (g_WorldEnv+4 = 0x18C67C8, g_WorldEnvAtmInitFlag) est REMIS À 0 à CHAQUE ENTRÉE DE ZONE, donc
+    // World_LoadMap tourne 1×/ZONE et NON 1×/session :
+    //   - World_LoadMap @0x41176E `mov byte ptr [ebx+4], 1` (ebx=this=g_WorldEnv 0x18C67C4) ARME le flag ;
+    //   - Scene_EnterWorldUpdate case 1 @0x52C091 met le compteur à 0 puis l'incrémente 0,1,…,19
+    //     @0x52C106 -> les pas défilent DANS L'ORDRE, donc le pas 1 précède TOUJOURS le pas 7 ;
+    //   - pas 1 = World_LoadZoneResource case 1 @0x4DCBB1 -> WSndMgr_Free 0x4DB060 @0x4DB09E ->
+    //     World_UnloadMap 0x411A80 @0x411A9F `mov byte [this+4], 0` = EFFACE le flag (sous garde
+    //     `if (this+8)` @0x411A89, vraie après le 1er load car this+8 = cAtmosphere non nul) ;
+    //   - pas 7 = case 7 @0x4DD202 relit le flag (=0) -> @0x4DD217 ne saute pas -> World_LoadMap re-run.
+    //   Le court-circuit `||` de la case 7 est donc une GARDE DÉFENSIVE jamais prise dans ce flux.
+    // AVANT C-03 le port C++ n'armait jamais le flag -> LoadMap tournait à chaque zone : ACCIDENTELLE-
+    // MENT CORRECT. C-03 a armé le flag -> 1×/session = RÉGRESSION de fidélité, ici annulée. On n'arme
+    // donc PAS `atmosphereLoaded_` : le pas 7 (`proceed = atmosphereLoaded_`, toujours faux) rejoue
+    // LoadMap chaque zone = comportement exact du binaire.
+    // NE PAS porter World_UnloadMap pour « compenser » : ce serait un NO-OP nuisible. Sa garde
+    // @0x411A89 `if (this+8)` -> en ClientSource `atmosphere_` est TOUJOURS nul (WorldAssets::
+    // AllocAtmosphere renvoie nullptr par conception, WorldIntegration.cpp:302) -> early-return
+    // systématique -> le flag ne serait JAMAIS effacé -> le bug 1×/session reviendrait, plus 3 hooks
+    // non câblés (l'anti-motif « code que personne n'appelle »). À reconsidérer UNIQUEMENT si
+    // SilverLining est un jour lié (atmosphere_ non nul), et alors dans WorldIntegration (EW-03), pas ici.
+    valid_ = true;                       // this+4 = 1  @0x41176E — écriture littérale, aucun lecteur hors WorldMap
+    // (PAS de `atmosphereLoaded_ = true` : cf. EW-02 ci-dessus — flag laissé à 0 -> LoadMap 1×/zone.)
     // Str_Assign(mapName) : mémorise le nom de map (byte_815190 côté binaire) — omis (leaf).
-    weather_.fill(0);                    // memcpy(this+180, &dword_18C5358, 0x68) : template 104 o, tout à 0.
+    // EW-05 : qmemcpy(this+180, &dword_18C5358, 0x68) @0x4117A2 = SAUVEGARDE global->instance du
+    // D3DLIGHT9 soleil (0x68 = sizeof(D3DLIGHT9)), PAS une « météo à zéro ». Non modélisé ici (aucun
+    // lecteur de weather_) : le fill(0) est un placeholder inobservable. Cf. .h:275 et
+    // Gfx/SilverLiningSky.cpp:217-222 / Env_UpdateSunLight 0x412210.
+    weather_.fill(0);
 
     // File_IfstreamOpen("Atmosphere.DAT") : si absent/vide -> géoloc par défaut (Séoul) ;
     // sinon parse ligne à ligne (Istream_GetChar/Ostream_WritePad) puis sub_4135F0 + World_FinishLoad.
@@ -534,9 +545,10 @@ unsigned char WorldMap::LoadZoneResource(int zoneId, ResourceKind kind) {
             // if (atmosphereLoaded || World_LoadMap(...)) { charger .ATM }
             // Structure byte-exacte (World_LoadZoneResource 0x4dcb60 case 7 : `byte_18C67C8 ||
             // World_LoadMap 0x4116b0`), lecture du garde @0x4DD202 / saut @0x4DD217.
-            // BEW-03 : le court-circuit s'arme DÉSORMAIS réellement — LoadMap pose `atmosphereLoaded_`
-            // en branche succès (@0x41176E, cf. plus haut), donc World_LoadMap n'est appelé qu'1x/session
-            // comme dans la cible, et non plus à chaque zone.
+            // EW-02 (W11) : `atmosphereLoaded_` reste TOUJOURS false (LoadMap ne l'arme plus, cf. plus
+            // haut) -> `proceed` est faux -> World_LoadMap est rejoué À CHAQUE zone, exactement comme le
+            // binaire (où World_UnloadMap 0x411A80 efface le flag au pas 1 avant le pas 7). Le court-
+            // circuit `||` reproduit ainsi son effet net sans avoir d'objet atmosphère à libérer.
             bool proceed = atmosphereLoaded_;
             if (!proceed) {
                 bool ok = LoadMap(kAtmosphereResourceDir); // -> dword_18C67C4, device g_GfxRenderer_pDevice

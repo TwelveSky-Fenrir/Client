@@ -15,8 +15,21 @@
 //   Net_ShopAction_4 (0x5C95C0)                       -> action réseau (boutique)
 //   Player_CheckStateDigit (0x511740)                 -> contrôleur joueur
 //   sub_5C9870 / UI_Confirm2Dlg_Init (0x5C9870/0x5C9800) -> dialogues UI
-//   Crt_StringInit (0x75CAB0)                          -> init de std::string maison
+//
+// ⚠️ FAUX AMI CORRIGÉ (W11/GVAR-01) — `Crt_StringInit 0x75CAB0` N'EST PAS un
+// « init de std::string maison » (ce que disaient cette ligne ET le commentaire de
+// l'IDB) : c'est un `strcpy(dest, src)` À DEUX ARGUMENTS. Preuve au désassemblage :
+//   0x75CAB0 push edi ; 0x75CAB1 mov edi,[esp+4+arg_0]  <- edi = dest BRUT
+//   0x75CAB5 jmp short loc_75CB25                       <- saut dans la queue de
+//   0x75CAC0 Crt_Strcat (qui, LUI, scanne d'abord le NUL de dest puis `lea edi,[ecx-N]`)
+//   0x75CB25 mov ecx,[esp+4+arg_4]                      <- ecx = src ; boucle de copie
+// Entrée alternative CRT MSVC classique : strcpy == strcat MOINS le prologue de scan.
+// Le stub no-op à 1 argument qui vivait ici a donc été SUPPRIMÉ (il réduisait le
+// sous-switch jour-de-semaine du cas 98 à un no-op) ; les sites appellent std::memcpy.
+// Le projet le savait déjà ailleurs : GameHandlers_ChatSocial.cpp:279,
+// GameHandlers_PartyGuild.cpp:321-322, WorldEntityDispatch.cpp:1218-1220.
 #include "Net/GameVarDispatch.h"
+#include "Net/NetClient.h"                   // net::g_GmAuthLevel (dword_1669294) — cas 54
 #include "Game/GameState.h"
 #include "Game/ClientRuntime.h"
 #include "Game/GameDatabase.h"
@@ -164,8 +177,9 @@ void Player_CheckStateDigit() {}
 // TODO(ui) sub_5C9870 / UI_Confirm2Dlg_Init 0x5C9870/0x5C9800 (dialogue de confirmation).
 void UI_Confirm2Dlg_Init() {}
 void UI_Confirm2Dlg_Cancel() {}
-// TODO(ui) Crt_StringInit 0x75CAB0 (réinit d'un buffer std::string maison).
-void Crt_StringInit(uint32_t /*addrByte167611C*/) {}
+// (ex-stub `Crt_StringInit(uint32_t)` SUPPRIMÉ — cf. bloc « FAUX AMI » en tête de
+//  fichier : 0x75CAB0 est un strcpy(dest, src) à 2 arguments, pas un init à 1. Son
+//  unique appelant était le cas 98, qui fait désormais la vraie copie.)
 
 // Nom localisé d'un item (MobDb_GetEntry(id) + 4 == champ ItemInfo::name).
 const char* itemName(uint32_t itemId) {
@@ -351,8 +365,14 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
         break;
 
     case 54: // dword_1674AAC ; si GM (g_GmAuthLevel>0) -> Msg "TimeEffectTime:%d"
-        g_Client.Var(0x1674AAC) = value; // /*0x468b45*/
-        if (g_Client.VarGet(0x1669294) > 0) // g_GmAuthLevel
+        g_Client.Var(0x1674AAC) = value; // g_TimeEffectRemain /*0x468b45*/
+        // (0x468b4b) `cmp ds:g_GmAuthLevel, 0 ; jle` — comparaison SIGNÉE sur le global
+        // dword_1669294. Source de vérité = net::g_GmAuthLevel (Net/NetClient.h:119),
+        // ALIMENTÉ par Net/Login.cpp:218 (memcpy depuis recvBuf+133) et lu par
+        // UI/GameHud.cpp:1228 / Scene/SceneManager.cpp:1417. L'ancienne lecture
+        // `g_Client.VarGet(0x1669294)` visait un 2e store parallèle que PERSONNE n'écrit
+        // (grep exhaustif) -> la ligne debug ne s'affichait jamais, même pour un GM.
+        if (static_cast<int32_t>(net::g_GmAuthLevel) > 0) // /*0x468b4b, jle = signé*/
             g_Client.msg.System(fmt("TimeEffectTime:%d", g_Client.VarGet(0x1674AAC)), sysColor()); // /*0x468b66*/
         break;
 
@@ -506,8 +526,34 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
             g_Client.Var(0x1676110) = v % 10000000 / 100000; // /*0x469208*/
             g_Client.Var(0x1676114) = v % 100000 / 1000;     // /*0x469224*/
             g_Client.Var(0x1676118) = v % 1000 / 10;         // /*0x469240*/
-            // switch(v % 10) : les deux branches font le même Crt_StringInit(&byte_167611C)
-            Crt_StringInit(0x167611C); // /*0x46927c / 0x46930b*/
+
+            // (0x46924B-0x469252) `mov ecx,0Ah ; idiv ; mov [ebp+var_418], edx` -> d = v % 10.
+            // (0x469258-0x46926B) `cmp var_418,6 ; ja def_46926B ; jmp jpt_46926B[edx*4]`
+            //   -> sous-switch à 7 cas (table @0x469C5C) + défaut. Comparaison NON SIGNÉE.
+            // Chaque branche fait `push <littéral> ; push offset byte_167611C ;
+            //   call Crt_StringInit ; add esp,8` == strcpy(byte_167611C, littéral)
+            //   (0x75CAB0 = strcpy(dest, src) — cf. bloc « FAUX AMI » en tête de fichier).
+            // L'ancien commentaire « les deux branches font le même Crt_StringInit » était
+            // FACTUELLEMENT FAUX : il y a 8 branches, chacune avec un littéral DIFFÉRENT.
+            static const char* const kDayNames[7] = {
+                "Sunday",   // /*0x469272, aSunday    0x7A6D00*/
+                "Monday",   // /*0x469289, aMonday    0x7A6CF8*/
+                "Tuesday",  // /*0x46929d, aTuesday   0x7A6CF0*/
+                "Wednesday",// /*0x4692b1, aWednesday 0x7A6CE4*/
+                "Thursday", // /*0x4692c5, aThursday  0x7A6CD8*/
+                "Friday",   // /*0x4692d9, aFriday    0x7A6CD0*/
+                "Saturday", // /*0x4692ed, aSaturday  0x7A6CC4*/
+            };
+            const int d = v % 10;                                 // /*0x46924b*/
+            const char* day = (d >= 0 && d <= 6) ? kDayNames[d]   // /*ja @0x46925f*/
+                                                 : "Unknown";     // /*def_46926B @0x469301, d in 7..9*/
+            // Destination = byte_167611C, buffer mono-usage : xrefs_to = 9 = ces 8 écritures
+            // + 1 SEULE lecture, UI_GameHud_Render @0x6868FA, qui le pousse DIRECTEMENT en
+            // vararg %s de "NowTime : %d / %d %d:%d %s" -> c'est bien un char[] brut.
+            // Taille 64 imposée par le 1er appelant de Blob() : UI/GameHud.cpp:1237.
+            // memcpy(len+1) reproduit strcpy : NUL inclus, queue du buffer laissée intacte.
+            auto& dayBlob = g_Client.Blob(0x167611C, 64);         // /*0x469277 push offset byte_167611C*/
+            std::memcpy(dayBlob.data(), day, std::strlen(day) + 1); // /*0x46927c call Crt_StringInit*/
         }
         break;
 
@@ -648,9 +694,19 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
             sysColor()); // /*0x469734*/
         break;
 
-    case 127: // dword_1675648 ; Msg Str(2995) avec nom item 1833
+    // Cas 127/146/147/148 — motif COMMUN (re-vérifié instruction par instruction @0x469759) :
+    //   push <itemId> ; mov ecx, offset mITEM ; call MobDb_GetEntry
+    //   mov ecx,[ebp+var_400] ; add ecx,4 ; push ecx      <- ARG = ItemInfo::name
+    //   push 0BB3h (2995) ; call StrTable005_Get ; push eax <- FORMAT
+    //   lea edx,[ebp+var_3F8] ; push edx ; call Crt_Vsnprintf ; add esp, 0Ch
+    // `add esp,0Ch` = 3 arguments EXACTEMENT -> Crt_Vsnprintf(buf, Str(2995), itemName).
+    // Str(2995) est donc le FORMAT (il contient le %s), PAS un préfixe à concaténer :
+    // l'ancienne forme `Str(2995) + " [" + itemName + "]"` laissait le %s LITTÉRAL à
+    // l'écran et inventait une décoration " [ ]" absente du binaire. Motif déjà établi
+    // et accepté au cas 114 (FmtFromStrTable(1845, value)).
+    case 127: // dword_1675648 ; Msg Str(2995) formaté avec le nom de l'item 1833 (0x729)
         g_Client.Var(0x1675648) = value; // /*0x46975c*/
-        g_Client.msg.System(Str(2995) + " [" + itemName(1833) + "]", sysColor()); // /*0x469797*/
+        g_Client.msg.System(FmtFromStrTable(2995, itemName(1833)), sysColor()); // /*0x469797*/
         break;
 
     case 128: g_Client.Var(0x167564C) = value; break; // dword_167564C /*0x4697be*/
@@ -659,19 +715,20 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
     case 131: g_Client.Var(0x1676100) = value; break; // dword_1676100 /*0x4697e7*/
     case 132: g_Client.Var(0x1676104) = value; break; // dword_1676104 /*0x4697f5*/
 
-    case 146: // dword_1674AA4 ; Msg Str(2995) avec nom item 17210
+    case 146: // dword_1674AA4 ; Msg Str(2995) formaté avec le nom de l'item 17210 (0x434A)
         g_Client.Var(0x1674AA4) = value; // /*0x469867*/
-        g_Client.msg.System(Str(2995) + " [" + itemName(17210) + "]", sysColor()); // /*0x4698a3*/
+        // Motif vérifié identique au cas 127 : `push 433Ah` @0x469864, `add esp,0Ch` @0x4698a8.
+        g_Client.msg.System(FmtFromStrTable(2995, itemName(17210)), sysColor()); // /*0x4698a3*/
         break;
 
-    case 147: // dword_1674AA0 ; Msg Str(2995) avec nom item 1956
+    case 147: // dword_1674AA0 ; Msg Str(2995) formaté avec le nom de l'item 1956 (0x7A4)
         g_Client.Var(0x1674AA0) = value; // /*0x4698cb*/
-        g_Client.msg.System(Str(2995) + " [" + itemName(1956) + "]", sysColor()); // /*0x469907*/
+        g_Client.msg.System(FmtFromStrTable(2995, itemName(1956)), sysColor()); // /*0x469907*/
         break;
 
-    case 148: // dword_167589C ; Msg Str(2995) avec nom item 17576
+    case 148: // dword_167589C ; Msg Str(2995) formaté avec le nom de l'item 17576 (0x44A8)
         g_Client.Var(0x167589C) = value; // /*0x46992f*/
-        g_Client.msg.System(Str(2995) + " [" + itemName(17576) + "]", sysColor()); // /*0x46996a*/
+        g_Client.msg.System(FmtFromStrTable(2995, itemName(17576)), sysColor()); // /*0x46996a*/
         break;
 
     case 149: // dword_167589C ; si <=0 warp

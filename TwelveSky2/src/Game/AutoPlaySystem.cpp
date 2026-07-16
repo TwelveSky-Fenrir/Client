@@ -1,5 +1,14 @@
 // Game/AutoPlaySystem.cpp — voir AutoPlaySystem.h pour la table EA -> méthode complète.
 #include "Game/AutoPlaySystem.h"
+// AutoTarget_MonsterActionState() : lit dword_1766F8C (= MonsterEntity::body+8), l'état d'action
+// brut du monstre, exactement comme le binaire (cf. AP-06 et le bandeau d'AutoPlaySystem.h).
+// RÉUTILISÉ tel quel plutôt que dupliqué localement. Pas de cycle d'inclusion : ce header ne tire
+// que GameState.h / ClientRuntime.h / ComboPickupTick.h, dont aucun n'inclut AutoPlaySystem.h.
+// NB ordre Winsock : AutoTargetCombatGate.h tire transitivement Net/NetClient.h, qui inclut
+// <winsock2.h> AVANT <windows.h> (NetClient.h:19-20) ; aucun en-tête inclus ici n'amène <windows.h>
+// en amont, donc aucune contrainte d'ordre à respecter dans ce fichier (contrairement à
+// World/TerrainPicker.cpp:6-13, qui inclut Gfx/Camera.h).
+#include "Game/AutoTargetCombatGate.h"
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -289,8 +298,11 @@ bool AutoPlaySystem::BuildTargetList() {
         // Gating fidèle : def résolu (v13), actif (dword_1766F74), état valide et != mort
         // (dword_1766F8C), catégories 232<=3 et 236<=1.
         if (!mon.def || !mon.active) continue;
-        const MonsterAutoplayExt& ext = Ext(i);
-        if (ext.state == 0 || ext.state == 12) continue;
+        // (0x45831a / 0x45832d) `!dword_1766F8C[70*i] || dword_1766F8C[70*i] == 12` — état d'action
+        // brut = base+0x18 = body+8, lu via AutoTarget_MonsterActionState (AP-06 : ce filtre lisait
+        // le champ fantôme MonsterAutoplayExt::state, figé à 1, donc ne s'activait JAMAIS).
+        const int32_t monState = AutoTarget_MonsterActionState(mon);
+        if (monState == 0 || monState == 12) continue;
         if (ReadI32(mon.def, kDefOffMonCat232) > 3) continue;
         if (ReadI32(mon.def, kDefOffMonCat236) > 1) continue;
 
@@ -312,14 +324,36 @@ bool AutoPlaySystem::BuildTargetList() {
             uint32_t skillId = config.skillAoE;
             if (PlayerIsInStance(2) && config.skillSingle != 0) skillId = config.skillSingle;
             const int32_t cost = Skill_CostById(static_cast<int>(skillId), g_World.self, g_World.db.item);
+            // (0x458417 / 0x458479) `+ *((float*)&unk_1766FD8 + 70 * *(this+220))` : unk_1766FD8 =
+            // base+0x64 = MonsterEntity::radius (AP-05 : ce site lisait le champ fantôme
+            // MonsterAutoplayExt::engageRange, figé à 0.0f, alors que radius est DÉJÀ calculé avec
+            // la formule exacte du binaire par EntityManager.cpp:558, ancre 0x467d87).
+            // Le binaire indexe par this+220 = la cible DÉJÀ verrouillée, PAS le monstre i examiné.
             float engageRange = 0.0f;
             if (currentTargetIndex_ >= 0 && static_cast<std::size_t>(currentTargetIndex_) < g_World.monsters.size())
-                engageRange = Ext(static_cast<std::size_t>(currentTargetIndex_)).engageRange;
+                engageRange = g_World.monsters[static_cast<std::size_t>(currentTargetIndex_)].radius;
             inRange = dist <= static_cast<float>(cost) + engageRange;
         }
 
+        // (0x458548 / 0x458596) `available = dword_176703C[70*i] != 1`, avec dword_176703C = base+0xC8.
+        // PROUVÉ TOUJOURS VRAI ICI — verrouillage de phase entre +0xC8 et l'état +0x18 :
+        //   * +0xC8 n'est écrit QUE par Char_UpdateMotionState 0x5816A0 : reset inconditionnel
+        //     `[eax+0C8h]=0` @0x5816cf, puis `[ecx+0C8h]=1` @0x581939 dans le SEUL case 12 du switch
+        //     sur [ecx+18h] (= l'état). `find_bytes` confirme 0x581939 comme UNIQUE site du binaire
+        //     écrivant 1 à cet offset.
+        //   * Char_UpdateMotionState n'a que 2 appelants, tous deux dans Pkt_SpawnMonster 0x467B00,
+        //     et chacun suit IMMÉDIATEMENT une écriture de l'état : spawn @0x467cef -> @0x467dc4 ;
+        //     update mode==1 @0x467e88 -> @0x467ea9. Sur l'update mode!=1, le bloc d'état 0x48 o est
+        //     sauvegardé @0x467dff / restauré @0x467e44 : ni +0x18 ni +0xC8 ne bougent.
+        //   => invariant : dword_176703C[i] == 1  <=>  dword_1766F8C[i] == 12.
+        // Or le `continue` sur monState == 12 ci-dessus s'exécute AVANT ce point : l'état ne peut donc
+        // pas valoir 12 ici, donc +0xC8 ne peut pas valoir 1, donc l'expression vaut TOUJOURS true.
+        // C'est une propriété du BINAIRE (pas de notre portage) : elle restera vraie même si un jour
+        // Char_UpdateMotionState est portée. NE PAS « corriger » en inventant un écrivain d'aggro :
+        // le commentaire d'origine (« ==1 => déjà engagé par un tiers ») était FAUX — +0xC8 est un
+        // latch de motion de MORT, pas une réservation de cible.
         if (inRange)
-            InsertTargetSorted(static_cast<int32_t>(i), dist, ext.aggroOwner != 1);
+            InsertTargetSorted(static_cast<int32_t>(i), dist, /*available=*/true);
     }
 
     return targetCount_ != 0;
@@ -344,8 +378,9 @@ int32_t AutoPlaySystem::SelectTarget() {
         if (idx < g_World.monsters.size()) {
             const MonsterEntity& mon = g_World.monsters[idx];
             if (mon.def) {
-                const MonsterAutoplayExt& ext = Ext(idx);
-                if (ext.state != 0 && ext.state != 12 && mon.active
+                // (0x4586a9 / 0x4586c1) même filtre d'état que BuildTargetList — cf. AP-06.
+                const int32_t monState = AutoTarget_MonsterActionState(mon);
+                if (monState != 0 && monState != 12 && mon.active
                     && ReadI32(mon.def, kDefOffMonCat232) <= 3
                     && ReadI32(mon.def, kDefOffMonCat236) <= 1) {
                     float outX = mon.x, outY = self.y, outZ = mon.z;
@@ -375,8 +410,9 @@ bool AutoPlaySystem::CountTargetsInRangeAtLeastThreshold() {
             continue;
         const std::size_t idx = static_cast<std::size_t>(monsterIndex);
         const MonsterEntity& mon = g_World.monsters[idx];
-        const MonsterAutoplayExt& ext = Ext(idx);
-        const bool valid = mon.def && mon.active && ext.state != 0 && ext.state != 12
+        // (0x458d12 / 0x458d25) même filtre d'état que BuildTargetList — cf. AP-06.
+        const int32_t monState = AutoTarget_MonsterActionState(mon);
+        const bool valid = mon.def && mon.active && monState != 0 && monState != 12
                             && ReadI32(mon.def, kDefOffMonCat232) <= 3
                             && ReadI32(mon.def, kDefOffMonCat236) <= 1;
         if (!valid) {
@@ -385,7 +421,10 @@ bool AutoPlaySystem::CountTargetsInRangeAtLeastThreshold() {
         }
 
         const float dist = DistanceToPlayer(mon.x, mon.y, mon.z);
-        if (dist <= static_cast<float>(aoeCost) + ext.engageRange)
+        // (0x458dd1) `+ *((float*)&unk_1766FD8 + 70*idx)` = MonsterEntity::radius — cf. AP-05. NB :
+        // ici le binaire indexe le monstre EXAMINÉ (idx), pas la cible verrouillée (contrairement à
+        // BuildTargetList @0x458417 qui indexe this+220).
+        if (dist <= static_cast<float>(aoeCost) + mon.radius)
             ++withinRange;
         if (withinRange >= config.aoeThreshold)
             return true;
@@ -831,13 +870,10 @@ bool AutoPlaySystem::CheckTownScroll() {
     return CheckConsumableScroll(563, /*StrTable005*/ 2185, config.useTownItem);
 }
 
-// ===========================================================================
-// Ext() — extension par-monstre, redimensionnée à la volée.
-// ===========================================================================
-MonsterAutoplayExt& AutoPlaySystem::Ext(std::size_t monsterIndex) {
-    if (monsterIndex >= ext_.size()) ext_.resize(monsterIndex + 1);
-    return ext_[monsterIndex];
-}
+// (SUPPRIMÉ 2026-07-16) AutoPlaySystem::Ext() — l'extension par-monstre MonsterAutoplayExt n'avait
+// aucun écrivain : ses 3 champs sont désormais lus sur la donnée réelle déjà peuplée
+// (MonsterEntity::body+8 via AutoTarget_MonsterActionState, MonsterEntity::radius), et
+// `available` est prouvé constant. Cf. le bandeau d'AutoPlaySystem.h (AP-05/AP-06).
 
 // ===========================================================================
 // AutoPlay_Update 0x45E770 — tick principal d'auto-hunt (remplace l'ancienne orchestration
@@ -852,12 +888,24 @@ void AutoPlaySystem::Update(float dt) {
     // accumulateur dt avancé chaque frame (même delta wall-clock depuis le dernier reset).
     npcInteractCooldownSec_ += dt;
 
-    // Garde d'entrée @0x45e792 : suivi inv-dirty actif ET au moins un carburant d'auto-hunt.
-    // g_InvDirtyEnable est ré-armé en permanence par les op. d'inventaire (0x16755AC, 82 xrefs)
-    // -> passe en jeu normal. autoHuntFuelA/B <= 0 par défaut => tick inerte tant que l'UI
-    // d'activation ne les a pas armés (cf. AutoPlayExternalState + rapport de front).
+    // Garde d'entrée, miroir exact de 0x45e779-0x45e794 :
+    //     cmp g_InvDirtyEnable(0x16755AC), 1 ; jnz loc_45E794      -> sortie si != 1
+    //     cmp g_AutoHuntFuelA(0x16755A4), 0  ; jg  loc_45E79B      -> passe si A > 0
+    //     cmp g_AutoHuntFuelB(0x16755A8), 0  ; jg  loc_45E79B      -> passe si B > 0
+    //     loc_45E794: jmp loc_45ED71                                -> sortie
+    // CORRECTIF AP-01 : le carburant se lisait sur externalState.autoHuntFuelA/B, deux champs que
+    // PERSONNE n'écrivait dans src/ (split-brain) -> la garde sortait à la 1re ligne À VIE et tout
+    // le tick d'autoplay (y compris UpdateTargeting, seul émetteur de l'ordre d'attaque) était mort.
+    // Le carburant est 100 % SERVEUR : on lit désormais le stockage RÉELLEMENT écrit par le chemin
+    // réseau, g_Client.Var(0x16755A4/A8) <- Pkt_SetGameVar 0x468370 cases 61/62/90
+    // (Net/GameVarDispatch.cpp:389/395/430/481). Cf. le bandeau d'AutoPlaySystem.h pour la preuve
+    // par xrefs que l'UI (AutoPlay_OnMouseUpMain 0x45A980) n'y touche PAS.
+    // invDirtyEnable (0x16755AC) reste sur externalState : c'est le seul des deux stockages C++ à
+    // avoir un écrivain réel (UI/AutoPlayWindow.cpp:234/243). Le miroir g_Client.Var(0x16755AC),
+    // lui, n'a que des lecteurs — split-brain SYMÉTRIQUE et INVERSE, hors périmètre de ce front
+    // (le fichier écrivain ne m'appartient pas), signalé au rapport.
     if (!externalState.invDirtyEnable
-        || (externalState.autoHuntFuelA <= 0 && externalState.autoHuntFuelB <= 0))
+        || (g_Client.VarGet(0x16755A4) <= 0 && g_Client.VarGet(0x16755A8) <= 0))
         return;
 
     // Latch one-shot armé par Start (this+284) @0x45e79e : flush inv-dirty au serveur puis

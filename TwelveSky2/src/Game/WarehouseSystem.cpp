@@ -1,6 +1,10 @@
 // Game/WarehouseSystem.cpp — implémentation du système ENTREPÔT.
 // Voir WarehouseSystem.h pour la documentation de layout et les EAs d'origine.
 #include "Game/WarehouseSystem.h"
+#include "Game/GameDatabase.h"  // game::GetItemInfo — ≡ MobDb_GetEntry(mITEM, id) 0x4C3C00
+#include "Net/NetClient.h"      // net::GlobalNetClient() — singleton g_NetClient 0x8156A0
+#include "Net/SendPackets.h"    // net::Net_SendVaultReq_250 — ≡ 0x592190
+#include "Net/ClientState.h"    // net::g_MorphInProgress / g_GmCmdCooldownLatch / flt_1675B0C
 #include <cstring>
 #include <cmath>
 #include <utility>
@@ -33,11 +37,14 @@ bool WarehouseState::DecodeBlob(const uint8_t* data, size_t size) {
 }
 
 // ===========================================================================
-// FindFreeSlot — à l'image de Warehouse_FindFreeSlot 0x54e240 :
-//   for (i = 0; i < pages; ++i)
-//     for (j = 0; j < 28; ++j)
-//       if (!occupé[i][j]) { *row=i; *col=j; return true; }
-// adapté à la grille réelle 5×5 issue du blob (25 cellules, une seule "page").
+// FindFreeSlot — premier slot libre du BLOB 5×5 (dword_18229CC).
+//
+// ⚠ NE PORTE AUCUNE FONCTION DU BINAIRE : ce n'est PAS Warehouse_FindFreeSlot
+// 0x54E240 (qui balaie le coffre 2×28 dword_1673F3C -> Vault_FindFreeSlot plus bas).
+// Le rattachement précédent — et la conclusion « nommage IDA Warehouse_* erroné »
+// qu'il avait fait écrire dans le .h — étaient faux : cf. RECTIFICATION du header.
+// Helper propre au blob ; sans appelant à ce jour (seul DepositIntoFreeSlot
+// l'utilise, lui-même sans appelant).
 // ===========================================================================
 bool WarehouseState::FindFreeSlot(int& outRow, int& outCol) const {
     for (int row = 0; row < WarehouseGrid::kRows; ++row) {
@@ -49,15 +56,21 @@ bool WarehouseState::FindFreeSlot(int& outRow, int& outCol) const {
             }
         }
     }
-    return false; // EA 0x54e2d6 : aucun slot libre
+    return false; // grille pleine
 }
 
 // ===========================================================================
-// FindItemCell — à l'image de Warehouse_FindItemCell 0x65ee10 :
-//   for (i = 0; i < pages; ++i)
-//     for (j = 0; j < 64; ++j)
-//       if (id[i][j] == cible) { *row=i; *col=j; return true; }
-// adapté à la grille 5×5.
+// FindItemCell — recherche d'un itemId dans le BLOB 5×5 (dword_18229CC).
+//
+// ⚠ NE PORTE PAS Warehouse_FindItemCell 0x65EE10 : re-vérifié à la décompilation
+// (2026-07-16), 0x65EE10 balaie un TROISIÈME conteneur, encore différent des deux
+// autres — `unk_16694C0[2522*a1 + 384*i + 6*j]`, 2 pages × 64 slots (0x65EE19/
+// 0x65EE31/0x65EE6E), avec un stride de 2522 dwords piloté par son 1er argument.
+// Ni le blob 5×5, ni le coffre 2×28 dword_1673F3C.
+// TODO [ancre 0x65EE10] : identifier le conteneur unk_16694C0 et sa chaîne de
+// consommation avant tout portage. NE PAS rattacher cette méthode à 0x65EE10 sur
+// la seule foi du nom (c'est exactement le glissement corrigé pour FindFreeSlot).
+// Helper propre au blob ; sans appelant à ce jour.
 // ===========================================================================
 bool WarehouseState::FindItemCell(int32_t itemId, int& outRow, int& outCol) const {
     for (int row = 0; row < WarehouseGrid::kRows; ++row) {
@@ -69,7 +82,7 @@ bool WarehouseState::FindItemCell(int32_t itemId, int& outRow, int& outCol) cons
             }
         }
     }
-    return false; // EA 0x65ee91
+    return false; // objet absent du blob
 }
 
 bool WarehouseState::SelectPendingMove(int row, int col) {
@@ -142,10 +155,15 @@ void WarehouseState::CommitAllToInventory() {
     gridCommitted = true; // dword_1822998, EA 0x48cdd5 (lu par ApplyCloseResult)
 }
 
+// DepositIntoFreeSlot — helper de blob (FindFreeSlot + écriture). Comme FindFreeSlot,
+// ne porte AUCUNE fonction du binaire : l'ancienne mention « à l'image du couple
+// Warehouse_FindFreeSlot 0x54e240 + affectation de slot » (header) était le même faux
+// rattachement. Le dépôt réel du binaire passe par Warehouse_TryDepositFromInventory
+// (0x6318E0 case 6) sur le coffre 2×28, plus bas. Sans appelant à ce jour.
 bool WarehouseState::DepositIntoFreeSlot(const WarehouseItemCell& item, const WarehouseAuxCell& aux,
                                           int& outRow, int& outCol) {
     int row = 0, col = 0;
-    if (!FindFreeSlot(row, col)) return false; // EA 0x54e2d6
+    if (!FindFreeSlot(row, col)) return false; // blob plein
     grid.cells[row][col] = item;
     grid.auxCells[row][col] = aux;
     outRow = row;
@@ -294,6 +312,114 @@ bool Warehouse_RackActionValid_Withdraw(int32_t rackCursor) {
     // EA 0x5cb711 (== -1 -> invalide) puis EA 0x5cb74c (plage [10,20)).
     if (rackCursor == -1) return false;
     return rackCursor >= 10 && rackCursor <= 19;
+}
+
+// ===========================================================================
+// Vault_FindFreeSlot — portage FIDÈLE de Warehouse_FindFreeSlot 0x54E240,
+// sur le VRAI coffre dword_1673F3C (2 pages × 28 slots). Miroir 1:1 ; voir le
+// header pour les 4 dérivations qui prouvent le layout.
+// ===========================================================================
+bool Vault_FindFreeSlot(int& outPage, int& outSlot) {
+    // 0x54E257 `mov [ebp+var_4], 1` ; 0x54E25E `cmp ds:dword_1673F34, 0` ;
+    // 0x54E265 `jle` -> reste à 1 ; sinon 0x54E267 `mov [ebp+var_4], 2`.
+    // `jle` = comparaison SIGNÉE : le test est bien `> 0`, pas `!= 0`.
+    const int pages = (g_Client.VarGet(kVaultPage2Unlocked) > 0) ? 2 : 1;
+
+    for (int page = 0; page < pages; ++page) {           // 0x54E280 `cmp ecx, [ebp+var_4] / jge`
+        for (int slot = 0; slot < 28; ++slot) {          // 0x54E29A `cmp [ebp+var_8], 1Ch / jge`
+            // 0x54E2AF `cmp ds:dword_1673F3C[eax+ecx], 0 / jnz` -> occupé si != 0.
+            if (g_Client.VarGet(kVaultItemId + VaultItemOff(page, slot)) == 0) {
+                outPage = page;                          // 0x54E2BF `mov [edx], eax`
+                outSlot = slot;                          // 0x54E2C7 `mov [ecx], edx`
+                return true;                             // 0x54E2C9 `mov eax, 1`
+            }
+        }
+    }
+    return false;                                        // 0x54E2D4 `xor eax, eax`
+}
+
+// ===========================================================================
+// Warehouse_TryDepositFromInventory — dépôt au coffre par CLIC DROIT.
+// Miroir de cGameHud_OnRButtonDown 0x6318E0, jumptable 0x6319E4 case 6
+// (séquence 0x6319EB..0x631B24). Ordre des gardes STRICTEMENT celui du binaire.
+// ===========================================================================
+bool Warehouse_TryDepositFromInventory(int invPage, int invSlot) {
+    // --- Sélecteur de page PNJ (0x6319AF `mov edx, ds:g_OpenServiceWindow` ;
+    // 0x6319C1 `sub eax, 6` ; 0x6319CA/D1 `cmp 45h / ja def_6319E4`) : le case 6
+    // de la jumptable n'est atteint que si g_OpenServiceWindow == 6 = page PNJ
+    // « refine/compound », posée par UI_Refine_Enter 0x5E25C0 @0x5E2605
+    // (`mov [ecx+2D0h], 6`, this = dword_1822EC8 ; 0x1822EC8 + 0x2D0 = 0x1823198).
+    // Sans cette garde, on émettrait l'opcode 250 dans des états où l'original
+    // ne l'émet JAMAIS.
+    if (g_Client.VarGet(0x1823198) != 6) return false;
+
+    // --- Fenêtre coffre ouverte (0x6319EB `cmp ds:g_WarehouseWindowOpen, 0` ;
+    // 0x6319F2 `jnz` -> suite ; sinon 0x6319F4 `jmp def_6319E4`). C'est ICI, et
+    // seulement ici, la garde « fenêtre non ouverte » : refus MUET, AUCUN message.
+    if (g_Client.VarGet(0x1822ED4) == 0) return false;
+
+    // --- Bornes (0x6319F9..0x631A1B) : page ∈ [0,1] et slot ∈ [0,0x3F].
+    // Grille = 2 lignes × 64 colonnes (stride ligne 0x600 = 64 × 0x18), PAS 8×8.
+    if (invPage < 0 || invPage > 1 || invSlot < 0 || invSlot > 0x3F) return false;
+
+    // --- Résolution DB (0x631A27..0x631A49) :
+    //     record = MobDb_GetEntry(mITEM, g_InvMain[0x600*page + 0x18*slot]).
+    const InvCell& cell = g_Client.inv.At(static_cast<uint32_t>(invPage),
+                                          static_cast<uint32_t>(invSlot));
+    const ItemInfo* info = GetItemInfo(cell.itemId);
+
+    // GARDE-FOU DÉFENSIF, JAMAIS PRIS — à ne pas prendre pour un correctif.
+    // Le binaire déréférence `[eax]` @0x631A5A SANS test de nullité, et c'est sûr
+    // PAR CONSTRUCTION : (invPage, invSlot) vient du hit-test cGameHud_InvCellAt
+    // 0x64F9F0, qui n'écrit `*a7 = page` / `*a8 = slot` que si la cellule est
+    // occupée (`g_InvMain[384*page + 6*k] >= 1` @0x64FB59) ET que
+    // MobDb_GetEntry(...) != 0 (@0x64FB95) ; tout autre chemin y écrit `*a7 = -1`,
+    // que la borne `invPage < 0` ci-dessus rejette. Le null-deref de 0x631A5A est
+    // donc INATTEIGNABLE — même classe que InventoryWindow.cpp:556-559.
+    if (!info) return false;
+
+    // --- Liste noire (0x631A5A `cmp dword ptr [eax], 345h` ; 0x631A60 `jnz`).
+    // ItemInfo.itemId est à +0 (GameDatabase.h:59, 1-based) => `record[0] == 837`
+    // signifie « l'objet EST l'item 837 » : une liste noire d'UN SEUL item, et non
+    // un « type » d'objet ni un « coffre non ouvert » (cette garde-là est plus haut).
+    // Si ÉGAL -> message 0x8F6 = 2294 puis sortie (0x631A62..0x631A88).
+    if (info->itemId == 0x345) {
+        g_Client.msg.System(Str(2294));
+        return false;
+    }
+
+    // --- Slot libre dans le coffre (0x631A8D..0x631A9D) ; si 0 -> msg 0x905 = 2309
+    // (0x631B36..0x631B52). C'est le SEUL appelant de Warehouse_FindFreeSlot.
+    int whPage = 0, whSlot = 0;
+    if (!Vault_FindFreeSlot(whPage, whSlot)) {
+        g_Client.msg.System(Str(2309));
+        return false;
+    }
+
+    // --- Garde morph/verrou (0x631AAA `cmp ds:g_MorphInProgress, 1 / jz` ->
+    // abandon ; 0x631AB3 `cmp ds:g_GmCmdCooldownLatch, 0 / jz` -> on continue) :
+    // on n'émet que si morph != 1 ET latch == 0 ; sinon abandon MUET (0x631ABC).
+    if (net::g_MorphInProgress == 1 || net::g_GmCmdCooldownLatch != 0) return false;
+
+    // g_NetClient 0x8156A0 est un GLOBAL (les builders l'adressent directement).
+    // Ce chemin n'est atteint qu'en jeu (post-handshake, fenêtre PNJ ouverte) : le
+    // `if (!nc)` est un garde-fou DÉFENSIF, pas du code mort — même précédent que
+    // UI/InventoryWindow.cpp:553-559.
+    net::NetClient* nc = net::GlobalNetClient();
+    if (!nc) return false;
+
+    // --- Émission (0x631AC6..0x631B05). Pushes droite->gauche =>
+    // args = (invRow, invCol, count, whPage, whSlot, 0, 0) ; count est relu dans
+    // g_InvGrid_Count[0x600*row + 0x18*col] @0x631AEA (= InvCell.flag : le nom C++
+    // est décalé, la POSITION est la bonne — cf. InventoryState::Set `e.flag = count`).
+    net::Net_SendVaultReq_250(*nc, invPage, invSlot, static_cast<int32_t>(cell.flag),
+                              whPage, whSlot, 0, 0);                 // 0x631B05
+
+    // --- Épilogue (0x631B0A..0x631B24).
+    g_Client.Var(0x182238C) = 1;                   // g_VaultOpPending = 1     0x631B0A
+    net::g_GmCmdCooldownLatch = 1;                 //                          0x631B14
+    net::flt_1675B0C = net::g_GameTimeSec;         // fld/fstp                 0x631B1E-24
+    return true;
 }
 
 } // namespace ts2::game

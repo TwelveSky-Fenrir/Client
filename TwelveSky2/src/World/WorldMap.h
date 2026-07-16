@@ -226,14 +226,17 @@ public:
                          float outPos[3]) const;
 
     // --- Champs relevés de l'objet monde ---
-    // BEW-03 / ex-CONFLICT C-03 (Docs/TS2_WORLD_ROSETTA.md §2) — RÉSOLU : `valid_` (this+4) ET
-    // `atmosphereLoaded_` (byte_18C67C8) désignent le MÊME octet g_WorldEnv+4 dans la cible
-    // (World_LoadMap @0x41176E `mov byte ptr [ebx+4], 1`, ebx = this = g_WorldEnv 0x18C67C4 ; lu
-    // par World_LoadZoneResource case 7 @0x4DD202). LoadMap arme désormais les DEUX en branche
-    // succès -> le court-circuit `||` de la case 7 fonctionne (World_LoadMap 1x/session).
-    // Remis à 0 par World_UnloadMap 0x411A80 dans la cible — NON porté ici (TODO au .cpp).
-    bool  valid_       = false;   // this+4  (mis à 1 par World_LoadMap en succès) = byte_18C67C8
-    void* atmosphere_  = nullptr; // this+8  (objet cAtmosphere)
+    // EW-02 (Passe 4 / W11) — dans la CIBLE, `valid_` (this+4) et le flag de la case 7 (byte_18C67C8)
+    // sont le MÊME octet g_WorldEnv+4 : World_LoadMap @0x41176E le met à 1, World_UnloadMap 0x411A80
+    // @0x411A9F le remet à 0 à CHAQUE entrée de zone (via WSndMgr_Free au pas 1, avant le pas 7). Le
+    // port C++ garde deux membres : `valid_` = l'écriture littérale @0x41176E (mais SANS lecteur hors
+    // WorldMap -> inobservable), et `atmosphereLoaded_` = la VALEUR DU FLAG TELLE QUE LUE au pas 7, qui
+    // vaut TOUJOURS 0 dans le flux (le pas 1 vient de l'effacer). D'où : LoadMap arme `valid_` mais PAS
+    // `atmosphereLoaded_` -> le court-circuit `||` de la case 7 est toujours faux -> World_LoadMap
+    // rejoué 1×/ZONE, fidèle. (Le « correctif C-03 » qui armait `atmosphereLoaded_` pour obtenir
+    // 1×/session était une RÉGRESSION, annulée — cf. WorldMap.cpp branche succès.)
+    bool  valid_       = false;   // this+4  (mis à 1 par World_LoadMap en succès @0x41176E) — write-only ici
+    void* atmosphere_  = nullptr; // this+8  (objet cAtmosphere ; toujours nul en ClientSource)
     void* device_      = nullptr; // this+12 (device D3D)
 
     // Flag dword_1686134 : sélection de variante de la zone 291 dans la case 6 de
@@ -241,10 +244,12 @@ public:
     // la zone 291 est au contraire pilotée par `mode` (voir CurrentZoneModelPath).
     int flagZ291Variant = 0;      // dword_1686134
 
-    // Flag byte_18C67C8 (nommé g_WorldEnvAtmInitFlag dans l'IDB) : atmosphère déjà chargée (case 7).
-    // Si vrai, on saute World_LoadMap (@0x4DD217 `jnz short loc_4DD23B`). byte_18C67C8 == g_WorldEnv+4
-    // == le MÊME octet que `valid_` dans la cible (cf. bandeau ci-dessus) : LoadMap arme les deux.
-    bool atmosphereLoaded_ = false; // byte_18C67C8 (0x18C67C8), armé @0x41176E, lu @0x4DD202
+    // Flag byte_18C67C8 (g_WorldEnvAtmInitFlag) : atmosphère déjà chargée, lu par la case 7 (@0x4DD202
+    // -> @0x4DD217 `jnz` = si armé, saute World_LoadMap). Dans la cible il vaut TOUJOURS 0 au pas 7
+    // (World_UnloadMap 0x411A80 l'a effacé au pas 1) -> on le laisse false ici : World_LoadMap est
+    // rejoué à chaque zone (EW-02). NE PAS l'armer (piège C-03) ni porter UnloadMap (NO-OP nuisible,
+    // atmosphere_ toujours nul, cf. WorldMap.cpp).
+    bool atmosphereLoaded_ = false; // byte_18C67C8 (0x18C67C8), lu @0x4DD202 ; laissé à 0 (EW-02)
 
     // Templates de chemins (relevés tels quels dans .rdata).
     static constexpr char kFmtWG[]       = "G03_GDATA\\D07_GWORLD\\Z%03d.WG";
@@ -272,7 +277,14 @@ public:
 private:
     WorldLoadHooks hooks_;
     int  currentZoneId_ = 0;
-    // this+180 : copie de dword_18C5358 (config météo par défaut). 104 octets, tous à 0.
+    // this+180 : SAUVEGARDE du D3DLIGHT9 soleil global dword_18C5358 (EW-05). 0x68 = 104 =
+    // sizeof(D3DLIGHT9) ; ce n'est PAS une « config météo à zéro ». Dans la cible : World_LoadMap
+    // @0x4117A2 qmemcpy(this+180, &dword_18C5358, 0x68) = global->instance (sauvegarde) ;
+    // World_UnloadMap @0x411AB6 qmemcpy(&dword_18C5358, this+180, 0x68) = instance->global
+    // (restauration). Le global est le D3DLIGHT9 directionnel construit chaque frame par
+    // Env_UpdateSunLight 0x412210 (memset 0x68 @0x41227B, Type=3 @0x412329, SetLight vtbl+204
+    // @0x412367 ; cf. Gfx/SilverLiningSky.cpp:217-222). Non modélisé (aucun lecteur de weather_ ;
+    // UnloadMap non porté, EW-02) -> reste write-only, le fill(0) est inobservable.
     std::array<uint8_t, 104> weather_{};
     // Maille de collision typée liée (Gaps G4/G5/G7). NON-possédante (détenue par l'hôte).
     const asset::CollisionMesh* collisionMesh_ = nullptr;

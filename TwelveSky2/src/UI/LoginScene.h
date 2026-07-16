@@ -46,7 +46,10 @@
 #include "Gfx/SpriteBatch.h"    // gfx::SpriteBatch, gfx::SetActiveSprite
 #include "Gfx/Font.h"           // gfx::Font
 #include "Gfx/GpuTexture.h"     // gfx::GpuTexture (fond réel ServerSelect/Login, atlas unk_8E8B50)
+#include "Gfx/Renderer.h"       // gfx::Renderer — requis par gfx::MeshRenderer::Init (aperçu 3D CharSelect)
+#include "Gfx/CharPreview3D.h"  // gfx::CharPreview3D + MeshRenderer/ModelCache/MotionCache (Char_RenderModel 0x527020)
 #include "Scene/SceneManager.h" // ts2::Scene
+#include <memory>               // std::unique_ptr — ModelCache/MotionCache (non copiables, ctor à arguments)
 #include <unordered_map>
 
 namespace ts2::ui {
@@ -105,8 +108,19 @@ public:
     // SingleServer, le SEUL mode actif pour la commande documentée `/0/0/2/1024/768`
     // — SceneManager peut passer cfg.buildVariant pour couvrir les builds non nuls
     // (cf. « Points d'attention » de la doc de session).
+    //
+    // `renderer` (OPTIONNEL, défaut nullptr) = le gfx::Renderer possédé par SceneManager.
+    // Requis UNIQUEMENT par l'aperçu 3D de CharSelect : gfx::MeshRenderer::Init() prend un
+    // `gfx::Renderer&` (dont il ne lit que Device(), cf. Gfx/MeshRenderer.cpp) et il n'existe
+    // aucun moyen de fabriquer un Renderer depuis un IDirect3DDevice9* (Renderer::Init crée
+    // son PROPRE device). Paramètre DÉFAUTÉ pour ne pas casser l'unique appelant existant
+    // (Scene/SceneManager.cpp:337), qui n'est pas un fichier de ce front.
+    // ⚠ TANT QUE SceneManager NE PASSE PAS `&renderer` ICI, charPreviewReady_ reste false et
+    //   les 4 Char_RenderModel (0x51D361/0x51D3CC/0x51D429/0x51D480) ne dessinent RIEN.
+    //   -> wiring TODO CHARSELECT_3D (cf. rapport de front cs-render-2d).
     bool Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notifyWnd,
-              int screenW, int screenH, int serverModeFlag = 0);
+              int screenW, int screenH, int serverModeFlag = 0,
+              gfx::Renderer* renderer = nullptr);
     void Shutdown();
 
     void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
@@ -197,7 +211,53 @@ private:
     void CharListRender();
     void CreateFormRender();
     void DeleteConfirmRender();  // confirmation Oui/Non (host.ShowDeleteConfirm)
-    RECT CharSlotRect(int i) const;
+
+    // --- CharSelect : ordre de peintre EXACT (Scene_CharSelectRender 0x51CED0) ---
+    // fond (Begin2D..End2D) -> PASSE 3D -> UI 2D (Begin2D..End2D). Les trois helpers
+    // ci-dessous découpent la fonction d'origine dans CET ordre ; CharSelectRender() les
+    // enchaîne. Empiler fond+UI dans un seul Begin2D puis dessiner la 3D CASSE l'ordre.
+    void CharSelectRenderBg();       // Sprite2D_DrawScaled(atlas+148*this[15713],0,0,nW/1024,nH/768) @0x51D2AB
+    void CharSelectRenderPreview3D();// 4x Char_RenderModel entre End2D 0x51D2B5 et Begin2D 0x51D48A
+    void CharSelectRenderUi2D();     // dispatch d'écran 2D (0x51D4CB) : Liste / Formulaire
+
+    // Panneau de détail GAUCHE de l'écran Liste, origine ABSOLUE (15,19).
+    // GARDE : `cmp [ecx+0F58Ch], -1 ; jz loc_51DF0D` @0x51D7CA -> RIEN si aucun slot
+    // sélectionné (garde ABSENTE de la spec consolidée §8.3, re-prouvée par désassemblage).
+    void CharDetailPanelRender();
+    // Colonne des 10 boutons (origine (nWidth-140, nHeight-301), pas 37 ; #8/#9 ABSOLUS).
+    void CharButtonColumnRender();
+
+    // Motif canonique du bouton 3 ÉTATS (slots CONSÉCUTIFS n/n+1/n+2), EA de référence
+    // 0x51DF32-0x51DF9A (ENTRER) — identique pour les 10 boutons, sans exception :
+    //   if (latch)                          Draw(base+2 /*pressé*/, x, y);
+    //   else if (HitTest(base /*normal*/))  Draw(base+1 /*survol*/, x, y);
+    //   else                                Draw(base   /*normal*/, x, y);
+    // ⚠ Le hit-test porte TOUJOURS sur le sprite NORMAL, même quand un autre état est peint.
+    void DrawTriStateSprite(int slotNormal, int x, int y, bool latched, int mouseX, int mouseY);
+    // Sprite2D_HitTest 0x4D6C50 sur un slot d'atlas : bornes >= gauche/haut et < droite/bas.
+    // Renvoie false si le sprite n'est pas chargeable (dimensions inconnues -> aucun rect).
+    bool AtlasHitTest(int slotIndex, int x, int y, int mouseX, int mouseY);
+
+    // Lit un int32 dans la fiche BRUTE de 10088 o du slot `slot` (net::g_CharRecords[slot]
+    // == &unk_1669380 + 0x2768*slot). Nécessaire parce que game::CharSlotInfo
+    // (Game/CharSelectFlow.h, HORS de ce front) n'expose PAS les champs que le rendu lit :
+    // +60 (dword_16693BC, bonus de niveau) et +5708 (dword_166A9CC, 2e palier de
+    // renaissance) pilotent les DEUX cascades de tier à 4 paliers de l'écran Liste
+    // (@0x51D55C/0x51D572) et du panneau de détail (@0x51D7FA/0x51D815), et les 11 champs du
+    // panneau de détail (+16/+88/+92/+100/+5432/+5484/+5488/+5568/+5572/+9408) n'y sont pas
+    // non plus. C'est EXACTEMENT la source du binaire, qui indexe ces mêmes globals à plat.
+    // Renvoie 0 si `slot` est hors [0, net::kCharRecordCount).
+    static int32_t CharRecI32(int32_t slot, int byteOffset);
+
+    // UI_MeasureNumberText 0x53FCA0 + UI_DrawNumberValue 0x53FCC0 (police bitmap
+    // unk_1685740) : `x = cx - largeur/2` (idiome `movzx/cdq/sub/sar 1` @0x51D73F-0x51D747).
+    void DrawNumberCentered(const char* text, int centerX, int y);
+
+    // GetPhysicalCursorPos(&pt) @0x51D493 puis ScreenToClient(hWndParent 0x815184, &pt)
+    // @0x51D4A4 — DISTINCT de CursorClient() (GetCursorPos), utilisé par les autres scènes.
+    // Le survol de CharSelect est recalculé PAR FRAME dans le rendu depuis cette position
+    // physique live ; AUCUN index de survol n'est mis en cache dans Update.
+    POINT CharSelectCursorClient() const;
 
     // --- Notice modale (NoticeDlg 0x5C0280/0x5C03F0 simplifiée) ---
     // `onClose` reproduit l'action déclenchée par UI_NoticeDlg_OnLButtonUp au clic OK,
@@ -289,19 +349,45 @@ private:
 
     // --- Fond réel ServerSelect/Login (atlas unk_8E8B50) ---
     int bgAtlasSlot_ = 2380;                     // this[168] (2380/2381, cf. GetAtlasSprite)
-    // Fond réel CharSelect (this[15713] = slot atlas aléatoire 2383/2384/2385 — cf.
-    // Docs/TS2_CHARSELECT_RE.md §4). Tiré une fois dans Init() (simplification comme bgAtlasSlot_).
-    int charBgSlot_ = 2383;
+    // [A4] Fond CharSelect : l'ancien membre `charBgSlot_`, tiré UNE FOIS dans Init(), a été
+    // SUPPRIMÉ. Le tirage `Rng_Next()%3` -> 2383/2384/2385 est À L'INTÉRIEUR du bloc Init de
+    // Scene_CharSelectUpdate (EA 0x51C23A `call Rng_Next` ; 0x51C261/70/7F les 3 écritures ;
+    // immédiatement suivi de this[15714]=1 @0x51C28C et this[15715]=-1 @0x51C299) : il est
+    // donc RE-TIRÉ À CHAQUE ENTRÉE en scène, pas une seule fois au boot. Ce tirage est
+    // désormais porté par game::CharSelectState::backgroundSlot (RunInitBlock) ; LoginScene
+    // le LIT (wiring TODO CHARBG_SLOT de Game/CharSelectFlow.h:480 — FERMÉ ici).
+    // Tirer une 2e fois ici décalerait AUSSI le flux PRNG partagé (net::DefaultRng), dont
+    // dépendent les nonces réseau : double défaut de fidélité.
     std::unordered_map<int, gfx::GpuTexture> atlasCache_; // slot -> texture (lazy)
+
+    // --- Aperçu 3D CharSelect (Char_RenderModel 0x527020, 4 sites) ---
+    // Ces membres sont PERSISTANTS (caches + device objects) : c'est précisément ce que les
+    // TODO d'aperçu 3D des passes précédentes déclaraient « bloqué, exige des membres
+    // possédés ». LoginScene.h appartenant à ce front, le blocage est levé.
+    gfx::Renderer*   gfxRenderer_ = nullptr;   // fourni par Init() (cf. wiring TODO CHARSELECT_3D)
+    gfx::MeshRenderer            charMesh_;    // decl 76 o + shaders skinnés
+    std::unique_ptr<gfx::ModelCache> charModels_;  // C%03d%03d%03d.SOBJECT (ctor : MeshRenderer&)
+    // ⚠ MÊME MotionCache pour la PALETTE DESSINÉE et pour le NOMBRE DE FRAMES rendu à
+    // host.GetMotionFrameCount : dans le binaire c'est le MÊME g_ModelMotionArray 0x8E8B30
+    // qui sert aux deux (PcModel_ResolveEquipSlot @0x52705F/0x527544 et
+    // PcModel_ResolveSlotAndApply @0x51c555). Deux caches divergeraient sur les motions
+    // absentes. Même discipline que Scene/WorldRenderer.cpp::Motions().
+    std::unique_ptr<gfx::MotionCache> charMotions_;
+    bool charPreviewReady_ = false;            // charMesh_.Init() a réussi ET renderer fourni
 
     // --- CharSelect (flux fidèle, cf. Game/CharSelectFlow.h) ---
     game::CharSelectState charState_;  // sous-état/écran/slots/formulaire/aperçu
     game::CharSelectHost  charHost_;   // callbacks réseau/UI (construits par BuildCharSelectHost)
 
     // Écran Liste : slots (clic = sélection), Créer/Supprimer/Entrer/Quitter.
-    Button enterBtn_, backBtn_;        // backBtn_ = "Quitter" (host.CloseConnectionAndQuit, fidèle)
-    Button createBtn_, deleteBtn_;
-    Button restoreBtn_;                // Restaurer (slots 3086/3087/3088, Scene_CharSelectRender 0x51E354)
+    Button enterBtn_, backBtn_;        // enterBtn_ = ENTRER (16/17/18) ; backBtn_ = RETOUR (963/964/965)
+    Button createBtn_, deleteBtn_;     // CRÉER (19/20/21) ; SUPPRIMER (22/23/24)
+    Button restoreBtn_;                // slots 3086/3087/3088 @ (x0, y0-37), EA 0x51E34F
+    // QUITTER (slots 25/26/27 @ (x0, y0+222), EA 0x51E2AA). Était hit-testé « à la main » sur
+    // le rect du sprite dans CharSelectOnMouseUp, sans latch : le binaire, lui, le latche
+    // comme les autres (`cmp dword ptr [ecx+24h], 0` = this[9] @0x51E288) et peint donc bien
+    // son état PRESSÉ (slot 27). Widget dédié -> motif 3 états identique aux 9 autres.
+    Button quitBtn_;
 
     // Écran Formulaire de création : 5 paires +/- (job/faction/visage/couleur/variant),
     // nom saisi (EditBox réutilisé de Widgets.h), Confirmer/Annuler.
@@ -326,6 +412,15 @@ private:
     bool        noticeOpen_ = false;
     std::string noticeText_;
     std::function<void()> noticeOnClose_; // action kind=2 (cf. OpenNotice) ; vide = no-op
+    // [A3] TYPE de la notice CharSelect (2e argument de UI_NoticeDlg_Open 0x5C0280).
+    // C'est LUI qui décide si le sous-état Verrouillé est un cul-de-sac (mode 1 = Close :
+    // la scène reste où elle est) ou une SORTIE vers ServerSelect (mode 2 = Disconnect :
+    // UI_NoticeDlg_OnLButtonUp 0x5C03F0 case 2 -> Net_CloseSocket 0x5C04DF, g_SceneMgr=2
+    // 0x5C04E4, g_SceneSubState=0 0x5C04EE, dword_1676188=0 0x5C04F8).
+    // Sans ce champ, Verrouillé était un CUL-DE-SAC DÉFINITIF (les 4 handlers de scène sont
+    // gatés `==1` et ne voient jamais ce clic — il arrive par UI_RouteLButtonUp 0x5AD0F0,
+    // xref unique EA 0x5AD164). Renseigné par charHost_.ShowNoticeTyped.
+    game::NoticeType noticeType_ = game::NoticeType::Close;
 
     // --- Transition demandée ---
     ts2::Scene pending_ = ts2::Scene::None;

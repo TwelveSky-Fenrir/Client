@@ -1729,21 +1729,88 @@ void Apply628(const uint8_t* payload, uint32_t len) {
 }
 
 // ---------------------------------------------------------------------------
+// Buffers de nom (13 o) écrits par ce module — helpers `strcpy(dest, src)` fidèles.
+// FAUX AMI LEVÉ (vague W11) : `Crt_StringInit 0x75CAB0` n'est PAS un constructeur de
+// std::string (ce que dit son commentaire IDA), c'est `strcpy(dest, src)` : entrée
+// alternative de `Crt_Strcat 0x75CAC0` sautant le scan de fin (0x75CAB1 `mov edi,
+// [esp+4+arg_0]` = dest tel quel ; corps commun 0x75CB25 `mov ecx,[esp+4+arg_4]` = src).
+// `offset String` 0x7EC95F a son octet 0 à 0 -> chaîne vide -> « strcpy(dest, String) » = clear.
+// ÉCART ASSUMÉ : strcpy laisse la QUEUE de dest intacte ; on zero-fill jusqu'à 13. Inobservable
+// (tous les lecteurs sont strcmp/%s, arrêt au 1er NUL) et NUL-terminant, cf. l'idiome établi
+// GameHandlers_ChatSocial.cpp:294-299.
+//
+// DEUX STORES DISTINCTS selon la nature de la cible :
+//   • globals AUTONOMES de la longue traîne (T1/T2 de guerre, 0x16746A8/0x16746BC) -> Blob(13).
+//     ⚠️ `Blob` fige la taille au 1er appelant (ClientRuntime.h:179) : ces clés doivent être
+//     ouvertes à 13 PARTOUT (0x16746A8 l'est déjà par UI/ClanContextMenu.cpp:92 `BlobNonEmpty
+//     -> Blob(addr,13)` ; l'ouvrir à 16 déborderait le tas). Slot binaire = 16 o mais champ FIL
+//     = 13 (strides T1/T2 de 13, et byte_1686145-byte_1686138 = 13).
+//   • champs de la FICHE d'entité de self (0x168725C = entity[0]+40 = body+16 ; 0x1687270 =
+//     entity[0]+60 = body+36) : leur home MODÉLISÉ est g_World.players[0].body (index 0 = self,
+//     GameState.h:122). body+16 a des lecteurs VIVANTS (Scene/WorldRenderer.cpp:803 affiliation,
+//     World/TerrainPicker.cpp:280) -> écrire ailleurs qu'au body créerait un store fantôme.
+// ---------------------------------------------------------------------------
+void BlobStrcpy13(uint32_t addr, const char* src) {
+    auto& b = g_Client.Blob(addr, 13);
+    size_t n = 0;
+    while (n < 13 && src[n] != 0) ++n;   // strcpy : arrêt au 1er NUL
+    b.assign(13, 0);
+    std::memcpy(b.data(), src, n);
+}
+void SelfBodyStrcpy13(size_t bodyOffset, const char* src) {
+    auto& players = g_World.players;
+    if (players.empty()) return;         // pas de self fantôme (cf. App/App.cpp:770/1161)
+    auto& body = players[0].body;
+    if (bodyOffset + 13 > body.size()) return;
+    size_t n = 0;
+    while (n < 13 && src[n] != 0) ++n;
+    std::memset(body.data() + bodyOffset, 0, 13);
+    std::memcpy(body.data() + bodyOffset, src, n);
+}
+// Identité d'affiliation de self (miroir EXACT : 0x16746A8/+16/+20 == entity+40/+56/+60).
+constexpr uint32_t kLocalAffilName  = 0x16746A8; // dword_16746A8 (= UI/ClanContextMenu::kVarGuildTag)
+constexpr uint32_t kLocalAffilName2 = 0x16746BC; // unk_16746BC
+constexpr size_t   kSelfBodyAffil   = 40 - 24;   // byte_168725C (= WorldRenderer::kNpBodyAffiliation)
+constexpr size_t   kSelfBodyAffil2  = 60 - 24;   // unk_1687270
+
+// ---------------------------------------------------------------------------
 // Famille "declaration de guerre / palier" (dump L.3903-4228, sous-opcodes
 // 629..652) : idx=element 0..3 (payload+4), gate elt<4. dword_168618C[elt] = palier
 // (0..14). Chaque palier ecrit son etat inconditionnellement puis, si
 // elt==g_World.self.element (paliers "annonce") ou si le morph courant correspond a
 // la ville de siege de l'element (kSiegeTownNpc[elt] = {138,139,165,166}, table
 // v682 du desasm, DISTINCTE de MapWarp::FactionTownNpcId), affiche le message et/ou
-// arme un drapeau simple. TODO precis (non recables, donnees indisponibles cote
-// ClientSource) : affichage du nom de guilde/chef (buffers bruts unk_16861B6/
-// unk_16861A9/unk_168619C/byte_16861C3, non recus dans CE paquet) sur 631/632/
-// 637-638/642-643/647-648 ; le warp CONDITIONNE PAR CE MEME nom (strcmp contre
-// dword_16746A8, "ma guilde") sur 637-638/642-643/647-648 ; recalcul de jauge
-// d'attaque (Char_CalcAttackRatingMin/Max sur g_EquipSnapshotScratch) sur
-// 635/640/645/650 ; UI_RemoveActiveBuffSlot() sur 650.
+// arme un drapeau simple.
+//
+// DEUX NOMS DE 13 o sont PORTÉS par le payload (rectification WARP-01/02, vague W11 —
+// l'ancien bandeau « non recus dans CE paquet / donnees indisponibles » etait FACTUELLEMENT
+// FAUX) : name1 = payload+8, name2 = payload+21 (derivation du cadre : Crt_Memcpy(&var_F8,
+// recvBuf+5, 0x64) @0x4948a5 ; recvBuf+5 = payload+4 ; var_F4@+8, var_E7@+21). Deux tables
+// de noms distinctes (bornees des deux cotes par des voisins nommes) :
+//   T1 = unk_168619C : 4 elt x 52 o = 4 emplacements de 13 (slot_i = +13*i) ; borne
+//        haute = unk_168626C (0x168619C + 208).
+//   T2 = unk_168626C : 4 elt x 13 o ; borne haute = dword_16862A0 (0x168626C + 52, EXACT).
+// Repartition PROUVEE instruction-a-instruction (imul 34h pour T1, imul 0Dh pour T2, gate
+// elt<4 a chaque case, ecriture AVANT le test onSelfElt) :
+//   629 -> T2[elt] <- name1 (0x49e9c5)
+//   635 -> T1.slot3[elt] <- name1 (0x49ef36) ; T2[elt] <- name2 (0x49ef52)
+//   640 -> T1.slot2[elt] <- name1 (0x49f2a7) ; T1.slot3[elt] <- name2 (0x49f2c3)
+//   645 -> T1.slot1[elt] <- name1 (0x49f600) ; T1.slot2[elt] <- name2 (0x49f61b)
+//   650 -> T1.slot0[elt] <- name1 (0x49f94e) ; T1.slot1[elt] <- name2 (0x49f96a)
+//   652 -> T2[elt] <- "" (clear, 0x49fa98, precede de Map_BeginWarpToFactionTown @0x49fa6d)
+// Les paires (slot_k, slot_k+1) CHEVAUCHENT d'une case a l'autre : le motif est regulier
+// et indexe par palier, mais ce n'est PAS une « echelle » monotone -> aucun nom conceptuel
+// invente ici, on decrit les faits (palier -> couple de slots).
+// LECTEURS (NON portes -> WARP-04, hors de ce fichier) : Warp_ProcessKeyword 0x5F54E0 /
+//   Warp_LookupDest 0x5F5B60 (strcmp T1.slot3/T2 vs dword_16746A8) ; 0x49f4ae strcmp
+//   T1.slot3[elt] vs g_LocalClanName sous gate kSiegeTownNpc -> Map_BeginWarpToFactionTown.
+// TODO ancre (non modelise, hors perimetre W11) : recalcul jauge d'attaque
+//   (Char_CalcAttackRatingMin/Max sur g_EquipSnapshotScratch) sur 635/640/645/650 ;
+//   UI_RemoveActiveBuffSlot() sur 650 ; 2e message Str(2037)+nom sur 631/632.
 // ---------------------------------------------------------------------------
 constexpr uint32_t kWarStage        = 0x168618C; // dword_168618C[elt]
+constexpr uint32_t kWarT1           = 0x168619C; // unk_168619C : 4 elt x 52 o, slot_i = +13*i
+constexpr uint32_t kWarT2           = 0x168626C; // unk_168626C : 4 elt x 13 o (borne dword_16862A0)
 constexpr int32_t  kSiegeTownNpc[4] = {138, 139, 165, 166}; // v682
 constexpr uint32_t kWarFlag1675DD8  = 0x1675DD8; // 634
 constexpr uint32_t kWarFlag1675DDC  = 0x1675DDC; // 639
@@ -1758,12 +1825,20 @@ void ApplyWarStageFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t le
     if (elt >= 4) return;
     const bool onSiegeMorph = (g_Client.VarGet(kSelfMorphNpcId) == kSiegeTownNpc[elt]);
     const bool onSelfElt    = (static_cast<int32_t>(elt) == g_World.self.element);
+    // Les deux noms 13 o portes par les cases 629/635/640/645/650 (arg2 CHEVAUCHE name1 sur
+    // payload+8, exactement comme le binaire : les cases "annonce" 630/631/... lisent le meme
+    // offset comme un entier). NUL-borne defensif (paquet reel = 105 o -> les deux presents).
+    char name1[14] = {}, name2[14] = {};
+    if (len >= 21) std::memcpy(name1, payload + 8,  13);
+    if (len >= 34) std::memcpy(name2, payload + 21, 13);
+    // Cle d'un emplacement de T1 (slot 0..3 de l'element courant) / de T2.
+    const uint32_t t1slot0 = kWarT1 + 52u * elt;
+    const uint32_t t2key   = kWarT2 + 13u * elt;
 
     switch (subOpcode) {
-    case 629: { // dump L.3903 -- tag8 = payload+8 (13 o, nom brut affiche tel quel, PAS une table).
-        char tag[14] = {};
-        if (len >= 21) std::memcpy(tag, payload + 8, 13);
-        if (onSelfElt) g_Client.msg.System(std::string(tag) + Str(1986));
+    case 629: { // dump L.3903 -- T2[elt] <- name1 (0x49e9c5), PUIS message si onSelfElt.
+        BlobStrcpy13(t2key, name1);                    // 0x49e9c5 (ecrit AVANT le test onSelfElt)
+        if (onSelfElt) g_Client.msg.System(std::string(name1) + Str(1986));
         return;
     }
     case 630:
@@ -1801,7 +1876,9 @@ void ApplyWarStageFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t le
             if (onSiegeMorph) g_Client.Var(kWarFlag1675DD8) = 1;
         }
         return;
-    case 635: // TODO(Char_CalcAttackRatingMin/Max) non modelise -- etat seul.
+    case 635: // TODO(Char_CalcAttackRatingMin/Max) non modelise -- noms + palier.
+        BlobStrcpy13(t1slot0 + 13u * 3, name1);        // 0x49ef36 : T1.slot3 <- name1
+        BlobStrcpy13(t2key,             name2);        // 0x49ef52 : T2[elt] <- name2
         g_Client.Var(kWarStage + 4 * elt) = 5;
         return;
     case 636:
@@ -1822,7 +1899,9 @@ void ApplyWarStageFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t le
             if (onSiegeMorph) g_Client.Var(kWarFlag1675DDC) = 1;
         }
         return;
-    case 640: // TODO(Char_CalcAttackRatingMin) -- etat seul.
+    case 640: // TODO(Char_CalcAttackRatingMin) -- noms + palier.
+        BlobStrcpy13(t1slot0 + 13u * 2, name1);        // 0x49f2a7 : T1.slot2 <- name1
+        BlobStrcpy13(t1slot0 + 13u * 3, name2);        // 0x49f2c3 : T1.slot3 <- name2
         g_Client.Var(kWarStage + 4 * elt) = 8;
         return;
     case 641:
@@ -1843,7 +1922,9 @@ void ApplyWarStageFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t le
             if (onSiegeMorph) g_Client.Var(kWarFlag1675DE0) = 1;
         }
         return;
-    case 645: // TODO(Char_CalcAttackRatingMin) -- etat seul.
+    case 645: // TODO(Char_CalcAttackRatingMin) -- noms + palier.
+        BlobStrcpy13(t1slot0 + 13u * 1, name1);        // 0x49f600 : T1.slot1 <- name1
+        BlobStrcpy13(t1slot0 + 13u * 2, name2);        // 0x49f61b : T1.slot2 <- name2
         g_Client.Var(kWarStage + 4 * elt) = 11;
         return;
     case 646:
@@ -1864,7 +1945,9 @@ void ApplyWarStageFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t le
             if (onSiegeMorph) g_Client.Var(kWarFlag1675DE4) = 1;
         }
         return;
-    case 650: // TODO(UI_RemoveActiveBuffSlot) -- etat seul.
+    case 650: // TODO(UI_RemoveActiveBuffSlot) -- noms + palier.
+        BlobStrcpy13(t1slot0 + 13u * 0, name1);        // 0x49f94e : T1.slot0 <- name1
+        BlobStrcpy13(t1slot0 + 13u * 1, name2);        // 0x49f96a : T1.slot1 <- name2
         g_Client.Var(kWarStage + 4 * elt) = 14;
         return;
     case 651:
@@ -1873,9 +1956,10 @@ void ApplyWarStageFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t le
     case 652:
         if (onSiegeMorph) {
             for (int c = 0; c < 4; ++c) g_Client.VarF(kWarFloatReset + 4 * c) = 0.0f;
-            WarpToOwnFactionTown();
+            WarpToOwnFactionTown();                     // Map_BeginWarpToFactionTown @0x49fa6d
         }
-        g_Client.Var(kWarStage + 4 * elt) = 0;
+        g_Client.Var(kWarStage + 4 * elt) = 0;         // dword_168618C[elt]=0 @0x49fa78
+        BlobStrcpy13(t2key, "");                        // 0x49fa98 : T2[elt] <- "" (clear)
         return;
     default:
         return;
@@ -3052,10 +3136,19 @@ void ApplyDuelBranchFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t 
         std::memcpy(&oppVal, payload + 30, 4);
         std::memcpy(&flag744C, payload + 34, 4);
         if (g_World.self.localPlayerName == name1) {
-            g_Client.Var(kDuelStateA) = 2;
-            g_Client.Var(kDuelStateB) = 2;
-            g_Client.Var(kDuelOpponentVal) = oppVal;
-            g_Client.Var(kDuelFlag744C) = flag744C;
+            // Identite d'affiliation de self <- name2 (var_54C = payload+17). RE-PROUVE W11
+            // (WARP-03) : ces 4 Crt_StringInit etaient elides par Hex-Rays (this implicite) mais
+            // le desassemblage les donne sans ambiguite. NB : kDuelState* est probablement un
+            // MISNOMER (ce global 0x16746B8 est ecrit par le dispatcher GUILDE 0x53 et lu par de
+            // l'UI clan) -> non renomme ici (toucherait 101..115, hors perimetre W11) ; SIGNALE.
+            BlobStrcpy13(kLocalAffilName,      name2.c_str()); // 0x49b73e : 0x16746A8 <- name2
+            g_Client.Var(kDuelStateA) = 2;                     // 0x49b746 : 0x16746B8 = 2
+            BlobStrcpy13(kLocalAffilName2,     "");            // 0x49b75a : 0x16746BC <- ""
+            SelfBodyStrcpy13(kSelfBodyAffil,   name2.c_str()); // 0x49b76e : 0x168725C <- name2
+            g_Client.Var(kDuelStateB) = 2;                     // 0x49b776 : 0x168726C = 2
+            SelfBodyStrcpy13(kSelfBodyAffil2,  "");            // 0x49b78a : 0x1687270 <- ""
+            g_Client.Var(kDuelOpponentVal) = oppVal;           // 0x49b798 : 0x1687450 <- oppVal
+            g_Client.Var(kDuelFlag744C) = flag744C;            // 0x49b7a3 : 0x168744C <- flag744C
             g_Client.Var(kDuelRatingMin) = DuelCalcAttackRatingMin();
             g_Client.Var(kDuelRatingMax) = DuelCalcAttackRatingMax();
         }
@@ -3087,9 +3180,14 @@ void ApplyDuelBranchFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t 
         if (len < 30) return;
         const std::string name1 = ReadName13(payload, 4), name2 = ReadName13(payload, 17);
         if (g_World.self.localPlayerName == name1) {
-            g_Client.Var(kDuelStateA) = 0;
-            g_Client.Var(kDuelStateB) = 0;
-            g_Client.Var(kDuelOpponentVal) = 0;
+            // Reset de l'identite d'affiliation de self (4 strcpy vers "" — WARP-03).
+            BlobStrcpy13(kLocalAffilName,     "");             // 0x49ba22 : 0x16746A8 <- ""
+            g_Client.Var(kDuelStateA) = 0;                     // 0x49ba2f : 0x16746B8 = 0
+            BlobStrcpy13(kLocalAffilName2,    "");             // 0x49ba3e : 0x16746BC <- ""
+            SelfBodyStrcpy13(kSelfBodyAffil,  "");             // 0x49ba50 : 0x168725C <- ""
+            g_Client.Var(kDuelStateB) = 0;                     // 0x49ba5d : 0x168726C = 0
+            SelfBodyStrcpy13(kSelfBodyAffil2, "");             // 0x49ba71 : 0x1687270 <- ""
+            g_Client.Var(kDuelOpponentVal) = 0;                // 0x49ba79 : 0x1687450 = 0
             g_Client.Var(kDuelFlag744C) = 0;
         }
         g_Client.msg.System("[" + name1 + "]" + Str(395) + " [" + name2 + "]" + Str(481));
@@ -3151,9 +3249,10 @@ void ApplyDuelBranchFamily(uint32_t subOpcode, const uint8_t* payload, uint32_t 
         ApplyBranchMasteryNotice(payload, len, 2322);
         return;
     default:
-        // 110 (famille "branche" 96-100, hors perimetre de cette mission) et 113 (gate
-        // entierement sur dword_16746A8 non disponible) tombent ici -- no-op fidele, cf.
-        // bandeau de tete de ce bloc.
+        // 110 (famille "branche" 96-100, hors perimetre de cette mission) et 113 tombent ici
+        // -- no-op fidele. NB : depuis W11, dword_16746A8 EST peuple (cases 1/4/6 guilde +
+        // 102/107) donc le gate de 113 `!Crt_Strcmp(dword_16746A8, v686)` serait desormais
+        // evaluable ; 113 reste neanmoins non porte (hors perimetre, cf. bandeau de tete).
         return;
     }
 }

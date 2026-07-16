@@ -148,6 +148,22 @@ bool ActionFsm::ApplyPendingCastInterrupt() {
 
 // ===========================================================================
 // Tick générique "anim end -> transition" / "anim loop".
+//
+// NATURE (précision W11) : c'est une PRIMITIVE GÉNÉRIQUE paramétrée (nextState/loopInstead),
+// PAS le portage d'un handler particulier. Le motif `frame += dt*30 ; if (frame >= duree)
+// { transition }` est partagé mot pour mot par la grande majorité des 81 cas du switch
+// terminal (0x5727BF). Les EFFETS DE BORD spécifiques de chaque cas restent donc à la
+// charge de l'appelant — ex. pour le cas 4 (Char_AnimEndToIdle_5761A0 0x5761A0, dont
+// l'appel est prouvé @0x572834) le binaire fait EN PLUS, une fois l'anim terminée :
+//     *(this+240) = 2 * Weapon_ClassFromField56(g_EquipSnapshotScratch, this+116); @0x57629B
+//     if ( !a2 ) { *(this+296) = 0;                                                @0x5762C4
+//                  Net_SendPacket_Op16(&g_AutoPlayMgr, this+240); }                @0x5762DC
+// TODO [ancre 0x57629B] : +240 (= « animSlot », g_SelfMoveStateBlock 0x1687324 pour l'entité
+// 0 : 0x1687324 - dword_1687234 = 0xF0 = 240) N'A PAS de champ porteur dans
+// game::CharAnimState (Game/GameState.h, hors périmètre de ce front) ; Weapon_ClassFromField56
+// 0x4CC930 n'est portée nulle part. Relation prouvée si un champ est ajouté un jour :
+// +240 == 2 * CharAnimState::weaponClass (weaponClass étant DÉJÀ défini comme le résultat de
+// Weapon_ClassFromField56, cf. ActionStateMachine.h).
 // ===========================================================================
 bool ActionFsm::TickTimedState(float dt, float durationFrames, CharActionState nextState, bool loopInstead) {
     animFrame += dt * 30.0f; // motif universel : *(this+248) = a3*30.0 + *(this+248)
@@ -167,7 +183,12 @@ bool ActionFsm::TickTimedState(float dt, float durationFrames, CharActionState n
 }
 
 // ===========================================================================
-// Tick des états de cast (CastSlot0/1/2) — 0x5763BE..0x576470.
+// Tick des états de cast (CastSlot0/1/2) — 0x5763BE..0x57644F.
+//
+// BORNE HAUTE CORRIGÉE (Passe 4 / W11, gap CTF-02) : la rédaction précédente annonçait
+// « 0x5763BE..0x576470 ». C'est FAUX — 0x576470 est le `Net_SendPacket_Op16` de la queue
+// `if (!a2)`, qui n'a JAMAIS été portée. Le code ci-dessous s'arrête bien à 0x57644F
+// (`*(this+624) = 0`). Voir le TODO de queue en fin de fonction.
 // ===========================================================================
 bool ActionFsm::TickCastState(float dt, double weaponRatePct, bool withinBounds, float durationFrames) {
     if (withinBounds)
@@ -185,6 +206,21 @@ bool ActionFsm::TickCastState(float dt, double weaponRatePct, bool withinBounds,
     SetState(CharActionState::Move);
     animFrame = 0.0f;
     hitCheckActive = false;
+
+    // TODO [ancre Char_CastAnimTick_5762F0 0x5762F0 @0x57645D..0x5764C2] : queue `if (!a2)`
+    // NON portée — c'est la CHAÎNE DE RÉ-ATTAQUE AUTOMATIQUE en fin de cast :
+    //     if ( !a2 ) {                                          @0x57645D
+    //         Net_SendPacket_Op16(&g_AutoPlayMgr, this+240);    @0x576470  (builder PORTÉ,
+    //                                                            Net/SendPackets.cpp:1266)
+    //         if ( !Game_UseFirstReadySkill() ) {               @0x57647A  (0x538190, NON portée)
+    //             v3 = *(this+284);                             @0x57648E  (== actor.meleeSubmode)
+    //             if ( v3 == 2 || v3 == 3 ) Player_AttackTargetPlayer();  @0x5764AA (0x539B00, NON portée)
+    //             else if ( v3 == 5 )       Player_AttackTargetMonster(); @0x5764C2 (0x53A3C0, NON portée)
+    //         }
+    //     }
+    // Sans elle, un cast qui se termine ne ré-enchaîne PAS sur la cible courante. Blocage
+    // réel : les 3 fonctions 0x538190/0x539B00/0x53A3C0 ne sont portées nulle part (grep
+    // exhaustif de src/ : citées en commentaire uniquement) — cf. gap AP-04.
     return true;
 }
 
@@ -201,10 +237,34 @@ bool ActionFsm::TickGuardBegin(float dt, float durationFrames) {
     animFrame = 0.0f;                     // 0x57F35A
     guardSubstate = 2;                    // *(this+552) = 2 (0x57F363)
 
-    if (!guardKeyHeld) { // !*(this+548) (0x57F39F) : touche déjà relâchée -> saute direct à GuardEnd
+    // CORRECTIF DE FIDÉLITÉ (Passe 4 / vague W11, front w11-combat-fsm — gap CTF-02).
+    // Le saut GuardLoop -> GuardEnd est IMBRIQUÉ dans `if (!a4)` @0x57F371 dans le binaire,
+    // donc réservé à l'entité simulée LOCALEMENT ; la rédaction précédente l'appliquait
+    // INCONDITIONNELLEMENT. Structure re-prouvée par décompilation de Char_ActionTick_GuardBegin
+    // 0x57F260 cette session :
+    //     *(this+552) = 2;                                   @0x57F363
+    //     if ( !a4 ) {                                       @0x57F371   <-- la garde manquante
+    //         Net_SendOp104(&g_AutoPlayMgr, 3, *(this+552)); @0x57F389
+    //         Net_SendOp104(&g_AutoPlayMgr, 2, 0);           @0x57F397
+    //         if ( !*(this+548) ) {                          @0x57F39F
+    //             *(this+552) = 3;                           @0x57F3AB
+    //             *(this+244) = 93;                          @0x57F3B8
+    //             ...
+    //     }
+    // Conséquence du défaut corrigé : une entité REJOUÉE depuis le réseau (a4!=0, où +548
+    // « touche de garde maintenue » n'a AUCUNE source d'input et vaut donc toujours 0)
+    // sautait GuardLoop -> GuardEnd dès la 1re frame, alors que le binaire la laisse en
+    // GuardLoop et attend l'état poussé par le serveur.
+    if (isLocalSimulation && !guardKeyHeld) { // !a4 (0x57F371) && !*(this+548) (0x57F39F)
         guardSubstate = 3;                  // 0x57F3AB
         SetState(CharActionState::GuardEnd); // *(this+244) = 93 (0x57F3B8)
     }
+    // TODO [ancre 0x57F260 @0x57F389/@0x57F397/@0x57F3D3/@0x57F3E7/@0x57F400] : la queue
+    // `if (!a4)` émet aussi Net_SendOp104(3, guardSubstate), Net_SendOp104(2, 0), puis
+    // Char_UpdateWeaponGlowState 0x55D740, *(this+296)=0 et Net_SendPacket_Op16(this+240).
+    // Les DEUX builders SONT portés (Net/SendPackets.cpp:2280 et :1266) — le blocage n'est
+    // pas « hors périmètre net » mais un choix de couche : Game/* n'inclut pas Net/* (cf.
+    // bandeau Game/AnimationTick.h). À câbler via des hooks côté appelant.
     return true;
 }
 

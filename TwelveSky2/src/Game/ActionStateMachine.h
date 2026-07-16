@@ -51,10 +51,20 @@ namespace ts2::game {
 // Char_*Tick*/Char_*AnimEnd*/Combat_TickAttackState dédié (EA en commentaire) qui fait
 // avancer entity+248 (frame courante) de a3*30 (ou d'un multiple pondéré pour les états
 // de cast, cf. CastSlot0/1/2) et transitionne quand la frame atteint la durée d'anim
-// (donnée asset 3D, hors périmètre — cf. IAnimFrameOracle/TickTimedState). Valeurs NON
-// listées dans le switch (8, 0x18..0x1D, 0x2F, 0x35, 0x3B, 0x4D..0x50, 0x54, ...) tombent
-// dans le `default: break` d'origine -> aucune progression d'anim pour cette entité tant
-// que l'état vaut une de ces valeurs (états probablement pilotés ailleurs, ou inutilisés).
+// (donnée asset 3D, hors périmètre — cf. IAnimFrameOracle/TickTimedState).
+//
+// ENUM VALIDÉ INTÉGRALEMENT (W11) — bornes du switch re-prouvées à l'instruction près :
+//     0x5727B2  cmp [ebp+var_6C], 5Fh   ; switch 96 cases
+//     0x5727B6  ja  def_5727BF          ; default case, cases 8,24-29,47,53,59,77-80,84
+//     0x5727BF  jmp jpt_5727BF[eax*4]
+// Soit 96 valeurs (0x00..0x5F) − 15 valeurs `default` = **81 CAS VIVANTS** (et non « 55 »,
+// chiffre erroné qui circulait dans Game/AnimationTick.*, corrigé). La liste `default`
+// d'IDA — 8 ; 24-29 ; 47 ; 53 ; 59 ; 77-80 ; 84 — correspond EXACTEMENT, aux 7 plages
+// près, aux valeurs marquées « absentes » ci-dessous (0x08 ; 0x18..0x1D ; 0x2F ; 0x35 ;
+// 0x3B ; 0x4D..0x50 ; 0x54) : la table d'états ci-dessous est donc complète et exacte,
+// il n'y a AUCUN trou supplémentaire (l'ancien « ... » laissait croire le contraire).
+// Ces 15 valeurs tombent dans le `default: break` d'origine -> aucune progression d'anim
+// pour cette entité tant que l'état vaut l'une d'elles (états pilotés ailleurs, ou inutilisés).
 enum class CharActionState : int32_t {
     Idle                    = 0x00, // Char_AnimTick_5746E0            0x5746E0 — boucle d'inactivité
     Move                    = 0x01, // Char_TickMoveState              0x574830 — déplacement + proximité ramassage/aura
@@ -269,12 +279,25 @@ struct ActionFsm {
 
     // ==========================================================================
     // Variante pour les 3 états de cast (CastSlot0/1/2) — l'incrément de frame N'EST PAS
-    // dt*30 mais dt*weaponRatePct*0.3 (0x576414, Char_CalcWeaponRatePct 0x4CD900 déjà
-    // câblée dans StatFormulas.h), et n'a lieu QUE si weaponRatePct est dans les bornes
-    // [Char_CalcAnimBoundMin99, Char_CalcAnimBoundMax121] (0x57FB30/0x57FBB0 — tables
-    // d'anim, hors périmètre ; l'appelant fournit `withinBounds`). En fin d'anim, retour à
-    // Move (1), frame=0, ET hitCheckActive=false (0x57644F, comportement spécifique à ce
-    // groupe d'états — les autres handlers ne touchent pas hitCheckActive).
+    // dt*30 mais dt*weaponRatePct*0.3 (0x576414, Char_CalcWeaponRatePct 0x4CD900), et n'a
+    // lieu QUE si weaponRatePct est STRICTEMENT dans les bornes ouvertes
+    // ]Char_CalcAnimBoundMin99, Char_CalcAnimBoundMax121[ (0x57FB30/0x57FBB0 — l'appelant
+    // fournit `withinBounds`). En fin d'anim, retour à Move (1), frame=0, ET
+    // hitCheckActive=false (0x57644F, comportement spécifique à ce groupe d'états — les
+    // autres handlers ne touchent pas hitCheckActive).
+    //
+    // UNE seule primitive pour TROIS états : cadrage RE-PROUVÉ, pas une approximation.
+    // Les cas 5/6/7 du switch appellent bien TROIS fonctions DISTINCTES (0x5762F0 @0x57284C,
+    // 0x5764D0 @0x572864, 0x5766B0 @0x57287C), mais leurs décompilations sont STRICTEMENT
+    // identiques (mêmes offsets, même constante 0.3, mêmes bornes, même queue) : ce sont
+    // trois copies compilées du même corps. La modélisation par une primitive unique est
+    // donc FIDÈLE. (Objection « TickCastState masque 3 états distincts » : RÉFUTÉE, W11.)
+    //
+    // ⚠️ FOURNITURE DE `weaponRatePct` — le seul portage existant, CalcWeaponRatePct
+    // (Game/StatFormulas.h:71), a la signature `(const SelfState&, const GameDatabases&)` :
+    // il ne calcule le taux que pour SOI. Le binaire, lui, appelle
+    // Char_CalcWeaponRatePct(this+328, this+116) @0x5763BE — PAR ENTITÉ. Il n'est donc PAS
+    // réutilisable tel quel pour un joueur distant. TODO [ancre 0x4CD900].
     // ==========================================================================
     bool TickCastState(float dt, double weaponRatePct, bool withinBounds, float durationFrames);
 
@@ -282,9 +305,20 @@ struct ActionFsm {
     // États de garde (0x5B..0x5F) — reproduction du sous-automate this+548 (bool "touche
     // de garde maintenue", fourni par l'appelant = input) / this+552 (sous-état garde
     // 2=maintien en cours, 3=relâché) observé dans Char_ActionTick_GuardBegin (0x57F260)
-    // et Char_ActionTick_GuardLoop (0x57F410). Ne modélise pas l'envoi réseau
-    // (Net_SendOp104 0x4BDAE0, hors périmètre net) ; expose seulement les transitions
-    // d'état + le sous-état de garde via `guardSubstate` (membre ajouté ci-dessous).
+    // et Char_ActionTick_GuardLoop (0x57F410). Expose seulement les transitions d'état + le
+    // sous-état de garde via `guardSubstate` (membre ci-dessous).
+    //
+    // BANDEAU CORRIGÉ (W11) : la rédaction précédente disait « Ne modélise pas l'envoi
+    // réseau (Net_SendOp104 0x4BDAE0, HORS PÉRIMÈTRE NET) ». Formulation PÉRIMÉE et
+    // trompeuse — Net_SendOp104 EST porté (Net/SendPackets.h:238, .cpp:2280), tout comme
+    // Net_SendPacket_Op16 (Net/SendPackets.h:134, .cpp:1266). La vraie raison de l'omission
+    // est un choix de COUCHE, pas une absence de builder : Game/* n'inclut pas Net/* (cf.
+    // bandeau d'autonomie de Game/AnimationTick.h). Les émissions manquantes sont donc des
+    // TODO de CÂBLAGE, à honorer par des hooks côté appelant :
+    //   GuardBegin 0x57F260, sous `if (!a4)` @0x57F371 : Op104(3, guardSubstate) @0x57F389,
+    //     Op104(2, 0) @0x57F397, Op104(3, 3) @0x57F3D3, Op16(this+240) @0x57F400.
+    //   GuardLoop  0x57F410, sous `if (!a4)` @0x57F59E : Op104(1, 0) @0x57F5C3 (uniquement
+    //     si guardSubstate==3 && guardKeyHeld), Op16(this+240) @0x57F5F0.
     // ==========================================================================
     int32_t guardSubstate = 0; // entity+552 : 0=inactif, 2=maintien, 3=relâché/fin
     bool guardKeyHeld     = false; // entrée fournie par l'appelant, reflète entity+548

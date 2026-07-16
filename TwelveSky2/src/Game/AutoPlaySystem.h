@@ -115,13 +115,30 @@ struct AutoPlayExternalState {
     // xrefs sur 0x16755AC) ; requis =true pour que la garde d'entrée d'AutoPlay_Update @0x45e792
     // laisse passer. Le latch de Start le remet à 0 une fois (flush serveur) — cf. Update().
 
-    // g_AutoHuntFuelA/B 0x16755A4 / 0x16755A8 : compteurs de "carburant" d'auto-hunt (durée/charges
-    // restantes). Garde d'entrée d'AutoPlay_Update 0x45E770 @0x45e792 : le tick ne fait RIEN tant
-    // que les DEUX valent <= 0. Mis > 0 par l'UI d'activation d'autoplay (AutoPlay_OnMouseUpMain
-    // 0x45A980, hors périmètre — front UI voisin). SANS cet armement, la chaîne d'auto-hunt (donc
-    // l'interrogation des listes ami/ennemi via MoveToNpc) ne s'exécute pas — fidèle au binaire.
-    int32_t autoHuntFuelA = 0;
-    int32_t autoHuntFuelB = 0;
+    // ---- CARBURANT D'AUTO-HUNT : AUCUN champ ici — le stockage est g_Client.Var (AP-01/AP-07) ----
+    // g_AutoHuntFuelA/B 0x16755A4 / 0x16755A8 = crédit/temps de chasse restant. Garde d'entrée
+    // d'AutoPlay_Update 0x45E770 @0x45e782 (`cmp g_AutoHuntFuelA,0 ; jg`) / @0x45e78b (idem B) :
+    // le tick sort à la 1re ligne (`jmp loc_45ED71` @0x45e794) tant que les DEUX sont <= 0.
+    //
+    // CORRECTIF AP-07 (2026-07-16) — l'ancien commentaire attribuait l'armement à l'UI
+    // (« Mis > 0 par AutoPlay_OnMouseUpMain 0x45A980 ») : c'est RÉFUTÉ par les xrefs. 0x45A980
+    // est ABSENT des 19 xrefs de 0x16755A4 et des 15 xrefs de 0x16755A8 — il n'écrit que
+    // g_InvDirtyEnable 0x16755AC. Ce carburant est 100 % SERVEUR ; le commentaire de l'IDB le
+    // dit lui-même : « Crédit/temps de chasse restant A (serveur) ». Écrivains RÉELS (disasm) :
+    //   Pkt_SetGameVar 0x468370        case 61 @0x468d30 / case 62 @0x468d5c / case 90 @0x469106
+    //                                   (+ @0x468eae)
+    //   Pkt_ItemActionDispatch 0x46A320 @0x478b4d / @0x481782 / @0x48317b
+    //   Net_OnConfirmPromptOpen_Dlg10 0x490EE0 @0x490f93 / @0x490f9c
+    //   Char_TickDeathRespawn 0x576CB0  @0x577ac3 / @0x577acc
+    // LECTEURS SEULEMENT (à ne pas confondre) : AutoPlay_IsActionAllowed 0x45D470, AutoPlay_Update
+    // 0x45E770, AutoPlay_OnMouseDown 0x45EE30, UI_GameHud_Render 0x67A3C0.
+    //
+    // CORRECTIF AP-01 (2026-07-16) — deux champs `autoHuntFuelA/B` vivaient ICI et étaient lus par
+    // Update() : ils n'avaient AUCUN écrivain dans tout src/ (split-brain), donc le tick sortait à
+    // sa 1re ligne À VIE. SUPPRIMÉS. Source de vérité UNIQUE côté ClientSource = le chemin serveur
+    // g_Client.Var(0x16755A4) / g_Client.Var(0x16755A8), écrit par Net/GameVarDispatch.cpp:389
+    // (case 61), :395 (case 62), :430, :481 (case 90) — lu directement par Update() (cf. .cpp,
+    // ancre @0x45e782). Ne PAS réintroduire de champ miroir ici.
 
     uint32_t selectedInvItemId = 0;   // g_SelectedInvItemId 0x1673258 (sélection UI inventaire)
     int32_t  selectedInvCounter = 0;  // dword_167325C (compteur associé, sémantique non prouvée ici)
@@ -140,23 +157,31 @@ struct AutoPlayExternalState {
 struct AutoPlayTargetSlot {
     int32_t monsterIndex = -1; // -1 = libre (le binaire écrit NaN/-1 selon le site — normalisé ici)
     float   distance = 0.0f;
-    bool    available = false; // dword_176703C[idx] != 1 au moment de l'insertion (cf. MonsterAutoplayExt)
+    // this+44 de l'objet d'origine (@0x458548 chemin 1er slot, @0x458596 chemin InsertTargetSorted) :
+    // `dword_176703C[70*i] != 1`. Champ CONSERVÉ (il existe dans la struct d'origine et SelectTarget
+    // le lit @0x4585e0), mais sa valeur est PROUVÉE toujours vraie au point d'insertion — cf. la
+    // démonstration du verrouillage de phase dans .cpp::BuildTargetList (ancres 0x5816cf/0x581939).
+    bool    available = false;
 };
 
 // ---------------------------------------------------------------------------
-// Champs par-monstre du tableau runtime d'origine (stride 280 o, base dword_1766F74) qui
-// NE SONT PAS couverts par MonsterEntity (Game/GameState.h) : ils sont peuplés ailleurs
-// dans le binaire (hors du cluster AutoPlay_* étudié ici, provenance non identifiée dans
-// ces ~19 fonctions) — probablement par un handler d'état/aggro monstre non porté dans
-// EntityManager. Indexé comme g_World.monsters (même index). Défauts choisis pour ne
-// jamais bloquer le ciblage tant que rien ne les alimente ; setters au fil de l'eau via
-// Ext() pour un branchement futur.
+// (SUPPRIMÉ 2026-07-16) struct MonsterAutoplayExt — ses 3 champs étaient des FANTÔMES : déclarés,
+// lus, mais JAMAIS écrits par personne dans src/ (aucun `Ext()` n'était un setter). Chacun a été
+// re-ancré sur la donnée réelle, déjà disponible et déjà peuplée :
+//   - `state` (AP-06)       = dword_1766F8C = base+0x18 = MonsterEntity::body+8. Peuplé par les DEUX
+//     chemins d'EntityManager::OnSpawnMonster (:523 refresh / :540 spawn), miroir du memcpy 0x50
+//     @0x467cef/@0x467e23 de Pkt_SpawnMonster 0x467B00. Lu via AutoTarget_MonsterActionState()
+//     (Game/AutoTargetCombatGate.h:113) qui lit EXACTEMENT body+8. L'ancien défaut `state = 1`
+//     rendait morts les 3 filtres « monstre mort/invalide » (0x45831a, 0x4586a9, 0x458d12).
+//   - `engageRange` (AP-05) = unk_1766FD8 = base+0x64 = MonsterEntity::radius (GameState.h:212),
+//     DÉJÀ calculé par EntityManager.cpp:558 avec la formule exacte du binaire
+//     (sqrt(def[+256]^2+def[+248]^2)*0.5, @0x467d4f-0x467d87) et jusqu'ici JAMAIS lu.
+//   - `aggroOwner`          = dword_176703C = base+0xC8. Son écrivain est INVISIBLE aux xrefs (accès
+//     par pointeur) : Char_UpdateMotionState 0x5816A0 — reset inconditionnel `[eax+0C8h]=0` @0x5816cf
+//     puis `[ecx+0C8h]=1` @0x581939 dans le SEUL case 12. Ne PAS lui inventer d'écrivain : la valeur
+//     lue par le binaire est prouvée constante au point d'usage (cf. .cpp::BuildTargetList).
+// Ne PAS réintroduire cette struct : elle réinstallerait 3 stockages sans écrivain.
 // ---------------------------------------------------------------------------
-struct MonsterAutoplayExt {
-    int32_t state = 1;          // dword_1766F8C d'origine : 0 = invalide, 12 = mort -> exclu du ciblage.
-    int32_t aggroOwner = 0;     // dword_176703C d'origine : ==1 => déjà engagé par un tiers.
-    float   engageRange = 0.0f; // unk_1766FD8 d'origine : allonge la portée de sélection/AoE du monstre.
-};
 
 // ---------------------------------------------------------------------------
 // Points d'intégration délibérément hors périmètre de ce cluster : collision de
@@ -249,10 +274,18 @@ public:
 
     // Reset des cibles + armement de l'auto-hunt + CHARGEMENT des listes ami/ennemi. Miroir
     // d'AutoPlay_Start 0x45D580, dont l'UNIQUE appelant binaire est UI_InitAllDialogs 0x5ABF50
-    // @0x5AC193. À CÂBLER (hors périmètre) : appeler UNE FOIS à l'init du HUD — cf.
-    // SceneManager.cpp:346 juste après `windows_->Init(...)` réussi (équivalent ClientSource de
-    // UI_InitAllDialogs). SANS cet appel, LoadFriendList/LoadEnemyList ne tournent jamais et les
-    // listes restent vides (c'est le défaut D1 corrigé par ce front).
+    // @0x5AC193 (`if (!AutoPlay_Start(g_AutoPlayBot)) return 0;` — 28e des ~37 slots d'init de
+    // dialogues, APRÈS UI_FactionTitleWnd_Init 0x184BF90 et AVANT UI_GameHud_Init @0x5ac1a8).
+    //
+    // ⚠ WIRING TODO (hors de mes fichiers — front CharSelect-fix / GameWindows) : Start() n'a
+    // AUJOURD'HUI AUCUN appelant côté ClientSource. Le miroir ClientSource de UI_InitAllDialogs est
+    // GameWindows::Init (UI/GameWindows.h:127, qui POSSÈDE déjà autoPlaySystem_) — PAS
+    // SceneManager.cpp (ancienne prescription erronée). Site fidèle : dans GameWindows::Init,
+    // AVANT l'init du HUD, `if (!autoPlaySystem_.Start()) return false;` (Start() renvoie toujours
+    // true @0x45d729, la garde ne se déclenche donc jamais — mais la FORME reste `if (!...)` pour
+    // respecter 0x5ac193 ≺ 0x5ac1a8). SANS cet appel, LoadFriendList/LoadEnemyList ne tournent
+    // jamais, friendNames/enemyNames restent vides, ET huntArmed_ reste false -> la chaîne OR
+    // d'Update() est désarmée (défaut D1). Câblage à assigner par l'orchestrateur.
     bool Start(); // AutoPlay_Start 0x45D580
 
     // ---- Machine de ciblage --------------------------------------------------
@@ -296,7 +329,10 @@ public:
     // FindNpcTarget), correctif du défaut « listes chargées mais jamais consultées ». Le tail
     // de combat (Player_CastSkill/Net_QueueRunTo) est DÉFÉRÉ (cf. .cpp, TODO 0x45E91D). dt en
     // secondes (remplace GetTickCount() par des accumulateurs — seuils 2000 ms / 50 ms, cf. .cpp).
-    // Déjà câblé chaque frame InGame : GameWindows::UpdateAutoPlay -> SceneManager.cpp:1258.
+    // Déjà câblé chaque frame InGame : SceneManager.cpp:1497 -> GameWindows::UpdateAutoPlay
+    // (UI/GameWindows.h:142) -> Update(dt). C'est ce chemin VIVANT qui rend actionnables les
+    // correctifs AP-01/AP-05/AP-06 : la garde de carburant franchie (g_Client.Var 0x16755A4/A8),
+    // le tick atteint UpdateTargeting -> BuildTargetList/SelectTarget/CountTargets.
     void Update(float dt);
 
     // Accès lecture (diagnostic / UI — le rendu du panneau autoplay reste hors périmètre,
@@ -305,14 +341,14 @@ public:
     uint16_t TargetCount() const { return targetCount_; }
     int32_t  CurrentTargetIndex() const { return currentTargetIndex_; }
 
-    // Extension par-monstre (cf. MonsterAutoplayExt) — accès pour un futur handler d'état.
-    MonsterAutoplayExt& Ext(std::size_t monsterIndex);
+    // (SUPPRIMÉ 2026-07-16) Ext(std::size_t) / MonsterAutoplayExt — cf. le bandeau ci-dessus : les
+    // 3 champs par-monstre étaient des fantômes sans écrivain, re-ancrés sur MonsterEntity::body+8
+    // et MonsterEntity::radius, déjà peuplés par EntityManager.
 
 private:
     std::array<AutoPlayTargetSlot, 15> targets_{};
     uint16_t targetCount_ = 0;          // +216
     int32_t  currentTargetIndex_ = -1;  // +220, -1 = aucune cible verrouillée
-    std::vector<MonsterAutoplayExt> ext_;
 
     // Timers dt-driven (remplacent GetTickCount() — cf. commentaire Update()). npcInteractCooldownSec_
     // modélise this[60] (byte +240) : timestamp partagé « dernière action » lu à la fois pour le

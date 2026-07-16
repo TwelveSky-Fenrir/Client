@@ -23,6 +23,7 @@
 #include "Game/StringTables.h"     // game::g_Strings.bannedWords (001.DAT, 1432 mots — filtre de creation)
 #include "Game/ClientRuntime.h"    // game::Str(id) — texte reel StrTable005 pour les notices CharSelect
 #include "Asset/ImgFile.h"         // asset::ImgFile (chargeur .IMG, fond réel ServerSelect/Login)
+#include "Gfx/Camera.h"            // gfx::Camera — projection applicative (Gfx_InitDevice 0x69BFC6)
 #include "Core/Log.h"
 #include <algorithm>
 #include <cstdio>
@@ -45,17 +46,29 @@ constexpr int kBtnW   = 72,  kBtnH   = 24;
 
 // Palette (ARGB) — restreinte aux SEULES couleurs encore employées après le câblage 1:1
 // du formulaire de création CharSelect sur ses vrais sprites d'atlas (2026-07-16, front
-// W4-F1). Ne subsistent que : kColPanel/kColPanelEdge = panneau + liseré de la
-// confirmation modale de suppression (DeleteConfirmRender — overlay Oui/Non sans asset
-// dédié identifié dans IDA) ; kColText = couleur des VALEURS réelles que le binaire dessine
-// (valeur des champs Login, niveaux de perso, valeurs du formulaire de création). Aucune
-// couleur d'aplat n'est plus présentée à la place d'un sprite .IMG réel. Les anciens
-// placeholders CharSelect (kColBackdrop/kColField/kColFieldFocus/kColSel/kColTitle/
-// kColLabel/kColBtn + BtnColor) ont été RETIRÉS : le formulaire est désormais câblé sur les
-// vrais sprites (panneau slot 40 unk_8EA270 @0x51E4C5, +/- slots 41/42, Confirmer/Annuler
-// slots 9/12, caret slot 43 g_SprTextInputCaret @0x51E53E) — cf. CreateFormRender().
-constexpr D3DCOLOR kColPanel     = 0xF01E2A44; // panneau (confirmation de suppression modale)
-constexpr D3DCOLOR kColPanelEdge = 0xFF3C5580; // liseré  (confirmation de suppression modale)
+// W4-F1). Les anciens placeholders CharSelect (kColBackdrop/kColField/kColFieldFocus/
+// kColSel/kColTitle/kColLabel/kColBtn + BtnColor) ont été RETIRÉS : le formulaire est câblé
+// sur les vrais sprites (panneau slot 40 unk_8EA270 @0x51E4C5, +/- slots 41/42 en état
+// PRESSÉ seul, Confirmer/Annuler slots 9/12, caret slot 43 g_SprTextInputCaret @0x51E53E)
+// — cf. CreateFormRender(). kColText = couleur des VALEURS réelles que le binaire dessine
+// (champs Login, niveaux de perso, valeurs du formulaire de création).
+//
+// 🔴 TODO [ancre 0x5C08C0 / dword_1822438] — kColPanel/kColPanelEdge sont NON FIDÈLES.
+// L'ancienne justification (« overlay Oui/Non sans asset dédié identifié dans IDA ») était
+// FAUSSE : l'asset est identifié. Le binaire n'émet AUCUN rectangle pour ces deux
+// confirmations — il ouvre le MsgBox PARTAGÉ dword_1822438 (UI_MsgBox_Open 0x5C08C0,
+// EA 0x5254DD pour la suppression / EA 0x519B3E pour la sortie), un vrai sous-système de
+// dialogue à SPRITES (40+ xrefs vérifiées : Pkt_PlayerShopOpen 0x48DD0E, Pkt_PartyInvitePrompt
+// 0x48FB64, Net_OnWorldEntityDispatch ×7, UI_InitAllDialogs 0x5ABFAB, rendu par
+// UI_RenderAllDialogs 0x5AE2D0 @0x5AE56C, routage UI_RouteLButtonUp 0x5AD0F0 @0x5AD17F).
+// Ce sous-système n'a AUCUN port C++ (grep : zéro occurrence de MsgBox hors commentaires) et
+// son portage dépasse le périmètre CharSelect (il faudrait UI_InitAllDialogs/UI_UpdateAllDialogs/
+// UI_RenderAllDialogs/UI_Route*, hors de ce fichier). Ces deux couleurs peignent donc un
+// panneau de SUBSTITUTION assumé, à supprimer dès que UI_MsgBox sera porté — elles ne sont
+// PAS un sprite d'atlas et ne prétendent plus l'être. Seuls consommateurs :
+// DeleteConfirmRender/ExitConfirmRender.
+constexpr D3DCOLOR kColPanel     = 0xF01E2A44; // ⚠ INVENTÉ — panneau de substitution du MsgBox
+constexpr D3DCOLOR kColPanelEdge = 0xFF3C5580; // ⚠ INVENTÉ — liseré  de substitution du MsgBox
 constexpr D3DCOLOR kColText      = 0xFFE8ECF4; // texte principal (VALEURS réelles)
 
 inline RECT MakeRect(int x, int y, int w, int h) {
@@ -68,15 +81,15 @@ inline bool RectContains(const RECT& r, int x, int y) {
     return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
 
-// Caméra d'aperçu 3D CharSelect — état de scène possédé ici (rule 6), extrait de
-// Scene_CharSelectUpdate (sous-état Init, EA 0x51BDED -> 0x51BE65) : le binaire écrit le
-// bloc g_CameraPos 0x800130..0x800144 (6 floats = œil + cible) puis le recopie dans
-// g_GxdRenderer. Valeurs lues dans l'IDB : 0x800130=0.0 / 0x800134=flt_7EDA1C=5.0 /
-// 0x800138=flt_7A9764=-28.0 (œil), 0x80013C=0.0 / 0x800140=flt_7A8D74=10.0 / 0x800144=0.0
-// (cible), up=(0,1,0). Consommées par le bloc TODO d'aperçu 3D de CharListRender/
-// CreateFormRender (câblage 3D bloqué : membres possédés par LoginScene.h, non éditable).
-constexpr float kCharPreviewEye[3]    = { 0.0f, 5.0f, -28.0f }; // 0x800130/34/38 (0x51BDED)
-constexpr float kCharPreviewTarget[3] = { 0.0f, 10.0f, 0.0f };  // 0x80013C/40/44 (0x51BE65)
+// [A14] Les anciens kCharPreviewEye/kCharPreviewTarget ont été SUPPRIMÉS : ils dupliquaient
+// une vérité qui vit déjà, prouvée à l'octet, dans gfx::CharPreview3D::CameraEye()/
+// CameraTarget()/CameraUp() (Gfx/CharPreview3D.h §5 — flt_7EDA1C=5.0f, flt_7A9764=-28.0f,
+// flt_7A8D74=10.0f, up=(0,1,0) @0x6A233A). Ils n'avaient plus aucun lecteur depuis que
+// CharSelectRenderPreview3D() passe par CharPreview3D::BuildViewMatrix().
+// Le binaire écrit ces 6 floats à l'Init de la scène sur les DEUX singletons renderer
+// (g_GfxRenderer 0x800130..0x800144 @0x51BDED-0x51BE21, recopiés dans g_GxdRenderer
+// 0x18C51C0..0x18C51D4 @0x51BE2C-0x51BE65) ; côté C++ ce sont des constantes consommées au
+// point de rendu, donc l'écriture « à chaque Init » est sans effet observable.
 
 } // namespace
 
@@ -86,13 +99,15 @@ constexpr float kCharPreviewTarget[3] = { 0.0f, 10.0f, 0.0f };  // 0x80013C/40/4
 LoginScene::~LoginScene() { Shutdown(); }
 
 bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notifyWnd,
-                      int screenW, int screenH, int serverModeFlag) {
+                      int screenW, int screenH, int serverModeFlag,
+                      gfx::Renderer* renderer) {
     device_        = device;
     net_           = net;
     notifyWnd_     = notifyWnd;
     screenW_       = screenW;
     screenH_       = screenH;
     serverModeFlag_ = serverModeFlag;           // dword_166918C : consommé par BuildServerList()
+    gfxRenderer_   = renderer;                  // aperçu 3D CharSelect (cf. LoginScene.h::Init)
     if (!device_) { TS2_ERR("LoginScene::Init : device nul"); return false; }
 
     // Police GXD (Font_AddTtfResource 0x4C0E70 puis D3DXCreateFontIndirect).
@@ -172,15 +187,20 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     // (sous-état Init, EA 0x525A5D), this[2]=0 (compteur de frames, EA 0x525A6A). L'ancien
     // câblage sur OnQuitButtonClicked était FAUX (le Quit réel est le slot 25, cf.
     // CharSelectOnMouseUp).
-    backBtn_.SetOnClick([this] {
-        if (charState_.previewMotion == game::PreviewMotion::Entering) return; // EA 0x525A33
-        if (net_) net::NetCloseSocket(net_->Client());                          // EA 0x525A46
-        pending_                = ts2::Scene::ServerSelect;                      // EA 0x525A51 (this[0]=2)
-        charState_.subState     = game::CharSelectSubState::Init;               // EA 0x525A5D (this[1]=0)
-        charState_.frameCounter = 0;                                            // EA 0x525A6A (this[2]=0)
-    });
+    // [A5] Délégué à game::RequestBackToServerSelect, qui porte DÉJÀ la séquence exacte
+    // (garde Entering EA 0x525A33 ; host.CloseConnection = Net_CloseSocket 0x463000 EA
+    // 0x525A46 ; pendingTransition=ServerSelect EA 0x525A51 ; subState=Init EA 0x525A5D ;
+    // frameCounter=0 EA 0x525A6A) — l'ancien code la RÉPLIQUAIT à la main ici, en posant
+    // `pending_` DIRECTEMENT au lieu de passer par pendingTransition : la transition
+    // court-circuitait UpdateCharSelect (et donc sa consommation en tête de tick), et la
+    // garde `subState == Active` de RequestBackToServerSelect n'était pas appliquée.
+    // La transition est désormais consommée par CharSelectUpdate (branche ServerSelect).
+    backBtn_.SetOnClick([this] { game::RequestBackToServerSelect(charState_, charHost_); });
     createBtn_.SetOnClick([this] { game::OnCreateButtonClicked(charState_, charHost_); });
     deleteBtn_.SetOnClick([this] { game::OnDeleteButtonClicked(charState_, charHost_); });
+    // QUITTER (slots 25/26/27 @ (x0, y0+222)) : garde `this[+0xF598]==3` EA 0x525ABE puis
+    // Net_CloseSocket + g_QuitFlag=1 — portés par game::OnQuitButtonClicked.
+    quitBtn_.SetOnClick([this] { game::OnQuitButtonClicked(charState_, charHost_); });
     createConfirmBtn_.SetOnClick([this] { game::ConfirmCreateCharacter(charState_, charHost_); });
     createCancelBtn_.SetOnClick([this]  { game::CancelCreateForm(charState_); });
     jobMinusBtn_.SetOnClick([this]     { game::SetCreateJob(charState_, -1); });
@@ -242,15 +262,32 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
         skinColBtn(restoreBtn_, 3086, 3087, 3088); // RESTAURER @ y=v117-37, EA 0x51E354/0x525B46
     }
 
-    // Formulaire de création (écran CreateForm) : boutons -/+ = sprites UNIQUES d'atlas baked
-    // (slot 41 unk_8EA304 = "-", slot 42 unk_8EA398 = "+", Scene_CharSelectRender 0x51CED0) —
-    // un seul état, dessiné en continu (SetNormal). Confirmer/Annuler = paire générique
-    // Confirm/Cancel (slots 9/12, survol/pressé via ApplyConfirmCancelSkin, cf. EA 0x51E4A1).
+    // Formulaire de création (écran CreateForm) : boutons -/+ = slot 41 unk_8EA304 ("-") et
+    // slot 42 unk_8EA398 ("+"), Scene_CharSelectRender 0x51CED0.
+    // 🔴 CORRECTION DE FIDÉLITÉ (re-désassemblée EA par EA ce front) : ces sprites sont un
+    // SEUL état = l'état PRESSÉ, dessiné UNIQUEMENT si le latch this[3..12] est armé. Le
+    // binaire n'a QU'UN site de blit par bouton, et il est GARDÉ par le latch :
+    //   `mov ecx,[ebp+var_470]` @0x51E983 ; `cmp dword ptr [ecx+0Ch],0` @0x51E989 ;
+    //   `jz short loc_51E9AA` @0x51E98D  -> latch NUL = ON SAUTE LE DESSIN.
+    //   Si armé seulement : `add edx,4Eh` (y=panelY+78) @0x51E995 ; `add eax,73h` (x=panelX+115)
+    //   @0x51E99C ; `mov ecx, offset unk_8EA304` @0x51E9A0 ; `call Sprite2D_Draw` @0x51E9A5.
+    // Motif STRICTEMENT identique pour le « + » (latch +0x10 @0x51E9B0, unk_8EA398 @0x51E9CE)
+    // et pour les 8 autres (latches +0x14 @0x51E9D9 … +0x30 @0x51EAF9). AUCUNE branche survol,
+    // AUCUNE branche normale. Les glyphes « - »/« + » AU REPOS sont donc peints DANS LA
+    // TEXTURE DU PANNEAU (slot 40) ; les slots 41/42 ne sont que des SURIMPRESSIONS d'état
+    // pressé. SetNormal les aurait dessinés EN PERMANENCE (Button::DrawSkin blitte `normal_`
+    // sans condition) = 10 sprites parasites dès la 1re frame. Avec SetPressed seul :
+    // non armé -> skin=&normal_ invalide -> `if (skin->Valid())` faux + fallbackTex_ nul ->
+    // RIEN dessiné ; armé -> slot 41/42 blitté. Exactement le binaire.
+    // Confirmer/Annuler sont, EUX, bien tri-état (hit-test unk_8E9084 @0x51EB4F, survol
+    // @0x51EB70, pressé unk_8E9118 @0x51EB90) -> paire générique ApplyConfirmCancelSkin.
     {
         Button* minusBtns[] = { &jobMinusBtn_, &factionMinusBtn_, &faceMinusBtn_, &hairMinusBtn_, &variantMinusBtn_ };
         Button* plusBtns[]  = { &jobPlusBtn_,  &factionPlusBtn_,  &facePlusBtn_,  &hairPlusBtn_,  &variantPlusBtn_ };
-        if (gfx::GpuTexture* t = GetAtlasSprite(41)) for (Button* b : minusBtns) b->SetNormal(WidgetSprite(t->Handle()));
-        if (gfx::GpuTexture* t = GetAtlasSprite(42)) for (Button* b : plusBtns)  b->SetNormal(WidgetSprite(t->Handle()));
+        // Surimpression PRESSÉE seule — garde latch EA 0x51E989 (`cmp [ecx+0Ch],0 ; jz`).
+        if (gfx::GpuTexture* t = GetAtlasSprite(41)) for (Button* b : minusBtns) b->SetPressed(WidgetSprite(t->Handle()));
+        // Idem « + » — garde latch EA 0x51E9B0 (`cmp [ecx+10h],0 ; jz`).
+        if (gfx::GpuTexture* t = GetAtlasSprite(42)) for (Button* b : plusBtns)  b->SetPressed(WidgetSprite(t->Handle()));
     }
     ApplyConfirmCancelSkin(createConfirmBtn_, createCancelBtn_);
 
@@ -291,14 +328,33 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     // cas 0) / `mov [ecx+2A0h], 94Dh` EA 0x518C40 (=2381, cas != 0).
     bgAtlasSlot_ = (net::DefaultRng().NextMod(2)) ? 2381 : 2380;
     serverState_.backgroundImageId = bgAtlasSlot_;
-    // Fond CharSelect (this[15713]) : slot atlas aléatoire 2383/2384/2385 (Scene_CharSelectUpdate
-    // 0x51BD90, init — cf. Docs/TS2_CHARSELECT_RE.md §4). Tiré une fois ici.
-    // Ancre : `call Rng_Next` EA 0x51C23A puis `cdq ; mov ecx, 3 ; idiv ecx` ;
-    // `mov [edx+0F584h], 94Fh` EA 0x51C261 (=2383) / `950h` EA 0x51C270 (=2384) /
-    // `951h` EA 0x51C27F (=2385). `2383 + Rng_Next()%3` est exactement équivalent :
-    // Rng_Next() ∈ 0..0x7FFF (positif) => reste toujours 0..2, la branche `default`
-    // (jmp 0x51C289, aucune écriture) est morte.
-    charBgSlot_ = 2383 + net::DefaultRng().NextMod(3);
+    // [A4] Le tirage du fond CharSelect (this[15713] = 2383/2384/2385) N'EST PLUS FAIT ICI.
+    // Il vit dans le bloc Init de Scene_CharSelectUpdate 0x51BD90 (`call Rng_Next` EA
+    // 0x51C23A, `%3` EA 0x51C245, écritures 0x51C261/0x51C270/0x51C27F) et est donc RE-TIRÉ
+    // à CHAQUE entrée en scène 4 — pas une fois au boot. Porté par game::UpdateCharSelect
+    // (RunInitBlock) dans charState_.backgroundSlot, que le rendu LIT. Cf. LoginScene.h.
+
+    // --- Aperçu 3D CharSelect (Char_RenderModel 0x527020) : ressources persistantes ---
+    // gfx::MeshRenderer::Init exige un gfx::Renderer& (dont il ne lit que Device()) ; sans
+    // lui, charPreviewReady_ reste false et CharSelectRenderPreview3D() ne dessine RIEN —
+    // ce qui est le comportement SÛR (le binaire, lui, dessine : cf. wiring TODO CHARSELECT_3D).
+    if (gfxRenderer_ && charMesh_.Init(*gfxRenderer_)) {
+        // gameDataDir="." : le CWD du process est déjà basculé sur gameDataDir par
+        // App::ResolveGameDataDir() (App/App.cpp) dès App::Init, donc bien avant la scène 4.
+        // MÊME convention et MÊME raison que Scene/WorldRenderer.cpp (Models()/Motions()).
+        charModels_  = std::make_unique<gfx::ModelCache>(charMesh_, ".");
+        charMotions_ = std::make_unique<gfx::MotionCache>(".");
+        // D3DLIGHT9 0x18C5358 -> SetLight(0,&light) @0x51D226 : diffuse/ambient 0.8 et
+        // direction normalize(-1,-1,-1). Poussé UNE FOIS (les valeurs sont des littéraux du
+        // binaire, réécrits à l'identique à chaque frame par Scene_CharSelectRender).
+        gfx::CharPreview3D::ApplyLight(charMesh_);
+        charPreviewReady_ = true;
+    } else if (!gfxRenderer_) {
+        TS2_WARN("LoginScene : aucun gfx::Renderer fourni -> apercu 3D CharSelect DESACTIVE "
+                 "(cf. wiring TODO CHARSELECT_3D, Scene/SceneManager.cpp:337).");
+    } else {
+        TS2_WARN("LoginScene : MeshRenderer::Init a echoue -> apercu 3D CharSelect desactive.");
+    }
 
     // Câblage des sprites RÉELS de l'écran ServerSelect (panneau/barre de charge/bouton
     // d'action, cf. UI/ServerSelectRender.h) : nécessite le device D3D9, indisponible
@@ -331,7 +387,21 @@ void LoginScene::Shutdown() {
     if (gfx::ActiveSprite() == &sprites_) gfx::SetActiveSprite(nullptr);
     if (whiteTex_) { whiteTex_->Release(); whiteTex_ = nullptr; }
     atlasCache_.clear(); // libère les GpuTexture avant que le device ne soit détruit
-    // font_ / sprites_ se libèrent via leurs destructeurs.
+    // Aperçu 3D CharSelect : même discipline que atlasCache_ — les VB/IB/textures des
+    // SkinnedModel du cache, puis la déclaration de sommets et les shaders du MeshRenderer,
+    // doivent être relâchés AVANT la destruction du device (possédé par SceneManager, qui
+    // détruit LoginScene en premier). ORDRE : modèles (référencent le device) -> motions
+    // (données 100 % CPU, aucun objet device) -> MeshRenderer.
+    charModels_.reset();
+    charMotions_.reset();
+    charMesh_.Shutdown();
+    charPreviewReady_ = false;
+    gfxRenderer_      = nullptr;
+    // ⚠ AUCUN hook OnDeviceLost/OnDeviceReset n'est requis pour ces ressources : MeshRenderer
+    // crée TOUS ses VB/IB/textures en D3DPOOL_MANAGED (Gfx/MeshRenderer.cpp:369/381/451), qui
+    // survit à un Reset sans ré-upload — c'est exactement pourquoi Scene/WorldRenderer.cpp
+    // n'y touche pas non plus dans ses propres OnDeviceLost/OnDeviceReset (il n'y traite que
+    // sa police). font_ / sprites_ se libèrent via leurs destructeurs.
 }
 
 void LoginScene::OnDeviceLost()  { font_.OnDeviceLost();  sprites_.OnLostDevice();  }
@@ -408,11 +478,41 @@ gfx::GpuTexture* LoginScene::GetAtlasSprite(int slotIndex) {
 // Texture réelle mise à l'échelle de l'écran. AUCUN repli (2026-07-15) : si le sprite ne
 // charge pas, on ne dessine RIEN — fidèle à Sprite2D_DrawScaled/EnsureLoaded qui échoue en
 // silence (Docs/TS2_SHELL_RENDER_TRUTH.md §2 : « Jamais de FillRect »).
+// [A7/B1] CORRECTION DE FIDÉLITÉ (2026-07-16) : les diviseurs sont les CONSTANTES LITTÉRALES
+// 1024.0f / 768.0f, PAS les dimensions de la texture. Le binaire NE LIT JAMAIS la taille du
+// sprite ici — l'ancien code (`screenW_/tex->Width()`) contredisait son propre commentaire et
+// produisait une mise à l'échelle fausse dès qu'un fond n'était pas exactement 1024x768.
+// PREUVE COMPLÈTE (désassemblage direct, re-vérifié ce front) :
+//   flt_1669178 / flt_166917C : `data_refs` = 4 réfs = 1 SEULE écriture + 3 lectures.
+//     écriture UNIQUE : WinMain 0x4609C0 -> `fld ds:flt_7A68C8 ; fstp ds:flt_1669178` @0x4609D3/
+//     0x4609D9 puis `fld ds:flt_7A68C4 ; fstp ds:flt_166917C` @0x4609DF/0x4609E5.
+//     lectures : Scene_ServerSelectRender @0x51942F, Scene_LoginRender @0x51B1D5,
+//                Scene_CharSelectRender @0x51D279 — toutes des `fdiv`.
+//   valeurs vérifiées À L'OCTET (get_bytes) : flt_7A68C8 = 00 00 80 44 = 1024.0f ;
+//                                             flt_7A68C4 = 00 00 40 44 =  768.0f.
+// Ce ne sont donc PAS des variables de résolution : ce sont les dimensions de RÉFÉRENCE du
+// design, figées au démarrage et jamais réécrites.
+//
+// Ordre des arguments de Sprite2D_DrawScaled 0x4D6BF0 (4 args + this), pushs @0x51D257-0x51D2AB :
+//   fild nHeight ; fdiv flt_166917C ; ... push ecx ; fstp [esp]   <- scaleY (poussé en 1er)
+//   fild nWidth  ; fdiv flt_1669178 ; ... push ecx ; fstp [esp]   <- scaleX
+//   push 0                                                        <- y
+//   push 0                                                        <- x
+//   mov ecx, atlas + 148*this[15713] ; call Sprite2D_DrawScaled
+// => Sprite2D_DrawScaled(spr, x=0, y=0, scaleX = nWidth/1024.0f, scaleY = nHeight/768.0f).
+// L'idiome `push ecx ; fstp [esp]` (réservation de slot + écriture FPU) est ce qui fait
+// croire à 3 dwords empilés : il y en a bien 4.
+//
+// nWidth = 0x1669184, nHeight = 0x1669188 (= screenW_/screenH_ côté C++).
+// AUCUN repli : si le sprite ne charge pas, on ne dessine RIEN — fidèle à
+// Sprite2D_DrawScaled/EnsureLoaded qui échoue en silence.
 void LoginScene::DrawFullscreenBg(int slotIndex) {
+    constexpr float kDesignW = 1024.0f; // flt_7A68C8 -> flt_1669178 (WinMain @0x4609D9)
+    constexpr float kDesignH = 768.0f;  // flt_7A68C4 -> flt_166917C (WinMain @0x4609E5)
     gfx::GpuTexture* tex = GetAtlasSprite(slotIndex);
-    if (tex && tex->Handle() && tex->Width() > 0 && tex->Height() > 0 && sprites_.Ready()) {
-        const float sx = static_cast<float>(screenW_) / static_cast<float>(tex->Width());
-        const float sy = static_cast<float>(screenH_) / static_cast<float>(tex->Height());
+    if (tex && tex->Handle() && sprites_.Ready()) {
+        const float sx = static_cast<float>(screenW_) / kDesignW;
+        const float sy = static_cast<float>(screenH_) / kDesignH;
         sprites_.DrawSpriteScaled(tex->Handle(), nullptr, 0, 0, sx, sy,
                                   gfx::kSpriteWhite, /*compensatePos=*/true);
     }
@@ -1171,6 +1271,16 @@ void LoginScene::LoginOnMouseUp(int x, int y) {
 void LoginScene::CharSelectUpdate() {
     ++frame_;
     const game::CharSelectTransition t = game::UpdateCharSelect(charState_, charHost_, 1.0f / 30.0f);
+    // [A5/A3] Transition vers ServerSelect (scène 2) — DEUX producteurs, tous deux HORS du
+    // tick : le bouton RETOUR (Scene_CharSelectOnMouseUp, `this[0]=2` EA 0x525A51) et le clic
+    // OK d'un NoticeDlg de MODE 2 (UI_NoticeDlg_OnLButtonUp 0x5C03F0 case 2, `g_SceneMgr=2`
+    // EA 0x5C04E4). game::UpdateCharSelect les remonte EN TÊTE (CharSelectFlow.cpp) ; sans
+    // cette branche, les DEUX étaient avalés et l'état Verrouillé restait un cul-de-sac
+    // définitif. PAS de notice 44/45 : le binaire n'en ouvre aucune sur ce chemin.
+    if (t == game::CharSelectTransition::ServerSelect) {
+        pending_ = ts2::Scene::ServerSelect; // this[0] = 2 (EA 0x525A51 / 0x5C04E4)
+        return;
+    }
     if (t == game::CharSelectTransition::EnterWorld) {
         // zoneId AUTHENTIQUE = celui renvoyé par Net_ReqEnterCharInfo (écrase toute
         // valeur locale, cf. CharSelectFlow.h EnterCharInfoResult).
@@ -1187,78 +1297,74 @@ void LoginScene::CharSelectUpdate() {
             game::g_World.self.spawnY = slot.localPosY;
             game::g_World.self.spawnZ = slot.localPosZ;
         }
-        // Angle de spawn : tiré fraîchement ICI (même point du flux que Scene_CharSelectUpdate
-        // EA 0x51c7ed, juste avant Net_ConnectGameServer) via le MÊME PRNG que le binaire
-        // (Net/Rng.h::DefaultRng, LCG identique à Rng_Next()). Cf. GameState.h::SelfState::
-        // spawnRotationDeg et Net/CharSelectPackets.h::kTail72OffRotA/RotB pour la destination.
-        game::g_World.self.spawnRotationDeg =
-            static_cast<float>(net::DefaultRng().NextMod(360));
+        // [A18] Angle de spawn : LU depuis l'état, PAS re-tiré ici. Le `Rng_Next()%360` est
+        // DANS le bloc d'entrée de Scene_CharSelectUpdate (EA 0x51c7ed), c'est-à-dire AVANT
+        // Net_ReqEnterCharInfo (op22, EA 0x51c81d) et donc AVANT les 4 tirages de nonce de
+        // l'op22 puis les 4 de l'op11 : re-tirer ICI (après coup) DÉCALAIT le flux PRNG
+        // partagé de net::DefaultRng() d'un cran par rapport au binaire, ce qui change TOUS
+        // les nonces réseau émis ensuite. game::CharSelectState::enterWorldSpawnRotationDeg
+        // porte le tirage au bon point du flux (wiring TODO SPAWN_ROT de
+        // Game/CharSelectFlow.h:499 — FERMÉ ici). flt_1675AC4 ET flt_1675AC8 reçoivent la
+        // MÊME valeur (EA 0x51c7ed/0x51c7f9) : un seul champ suffit côté C++
+        // (Net/CharSelectPackets.h::kTail72OffRotA/RotB la dupliquent à la sérialisation).
+        game::g_World.self.spawnRotationDeg = charState_.enterWorldSpawnRotationDeg;
         pending_ = ts2::Scene::EnterWorld; // scene_id = 5
     }
 }
 
-// CORRIGÉ (audit CharSelect, session 2026-07-14, décompilation + désassemblage directs de
-// Scene_CharSelectRender 0x51CED0, branche substate==1 « Liste », EA 0x51D4E6-0x51D7BF) :
-// l'ancien gabarit (rowW=300, centré à l'écran, pas=50) était une INVENTION pure — le
-// binaire réel ANCRE la colonne des 3 emplacements en HAUT-DROITE de l'écran, pas au
-// centre. Origine du panneau/fond (Sprite2D_Draw sur unk_931680) : (nWidth-194, 19)
-// (EA 0x51D4E6 `ecx=nWidth; sub ecx,0C2h` puis EA 0x51D4F5 `var_418=13h`). Pas vertical
-// RÉEL de 44px par slot (`imul ..., 2Ch`, EA 0x51D590/0x51D5F3/0x51D623/0x51D65B) —
-// PAS 50. Dans cette même boucle (i=0..2, EA 0x51D526 `cmp var_20,3` — CONFIRME
-// game::kMaxCharSlots=3) le binaire dessine, par slot, une icône de tier/job
-// (unk_931714/9319F8/94B504/985A1C, choisie selon dword_166A9CC/16693BC/16693B8 —
-// stride 0x2768) à (nWidth-194, 19+34+i*44), un surlignage de sélection (unk_924944,
-// UNIQUEMENT sur le slot == this[+0xF58C]) à (+25, +50+i*44), et un NIVEAU numérique
-// (police bitmap unk_1685740, UI_MeasureNumberText/UI_DrawNumberValue, centré) vers
-// (+54, +51+i*44) — rien de tout cela n'est câblé ici (cf. TODO au-dessus de
-// CharListRender). NOTE HONNÊTE (re-vérifié idaTs2 2026-07-15) : Sprite2D_Draw (EA
-// 0x51D50F pour le panneau, 0x51D5A7 pour l'icône de tier) NE PREND PAS de w/h explicite
-// — les dimensions viennent de la texture .IMG chargée (panneau unk_931680 / icône de
-// tier unk_931714…), donc NON prouvables statiquement sans charger l'asset. Seuls
-// L'ORIGINE (x,y) et LE PAS (44px) sont extraits du binaire (fidèles) ; kNominalW/kNominalH
-// ci-dessous ne servent QUE de repli de hit-test si le sprite de fiche (slot 2013) n'est pas
-// chargeable — sinon la taille NATIVE de ce sprite est utilisée (cf. corps ci-dessous).
-RECT LoginScene::CharSlotRect(int i) const {
-    constexpr int kRightMargin = 194; // nWidth - 0xC2, EA 0x51D4EC
-    constexpr int kTop         = 19;  // var_418 = 0x13, EA 0x51D4F5
-    constexpr int kRowOffset   = 34;  // +0x22, EA 0x51D599/0x51D62C/0x51D5DB/0x51D6DA
-    constexpr int kRowStep     = 44;  // imul ..., 2Ch, EA 0x51D590
-    constexpr int kNominalW = 176, kNominalH = 44; // gabarit de repli (dims réelles = celles
-                                                    // du sprite .IMG, non extractibles statiquement)
-    const int x = screenW_ - kRightMargin;              // panneauX (= x du blit CharListRender)
-    const int y = kTop + kRowOffset + i * kRowStep;     // y_i = 53 / 97 / 141
-    // Dimensions = taille NATIVE du sprite de fiche (slot 2013) quand il est chargeable, pour
-    // que le hit-test colle EXACTEMENT au blit de CharListRender ; sinon gabarit nominal.
-    // GetAtlasSprite alimente un cache membre (paresseux) -> const_cast (le RECT reste une
-    // valeur pure). Les 4 tiers partagent la même géométrie de fiche -> 2013 suffit ici.
-    int w = kNominalW, h = kNominalH;
-    if (gfx::GpuTexture* t = const_cast<LoginScene*>(this)->GetAtlasSprite(2013)) {
-        if (t->Width() > 0 && t->Height() > 0) {
+// [D2] CharSlotRect() a été SUPPRIMÉ (fonction + déclaration) : son dernier appelant a
+// disparu quand le hit-test de sélection est passé sur AtlasHitTest(1657, ...), qui teste le
+// sprite de SURBRILLANCE aux coordonnées exactes du binaire (@0x522688) plutôt qu'un RECT de
+// fiche reconstruit. Il portait en outre un gabarit INVENTÉ (kNominalW=176 / kNominalH=44)
+// utilisé en repli — proscrit en mission pixel-perfect. Les ancres qu'il documentait sont
+// désormais dans CharListRender() (origine X = nWidth-0xC2 @0x51D4EC, Y0 = 0x13 @0x51D4F5,
+// pas 44 = `imul .., 2Ch` @0x51D590, décalage +0x22 @0x51D599).
+
+// Lit un int32 dans la fiche BRUTE (net::g_CharRecords[slot] = &unk_1669380 + 0x2768*slot).
+// Cf. LoginScene.h pour la raison d'être : game::CharSlotInfo n'expose ni +60 ni +5708 (les
+// deux discriminants des cascades de tier), ni les 11 champs du panneau de détail.
+int32_t LoginScene::CharRecI32(int32_t slot, int byteOffset) {
+    if (slot < 0 || slot >= net::kCharRecordCount) return 0;
+    if (byteOffset < 0 || byteOffset + static_cast<int>(sizeof(int32_t)) > net::kCharRecordSize)
+        return 0;
+    int32_t v = 0;
+    std::memcpy(&v, net::g_CharRecords[slot] + byteOffset, sizeof(v));
+    return v;
+}
+
+// [C2] Colonne des 10 boutons — origine et pas RE-PROUVÉS À L'OCTET ce front :
+//   x0 = nWidth - 0x8C (140) @0x51DF12 ; y0 = nHeight - 0x12D (301) @0x51DF20 (écrits UNE
+//   fois, @0x51DF17/@0x51DF26, jamais réécrits dans le bloc).
+//   deltas y décodés depuis les octets : `sub edx,25h` (83 EA 25) @0x51E347 = -37 (slots
+//   3086) ; ENTRER +0 ; `add eax,25h` (83 C0 25) @0x51DFDE = +37 ; `add eax,4Ah` (83 C0 4A)
+//   @0x51E06C = +74 ; `add eax,6Fh` (83 C0 6F) @0x51E0FA = +111 ; `add eax,94h`
+//   (05 94 00 00 00) @0x51E18C = +148 ; `add edx,0B9h` @0x51E215 = +185 (RETOUR) ;
+//   `add ecx,0DEh` @0x51E29F = +222 (QUITTER).
+//
+// ⚠ DIMENSIONS : le gabarit inventé kColBtnW=128 / kColBtnH=34 de l'ancien code a été
+//   SUPPRIMÉ. Les vraies dimensions vivent dans spr+108/+112, remplis au chargement du .IMG
+//   (non déterminables en statique — spec §13.1) : on prend donc la taille NATIVE de la
+//   texture du sprite NORMAL, qui est la source exacte, disponible au runtime comme dans le
+//   binaire. Sprite absent -> bounds 0x0 -> le bouton ne peut pas être cliqué, ce qui est
+//   cohérent avec un sprite non chargé (Sprite2D_HitTest testerait un rect 0x0).
+// ⚠ Le hit-test du binaire porte sur le sprite NORMAL — d'où les slots 3086/16/19/22/963/25.
+void LoginScene::LayoutCharSelect() {
+    const int x0 = screenW_ - 0x8C;  // nWidth  - 140 @0x51DF12
+    const int y0 = screenH_ - 0x12D; // nHeight - 301 @0x51DF20
+    auto place = [this](Button& b, int slotNormal, int x, int y) {
+        int w = 0, h = 0;
+        if (gfx::GpuTexture* t = GetAtlasSprite(slotNormal)) {
             w = static_cast<int>(t->Width());
             h = static_cast<int>(t->Height());
         }
-    }
-    return MakeRect(x, y, w, h);
-}
-
-// Écran Liste : colonne principale de boutons (Docs/TS2_CHARSELECT_RE.md §7). Origine
-// v126 = nWidth-140, v117 = nHeight-301 ; pas vertical de 37 px. Les boutons de cette
-// colonne sont rendus/hit-testés aux mêmes offsets que Scene_CharSelectRender/
-// OnMouseDown/Up : RESTAURER v117-37 (EA 0x51E354/0x525B46), ENTRER v117 (0x51DF53/
-// 0x52508E), CRÉER v117+37 (0x51DFEB/0x52522A), SUPPRIMER v117+74 (0x51E079/
-// 0x52545C), RETOUR v117+185 (0x51E225/0x525A1F). RENOMMER (v117+111), ENTREPÔT
-// (v117+148) et QUITTER (v117+222) restent dessinés en sprites directs.
-void LoginScene::LayoutCharSelect() {
-    // Hit rect = gabarit nominal (dims réelles = celles du sprite .IMG, non extractibles
-    // statiquement) ; borné sous le pas de 37 px pour éviter le recouvrement des zones.
-    constexpr int kColBtnW = 128, kColBtnH = 34;
-    const int v126 = screenW_ - 140;
-    const int v117 = screenH_ - 301;
-    restoreBtn_.SetBounds(v126, v117 - 37,  kColBtnW, kColBtnH); // RESTAURER (3086/3087/3088), EA 0x51E354
-    enterBtn_.SetBounds  (v126, v117,       kColBtnW, kColBtnH); // ENTRER    (16/17/18),       EA 0x51DF53
-    createBtn_.SetBounds (v126, v117 + 37,  kColBtnW, kColBtnH); // CRÉER     (19/20/21),       EA 0x51DFEB
-    deleteBtn_.SetBounds (v126, v117 + 74,  kColBtnW, kColBtnH); // SUPPRIMER (22/23/24),       EA 0x51E079
-    backBtn_.SetBounds   (v126, v117 + 185, kColBtnW, kColBtnH); // RETOUR    (963/964/965),    EA 0x51E225
+        b.SetBounds(x, y, w, h);
+    };
+    place(restoreBtn_, 3086, x0, y0 - 37);  // EA 0x51E34F (`sub edx,25h` @0x51E347)
+    place(enterBtn_,     16, x0, y0);       // EA 0x51DF4E / hit-test 0x51DF53
+    place(createBtn_,    19, x0, y0 + 37);  // EA 0x51DFE6 / hit-test 0x51DFEB
+    place(deleteBtn_,    22, x0, y0 + 74);  // EA 0x51E074 / hit-test 0x51E079
+    place(backBtn_,     963, x0, y0 + 185); // EA 0x51E220 / hit-test 0x51E225
+    place(quitBtn_,      25, x0, y0 + 222); // EA 0x51E2AA / hit-test 0x51E2AF
 }
 
 // Écran Formulaire de création : 5 paires -/+ (job/faction/visage/couleur/variant),
@@ -1291,183 +1397,577 @@ void LoginScene::LayoutCreateForm() {
     createCancelBtn_.SetBounds (panelX + 149, panelY + 203, kBtnW, kBtnH);
 }
 
-// AUDIT (2026-07-14, décompilation + désassemblage directs de Scene_CharSelectRender
-// 0x51CED0 — 473 blocs, 151 appels Sprite2D_Draw/DrawScaled, 40 StrTable005_Get, EA
-// 0x51CED0-0x520F40) — écarts CONFIRMÉS entre le binaire et cette implémentation :
+// ÉTAT DE L'AUDIT CharSelect (mis à jour le 2026-07-16, front cs-render-2d) — les 4 écarts
+// que l'audit du 2026-07-14 listait ici sont CLOS, sauf le n°1 :
+//  1) DISPATCH À 3 BRANCHES (`this[+0xF588]` @0x51D4CB : ==1 Liste 0x51D4E6, ==2 Formulaire
+//     0x51E4A1, sinon 3e branche 0x51ECC5 = overlay MOT DE PASSE SECONDAIRE / PIN, piloté
+//     par dword_16692A4 / this[15375]) : TOUJOURS OUVERT. game::CharSelectScreen ne modélise
+//     que {List, CreateForm} et game::CharSelectPinState est un état inerte — les deux
+//     vivent dans Game/CharSelectFlow.h, HORS de ce front. La 3e branche est donc
+//     inatteignable côté C++. TODO [0x51ECC5] (cf. CharSelectRenderUi2D).
+//  2) APERÇU 3D : CLOS. Les 4 Char_RenderModel (0x51D361/0x51D3CC/0x51D429/0x51D480) sont
+//     câblés dans CharSelectRenderPreview3D(), avec les membres persistants qui manquaient
+//     (charMesh_/charModels_/charMotions_, cf. LoginScene.h) et la résolution d'apparence de
+//     gfx::CharPreview3D. Reste UN câblage hors de ce front : SceneManager doit passer son
+//     gfx::Renderer à Init() (wiring TODO CHARSELECT_3D).
+//  3) HABILLAGE SPRITE DE LA LISTE : CLOS. Panneau 2012, DEUX cascades de tier à 4 paliers
+//     (icône ET valeur), surbrillance 1657, niveau et nom centrés — cf. CharListRender().
+//     Plus aucun FillRect ni gabarit inventé dans la scène 4.
+//  4) TITRE / "Compte : %s" : CLOS — ils n'existaient pas dans le binaire et ont été retirés
+//     (les 40 StrTable005_Get de la fonction sont TOUS dans 0x51E571-0x51FEF7, exclusivement
+//     pour les VALEURS du formulaire de création). Les libellés des boutons sont GRAPHIQUES
+//     (textures d'atlas) : aucun texte n'est dessiné par-dessus.
+// ===========================================================================
+// [A1/A13/A16] ORDRE DE PEINTRE — Scene_CharSelectRender 0x51CED0, EA par EA
+// ===========================================================================
+// Le binaire ouvre et ferme DEUX batches 2D distincts, avec la passe 3D ENTRE LES DEUX :
 //
-// 1) DISPATCH RÉEL À 3 BRANCHES, pas 2 : le binaire teste `this[+0xF588]` (EA 0x51D4CB)
-//    ==1 -> Liste (0x51D4E6), ==2 -> Formulaire (0x51E4A1), SINON -> 3e branche (0x51ECC5).
-//    3e branche ÉLUCIDÉE (front W4-F1) : `screen∉{1,2}` -> `if (this[+0xF03C]==0) goto
-//    0x51F895` (popups communs de fin) `else` overlay MOT DE PASSE SECONDAIRE / PIN — le
-//    compte-annexe/GM piloté par dword_16692A4 / this[15375] (this[+0xF03C]). Sous-états
-//    this[+0xF040] 1/2/3 (0x51ED12 / 0x51F0DB / 0x51F3DD), masque '*' de longueur
-//    this[+0xF048], pavé PIN, sprites unk_93EF4C. CharSelectFlow.h déclare CE système
-//    EXPLICITEMENT NON REPRODUIT (hors périmètre) et game::CharSelectScreen ne modélise que
-//    {List, CreateForm} : l'état PIN (this[15375]/15376/longueur saisie) n'existe PAS dans
-//    game::CharSelectState. -> TODO ancre (nécessiterait d'ajouter l'état PIN à
-//    CharSelectState, fichier possédé par un autre front) — PAS de code ici. CharSelectRender()
-//    ci-dessous ne modélise donc que 2 écrans (CreateForm/Liste) + l'overlay deleteConfirmOpen_.
+//   Gfx_Begin2D                                                            @0x51D22D
+//     >>> if (this[1] == 0) { Gfx_End2D @0x51D243 ; Gfx_Present @0x51D24D ;
+//                             jmp 0x520EC8 /* RETURN */ }                  <<< garde @0x51D238
+//     Sprite2D_DrawScaled(atlas + 148*this[15713], 0, 0, nW/1024, nH/768)  @0x51D2AB
+//   Gfx_End2D                                     <-- LE 2D SE FERME AVANT LA 3D  @0x51D2B5
+//   --- PASSE 3D : 4x Char_RenderModel 0x527020 (0x51D361/0x51D3CC/0x51D429/0x51D480) ---
+//   Gfx_Begin2D                                                            @0x51D48A
+//     GetPhysicalCursorPos(&Point) @0x51D493 ; ScreenToClient(hWndParent) @0x51D4A4
+//     var_1C = Point.x @0x51D4AD ; var_420 = Point.y @0x51D4B3   <- mouse de TOUS les HitTest
+//     --- TOUT LE 2D UI (dispatch d'écran @0x51D4CB) ---
+//   UI_RenderAllDialogs @0x520EAF ; Gfx_End2D @0x520EB9 ; Gfx_Present @0x520EC3
 //
-// 2) APERÇU 3D DU PERSONNAGE : le binaire appelle `Char_RenderModel` (0x527020 —
-//    « assemblage du paperdoll joueur pièce par pièce via SObject_DrawEx ... appelé
-//    UNIQUEMENT depuis Scene_CharSelectRender (4x) ») QUATRE fois avant le 1er Gfx_Begin2D
-//    (0x51D48A) : Liste EA 0x51D361/0x51D3CC (fiche &unk_1669380+0x2768*selectedSlot),
-//    CreateForm EA 0x51D429/0x51D480 (fiche d'aperçu dword_16709B8) — en mode 3D, PAS en
-//    sprite 2D. La CAMÉRA de preview est désormais modélisée (kCharPreviewEye/Target,
-//    0x51BDED) et la RECETTE 3D complète est posée en TODO ancre au début de CharListRender()
-//    et CreateFormRender() (résolution paperdoll disponible en lecture seule via
-//    gfx::PlayerPaperdoll::Resolve, W3). Le CÂBLAGE reste BLOQUÉ : il exige des membres 3D
-//    persistants (MeshRenderer/ModelCache/MotionCache/Camera + OnDeviceLost/Reset) et une
-//    entrée begin-frame (Gfx_BeginFrame 0x6A2280) vivant dans LoginScene.h, NON possédé par
-//    ce front (W4-F1) ; Scene/WorldRenderer est interdit d'édition. -> front possédant ces
-//    membres 3D.
-//
-// 3) Habillage sprite de la Liste (panneau + icône de tier + surlignage + niveau
-//    numérique par slot) confirmé et documenté EA par EA dans CharSlotRect() ci-dessous —
-//    non câblé (repli FillRect aplat uniquement).
-//
-// 4) Titre "Selection du personnage" / ligne "Compte : %s" : AUCUN appel StrTable005_Get
-//    ni aucun Font_Draw identifié pour un titre de la Liste dans la plage EA 0x51D2A0-
-//    0x51D7C4 inspectée (les 40 appels StrTable005_Get de la fonction sont TOUS dans la
-//    plage 0x51E571-0x51FEF7, exclusivement pour les VALEURS du formulaire de création,
-//    cf. commentaire de CreateFormRender()). Le panneau réel (unk_931680) porte
-//    vraisemblablement son propre titre peint dans la texture (même motif que le panneau
-//    Login "Connexion", cf. LoginRender()) — ce texte libre ICI est donc, comme les
-//    libellés de boutons (cf. Init()), un texte de repli TEMPORAIRE probablement en trop
-//    une fois le vrai sprite panneau câblé (superposition potentielle avec un titre déjà
-//    peint dans l'image) : à retirer/repositionner dès que unk_931680 (ou l'asset .IMG
-//    correspondant) sera chargé.
+// [A1] GARDE D'INIT (@0x51D238, `cmp dword ptr [edx+4], 0`) : pendant le sous-état Init —
+// soit les 30 frames que compte Scene_CharSelectUpdate avant de passer Actif (EA 0x51bde4
+// `++this[2] >= 0x1Eu`) — le rendu ne dessine RIEN : End2D + Present + return sec. C'est
+// UNE SECONDE d'écran VIDE, à reproduire telle quelle. L'ancien code affichait la liste
+// immédiatement.
+// ⚠ Sous-état Verrouillé (2) : Update est inerte MAIS le rendu dessine TOUT (image figée) —
+//   la garde ne teste QUE 0, pas `!= 1`. C'est un modal gelé, pas un écran mort.
 void LoginScene::CharSelectRender() {
-    if (charState_.screen == game::CharSelectScreen::CreateForm) CreateFormRender();
-    else                                                          CharListRender();
+    // Garde @0x51D238 : `[edx+4]` == this[1] == sous-état. SEUL 0 sort.
+    if (charState_.subState == game::CharSelectSubState::Init) return; // frame vide (1 s)
+
+    CharSelectRenderBg();        // Begin2D .. fond plein écran .. End2D  (0x51D22D-0x51D2B5)
+    CharSelectRenderPreview3D(); // ENTRE les deux batches 2D            (0x51D2C0-0x51D485)
+    CharSelectRenderUi2D();      // Begin2D .. UI .. End2D               (0x51D48A-0x520EB9)
+}
+
+// Fond plein écran — Begin2D/End2D À LUI SEUL (0x51D22D .. 0x51D2B5).
+// Le slot est LU dans l'état (this[15713]), re-tiré à chaque Init par le flux : cf. [A4].
+void LoginScene::CharSelectRenderBg() {
+    if (!sprites_.Ready()) return;
+    sprites_.Begin();
+    DrawFullscreenBg(charState_.backgroundSlot); // 2383/2384/2385 (EA 0x51C261/70/7F)
+    sprites_.End();
+}
+
+// [A16/E1/G1/G2] PASSE 3D — les 4 Char_RenderModel 0x527020, ENTRE Gfx_End2D (0x51D2B5) et
+// Gfx_Begin2D (0x51D48A). Dispatch d'écran @0x51D2C0 (`v108 = this[15714]`) :
+//   this[15714]==1 (Liste)    : garde `cmp [eax+0F58Ch], -1 ; jz 0x51D485` @0x51D2ED ->
+//                               slot == -1 => LES DEUX APPELS SAUTÉS (aucun modèle).
+//                               (pass=1,isCreate=0) @0x51D361 ; (pass=2,isCreate=0) @0x51D3CC
+//                               record = &unk_1669380 + 0x2768*this[15715]
+//   this[15714]==2 (Création) : (pass=1,isCreate=1) @0x51D429 ; (pass=2,isCreate=1) @0x51D480
+//                               record = &dword_16709B8 (fiche d'aperçu)
+//   sinon                     : jmp 0x51D485 (aucune 3D) — inatteignable ici, cf. UI2D.
+//
+// [E1] `pass ∈ {1,2}` OBLIGATOIRE (Model_Render @0x40EBD5 : `dec eax ; cmp eax,1 ; ja ->
+// sortie`) et le paperdoll ENTIER est dessiné en passe 1 PUIS en passe 2 — surtout pas les
+// deux passes par pièce. animState = 1 (Idle, `this[15718]=1` @0x51C363) ou 3 (Entering,
+// @0x52516F) : JAMAIS 0. Le switch ~500 cas sur a8 est MORT ici (a8 = 0 EN DUR @0x52705F /
+// @0x527544) -> non porté. Échelle réelle = 1.0 (le 20.0f de flt_7ED9F8 est le diamètre de
+// la sphère de frustum, pas une échelle — cf. Gfx/CharPreview3D.h §5).
+//
+// [G1] Le TODO « race/gender pas encore exposés » de l'ancien code était FAUX : la race de
+// la LISTE est la fiche +40 (`mov eax,[edx+28h]` @0x527536), le genre +44 — les deux sont
+// lus par gfx::CharPreview3D::BuildFromRecord DIRECTEMENT dans la fiche brute
+// net::g_CharRecords[slot], donc sans dépendre de game::CharSlotInfo.
+// [G2] L'arme de l'aperçu de CRÉATION vient de la SCÈNE (this[15716] = variant,
+// `mov edx,[ecx+0F590h]` @0x5271B8), PAS de record+216 (qui n'est écrit qu'à la
+// confirmation) : d'où `choices.variant = createForm.variant`.
+void LoginScene::CharSelectRenderPreview3D() {
+    if (!charPreviewReady_ || !charModels_ || !charMotions_) return; // cf. wiring CHARSELECT_3D
+
+    // Pose = les 5 derniers arguments de Char_RenderModel (this[15717..15724]).
+    gfx::CharPreviewPose pose;
+    pose.motion    = charState_.previewMotionIndex;                   // this[15717] (+0xF594)
+    pose.animState = static_cast<int32_t>(charState_.previewMotion);  // this[15718] (+0xF598)
+    pose.animTime  = charState_.previewElapsed;                       // this[15719] (+0xF59C)
+    pose.pos[0]    = charState_.previewPos[0];                        // this[15720..22]
+    pose.pos[1]    = charState_.previewPos[1];
+    pose.pos[2]    = charState_.previewPos[2];
+    pose.yawDeg    = charState_.previewRot[1];                        // yaw = this[15724] (+0xF5B0)
+
+    gfx::CharPreviewResult r;
+    if (charState_.screen == game::CharSelectScreen::List) {
+        // Garde @0x51D2ED — AVANT toute résolution : slot == -1 => rien du tout.
+        const int32_t slot = charState_.selectedSlot;
+        if (slot < 0 || slot >= net::kCharRecordCount) return;
+        // record = &unk_1669380 + 0x2768*slot == net::g_CharRecords[slot] (fiche BRUTE).
+        r = gfx::CharPreview3D::BuildFromRecord(*charModels_, *charMotions_,
+                                                net::g_CharRecords[slot], pose);
+    } else {
+        // Fiche d'aperçu dword_16709B8 : reconstruite depuis le formulaire (mêmes champs,
+        // cf. Game/CharSelectFlow.h::CharCreateForm et l'inventaire exhaustif §6.2).
+        gfx::CharPreviewChoices c;
+        c.job       = charState_.createForm.job;       // +36 — index de RACE de cette branche (@0x527051)
+        c.gender    = charState_.createForm.faction;   // +44 — genre (nom historique conservé)
+        c.face      = charState_.createForm.face;      // +48
+        c.hairColor = charState_.createForm.hairColor; // +52
+        c.variant   = charState_.createForm.variant;   // this[15716] (SCÈNE) — @0x5271B8
+        r = gfx::CharPreview3D::BuildFromChoices(*charModels_, *charMotions_, c, pose);
+    }
+    if (!r.valid) return;
+
+    // Vue = D3DXMatrixLookAtLH(eye(0,5,-28), target(0,10,0), up(0,1,0)) — l'opération exacte
+    // de Gfx_BeginFrame @0x6A2352 sur le bloc caméra écrit à l'Init de la scène
+    // (0x800130..0x800144 @0x51BDED-0x51BE21, recopié dans g_GxdRenderer @0x51BE2C-0x51BE65).
+    // [A14] Écrire ces 6 floats « à chaque Init sur les DEUX singletons » est, côté C++, sans
+    // effet observable : ce sont des CONSTANTES (vérifiées à l'octet, cf. CharPreview3D.h §5)
+    // et rien d'autre ne les lit. On les pose donc directement ici, au point de consommation.
+    // ⚠ La PROJECTION n'est PAS touchée par la scène 4 (les seuls memcpy de matrices de
+    // Scene_CharSelectRender, @0x51CF32-0x51CF4D, copient le WORLD 0x800244 et la VUE
+    // 0x800154 vers le GXD — jamais la projection) : on réutilise celle, APPLICATIVE, posée
+    // au boot par Gfx_InitDevice 0x69B9B0 (D3DXMatrixPerspectiveFovLH @0x69BFC6). Elle est
+    // déjà portée par gfx::Camera (fovY 45° = kFovDegDefault ; near/far = g_GxdRenderer+60/
+    // +64) — on l'instancie par DÉFAUT plutôt que de recopier des littéraux ici, pour ne pas
+    // dupliquer une vérité qui vit déjà dans Gfx/Camera.h.
+    D3DXMATRIX view, proj;
+    gfx::CharPreview3D::BuildViewMatrix(view);
+    const gfx::Camera appCam; // valeurs par défaut = projection applicative (cf. Gfx/Camera.h)
+    appCam.BuildProjMatrix(proj, static_cast<float>(screenW_) / static_cast<float>(screenH_));
+    charMesh_.SetCamera(view, proj);
+
+    // DEUX rendus COMPLETS du paperdoll : passe 1 puis passe 2 (les 4 sites d'appel du
+    // binaire sont deux paires adjacentes, jamais entrelacées par pièce).
+    gfx::CharPreview3D::Render(charMesh_, r, pose, gfx::MeshRenderer::kDrawPass_Opaque); // pass=1
+    gfx::CharPreview3D::Render(charMesh_, r, pose, gfx::MeshRenderer::kDrawPass_Blend);  // pass=2
+}
+
+// [A13] Second batch 2D (0x51D48A) : le survol est recalculé PAR FRAME depuis la position
+// PHYSIQUE LIVE du curseur, lue APRÈS Gfx_Begin2D et AVANT le dispatch d'écran (@0x51D4CB).
+// Aucun index de survol n'est mis en cache dans Update — toute mise en cache diverge.
+void LoginScene::CharSelectRenderUi2D() {
+    if (charState_.screen == game::CharSelectScreen::CreateForm) CreateFormRender(); // @0x51E4A1
+    else                                                          CharListRender();  // @0x51D4E6
+    // 3e branche du dispatch (@0x51D4E1 -> 0x51ECC5) = overlay MOT DE PASSE SECONDAIRE / PIN.
+    // INATTEIGNABLE ici : game::CharSelectScreen ne modélise que {List, CreateForm} et
+    // game::CharSelectPinState est un état inerte (opcodes 13/14/15 non câblés).
+    // TODO [0x51ECC5] : porter l'assistant PIN (this[15375]/15376/15377, pavé permuté
+    // this[15385..15394], sprites unk_93EF4C) — hors périmètre de ce front.
     if (deleteConfirmOpen_) DeleteConfirmRender(); // overlay, cf. host.ShowDeleteConfirm
 }
 
-// Écran Liste — CÂBLAGE 1:1 depuis les vraies assets .IMG de l'atlas 001
-// (Docs/TS2_CHARSELECT_RE.md §4/§5.1/§7). Plus AUCUN aplat FillRect ni libellé inventé :
-//   - panneau liste (slot 2012) @ (nWidth-194, 19), blit natif non étiré ;
-//   - fiches des emplacements OCCUPÉS (slot vide -> rien) : fond de fiche par tier
-//     (renaissance niveau>=113 -> 2018, sinon normal -> 2013) @ (panneauX, y_i), avec
-//     surbrillance de sélection (slot 1657) @ (panneauX+25, y_i+16) sur selectedSlot, et
-//     la VALEUR de niveau centrée en texte à (panneauX+54, y_i+17) et (panneauX+118, y_i+17) ;
-//   - colonne de boutons (slots dédiés câblés en Init()) @ (v126, v117 + offset).
-// POLITIQUE ZÉRO REPLI (comme LoginRender) : un sprite qui ne charge pas -> rien dessiné.
+// ===========================================================================
+// [D1/D2] ÉCRAN LISTE (this[15714] == 1) — Scene_CharSelectRender @0x51D4E6-0x51D7BF
+// ===========================================================================
+// Origine, LITTÉRALE : X = nWidth - 0xC2 (194) @0x51D4EC ; Y0 = 0x13 (19) @0x51D4F5.
+// Panneau de fond : Sprite2D_Draw(unk_931680, X, 19) @0x51D50F — slot 2012
+//   ((0x931680 - 0x8E8B50)/148 = 2012, base+stride re-vérifiés ce front).
+// Boucle `for (i=0;i<3;++i)` : `cmp [ebp+var_20], 3 ; jge` @0x51D526 -> kMaxCharSlots = 3.
+//
+// [D1] 🔴 SLOT VIDE = RIEN DESSINÉ. Première ligne du corps de boucle :
+//        `Crt_Strcmp(&unk_1669394 + 0x2768*i, "") ; test eax,eax ; jnz` @0x51D545/0x51D54F
+//      -> si le nom est vide, `jmp loc_51D51D` = CONTINUE : le `continue` saute TOUT le
+//      corps (aucun sprite, aucun texte, aucun cadre). Seul le panneau 2012 reste visible
+//      derrière. NE PAS « améliorer » en dessinant un emplacement vide.
+//
+// Par slot OCCUPÉ, QUATRE éléments (dans cet ordre) :
+//  1. Icône de tier @ (X, 19 + 44*i + 0x22) = (X, 53 + 44*i)
+//     (`imul eax, 2Ch` @0x51D590 puis `lea edx, [ecx+eax+22h]` @0x51D599)
+//  2. Surbrillance de sélection unk_924944 = slot 1657 @ (X + 0x19, 19 + 44*i + 0x32)
+//     = (X+25, 69 + 44*i), UNIQUEMENT si `i == this[15715]` (`cmp edx,[ecx+0F58Ch]` @0x51D618)
+//  3. NIVEAU, nombre CENTRÉ sur x = X + 0x36 (54), y = 19 + 44*i + 0x33 (70+44*i) @0x51D715-0x51D756
+//  4. NOM, texte CENTRÉ sur x = X + 0x76 (118), même y @0x51D779-0x51D7BA
+//
+// 🔴 DEUX CASCADES DE TIER À 4 PALIERS — même prédicat, SPRITE et VALEUR différents.
+//    ORDRE EXACT (si / sinon-si), désassemblé ce front :
+//      icône @0x51D556-0x51D60A                     |  valeur @0x51D642-0x51D712
+//      rec[+5708] >= 1 -> unk_985A1C (4343) @0x51D605 | -> "%d" rec[+5708]        @0x51D6FA
+//      rec[+60]   >= 1 -> unk_94B504 (2729) @0x51D5E4 | -> "%d" rec[+60]          @0x51D6D4
+//      rec[+56]   >= 113 -> unk_9319F8 (2018) @0x51D5C3 | -> "%d" rec[+56] - 112  @0x51D6B1
+//      sinon           -> unk_931714 (2013) @0x51D5A2 | -> "%d" rec[+56]          @0x51D685
+//    (113 = `cmp ..., 71h` @0x51D584 ; 112 = `sub edx, 70h` @0x51D6B1 — vérifiés.)
+//    ⚠ L'ancien code ne portait que 2 des 4 paliers (2018/2013) et rendait la MÊME valeur
+//      aux deux emplacements de texte : c'était faux sur les deux plans. Le 2e emplacement
+//      n'est PAS un second niveau — c'est le NOM (Crt_StringInit(&String, name) @0x51D771).
+//
+// POLITIQUE ZÉRO REPLI : un sprite qui ne charge pas -> rien dessiné (fidèle à
+// Sprite2D_Draw/EnsureLoaded, qui échoue en silence).
+//
+// ⚠ DIVERGENCE STRUCTURELLE ASSUMÉE ET MESURÉE (ordre de peintre) : le binaire n'a qu'UNE
+// boucle (init `mov [ebp+var_20],0` EA 0x51D514 ; sortie `cmp [ebp+var_20],3 ; jge
+// loc_51D7C4` EA 0x51D526/0x51D52A ; arête arrière `jmp loc_51D51D` EA 0x51D7BF) qui
+// ENTRELACE sprites et texte PAR FICHE : icone_0, surbrillance_0, niveau_0, nom_0, icone_1…
+// On la scinde ici en deux passes (batch sprite puis batch font). L'ordre INTRA-fiche
+// (surbrillance_i avant texte_i) est PRÉSERVÉ — c'est le seul recouvrement possible au pas
+// de 44 px — mais l'ordre INTER-fiches diverge (le binaire peint texte_0 AVANT icone_1, on
+// peint icone_1 avant texte_0). Sans conséquence tant que les sprites tiennent dans le pas
+// de 44 px (icônes y=53+44i, surbrillance y=69+44i, texte y=70+44i) ; les dimensions n'étant
+// pas déterminables en statique (spec §13.1), le recouvrement n'est ni prouvé ni prouvable
+// ici. À re-trancher si un sprite de liste dépasse ce pas.
 void LoginScene::CharListRender() {
     LayoutCharSelect();
-    const POINT mp = CursorClient();
+    // [A13] Position PHYSIQUE LIVE du curseur (GetPhysicalCursorPos @0x51D493 +
+    // ScreenToClient(hWndParent) @0x51D4A4) — recalculée à CHAQUE frame de rendu.
+    const POINT mp = CharSelectCursorClient();
     createBtn_.OnMouseMove(mp.x, mp.y);
     deleteBtn_.OnMouseMove(mp.x, mp.y);
     enterBtn_.OnMouseMove(mp.x, mp.y);
     backBtn_.OnMouseMove(mp.x, mp.y);
     restoreBtn_.OnMouseMove(mp.x, mp.y);
 
-    // Ancres réelles (doc §5.1 / §7).
-    constexpr int kPanelTop = 19;         // panneau liste unk_931680 @ (nWidth-194, 19)
-    const int panneauX = screenW_ - 194;
-    const int v126     = screenW_ - 140;  // origine colonne boutons
-    const int v117     = screenH_ - 301;
-
-    // TODO(ancre) APERÇU 3D — Scene_CharSelectRender 0x51CED0, 2x Char_RenderModel 0x527020
-    // AVANT le 1er Gfx_Begin2D (0x51D48A), écran Liste : EA 0x51D361 (pass=1,isCreate=0) et
-    // 0x51D3CC (pass=2,isCreate=0), sur la fiche sélectionnée &unk_1669380 + 0x2768*this[15715]
-    // (charState_.selectedSlot). Caméra : œil kCharPreviewEye / cible kCharPreviewTarget
-    // (Scene_CharSelectUpdate EA 0x51BDED). Chaque pièce -> SObject_DrawEx(desc, pass, animTime,
-    // pos, rotY, 20.0, palette, 1) avec palette d'os partagée v37 =
-    // PcModel_ResolveEquipSlot 0x4E46A0 (== PcModel_ResolveSlotAndApply 0x4E5A00), animTime
-    // échantillonné par g_GameTimeSec (idiome ftol(t*30)%frameCount, Char_RenderModel 0x528D38).
-    // Résolution DISPONIBLE en lecture seule : gfx::PlayerPaperdoll::Resolve (Gfx/PlayerPaperdoll.h,
-    // W3) -> {palette, pièces SLOT0/SLOT1/[arme]} depuis (race, gender, costume0, costume1,
-    // weaponItemId, gameTimeSec). Paramètres de la fiche = charState_.slots[selectedSlot]
-    // (job@36/faction@44/face@48/hairColor@52 exposés ; race/gender/costume/arme PAS encore
-    // exposés par LoadCharacterSlots -> état possédé par un autre front).
-    // BLOQUÉ ICI : le câblage 3D exige des membres PERSISTANTS possédés (gfx::MeshRenderer +
-    // gfx::ModelCache + gfx::MotionCache + gfx::Camera + hooks OnDeviceLost/Reset) et une entrée
-    // begin-frame 3D (Gfx_BeginFrame 0x6A2280) qui vivent dans LoginScene.h (NON possédé par ce
-    // front) ; Scene/WorldRenderer est interdit d'édition. -> à câbler par le front possédant
-    // ces membres 3D. Ne pas toucher Scene/WorldRenderer.
+    constexpr int kPanelTop = 19;         // var_418 = 0x13 @0x51D4F5
+    const int panneauX = screenW_ - 194;  // nWidth - 0xC2 @0x51D4EC
 
     if (sprites_.Ready()) {
         sprites_.Begin();
-        DrawFullscreenBg(charBgSlot_); // fond RÉEL CharSelect (slot 2383/2384/2385) — zéro aplat
 
-        // Panneau de la liste (slot 2012) : blit non étiré à sa taille native.
+        // Panneau de la liste — slot 2012 (unk_931680) @ (X, 19), blit natif @0x51D50F.
         if (gfx::GpuTexture* t = GetAtlasSprite(2012))
             sprites_.DrawSprite(t->Handle(), nullptr, panneauX, kPanelTop, gfx::kSpriteWhite);
 
-        // 3 fiches perso : uniquement les emplacements occupés.
         for (int i = 0; i < game::kMaxCharSlots; ++i) {
             const game::CharSlotInfo& slot = charState_.slots[static_cast<size_t>(i)];
-            if (!slot.occupied) continue;            // slot vide -> pas de fiche dessinée
-            const RECT r = CharSlotRect(i);          // fiche @ (panneauX, y_i), EA 0x51D5A7 ; hit sélection = r+(25,16)
-            // Fond de fiche selon le tier (doc §5.1). Décidables ici : normal (2013) et
-            // renaissance (niveau>=113 -> 2018). Les tiers intermédiaire (2729, rec+0x3C) et
-            // max (4343, rec+0x164C) dépendent de champs de fiche NON exposés par
-            // game::CharSlotInfo -> TODO (câbler dès que LoadCharacterSlots exposera ces offsets).
-            const int ficheSlot = (slot.power >= 113) ? 2018 : 2013;
-            if (gfx::GpuTexture* t = GetAtlasSprite(ficheSlot))
-                sprites_.DrawSprite(t->Handle(), nullptr, r.left, r.top, gfx::kSpriteWhite);
-            // Surbrillance de sélection (slot 1657) @ (panneauX+25, y_i+16).
-            if (i == charState_.selectedSlot) {
+            if (!slot.occupied) continue;          // [D1] Crt_Strcmp(name,"")==0 -> continue @0x51D54F
+
+            const int yIcon = kPanelTop + 44 * i + 0x22; // 53 + 44*i  @0x51D599
+            // 1. Icône de tier — cascade à 4 paliers, ORDRE EXACT.
+            const int32_t t5708 = CharRecI32(i, 5708); // dword_166A9CC[2768h*i] @0x51D55C
+            const int32_t t60   = CharRecI32(i,   60); // dword_16693BC[2768h*i] @0x51D572
+            int tierSlot;
+            if      (t5708 >= 1)       tierSlot = 4343; // unk_985A1C @0x51D605
+            else if (t60   >= 1)       tierSlot = 2729; // unk_94B504 @0x51D5E4
+            else if (slot.power >= 113) tierSlot = 2018; // unk_9319F8 @0x51D5C3 (`cmp ..,71h` @0x51D584)
+            else                        tierSlot = 2013; // unk_931714 @0x51D5A2
+            if (gfx::GpuTexture* t = GetAtlasSprite(tierSlot))
+                sprites_.DrawSprite(t->Handle(), nullptr, panneauX, yIcon, gfx::kSpriteWhite);
+
+            // 2. Surbrillance de sélection — slot 1657 (unk_924944) @ (X+25, 69+44*i).
+            if (i == charState_.selectedSlot) {                     // `cmp edx,[ecx+0F58Ch]` @0x51D618
                 if (gfx::GpuTexture* t = GetAtlasSprite(1657))
-                    sprites_.DrawSprite(t->Handle(), nullptr, r.left + 25, r.top + 16, gfx::kSpriteWhite);
+                    sprites_.DrawSprite(t->Handle(), nullptr,
+                                        panneauX + 0x19, kPanelTop + 44 * i + 0x32,
+                                        gfx::kSpriteWhite);         // (+25, +50) @0x51D634/0x51D62C
             }
         }
-
-        // Boutons LATCHÉS de la colonne principale : sprites idle/hover/pressé dédiés câblés
-        // en Init() ; DrawSkin dessine l'état courant à la taille native du sprite.
-        restoreBtn_.DrawSkin(sprites_); // RESTAURER @ (v126, v117-37), Scene_CharSelectRender 0x51E370/0x51E38A/0x51E3A4
-        enterBtn_.DrawSkin(sprites_);
-        createBtn_.DrawSkin(sprites_);
-        deleteBtn_.DrawSkin(sprites_);
-        backBtn_.DrawSkin(sprites_);
-
-        // RENOMMER / ENTREPÔT / QUITTER : pas de membre Button -> dessinés en sprites DIRECTS
-        // à l'état idle (doc §7). QUITTER (slot 25) est désormais HIT-TESTÉ dans
-        // CharSelectOnMouseUp (rect direct sur ce sprite -> game::OnQuitButtonClicked, EA
-        // 0x525AA5) ; RENOMMER (this[15706], ticket item 1133) / ENTREPÔT (this[15396],
-        // Net_ReqStorageList) restent hors périmètre (latch/action non portés — TODO).
-        auto drawIdleSprite = [&](int slot, int px, int py) {
-            if (gfx::GpuTexture* t = GetAtlasSprite(slot))
-                sprites_.DrawSprite(t->Handle(), nullptr, px, py, gfx::kSpriteWhite);
-        };
-        drawIdleSprite(1812, v126, v117 + 111); // RENOMMER (idle, hors périmètre)
-        drawIdleSprite(1925, v126, v117 + 148); // ENTREPÔT (idle, hors périmètre)
-        drawIdleSprite(25,   v126, v117 + 222); // QUITTER  (idle ; hit-test en OnMouseUp)
         sprites_.End();
     }
 
     if (font_.Ready()) {
         font_.BeginBatch();
-        // VALEUR de niveau par fiche occupée (doc §5.1) : deux nombres CENTRÉS à
-        // (panneauX+54, y_i+17) et (panneauX+118, y_i+17). Valeur = niveau brut, sauf tier
-        // renaissance (niveau>=113 affiché niveau-112). Seul game::CharSlotInfo.power (fiche
-        // +0x38 = dword_16693B8 = niveau, doc §5.2) est exposé -> la même valeur est rendue
-        // aux deux emplacements (le binaire y dessine deux valeurs via UI_DrawNumberValue ;
-        // la seconde n'est pas décidable statiquement -> TODO). Centrage via MeasureText
-        // (repli du UI_MeasureNumberText/police bitmap unk_1685740 d'origine).
         for (int i = 0; i < game::kMaxCharSlots; ++i) {
             const game::CharSlotInfo& slot = charState_.slots[static_cast<size_t>(i)];
-            if (!slot.occupied) continue;
-            const RECT r = CharSlotRect(i);
-            const int lvl = (slot.power >= 113) ? (slot.power - 112) : slot.power;
+            if (!slot.occupied) continue;                 // même `continue` @0x51D54F
+
+            const int yText = kPanelTop + 44 * i + 0x33;  // 70 + 44*i  @0x51D723
+
+            // 3. NIVEAU — MÊME cascade à 4 paliers que l'icône, mais sur la VALEUR.
+            const int32_t v5708 = CharRecI32(i, 5708); // @0x51D64B
+            const int32_t v60   = CharRecI32(i,   60); // @0x51D661
             char num[16];
-            std::snprintf(num, sizeof(num), "%d", lvl);
-            const int halfW = font_.MeasureText(num) / 2;
-            font_.DrawTextAt(num, r.left + 54  - halfW, r.top + 17, kColText);
-            font_.DrawTextAt(num, r.left + 118 - halfW, r.top + 17, kColText);
+            if      (v5708 >= 1) std::snprintf(num, sizeof(num), "%d", v5708);          // @0x51D6FA
+            else if (v60   >= 1) std::snprintf(num, sizeof(num), "%d", v60);            // @0x51D6D4
+            else if (slot.power >= 113)                               // `cmp ..., 71h` @0x51D673
+                std::snprintf(num, sizeof(num), "%d", slot.power - 112);   // `sub edx, 70h` @0x51D6B1
+            else
+                std::snprintf(num, sizeof(num), "%d", slot.power);         // @0x51D685
+            DrawNumberCentered(num, panneauX + 0x36, yText);          // centre x = X+54 @0x51D72B
+
+            // 4. NOM — texte centré (Crt_StringInit(&String, &unk_1669394+0x2768*i) @0x51D771).
+            DrawNumberCentered(slot.name.c_str(), panneauX + 0x76, yText); // x = X+118 @0x51D78F
         }
         font_.EndBatch();
     }
+
+    // Panneau de détail GAUCHE, puis colonne de boutons — ORDRE DU BINAIRE
+    // (0x51D7C4 -> 0x51DF0D -> 0x51E4A1) : le détail est peint AVANT les boutons.
+    CharDetailPanelRender();
+    CharButtonColumnRender();
+}
+
+// ===========================================================================
+// [B2] PANNEAU DE DÉTAIL GAUCHE — @0x51D7C4-0x51DF0D, origine ABSOLUE (15, 19)
+// ===========================================================================
+// 🔴 GARDE ABSENTE DE LA SPEC CONSOLIDÉE §8.3, re-prouvée ici par désassemblage :
+//    `cmp dword ptr [ecx+0F58Ch], 0FFFFFFFFh ; jz loc_51DF0D` @0x51D7CA
+//    -> AUCUN slot sélectionné => le panneau ENTIER est sauté (on saute directement à la
+//       colonne de boutons). Le panneau n'est donc PAS un décor permanent.
+// Origine : var_4 = 0Fh (15) @0x51D7D7 ; var_418 = 13h (19) @0x51D7DE.
+// Indexé par this[15715] (`imul eax, 2768h` @0x51D7F4) — ce n'est PAS la liste des 3 slots.
+// AUCUN hit-test dans tout le bloc : purement décoratif.
+//
+// Fond : MÊME cascade à 4 paliers que la liste, sprites DIFFÉRENTS (@0x51D7FA-0x51D88E) :
+//   rec[+5708] >= 1  -> unk_985988 = slot 4342 @0x51D889
+//   rec[+60]   >= 1  -> unk_94B3DC = slot 2727 @0x51D872
+//   rec[+56]   >= 113 -> unk_90E6E0 = slot 1044 @0x51D85B
+//   sinon            -> unk_8E93FC = slot   15 @0x51D844
+// Puis, tous centrés via UI_MeasureNumberText/UI_DrawNumberValue :
+//   NOM   @ x = 15 + 0x77 (134), y = 19 + 0x20 (51)   @0x51D8CA / 0x51D8C3
+//   NIVEAU (MÊME cascade 4 paliers) @ x = 15 + 0x75 (132), y = 19 + 0x35 (72) @0x51DA1B/0x51DA14
+//   puis 11 champs @ x = 132, y = 19 + 0x48 + 19*k = 91, 110, ..., 281 (pas 19)
+//     (1er champ vérifié à l'octet : `add eax, 48h` @0x51DA80 ; `add esi, 75h` @0x51DA87 ;
+//      source `mov ecx, ds:dword_1669390[eax]` @0x51DA5D = fiche +16.)
+void LoginScene::CharDetailPanelRender() {
+    // Garde @0x51D7CA — AVANT tout dessin.
+    const int32_t sel = charState_.selectedSlot;
+    if (sel < 0 || sel >= game::kMaxCharSlots) return;
+    const game::CharSlotInfo& rec = charState_.slots[static_cast<size_t>(sel)];
+    const int32_t d5708 = CharRecI32(sel, 5708); // dword_166A9CC[2768h*sel] @0x51D7FA
+    const int32_t d60   = CharRecI32(sel,   60); // dword_16693BC[2768h*sel] @0x51D815
+
+    constexpr int kX = 15; // var_4   = 0Fh @0x51D7D7
+    constexpr int kY = 19; // var_418 = 13h @0x51D7DE
+
+    if (sprites_.Ready()) {
+        sprites_.Begin();
+        int bgSlot;
+        if      (d5708 >= 1)       bgSlot = 4342; // unk_985988 @0x51D889
+        else if (d60   >= 1)       bgSlot = 2727; // unk_94B3DC @0x51D872
+        else if (rec.power >= 113) bgSlot = 1044; // unk_90E6E0 @0x51D85B (`cmp ..,71h` @0x51D830)
+        else                       bgSlot = 15;   // unk_8E93FC @0x51D844
+        if (gfx::GpuTexture* t = GetAtlasSprite(bgSlot))
+            sprites_.DrawSprite(t->Handle(), nullptr, kX, kY, gfx::kSpriteWhite);
+        sprites_.End();
+    }
+
+    if (!font_.Ready()) return;
+    font_.BeginBatch();
+
+    // NOM du personnage sélectionné — centré @ (15+119, 19+32) = (134, 51).
+    DrawNumberCentered(rec.name.c_str(), kX + 0x77, kY + 0x20); // @0x51D8CA / 0x51D8C3
+
+    char buf[32];
+    // NIVEAU — MÊME cascade à 4 paliers (@0x51D90C-0x51DA09), centré @ (15+117, 19+53).
+    if      (d5708 >= 1)       std::snprintf(buf, sizeof(buf), "%d", d5708);
+    else if (d60   >= 1)       std::snprintf(buf, sizeof(buf), "%d", d60);
+    else if (rec.power >= 113) std::snprintf(buf, sizeof(buf), "%d", rec.power - 112);
+    else                       std::snprintf(buf, sizeof(buf), "%d", rec.power);
+    DrawNumberCentered(buf, kX + 0x75, kY + 0x35); // (132, 72) @0x51DA1B / 0x51DA14
+
+    // Les 11 champs numériques : MÊME x (132), y = 91 + 19*k.
+    // 🔴 SÉMANTIQUE NON PROUVÉE pour la moitié d'entre eux — les OFFSETS et les POSITIONS
+    // le sont (1er champ vérifié à l'octet ci-dessus ; le reste suit le même motif au pas
+    // de 19). game::CharSlotInfo (Game/CharSelectFlow.h, HORS de ce front) n'expose AUCUN
+    // de ces champs : ils vivent dans la fiche brute net::g_CharRecords[sel], qu'on relit
+    // directement — même source que le binaire (dword_1669390[2768h*slot] & co).
+    // TODO [0x51DA5D..0x51DEFF] : nommer +5484/+5488 (écrits par Pkt_CharStatDelta 0x46712C/
+    // 0x467101), +5432 (chaîne, « nom de clan » = INFÉRENCE non prouvée), +5708 (« 2e palier
+    // de renaissance » = inférence par symétrie). Ne PAS inventer de libellé : le binaire
+    // n'en dessine aucun (ils sont peints dans la texture du panneau).
+    if (sel >= net::kCharRecordCount) { font_.EndBatch(); return; }
+    // Offsets dans la fiche, dans l'ordre de dessin (y croissant). -1 = cas particulier
+    // traité dans la boucle (chaîne, ou champ packé lu deux fois).
+    constexpr int kDetailFieldOffsets[11] = {
+        16,   // y=91  — g_Currency 0x1673180 (monnaie/or)   `mov ecx, ds:dword_1669390[eax]` @0x51DA5D
+        5484, // y=110 — dword_16746DC, sémantique INCONNUE (écrit par Pkt_CharStatDelta 0x46712C)
+        5488, // y=129 — dword_16746E0, sémantique INCONNUE (écrit par Pkt_CharStatDelta 0x467101)
+        100,  // y=148 — g_SkillPointPool 0x16731D4
+        -1,   // y=167 — +5432 (dword_16746A8) : CHAÎNE (« nom de clan/équipe » = INFÉRENCE)
+        88,   // y=186 — g_MeridianPts_RatingMin
+        92,   // y=205 — g_MeridianPts_RatingMax
+        5568, // y=224 — g_MeridianPts_ExtAtk
+        5572, // y=243 — g_MeridianPts_Defense
+        -1,   // y=262 — +9408 (g_MeridianHpMpPacked 0x1675630) / 1000
+        -1,   // y=281 — +9408 % 1000
+    };
+    for (int k = 0; k < 11; ++k) {
+        const int y = kY + 0x48 + 19 * k; // 91 + 19*k (`add eax, 48h` @0x51DA80 pour k=0)
+        if (k == 4) {                     // CHAÎNE : lecture directe dans la fiche brute
+            char s[64] = {0};
+            std::memcpy(s, net::g_CharRecords[sel] + 5432, sizeof(s) - 1);
+            DrawNumberCentered(s, kX + 0x75, y);
+            continue;
+        }
+        int32_t v;
+        if (k == 9)       v = CharRecI32(sel, 9408) / 1000; // HP/MP packé : quotient
+        else if (k == 10) v = CharRecI32(sel, 9408) % 1000; // HP/MP packé : reste
+        else              v = CharRecI32(sel, kDetailFieldOffsets[k]);
+        std::snprintf(buf, sizeof(buf), "%d", v);
+        DrawNumberCentered(buf, kX + 0x75, y);
+    }
+    font_.EndBatch();
+}
+
+// ===========================================================================
+// [C2/C1] COLONNE DES 10 BOUTONS — @0x51DF0D-0x51E4A1
+// ===========================================================================
+// Origine : x0 = nWidth - 0x8C (140) @0x51DF12 ; y0 = nHeight - 0x12D (301) @0x51DF20.
+// var_4 et var_418 sont écrits UNE SEULE FOIS ici (@0x51DF17 / @0x51DF26) et JAMAIS
+// réécrits dans tout le bloc : les 8 premiers boutons partagent x0 et ne diffèrent que par
+// un delta sur y0 ; les DEUX derniers sont à des positions ABSOLUES.
+//
+// 🔴 TABLE RE-PROUVÉE À L'OCTET CE FRONT (get_bytes sur chaque `add/sub`) — la table §8.2 de
+//    la spec consolidée est FAUSSE sur plusieurs lignes (elle plaçait le bouton 3086 à
+//    y0+259 et donnait des gardes erronées). Décodage effectif :
+//   dy      | slots N/H/P    | latch    | garde serveur (this[15374], +0xF038) | EA sprite
+//   --------+----------------+----------+--------------------------------------+----------
+//   -37     | 3086/3087/3088 | this[10] | == 50 OU == 40 (cf. 🔴 ci-dessous)   | 0x51E34F
+//   (8e peint, APRÈS le slot 25)        |  (`sub edx, 25h` = 83 EA 25 @0x51E347)|
+//     0     | 16/17/18       | this[3]  | —                                    | 0x51DF4E
+//   +37     | 19/20/21       | this[4]  | != 60 ET != 50 (@0x51DFA5 / 0x51DFB8) | 0x51DFE6
+//           |                |          |  (`add eax, 25h` = 83 C0 25 @0x51DFDE)|
+//   +74     | 22/23/24       | this[5]  | != 60  (`cmp ...,3Ch ; jz` @0x51E046) | 0x51E074
+//           |                |          |  (`add eax, 4Ah` = 83 C0 4A @0x51E06C)|
+//   +111    | 1812/1813/1814 | this[6]  | != 60  (@0x51E0D4)                    | 0x51E102
+//           |                |          |  (`add eax, 6Fh` = 83 C0 6F @0x51E0FA)|
+//   +148    | 1925/1926/1927 | this[7]  | != 60  (@0x51E162)                    | 0x51E196
+//           |                |          |  (`add eax, 94h` = 05 94 00 00 00)    |
+//   +185    | 963/964/965    | this[8]  | —      (`cmp [edx+20h],0` @0x51E1FE)  | 0x51E220
+//   +222    | 25/26/27       | this[9]  | —      (`cmp [ecx+24h],0` @0x51E288)  | 0x51E2AA
+//   ABS(15,332) | 3166/3167/3168 | this[11] | != 60 ET != 40 (@0x51E3B5/0x51E3BE) | 0x51E3E5
+//   ABS(15,404) | 3192/3193/3194 | this[12] | == 40 SEULEMENT (@0x51E430)         | 0x51E457
+//   (positions absolues vérifiées à l'octet : `push 14Ch ; push 0Fh` @0x51E3DE/0x51E3E3 et
+//    `push 194h ; push 0Fh` = 68 94 01 00 00 / 6A 0F @0x51E450 -> (15,332) et (15,404).)
+//
+// 🔴 DOUBLE-KILL DU BOUTON #9 (3192) : il n'est RENDU que si serverIdx == 40 (@0x51E430)
+//    alors que son handler ABANDONNE justement si serverIdx == 40 (notice 110 @0x525D81) —
+//    et même en forçant, la garde `var_434` (invariant 0, cf. Game/CharSelectFlow.h [H1])
+//    mène à la notice 2248. CHAÎNE ENTIÈREMENT MORTE : on le DESSINE (fidélité du rendu)
+//    mais on ne câble AUCUN clic dessus. Idem pour l'opcode 24.
+//
+// GARDE SERVEUR : this[15374] (+0xF038) n'est réifié NULLE PART côté C++ (l'index « à plat »
+// 40/50/60 n'est PAS game::ServerSelectState::selectedServer — ne rien deviner, cf. règle #8).
+// host.GetServerIndex est donc nullptr -> srv == 0 en permanence, et c'est le MÊME état que
+// le binaire à srv==0 : les gardes « != » laissent passer (7 boutons dessinés), les gardes
+// « == » bloquent (3086 gardé `==50 || ==40` et 3192 gardé `==40` ne sont JAMAIS dessinés —
+// sans conséquence, leurs chaînes étant mortes). TODO [0x51c09d / 0x51c13f] : réifier
+// this[15374] en décompilant son écriture, puis assigner charHost_.GetServerIndex.
+void LoginScene::CharButtonColumnRender() {
+    if (!sprites_.Ready()) return;
+
+    const int x0 = screenW_ - 0x8C;  // nWidth  - 140 @0x51DF12
+    const int y0 = screenH_ - 0x12D; // nHeight - 301 @0x51DF20
+    const POINT mp = CharSelectCursorClient(); // survol live, par frame (@0x51D493)
+    const int32_t srv = charHost_.GetServerIndex ? charHost_.GetServerIndex() : 0;
+
+    sprites_.Begin();
+    // dy = 0 : ENTRER (16/17/18), aucune garde.
+    DrawTriStateSprite(16, x0, y0, enterBtn_.Pressed(), mp.x, mp.y);
+    // dy = +37 : CRÉER (19/20/21), garde != 60 ET != 50.
+    if (srv != 60 && srv != 50)
+        DrawTriStateSprite(19, x0, y0 + 37, createBtn_.Pressed(), mp.x, mp.y);
+    // dy = +74 : SUPPRIMER (22/23/24), garde != 60.
+    if (srv != 60)
+        DrawTriStateSprite(22, x0, y0 + 74, deleteBtn_.Pressed(), mp.x, mp.y);
+    // dy = +111 : slots 1812/1813/1814, garde != 60. Latch this[6] non porté (aucun membre
+    // Button) -> dessiné à l'état normal/survol uniquement. TODO [0x525544] : action non
+    // portée (RENOMMER, ticket item 1133 — cf. Net/CharSelectPackets.h::CharItemAction).
+    if (srv != 60)
+        DrawTriStateSprite(1812, x0, y0 + 111, /*latched=*/false, mp.x, mp.y);
+    // dy = +148 : slots 1925/1926/1927, garde != 60. Latch this[7] non porté.
+    // TODO [0x52B730] : action non portée (Net_ReqStorageList, op25).
+    if (srv != 60)
+        DrawTriStateSprite(1925, x0, y0 + 148, /*latched=*/false, mp.x, mp.y);
+    // dy = +185 : RETOUR (963/964/965), aucune garde serveur.
+    DrawTriStateSprite(963, x0, y0 + 185, backBtn_.Pressed(), mp.x, mp.y);
+    // dy = +222 : QUITTER (25/26/27), aucune garde serveur.
+    DrawTriStateSprite(25, x0, y0 + 222, quitBtn_.Pressed(), mp.x, mp.y);
+    // dy = -37 : RESTAURER (3086/3087/3088) — 8e dans l'ordre du binaire (blit EA 0x51E34F,
+    // APRÈS le slot 25 EA 0x51E2AA), et NON 1er : la colonne est peinte 16, 19, 22, 1812,
+    // 1925, 963, 25, PUIS 3086, 3166, 3192 (adresses croissantes 0x51DF4E -> 0x51E457).
+    // 🔴 GARDE RE-DÉSASSEMBLÉE CE FRONT (le sens était INVERSÉ, et la disjonction ==40 perdue) :
+    //   `cmp dword ptr [eax+0F038h], 32h` @0x51E312 ; `jz short loc_51E32A` @0x51E319  (==50 -> DESSINE)
+    //   `cmp dword ptr [ecx+0F038h], 28h` @0x51E321 ; `jnz short loc_51E3A9` @0x51E328 (!=40 -> SAUTE)
+    // => dessiner SSI (srv == 50 || srv == 40). GetServerIndex n'étant pas réifié (srv==0,
+    // cf. TODO ci-dessus), le binaire ne dessine JAMAIS ce bouton — l'ancien `srv != 50` le
+    // peignait à chaque frame.
+    if (srv == 50 || srv == 40)
+        DrawTriStateSprite(3086, x0, y0 - 37, restoreBtn_.Pressed(), mp.x, mp.y);
+    // ABSOLU (15,332) : slots 3166/3167/3168, garde != 60 ET != 40. Rôle NON PROUVÉ
+    // (spec §13.13) -> aucun clic câblé. TODO [0x525CA4].
+    if (srv != 60 && srv != 40)
+        DrawTriStateSprite(3166, 15, 332, /*latched=*/false, mp.x, mp.y);
+    // ABSOLU (15,404) : slots 3192/3193/3194, rendu SEULEMENT si serverIdx == 40.
+    // 🔴 CHAÎNE MORTE (double-kill ci-dessus) : dessiné, jamais cliquable.
+    if (srv == 40)
+        DrawTriStateSprite(3192, 15, 404, /*latched=*/false, mp.x, mp.y);
+    sprites_.End();
+}
+
+// [C1] Motif canonique du bouton 3 ÉTATS — slots CONSÉCUTIFS (n, n+1, n+2), sans exception
+// sur les 10 boutons. EA de référence (ENTRER) : latch @0x51DF32, hit-test @0x51DF53,
+// survol @0x51DF83, normal @0x51DF6C, pressé @0x51DF9A.
+// ⚠ LE HIT-TEST PORTE SUR LE SPRITE NORMAL (base), jamais sur celui qui est peint.
+// ⚠ EFFET DE BORD À NE PAS OMETTRE : Sprite2D_Draw ET Sprite2D_HitTest appellent tous deux
+//   Sprite2D_EnsureLoaded et écrivent `spr+144 = g_GameTimeSec` (@0x4D6B4F / @0x4D6C81) —
+//   même un simple survol « touche » le sprite pour le LRU d'atlas. Côté C++, GetAtlasSprite
+//   fait exactement cela : il charge paresseusement et garde l'entrée résidente dans
+//   atlasCache_ (pas d'éviction) — l'effet observable (le sprite reste chargé) est identique.
+void LoginScene::DrawTriStateSprite(int slotNormal, int x, int y, bool latched,
+                                    int mouseX, int mouseY) {
+    int slot;
+    if (latched)                                            slot = slotNormal + 2; // pressé
+    else if (AtlasHitTest(slotNormal, x, y, mouseX, mouseY)) slot = slotNormal + 1; // survol
+    else                                                     slot = slotNormal;     // normal
+    if (gfx::GpuTexture* t = GetAtlasSprite(slot))
+        sprites_.DrawSprite(t->Handle(), nullptr, x, y, gfx::kSpriteWhite);
+}
+
+// Sprite2D_HitTest 0x4D6C50 : `ptX >= x && ptX < x + spr[+108] && ptY >= y && ptY < y + spr[+112]`
+// (`a4 < *(_DWORD*)(this+108) + a2` @0x4D6CBC) — bornes >= gauche/haut et < droite/bas.
+// spr+108/+112 = width/height, remplis par le chargement du .IMG : NON déterminables en
+// statique (spec §13.1). On utilise donc les dimensions RÉELLES de la texture chargée —
+// c'est la seule source exacte, et elle est disponible au runtime comme dans le binaire.
+// Sprite non chargeable => aucun rect => false (le binaire, lui, testerait 0x0 : idem).
+bool LoginScene::AtlasHitTest(int slotIndex, int x, int y, int mouseX, int mouseY) {
+    gfx::GpuTexture* t = GetAtlasSprite(slotIndex);
+    if (!t || t->Width() <= 0 || t->Height() <= 0) return false;
+    const int w = static_cast<int>(t->Width());
+    const int h = static_cast<int>(t->Height());
+    return mouseX >= x && mouseX < x + w && mouseY >= y && mouseY < y + h;
+}
+
+// UI_MeasureNumberText 0x53FCA0 puis UI_DrawNumberValue 0x53FCC0, sur la police bitmap
+// unk_1685740. Centrage = idiome `movzx eax,ax ; cdq ; sub eax,edx ; sar eax,1 ; sub esi,eax`
+// (@0x51D73F-0x51D747) = `x = centerX - largeur/2` (division signée par 2).
+// TODO [0x53FCC0] : le dernier argument vaut LITTÉRALEMENT 1 sur tous les sites (certain),
+// mais sa signification est INCONNUE (couleur ? contour ? police ?) — non porté.
+// TODO [0x1685740] : l'objet police bitmap n'est pas identifié ; on rend via gfx::Font, dont
+// les métriques diffèrent -> le centrage n'est PAS garanti au pixel (spec §13.10).
+void LoginScene::DrawNumberCentered(const char* text, int centerX, int y) {
+    if (!text || !*text || !font_.Ready()) return;
+    font_.DrawTextAt(text, centerX - font_.MeasureText(text) / 2, y, kColText);
+}
+
+// GetPhysicalCursorPos(&Point) @0x51D493 — PAS GetCursorPos (que CursorClient() utilise pour
+// les autres scènes) — puis ScreenToClient(hWndParent 0x815184, &Point) @0x51D4A4.
+// GetPhysicalCursorPos n'est exposé par les en-têtes du SDK que sous _WIN32_WINNT >= 0x0600 :
+// on le résout dynamiquement dans user32 pour ne dépendre d'aucun réglage de la solution,
+// avec repli sur GetCursorPos (identique hors DPI virtualisé).
+POINT LoginScene::CharSelectCursorClient() const {
+    POINT p{0, 0};
+    using PFN = BOOL (WINAPI*)(LPPOINT);
+    static PFN pGetPhysical = []() -> PFN {
+        if (HMODULE u = GetModuleHandleA("user32.dll"))
+            return reinterpret_cast<PFN>(
+                reinterpret_cast<void*>(GetProcAddress(u, "GetPhysicalCursorPos")));
+        return nullptr;
+    }();
+    const BOOL ok = pGetPhysical ? pGetPhysical(&p) : GetCursorPos(&p);
+    if (ok && notifyWnd_) ScreenToClient(notifyWnd_, &p); // hWndParent 0x815184
+    return p;
 }
 
 // Écran Formulaire de création — CÂBLAGE 1:1 sur les vrais sprites d'atlas (front W4-F1,
-// Scene_CharSelectRender 0x51CED0, branche screen==2 EA 0x51E4A1). Plus AUCUN aplat FillRect,
-// AUCUN titre/libellé FR fabriqué : le binaire ne dessine QUE le panneau (slot 40), les
-// boutons -/+ (slots 41/42) baked, Confirmer/Annuler (slots 9/12), le caret (slot 43) et les
-// 5 VALEURS localisées + le nom. Aucune chaîne "Créer/Nom/Classe/…" n'existe dans l'exe.
+// Scene_CharSelectRender 0x51CED0, branche screen==2 EA 0x51E4A1). Dans CETTE fonction :
+// aucun aplat FillRect, aucun titre/libellé FR fabriqué — le binaire ne dessine QUE le
+// panneau (slot 40), les boutons -/+ (slots 41/42, état PRESSÉ uniquement), Confirmer/Annuler
+// (slots 9/12), le caret (slot 43) et les 5 VALEURS localisées + le nom. Aucune chaîne
+// "Créer/Nom/Classe/…" n'existe dans l'exe.
+// (⚠ l'ancienne affirmation « Plus AUCUN aplat FillRect » portait sur le FICHIER : elle était
+//  fausse — DeleteConfirmRender/ExitConfirmRender en peignent 3 chacun, cf. leurs TODO.)
+//
+// 🔴 ORDRE DE PEINTRE RE-ÉTABLI CE FRONT en balayant les sites de dessin de la plage
+// [0x51E4A1, 0x51ECC5) : (1) panneau slot 40 @0x51E4CA ; (2) NOM saisi @0x51E507 ;
+// (3) caret @0x51E543 ; (4) les 5 valeurs localisées, la DERNIÈRE @0x51E97E ; (5) PUIS
+// SEULEMENT les 18 blits de boutons, de 0x51E9A5 (1er « - ») à 0x51ECC0 (rotation droite).
+// Les boutons sont donc peints EN DERNIER, PAR-DESSUS le texte : une valeur localisée longue
+// (langue verbeuse) est RECOUVERTE par le bouton, jamais l'inverse. Le batch des boutons est
+// pour cela ROUVERT APRÈS le batch font, en fin de fonction.
 void LoginScene::CreateFormRender() {
     LayoutCreateForm();
-    const POINT mp = CursorClient();
+    // [A13] Curseur PHYSIQUE live (GetPhysicalCursorPos @0x51D493 + ScreenToClient @0x51D4A4),
+    // lu une fois par frame au 2e Begin2D et partagé par TOUS les hit-tests de la scène 4.
+    const POINT mp = CharSelectCursorClient();
     Button* formBtns[] = {
         &jobMinusBtn_, &jobPlusBtn_, &factionMinusBtn_, &factionPlusBtn_,
         &faceMinusBtn_, &facePlusBtn_, &hairMinusBtn_, &hairPlusBtn_,
@@ -1478,28 +1978,21 @@ void LoginScene::CreateFormRender() {
     // Ancres RÉELLES du panneau de création (EA 0x51E4A1 sub 0x14F / 0x51E4B0 = 0x49).
     const int panelX = screenW_ - 335, panelY = 73;
 
-    // TODO(ancre) APERÇU 3D — Scene_CharSelectRender 0x51CED0, 2x Char_RenderModel 0x527020
-    // AVANT le 1er Gfx_Begin2D (0x51D48A), écran CreateForm : EA 0x51D429 (pass=1,isCreate=1)
-    // et 0x51D480 (pass=2,isCreate=1), sur la fiche d'aperçu de création &dword_16709B8.
-    // Caméra œil kCharPreviewEye / cible kCharPreviewTarget (Scene_CharSelectUpdate 0x51BDED) ;
-    // palette d'os partagée v37 = PcModel_ResolveEquipSlot 0x4E46A0 (== PcModel_ResolveSlotAndApply
-    // 0x4E5A00), animTime par g_GameTimeSec (idiome ftol(t*30)%frameCount). Résolution en lecture
-    // seule : gfx::PlayerPaperdoll::Resolve (Gfx/PlayerPaperdoll.h, W3). Source d'apparence = la
-    // fiche d'aperçu dword_16709B8 (construite depuis charState_.createForm) — NON répliquée dans
-    // game::CharCreateForm (état possédé par un autre front).
-    // BLOQUÉ ICI : mêmes membres 3D possédés manquants (MeshRenderer/ModelCache/MotionCache/
-    // Camera + OnDeviceLost/Reset, entrée begin-frame Gfx_BeginFrame 0x6A2280) dans LoginScene.h
-    // (NON possédé par ce front). Ne pas toucher Scene/WorldRenderer.
+    // [G1] L'ancien TODO « APERÇU 3D ... BLOQUÉ ICI : membres 3D possédés manquants » est
+    // RETIRÉ : LoginScene.h appartient à ce front, les membres persistants existent
+    // (charMesh_/charModels_/charMotions_) et les DEUX Char_RenderModel de l'écran Création
+    // (EA 0x51D429 pass=1 / 0x51D480 pass=2, fiche &dword_16709B8) sont câblés dans
+    // CharSelectRenderPreview3D() — au BON endroit de l'ordre de peintre, c'est-à-dire AVANT
+    // ce batch 2D et APRÈS le fond, jamais ici.
+    // ⚠ Le fond plein écran N'EST PLUS dessiné ici : il a son PROPRE Begin2D/End2D
+    // (CharSelectRenderBg, 0x51D22D-0x51D2B5), fermé AVANT la passe 3D. Le redessiner dans
+    // ce batch-ci le repeindrait PAR-DESSUS le modèle 3D.
 
     if (sprites_.Ready()) {
         sprites_.Begin();
-        DrawFullscreenBg(charBgSlot_); // fond RÉEL CharSelect (slot 2383/2384/2385) — zéro aplat
         // Panneau de création (slot 40 unk_8EA270) @ (panelX, panelY) — blit natif, EA 0x51E4C5.
         if (gfx::GpuTexture* t = GetAtlasSprite(40))
             sprites_.DrawSprite(t->Handle(), nullptr, panelX, panelY, gfx::kSpriteWhite);
-        // Boutons -/+ (slots 41/42 skinnés en Init) + Confirmer/Annuler (slots 9/12) : DrawSkin
-        // dessine l'état courant à la taille native du sprite.
-        for (Button* b : formBtns) b->DrawSkin(sprites_);
         // Caret du champ nom (g_SprTextInputCaret = slot 43 unk_8EA42C) @ (panelX+largeurNom+0x80,
         // panelY+0x35), quand le champ est focalisé (EA 0x51E50C test g_UIEditBoxMgr==3, Sprite2D_Draw
         // 0x51E543). Repli caret texte assuré par DrawFieldValue (batch font) si le sprite manque.
@@ -1545,24 +2038,49 @@ void LoginScene::CreateFormRender() {
         DrawFieldValue(createNameBox_, panelX + 127, panelY + 53);
         font_.EndBatch();
     }
+
+    // Ordre de peintre : les 18 blits de boutons du binaire (EA 0x51E9A5..0x51ECC0) viennent
+    // APRÈS le dernier texte (dernier UI_DrawNumberValue EA 0x51E97E) — ils recouvrent donc
+    // les valeurs localisées qui débordent, jamais l'inverse. D'où ce SECOND batch sprite,
+    // rouvert après le batch font. Les 10 boutons -/+ ne portent QUE leur sprite pressé
+    // (SetPressed en Init, cf. garde latch EA 0x51E989) : au repos, DrawSkin ne dessine RIEN.
+    if (sprites_.Ready()) {
+        sprites_.Begin();
+        for (Button* b : formBtns) b->DrawSkin(sprites_);
+        sprites_.End();
+    }
 }
 
 // Confirmation Oui/Non de suppression (host.ShowDeleteConfirm), overlay au-dessus
 // de l'écran Liste. "Oui" -> ConfirmDeleteCharacter (opcode 18) ; "Non" referme.
+//
+// ⚠ NON FIDÈLE — GÉOMÉTRIE ENTIÈREMENT INVENTÉE (aucune ancre : bw/bh, le centrage, les
+// rects des boutons 64x24, les offsets de texte +24/+30 et +20/+5 ne sont prouvés par RIEN).
+// Le binaire n'ouvre PAS un panneau propre et ne dessine AUCUN rect : il fait
+//   UI_MsgBox_Open(dword_1822438, a2=2, StrTable005_Get(g_LangId,49), "")  EA 0x5254C4-0x5254DD
+// sur l'objet de dialogue PARTAGÉ à 40+ xrefs, dont la géométrie est celle des sprites du
+// MsgBox — non déterminable en statique (les dims viennent du .IMG, spec §13.1).
+// TODO [ancre 0x5C08C0] : porter UI_MsgBox (open 0x5C08C0, OnLButtonUp 0x5C0A90, rendu via
+// UI_RenderAllDialogs 0x5AE2D0) et router les deux confirmations dessus — ce qui supprimera
+// du même coup kColPanel/kColPanelEdge et toute la géométrie ci-dessous.
 void LoginScene::DeleteConfirmRender() {
     const int bw = 300, bh = 110;
     const int bx = screenW_ / 2 - bw / 2, by = screenH_ / 2 - bh / 2;
     deleteYesBtn_.SetBounds(bx + 40,          by + bh - 40, 64, 24);
     deleteNoBtn_.SetBounds(bx + bw - 104,     by + bh - 40, 64, 24);
-    const POINT mp = CursorClient();
+    // Overlay de la scène 4 -> MÊME source de curseur que le reste de CharSelect
+    // (GetPhysicalCursorPos @0x51D493), pas le GetCursorPos des scènes 2/3.
+    const POINT mp = CharSelectCursorClient();
     deleteYesBtn_.OnMouseMove(mp.x, mp.y);
     deleteNoBtn_.OnMouseMove(mp.x, mp.y);
 
     if (sprites_.Ready()) {
         sprites_.Begin();
-        FillRect(0, 0, screenW_, screenH_, 0x88000000);       // voile modal
-        FillRect(bx - 2, by - 2, bw + 4, bh + 4, kColPanelEdge);
-        FillRect(bx, by, bw, bh, kColPanel);
+        // TODO [ancre 0x5254DD] : ces 3 aplats N'EXISTENT PAS dans le binaire (voile modal,
+        // liseré, panneau). Substitution provisoire du MsgBox partagé dword_1822438.
+        FillRect(0, 0, screenW_, screenH_, 0x88000000);       // ⚠ inventé — voile modal
+        FillRect(bx - 2, by - 2, bw + 4, bh + 4, kColPanelEdge); // ⚠ inventé — liseré
+        FillRect(bx, by, bw, bh, kColPanel);                     // ⚠ inventé — panneau
         // Oui/Non : sprites réels "Confirm"/"Cancel" réutilisés (cf. ApplyConfirmCancelSkin) —
         // même paire générique que Login/CharSelect, mapping sémantique Oui=Confirm/Non=Cancel.
         deleteYesBtn_.DrawSkin(sprites_);
@@ -1571,7 +2089,16 @@ void LoginScene::DeleteConfirmRender() {
     }
     if (font_.Ready()) {
         font_.BeginBatch();
-        font_.DrawTextAt("Supprimer ce personnage ?", bx + 24, by + 30, kColText);
+        // Corps = StrTable005_Get(g_LangId, 49) — RE-DÉSASSEMBLÉ ce front :
+        //   `push offset String` (a4="") @0x5254C4 ; `push 31h` (=49) @0x5254C9 ;
+        //   `mov ecx, offset g_LangId` @0x5254CB ; `call StrTable005_Get` @0x5254D0 ;
+        //   `push eax` (a3=corps) ; `push 2` (a2=action id) @0x5254D6 ;
+        //   `mov ecx, offset dword_1822438` @0x5254D8 ; `call UI_MsgBox_Open` @0x5254DD.
+        // L'ancien littéral français "Supprimer ce personnage ?" était une INVENTION : le
+        // binaire ne contient aucun texte FR, tout passe par StrTable005 (game::Str = fidèle,
+        // même motif que la confirmation de sortie ci-dessous, Str(1) / EA 0x519B2A).
+        const std::string body = game::Str(49);
+        font_.DrawTextAt(body.c_str(), bx + 24, by + 30, kColText);
         if (!deleteYesBtn_.HasAnySkin())
             font_.DrawTextAt(deleteYesBtn_.Label().c_str(), deleteYesBtn_.X() + 20, deleteYesBtn_.Y() + 5, kColText);
         if (!deleteNoBtn_.HasAnySkin())
@@ -1585,6 +2112,11 @@ void LoginScene::DeleteConfirmRender() {
 // StrTable005_Get(g_LangId,1), &String) ouvert par Scene_ServerSelectOnMouseUp 0x519B3E —
 // même dialogue partagé que la confirmation de suppression (le binaire réutilise
 // dword_1822438). "Oui" -> g_QuitFlag=1 (UI_MsgBox_OnLButtonUp case 1) ; "Non" referme.
+//
+// ⚠ NON FIDÈLE — MÊME géométrie inventée que DeleteConfirmRender (aucune ancre sur bw/bh,
+// le centrage, les rects 64x24 et les offsets de texte). Seuls le TEXTE (Str(1), EA
+// 0x519B2A) et l'objet (dword_1822438, EA 0x519B3E) sont ancrés ; le binaire ne dessine
+// aucun rect. TODO [ancre 0x519B3E] : router sur UI_MsgBox une fois porté (cf. 0x5C08C0).
 void LoginScene::ExitConfirmRender() {
     const int bw = 300, bh = 110;
     const int bx = screenW_ / 2 - bw / 2, by = screenH_ / 2 - bh / 2;
@@ -1596,9 +2128,11 @@ void LoginScene::ExitConfirmRender() {
 
     if (sprites_.Ready()) {
         sprites_.Begin();
-        FillRect(0, 0, screenW_, screenH_, 0x88000000);       // voile modal
-        FillRect(bx - 2, by - 2, bw + 4, bh + 4, kColPanelEdge);
-        FillRect(bx, by, bw, bh, kColPanel);
+        // TODO [ancre 0x519B3E] : ces 3 aplats N'EXISTENT PAS dans le binaire. Substitution
+        // provisoire du MsgBox partagé dword_1822438 (cf. en-tête de fonction).
+        FillRect(0, 0, screenW_, screenH_, 0x88000000);       // ⚠ inventé — voile modal
+        FillRect(bx - 2, by - 2, bw + 4, bh + 4, kColPanelEdge); // ⚠ inventé — liseré
+        FillRect(bx, by, bw, bh, kColPanel);                     // ⚠ inventé — panneau
         // Oui/Non : sprites réels "Confirm"/"Cancel" réutilisés (cf. ApplyConfirmCancelSkin) —
         // même paire générique que Login/CharSelect (le binaire réutilise dword_1822438).
         exitConfirmYesBtn_.DrawSkin(sprites_);
@@ -1624,6 +2158,14 @@ void LoginScene::ExitConfirmRender() {
 // CharSelectFlow.h). La validation des boutons (envoi réseau) a lieu au « up »
 // dans CharSelectOnMouseUp, motif identique à Login.
 void LoginScene::CharSelectOnMouseDown(int x, int y) {
+    // [A2] GARDE DE SOUS-ÉTAT — TOUTE PREMIÈRE LIGNE, AVANT le test de la confirmation
+    // modale : `mov eax,[...] ; cmp dword ptr [eax+4], 1 ; jnz -> return` @0x520F4D.
+    // Le binaire sort IMMÉDIATEMENT si this[1] != 1 : la souris est inerte pendant l'Init
+    // (30 frames d'écran vide) ET pendant le Verrouillé (image figée). Placer cette garde
+    // APRÈS `deleteConfirmOpen_` laisserait cliquer la modale dans un état où le binaire ne
+    // route rien.
+    if (charState_.subState != game::CharSelectSubState::Active) return;
+
     if (deleteConfirmOpen_) {
         deleteYesBtn_.OnMouseDown(x, y);
         deleteNoBtn_.OnMouseDown(x, y);
@@ -1642,34 +2184,41 @@ void LoginScene::CharSelectOnMouseDown(int x, int y) {
     }
 
     LayoutCharSelect();
+    // Hit-test de sélection = le sprite de SURBRILLANCE unk_924944 (slot 1657) @
+    // (nWidth-194 + 25, 19 + 44*i + 50), PAS toute la fiche : Scene_CharSelectOnMouseDown
+    // 0x520F40, EA 0x522688 — MÊMES coordonnées que le blit de CharListRender (@0x51D634 /
+    // @0x51D62C). Le repli inventé (64x28 « si l'asset manque ») a été RETIRÉ : les vraies
+    // dimensions sont spr+108/+112, remplies au chargement du .IMG, et un sprite non
+    // chargeable ne doit produire AUCUNE zone cliquable (cf. AtlasHitTest).
     for (int i = 0; i < game::kMaxCharSlots; ++i) {
-        const RECT row = CharSlotRect(i);
-        int hw = 64, hh = 28; // repli : zone de surbrillance si l'asset manque
-        if (gfx::GpuTexture* t = GetAtlasSprite(1657)) {
-            if (t->Width() > 0 && t->Height() > 0) {
-                hw = static_cast<int>(t->Width());
-                hh = static_cast<int>(t->Height());
-            }
-        }
-        // Hit-test de sélection = sprite unk_924944 (slot 1657) @ (panneauX+25, 19+50+i*44),
-        // pas toute la fiche : Scene_CharSelectOnMouseDown 0x520F40, EA 0x522688.
-        const RECT hit = MakeRect(row.left + 25, row.top + 16, hw, hh);
-        if (RectContains(hit, x, y)) {
+        if (AtlasHitTest(1657, (screenW_ - 194) + 0x19, 19 + 44 * i + 0x32, x, y)) {
             game::SelectCharacterSlot(charState_, i);
             return;
         }
     }
-    restoreBtn_.OnMouseDown(x, y); // RESTAURER : Scene_CharSelectOnMouseDown EA 0x522935 (slot 3086)
+    // RESTAURER (slot 3086) : le binaire porte la MÊME garde serveur AVANT le hit-test —
+    //   `cmp dword ptr [edx+0F038h], 32h` @0x522908 ; `jz short loc_52291D` @0x52290F (==50 -> teste)
+    //   `cmp dword ptr [eax+0F038h], 28h` @0x522914 ; `jnz short loc_52295D` @0x52291B (!=40 -> saute)
+    // puis seulement `call Sprite2D_HitTest(unk_958368)` @0x522935 et l'armement du latch
+    // `mov [edx+28h], 1` @0x522951. Sans elle, le bouton restait cliquable là où le binaire
+    // l'ignore totalement (et invisible : cf. la même garde au rendu, EA 0x51E312/0x51E321).
+    const int32_t srvDown = charHost_.GetServerIndex ? charHost_.GetServerIndex() : 0;
+    if (srvDown == 50 || srvDown == 40)
+        restoreBtn_.OnMouseDown(x, y);
     createBtn_.OnMouseDown(x, y);
     deleteBtn_.OnMouseDown(x, y);
     enterBtn_.OnMouseDown(x, y);
     backBtn_.OnMouseDown(x, y);
+    quitBtn_.OnMouseDown(x, y);    // QUITTER (slot 25) : latch this[9] (`[ecx+24h]` @0x51E288)
 }
 
 // Scene_CharSelectOnMouseUp 0x522E50 : porte la quasi-totalité de la logique
 // métier réelle (validation + requêtes réseau) — ici déléguée aux callbacks
 // SetOnClick câblés en Init() (game::OnXxxButtonClicked/ConfirmXxx).
 void LoginScene::CharSelectOnMouseUp(int x, int y) {
+    // [A2] MÊME garde, MÊME position : `cmp dword ptr [eax+4], 1 ; jnz -> return` @0x522E70.
+    if (charState_.subState != game::CharSelectSubState::Active) return;
+
     if (deleteConfirmOpen_) {
         deleteYesBtn_.OnMouseUp(x, y);
         deleteNoBtn_.OnMouseUp(x, y);
@@ -1684,24 +2233,26 @@ void LoginScene::CharSelectOnMouseUp(int x, int y) {
         createConfirmBtn_.OnMouseUp(x, y); createCancelBtn_.OnMouseUp(x, y);
         return;
     }
-    restoreBtn_.OnMouseUp(x, y); // RESTAURER : Scene_CharSelectOnMouseUp EA 0x525B46 (action restauration hors flux porté)
+    // RESTAURER : garde serveur RE-VÉRIFIÉE au « up » aussi (elle précède le hit-test) —
+    //   `cmp dword ptr [ecx+0F038h], 32h` @0x525AF5 ; `jz short loc_525B11` @0x525AFC
+    //   `cmp dword ptr [edx+0F038h], 28h` @0x525B04 ; `jnz loc_525C3C` @0x525B0B
+    // puis `cmp dword ptr [eax+28h],0 ; jz loc_525C3C` @0x525B17 (latch requis — porté par
+    // Button::OnMouseUp, qui ne valide que si armed_) et enfin Sprite2D_HitTest @0x525B46.
+    // Action de restauration elle-même hors flux porté (host.RestoreCharacter non assigné).
+    const int32_t srvUp = charHost_.GetServerIndex ? charHost_.GetServerIndex() : 0;
+    if (srvUp == 50 || srvUp == 40)
+        restoreBtn_.OnMouseUp(x, y);
     createBtn_.OnMouseUp(x, y);
     deleteBtn_.OnMouseUp(x, y);
     enterBtn_.OnMouseUp(x, y);
     backBtn_.OnMouseUp(x, y);
-
-    // QUITTER (unk_8E99C4 = slot 25, colonne @v117+222) : Scene_CharSelectOnMouseUp EA
-    // 0x525AA5 hit-test -> si this[+0xF598]!=3 (pas en cours d'entrée), UI_MsgBox_Open de
-    // confirmation de quit (EA 0x525AE5). Contrairement à RETOUR/ENTRER/CRÉER/SUPPRIMER, ce
-    // bouton n'a PAS de membre Button (LoginScene.h non possédé par ce front) -> hit-test
-    // DIRECT du rect du sprite (mêmes ancres que le drawIdleSprite de CharListRender).
-    // game::OnQuitButtonClicked porte déjà la garde PreviewMotion::Entering et fait
-    // Net_CloseSocket + g_QuitFlag=1 (simplification assumée vs la MsgBox du binaire).
-    if (gfx::GpuTexture* t = GetAtlasSprite(25)) {
-        const RECT r = MakeRect(screenW_ - 140, (screenH_ - 301) + 222,
-                                static_cast<int>(t->Width()), static_cast<int>(t->Height()));
-        if (RectContains(r, x, y)) { game::OnQuitButtonClicked(charState_, charHost_); return; }
-    }
+    // QUITTER (unk_8E99C4 = slot 25 @ (x0, y0+222)) : hit-test EA 0x525AA5 -> si
+    // this[+0xF598] != 3 (pas d'entrée en cours, garde EA 0x525ABE), UI_MsgBox_Open de
+    // confirmation (EA 0x525AE5). Désormais un vrai Button latché (cf. LoginScene.h) : le
+    // hit-test « à la main » sur le rect du sprite a été retiré — il court-circuitait le
+    // latch, donc l'état PRESSÉ (slot 27) n'était jamais peint. L'action reste
+    // game::OnQuitButtonClicked (qui porte la garde Entering) — câblée en Init().
+    quitBtn_.OnMouseUp(x, y);
 }
 
 // Construit charHost_ : point d'intégration réseau/UI de Game/CharSelectFlow.h,
@@ -1729,11 +2280,59 @@ void LoginScene::BuildCharSelectHost() {
         return game::ValidateNameCharset(charState_.slots[static_cast<size_t>(slot)].name);
     };
     charHost_.HasGmAuthLevel       = [] { return net::g_GmAuthLevel >= 1; };
+    // g_ServerModeFlag 0x166918C — DÉJÀ réifié dans serverModeFlag_ (Init, cf. plus haut) :
+    // la donnée était là, le consommateur aussi (CharSelectFlow.cpp:224), seul le fil
+    // manquait. Lu par le binaire @0x5252C1 (`cmp ds:g_ServerModeFlag, 0` — garde de la
+    // notice 2163 à l'ouverture du formulaire) et @0x51c08d (nombre d'entrées de la liste
+    // de restauration). Sans ce câblage, RecomputeRestoreListCount prenait TOUJOURS la
+    // branche `else`.
+    charHost_.IsServerModeFlag = [this] { return serverModeFlag_ != 0; };
+    // UI_FocusEditBox 0x50F4A0 (g_UIEditBoxMgr 0x1668FC0) — décompilée : `if (idx < 0x16)
+    // { *this = idx; return idx ? SetFocus(hwnd[idx]) : SetFocus(hWndParent); }` — elle ne
+    // fait QUE SetFocus + poser l'index de focus. Indices PROUVÉS :
+    //   0  = fenêtre parente  — `push 0` @0x51BE77 -> call @0x51BE7E (Init de la scène) et @0x529365
+    //   3  = nom de création  — `push 3` @0x5252FC -> call @0x525303, immédiatement suivi de
+    //        SetWindowTextA(dword_1668FCC, "") @0x525314 : c'est bien l'EDIT du nom, le MÊME
+    //        hWnd que le GetWindowTextA du rendu du formulaire (@0x51E4E2). Recoupement
+    //        indépendant : le caret n'est peint que si `g_UIEditBoxMgr == 3` (@0x51E50C).
+    //   19 = suppression par nom — `push 13h` @0x525FCC
+    // Aucune correspondance n'est INVENTÉE pour les indices non prouvés : ils sont ignorés.
+    charHost_.FocusEditBox = [this](int32_t idx) {
+        if (idx == 0) { SetFocus(0); createNameBox_.SetFocused(false); return; } // -> hWndParent
+        if (idx == 3) { createNameBox_.SetFocused(true); return; }
+        // TODO [ancre 0x525FCC] : index 19 = EDIT « supprimer par nom », widget non porté.
+    };
     charHost_.ShowNotice = [this](int32_t strId) {
         // StrTable005_Get(g_LangId, strId) 0x4C1D20 — g_Strings.messages est charge par
         // App::Init AVANT toute scene (cf. App.cpp::Init, LoadStringTables), donc le texte
         // reel est deja disponible ici (plus de repli "#id" — cf. game::Str()).
         OpenNotice(game::Str(strId).c_str());
+    };
+    // [A3] ShowNoticeTyped — PRÉFÉRÉ à ShowNotice (CharSelectFlow.h l'essaie en premier).
+    // Le 2e argument de UI_NoticeDlg_Open 0x5C0280 est ce qui décide du DEVENIR de l'état
+    // Verrouillé, via UI_NoticeDlg_OnLButtonUp 0x5C03F0 (route UI_RouteLButtonUp 0x5AD0F0,
+    // xref unique EA 0x5AD164 — jamais les handlers de scène, qui sont gatés `==1`) :
+    //   mode 1 (Close)      : simple fermeture, la scène RESTE où elle est (erreurs
+    //                         récupérables, ex. après un Net_ReqCancelEnter réussi).
+    //   mode 2 (Disconnect) : case 2 @0x5C04C9 -> Net_CloseSocket(&g_NetClient) @0x5C04DF ;
+    //                         g_SceneMgr=2 @0x5C04E4 ; g_SceneSubState=0 @0x5C04EE ;
+    //                         dword_1676188=0 @0x5C04F8.
+    //   mode 3 (Quit)       : g_QuitFlag=1 — JAMAIS utilisé par CharSelect.
+    // Sans ce câblage, le type était PERDU et Verrouillé devenait un CUL-DE-SAC DÉFINITIF :
+    // Update est inerte en sous-état 2 et les 4 handlers souris de la scène refusent tout.
+    // (wiring TODO NOTICEDLG_MODE2 de Game/CharSelectFlow.h:37 — FERMÉ ici.)
+    charHost_.ShowNoticeTyped = [this](int32_t strId, game::NoticeType type) {
+        noticeType_ = type;
+        if (type == game::NoticeType::Disconnect) {
+            OpenNotice(game::Str(strId).c_str(), [this] {
+                // Effets EXACTS du case 2, dans l'ordre du binaire. game::OnNoticeDlgMode2Ok
+                // pose CloseConnection + pendingTransition=ServerSelect + subState=Init +
+                // frameCounter=0 ; CharSelectUpdate consomme la transition (cf. [A5/A3]).
+                game::OnNoticeDlgMode2Ok(charState_, charHost_);
+            });
+        } else {
+            OpenNotice(game::Str(strId).c_str()); // mode 1 : fermeture sèche, aucun effet
+        }
     };
     // W5b — CÂBLAGE de la notice « deltas post-login » (Net/Login.h::g_LoginNoticeHook).
     // Sans cette pose, le hook restait nul dans TOUT le dépôt : la branche notice de
@@ -1746,6 +2345,15 @@ void LoginScene::BuildCharSelectHost() {
     net::g_LoginNoticeHook = [this](int32_t id) {
         OpenNotice(game::Str(id).c_str());
     };
+    // TODO [ancre 0x5C08C0] : UI_MsgBox_Open ne fait pas QUE lever un drapeau. Décompilée,
+    // TOUTE ouverture exécute d'abord, inconditionnellement :
+    //   Util_SetClampedU8Field(dword_8E714C, 0)      (0x4C1110, EA 0x5C08D0)
+    //   UI_FocusEditBox(&g_UIEditBoxMgr, 0)          (0x50F4A0, EA 0x5C08DC) -> DÉFOCALISE
+    // puis this+20 = g_GameTimeSec (0x815180), this+8 = 1 (ouvert), this+12/+16 = 0 (les 2
+    // latches de bouton), this+24 = a2 (action id). Conséquence non reproduite ici : dans le
+    // binaire, cliquer SUPPRIMER retire le focus clavier du champ de nom ; côté C++ le champ
+    // le garde et continue de recevoir les frappes sous la modale. Même manque sur la
+    // confirmation de sortie. À refermer au portage de UI_MsgBox (cf. DeleteConfirmRender).
     charHost_.ShowDeleteConfirm = [this] { deleteConfirmOpen_ = true; };
     // Str_ValidateNameChars 0x53FD70, reproduction FIDELE : ValidateNameCharset()
     // (Game/CharSelectFlow.cpp) — encodage + longueur (12 caracteres utiles max, via
@@ -1808,6 +2416,86 @@ void LoginScene::BuildCharSelectHost() {
     charHost_.CloseConnectionAndQuit = [this] {
         if (net_) net::NetCloseSocket(net_->Client());
         PostQuitMessage(0); // équivalent g_QuitFlag=1 (motif déjà utilisé, cf. App.cpp VK_ESCAPE)
+    };
+    // Net_CloseSocket(&g_NetClient) 0x463000 SEUL — bouton RETOUR (EA 0x525A46) et clic OK
+    // du NoticeDlg mode 2 (EA 0x5C04DF). SANS quitter le process (≠ CloseConnectionAndQuit).
+    charHost_.CloseConnection = [this] {
+        if (net_) net::NetCloseSocket(net_->Client());
+    };
+
+    // [A15] Efface les 150 latches this[3..152] (+12..+608) à CHAQUE Init — boucle
+    // `for (i=0;i<150;++i) this[i+3]=0` @0x51BE83-0x51BEA4 (`cmp var, 96h`). ⚠ CE N'EST PAS
+    // 10 : Scene_CharSelectOnMouseDown arme des latches jusqu'à this[92]. Côté C++ les
+    // latches sont portés par les Widget de ce fichier -> hook. Sans lui, un bouton resté
+    // armé d'une visite à l'autre repeindrait son état PRESSÉ à la ré-entrée en scène.
+    // Seuls les boutons RÉIFIÉS sont désarmés ici (les latches this[6]/this[7]/this[11]/
+    // this[12] n'ont pas de widget : leurs boutons sont dessinés sans latch, cf.
+    // CharButtonColumnRender).
+    charHost_.ClearAllButtonLatches = [this] {
+        Button* all[] = { &enterBtn_, &backBtn_, &createBtn_, &deleteBtn_, &restoreBtn_,
+                          &quitBtn_, &jobMinusBtn_, &jobPlusBtn_, &factionMinusBtn_,
+                          &factionPlusBtn_, &faceMinusBtn_, &facePlusBtn_, &hairMinusBtn_,
+                          &hairPlusBtn_, &variantMinusBtn_, &variantPlusBtn_,
+                          &createConfirmBtn_, &createCancelBtn_,
+                          &deleteYesBtn_, &deleteNoBtn_ };
+        for (Button* b : all) b->Reset(); // armed_ = false ; hover_active_ = false (Widgets.h:223)
+    };
+
+    // [A8] Bascules de rotation de l'aperçu de CRÉATION : this[15] (`cmp [reg+3Ch],0`
+    // @0x51CDD0) et this[16] (@0x51CDF1). Le flux applique `yaw += 3.0` @0x51CDE8 /
+    // `yaw -= 3.0` @0x51CE09 sur this[15724], UNIQUEMENT en écran Création.
+    // 🔴 NON CÂBLÉ : les deux boutons de rotation (slots 44/45 et 46/47, positions de design
+    // (390,628) et (557,628) projetées par UI_ProjectSpriteToScreen 0x50F5D0) n'ont pas de
+    // widget — et surtout UI_ProjectSpriteToScreen n'est PAS décompilée, donc leur position
+    // écran réelle est INCONNUE (spec §13.11). Poser un rect ici serait une invention.
+    // TODO [ancre 0x50F5D0] : décompiler la projection, puis créer les 2 widgets et rendre
+    // ici leur latch. En attendant, nullptr => false => aperçu de création NON rotatif.
+    charHost_.IsRotateLeftLatched  = nullptr;
+    charHost_.IsRotateRightLatched = nullptr;
+
+    // PcModel_ResolveSlotAndApply 0x4E5A00 -> NOMBRE DE FRAMES de l'animation. Le flux
+    // l'appelle avec des arguments différents selon l'écran (LISTE : rec+40/rec+44 @0x51c555 ;
+    // CRÉATION : dword_16709DC(+36)/dword_16709E4(+44) @0x51cd7a) — d'où la signature
+    // générique. ⚠ MÊME MotionCache que le DESSIN (cf. LoginScene.h::charMotions_) : dans le
+    // binaire c'est le MÊME g_ModelMotionArray 0x8E8B30 qui sert à résoudre la palette et à
+    // compter les frames. Deux caches divergeraient sur les motions absentes, et le minuteur
+    // d'entrée (`this[15719] >= durée` @0x51C649) partirait sur une durée fantôme.
+    // Motion_BuildPathAndLoad 0x4D7390 cas 1 : "C%03d%03d%03d.MOTION" % (race+3*gender+1,
+    // motion+1, animState+1) == MotionCache::GetForPlayer(race, gender, motion, animState).
+    // ⚠ LE `return 0` CI-DESSOUS NE DÉCLENCHE AUCUN REPLI — l'ancien commentaire « -> repli
+    // kDefaultEnterPreviewFrames » était FAUX à double titre : (1) MotionFrameCount teste la
+    // PRÉSENCE du std::function, pas sa valeur, donc un hook assigné qui renvoie 0 ne retombe
+    // jamais sur GetEnterPreviewDurationFrames ; (2) surtout, 0 EST une valeur de retour
+    // LÉGITIME du binaire et ne DOIT PAS être filtrée — re-décompilé ce front :
+    //   PcModel_ResolveSlotAndApply 0x4E5A00 = `Motion_GetFrameCount(PcModel_ResolveEquipSlot(…), a9)`
+    //   Motion_GetFrameCount 0x4D7830 : `if (!*(this+152) && !Motion_Load(this,a2)) return 0;`
+    //                                   (EA 0x4D784B -> 0x4D7854)
+    // => sur motion ABSENTE/illisible, le binaire renvoie littéralement 0 et le flux amont
+    // s'en accommode (cf. le bloc ⚠ de Game/CharSelectFlow.cpp::MotionFrameCount). Renvoyer 0
+    // quand charMotions_ est nul ou la palette invalide reproduit donc EXACTEMENT le cas
+    // « motion introuvable » du binaire : c'est la dégradation fidèle, pas un trou.
+    charHost_.GetMotionFrameCount = [this](int32_t race, int32_t gender,
+                                           int32_t motion, int32_t animState) -> int32_t {
+        if (!charMotions_) return 0; // = cas « motion non chargeable » du binaire (EA 0x4D7854)
+        const gfx::MotionPalette* mp = charMotions_->GetForPlayer(race, gender, motion, animState);
+        return (mp && mp->valid) ? mp->frameCount : 0;
+    };
+
+    // 🔴 PublishSelfFromSlot — miroir du memcpy UNIQUE @0x51C707 :
+    //   Crt_Memcpy(g_SelfCharInvBlock /*0x1673170*/, &unk_1669380 + 10088*slot, 0x2768u)
+    // Ce memcpy pose À LA FOIS le bloc d'inventaire ET g_LocalElement (= bloc+0x24 =
+    // fiche[+36] = le champ `job`), qui part ensuite sur le fil aux octets [137..140] du
+    // paquet d'auth op11 de Net_ConnectGameServer 0x462A70 (EA 0x462D5D).
+    // ORDRE PROUVÉ : 0x51C707 (memcpy) ≺ 0x51C81D (op22) ≺ 0x51C850 ≺ op11.
+    // Ce hook était NON BRANCHÉ dans tout le dépôt (défaut GAMEAUTH_Element_Zero documenté
+    // par Game/CharSelectFlow.h:400-405) : les octets [137..140] du handshake partaient à 0.
+    // g_LocalElementSecondary 0x1673198 = fiche +40 (la RACE, que seul le serveur remplit) —
+    // posé aussi, même memcpy.
+    charHost_.PublishSelfFromSlot = [this](int32_t slot) {
+        if (slot < 0 || slot >= game::kMaxCharSlots) return;
+        const game::CharSlotInfo& s = charState_.slots[static_cast<size_t>(slot)];
+        game::g_World.self.element          = s.job;  // 0x1673194 = bloc+0x24 = fiche +36
+        game::g_World.self.elementSecondary = s.race; // 0x1673198 = bloc+0x28 = fiche +40
     };
 }
 

@@ -467,10 +467,12 @@ void Char_UpdateAnimationFrame(CharAnimState& anim, const CombatActorState& acto
         }
     }
 
-    // --- Switch terminal (0x5727BF) : 55 handlers Char_*/Combat_TickAttackState, chacun
+    // --- Switch terminal (0x5727BF) : 81 cas Char_*/Combat_TickAttackState, chacun
     // asset-driven (durée d'anim = donnée de motion, hors périmètre) -> un seul hook opaque,
     // appelé avec l'état COURANT (post-interruption de cast ci-dessus, fidèle à l'ordre du
-    // binaire). ---------------------------------------------------------------------------
+    // binaire : `mov edx, [ecx+0F4h]` @0x5727A9 relit *(this+244) juste avant le switch).
+    // « 55 handlers » était FAUX : 96 cases − 15 valeurs `default` = 81 (cf. AnimationTick.h).
+    // Routeur partiel prêt à poser ici : Char_DispatchStateTick (§7). -----------------------
     if (stateHandler) stateHandler(static_cast<CharActionState>(anim.state), dt);
 
     // --- Marque de guilde en attente (0x572F4E) -----------------------------------------
@@ -901,6 +903,114 @@ void ZoneNpc_OnDialogueOpen(int zoneNpcIndex, float playerX, float playerZ) {
     }
     // TODO [ancre 0x5dc0a8 -> Fx_MeleeSwingUpdate 0x57FE90] : son positionnel joué ici par le
     // binaire (hors périmètre audio/FX de ce front) — non reproduit.
+}
+
+// =====================================================================================
+// 7. Routeur PARTIEL du switch terminal JOUEUR — Char_UpdateAnimationFrame 0x571880,
+//    switch @0x5727BF. Voir Game/AnimationTick.h §7 (couverture, preuves, dégradation).
+// =====================================================================================
+namespace {
+
+// Durée « inconnue » : le curseur avance mais n'atteint jamais la borne -> aucune transition
+// n'est émise. MÊME idiome que MorphDuration() en tête de ce fichier (oracle nul -> 1e9f).
+constexpr float kUnknownMotionDuration = 1.0e9f;
+
+// Latch de câblage — cf. Char_StateTickIsWired() dans Game/AnimationTick.h (garde de
+// non-régression, PAS un comportement du binaire).
+bool g_CharStateTickRan = false;
+
+} // namespace (helpers routeur FSM joueur)
+
+bool Char_StateTickIsWired() { return g_CharStateTickRan; }
+
+void Char_DispatchStateTick(CharAnimState& anim, CharActionState state, float dt,
+                             bool isLocalSimulation, const CharStateTickHost& host) {
+    // Filtre d'entrée : seuls les 6 cas dont la primitive est PORTÉE sont routés. Libellés de
+    // case = ceux d'IDA (`jumptable 005727BF case N`) ; chacune des 6 fonctions d'origine a
+    // exactement 1 appelant dans tout le binaire (xrefs_to -> xref_count == 1), et c'est ce
+    // switch -> correspondance bijective.
+    switch (state) {
+        case CharActionState::AnimEndToIdle_5761A0: // case 4  @0x572834 -> 0x5761A0
+        case CharActionState::CastSlot0:            // case 5  @0x57284C -> 0x5762F0
+        case CharActionState::CastSlot1:            // case 6  @0x572864 -> 0x5764D0
+        case CharActionState::CastSlot2:            // case 7  @0x57287C -> 0x5766B0
+        case CharActionState::GuardBegin:           // case 91 @0x572EEE -> 0x57F260
+        case CharActionState::GuardLoop:            // case 92 @0x572F03 -> 0x57F410
+            break;
+        default:
+            // TODO [ancre 0x5727BF, 75 cas restants sur 81] : no-op EXPLICITE. Recouvre DEUX
+            // situations distinctes, à ne pas confondre :
+            //  (a) les 15 valeurs du `default` d'origine (8 ; 24-29 ; 47 ; 53 ; 59 ; 77-80 ;
+            //      84, cf. @0x5727B6) -> no-op FIDÈLE, rien à faire ;
+            //  (b) les 75 cas VIVANTS dont la primitive n'est pas portée (Char_AnimTick_5746E0
+            //      0x5746E0 case 0, Char_TickMoveState 0x574830 case 1, Combat_TickAttackState
+            //      0x574BD0 case 2, Char_TickRunState 0x578D70 case 32, Char_TickDeathRespawn
+            //      0x576CB0 case 12, ...) -> l'anim de ces états reste GELÉE, exactement comme
+            //      avant ce routeur. Aucune régression, mais CTF-01 n'est PAS clos pour autant.
+            return;
+    }
+    g_CharStateTickRan = true; // le routeur est réellement atteint (cf. Char_StateTickIsWired)
+
+    // ActionFsm transitoire — MÊME patron que Char_UpdateAnimationFrame ci-dessus (§2) : les
+    // 4 primitives ne touchent que state/animFrame/guardSubstate/hitCheckActive (+ actor.facing,
+    // miroir du même mot mémoire entity+244) et ne LISENT que guardKeyHeld/isLocalSimulation.
+    ActionFsm fsm;
+    fsm.state             = state;
+    fsm.animFrame         = anim.animFrame;
+    fsm.hitCheckActive    = anim.hitCheckActive;
+    fsm.guardSubstate     = anim.guardSubstate;
+    fsm.guardKeyHeld      = anim.guardKeyHeld;
+    fsm.isLocalSimulation = isLocalSimulation;
+    fsm.actor.facing      = ToRaw(state); // entity+244 == state (cf. ActionStateMachine.h)
+
+    // Durée d'anim : PcModel_ResolveSlotAndApply 0x4E5A00, calculée EN TÊTE des 4 handlers,
+    // AVANT l'avance de frame (@0x5761AC / @0x5762FC / @0x57F26C / @0x57F41C) — ordre reproduit.
+    // count<=0 (slot non résolu) == hook absent == durée inconnue : on ne fabrique rien.
+    const int rawCount = host.GetMotionFrameCount ? host.GetMotionFrameCount(anim, isLocalSimulation) : 0;
+    const float duration = (rawCount > 0) ? static_cast<float>(rawCount) : kUnknownMotionDuration;
+
+    switch (state) {
+        // --- case 4 : Char_AnimEndToIdle_5761A0 0x5761A0 -> retour à Move(1) ---------------
+        // `frame += dt*30` @0x576268 ; `if (frame >= v4)` @0x576281 ; `*(this+244) = 1`
+        // @0x5762A4 ; `*(this+248) = 0.0` @0x5762B3. Effets de bord NON portés (+240, +296,
+        // Op16) : cf. TODO détaillé sur TickTimedState (Game/ActionStateMachine.cpp).
+        case CharActionState::AnimEndToIdle_5761A0:
+            fsm.TickTimedState(dt, duration, CharActionState::Move);
+            break;
+
+        // --- cases 5/6/7 : Char_CastAnimTick_5762F0 / _5764D0 / _5766B0 --------------------
+        // Les trois corps sont STRICTEMENT identiques (copies compilées) -> une seule primitive,
+        // cadrage RE-PROUVÉ (cf. ActionStateMachine.h::TickCastState). Sans le hook de taux, le
+        // curseur de cast N'AVANCE PAS (le taux est un multiplicateur, pas une borne) : gel =
+        // comportement actuel, aucune régression, aucune valeur inventée.
+        case CharActionState::CastSlot0:
+        case CharActionState::CastSlot1:
+        case CharActionState::CastSlot2: {
+            double ratePct = 0.0;
+            const bool withinBounds =
+                host.GetCastRateWithinBounds && host.GetCastRateWithinBounds(anim, ratePct);
+            fsm.TickCastState(dt, ratePct, withinBounds, duration);
+            break;
+        }
+
+        // --- case 91 : Char_ActionTick_GuardBegin 0x57F260 ---------------------------------
+        case CharActionState::GuardBegin:
+            fsm.TickGuardBegin(dt, duration);
+            break;
+
+        // --- case 92 : Char_ActionTick_GuardLoop 0x57F410 ----------------------------------
+        case CharActionState::GuardLoop:
+            fsm.TickGuardLoop(dt, duration);
+            break;
+
+        default:
+            break; // inatteignable (filtré ci-dessus)
+    }
+
+    anim.state          = ToRaw(fsm.state);
+    anim.animFrame      = fsm.animFrame;
+    anim.hitCheckActive = fsm.hitCheckActive; // seul TickCastState le mute (@0x57644F)
+    anim.guardSubstate  = fsm.guardSubstate;
 }
 
 } // namespace ts2::game

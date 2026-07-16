@@ -561,6 +561,12 @@
     <ClCompile Include="src\UI\FloatingNotices.cpp">
       <Filter>Source Files\UI</Filter>
     </ClCompile>
+    <ClCompile Include="src\Gfx\CharPreview3D.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\TeleportWindow.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h">
@@ -993,6 +999,12 @@
       <Filter>Header Files\UI</Filter>
     </ClInclude>
     <ClInclude Include="src\UI\FloatingNotices.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\CharPreview3D.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\TeleportWindow.h">
       <Filter>Header Files\UI</Filter>
     </ClInclude>
   </ItemGroup>

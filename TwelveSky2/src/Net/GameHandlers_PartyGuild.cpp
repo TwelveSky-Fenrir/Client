@@ -64,14 +64,93 @@ int FindPlayerIndex(uint32_t hi, uint32_t lo) {
     return -1;
 }
 
+// ---------------------------------------------------------------------------
+// Bloc « identité d'affiliation du joueur local » — 4 buffers de nom de 13 o que le
+// binaire pose TOUJOURS ENSEMBLE : ici 0x53 cases 1 (0x491F36..0x491F87) / 4
+// (0x492442..0x49248C) / 6 (0x492668..0x4926B2), et 0x5E cases 102/107 (côté
+// Net/WorldEntityDispatch.cpp). RE-PROUVÉ dans IDA (vague W11 / WARP-03).
+//
+// FAUX AMI LEVÉ — `Crt_StringInit 0x75CAB0` n'est PAS un « constructeur de std::string »
+// (ce que dit le commentaire IDA, et ce que répétaient les TODO ci-dessous) : c'est
+// `strcpy(dest, src)`. Preuve — c'est l'entrée alternative de `Crt_Strcat 0x75CAC0` qui
+// SAUTE le scan de fin de chaîne, les deux partageant le même corps de copie :
+//     0x75CAB0  push edi
+//     0x75CAB1  mov  edi, [esp+4+arg_0]   ; edi = dest TEL QUEL (aucun scan)
+//     0x75CAB5  jmp  loc_75CB25           ; -> corps COMMUN
+//     0x75CB25  mov  ecx, [esp+4+arg_4]   ; ecx = src, puis boucle de copie src -> edi
+// (strcat, lui, atteint 0x75CB25 via `lea edi,[ecx-1]` @0x75CB13 = FIN de dest.)
+// Donc : 2 arguments (dest, src), et l'appel COPIE — ce ne sont ni des « init » ni des
+// « clear ». `offset String` 0x7EC95F a son octet 0 à 0x00 -> chaîne vide, si bien que
+// « strcpy(dest, String) » est le vrai clear (même infra que GameHandlers_ChatSocial.cpp).
+//
+// DEUX STORES DISTINCTS — ce n'est pas un choix esthétique, chacun a sa preuve :
+//   • 0x16746A8 / 0x16746BC : globals AUTONOMES -> `g_Client.Blob` (longue traîne).
+//     0x16746A8 a un lecteur VIVANT : UI/ClanContextMenu.cpp:550 `BlobNonEmpty(kVarGuildTag)`
+//     -> `Blob(0x16746A8, 13)`. La taille de clé 13 est IMPOSÉE : `Blob` fige la taille au
+//     PREMIER appelant (ClientRuntime.h:179-183, `if (b.empty()) b.assign(size,0)`) — ouvrir
+//     cette clé à 16 ailleurs déborderait silencieusement le tas. Le slot binaire fait 16 o
+//     (0x16746B8 - 0x16746A8), mais le champ FIL fait 13 (strides T1/T2 de 0x5E) -> 13 partout.
+//   • 0x168725C / 0x1687270 : PAS des globals autonomes. Ce sont des champs de
+//     g_EntityArray 0x1687234 (stride 908, index 0 = self — GameState.h:122) :
+//         0x168725C = entity[0]+40 = body+16   (le body démarre à entity+0x18)
+//         0x1687270 = entity[0]+60 = body+36
+//     Leur home MODÉLISÉ est donc `g_World.players[0].body`, et body+16 a DEUX lecteurs
+//     vivants : Scene/WorldRenderer.cpp:803 (`ReadBodyCString(p.body, 40-24, …)` ->
+//     actor.affiliationName, plaque de nom) et World/TerrainPicker.cpp:280. Les poser en
+//     `Blob(0x168725C)` créerait un SECOND store que PERSONNE ne lit — exactement le défaut
+//     « produit-mais-non-consommé » que la campagne traque. -> on écrit dans le body.
+//
+// CORROBORATION STRUCTURELLE (les deux groupes sont des miroirs EXACTS) :
+//     0x16746A8 (nom, 16 o) | 0x16746B8 (scalaire) | 0x16746BC (nom)
+//     entity+40 (nom, 16 o) | entity+56 (scalaire) | entity+60 (nom)
+//   écarts +16 / +20 identiques des deux côtés -> 0x16746A8 est le miroir scalaire de
+//   l'affiliation de self, recopié dans la fiche d'entité de self pour l'affichage.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kLocalAffilName  = 0x16746A8; // dword_16746A8 (= UI/ClanContextMenu::kVarGuildTag)
+constexpr uint32_t kLocalAffilName2 = 0x16746BC; // unk_16746BC
+constexpr size_t   kSelfBodyAffil   = 40 - 24;   // byte_168725C (= WorldRenderer::kNpBodyAffiliation)
+constexpr size_t   kSelfBodyAffil2  = 60 - 24;   // unk_1687270
+
+// `strcpy(dest, src)` fidèle vers un buffer de nom 13 o de la longue traîne (store Blob).
+// ÉCART ASSUMÉ vs le binaire : strcpy laisse la QUEUE de la destination intacte (résidu de
+// l'ancien nom), on la zero-fill. Inobservable — tous les lecteurs de ces buffers sont des
+// strcmp/%s qui s'arrêtent au 1er NUL ; et le zero-fill garantit la NUL-terminaison là où le
+// binaire dépend d'un NUL présent dans sa source.
+void SetBlobName13(uint32_t addr, const char* src) {
+    auto& b = ts2::game::g_Client.Blob(addr, 13);
+    size_t n = 0;
+    while (n < 13 && src[n] != 0) ++n;   // strcpy : arrêt au 1er NUL
+    b.assign(13, 0);
+    std::memcpy(b.data(), src, n);
+}
+
+// `strcpy(dest, src)` vers un champ nom de la fiche d'entité de SELF (g_EntityArray[0]).
+// Garde `!players.empty()` : même convention que App/App.cpp:1161-1165 — on ne fabrique PAS
+// de self fantôme (cf. l'avertissement App.cpp:770 ; `g_World.Self()` ferait un emplace_back),
+// là où le binaire écrit dans un tableau statique toujours présent.
+void SetSelfBodyName13(size_t bodyOffset, const char* src) {
+    auto& players = ts2::game::g_World.players;
+    if (players.empty()) return;
+    auto& body = players[0].body;
+    if (bodyOffset + 13 > body.size()) return;
+    size_t n = 0;
+    while (n < 13 && src[n] != 0) ++n;
+    std::memset(body.data() + bodyOffset, 0, 13);
+    std::memcpy(body.data() + bodyOffset, src, n);
+}
+
 // Bloc de remise à zéro d'état de guilde partagé À L'IDENTIQUE par Net_OnTeamFormationDispatch
 // (0x491E70) case 4 (0x492442-0x4924F3) et case 6 (0x492668-0x492719) — mêmes écritures, mêmes
 // ordres, seul le message final diffère (478 vs 470). Factorisé ici car le binaire duplique
 // littéralement la séquence (ce n'est pas un refactor : les deux sites sont identiques).
-// Les 4 Crt_StringInit de tête (0x492442/0x49245E/0x492470/0x49248C) visent des buffers de
-// CHAÎNE non modélisés (0x16746A8/0x16746BC/0x168725C/0x1687270) -> TODO, pas de Var(int32).
 void ResetGuildStateBlock() {
     auto& c = ts2::game::g_Client;
+    // Les 4 strcpy(dest, "") de tête — cf. bandeau ci-dessus (ex-TODO « buffers non
+    // modélisés » : levé, le store existait déjà des deux côtés).
+    SetBlobName13(kLocalAffilName,  "");   // 0x492442 / 0x492668
+    SetBlobName13(kLocalAffilName2, "");   // 0x49245E / 0x492684
+    SetSelfBodyName13(kSelfBodyAffil,  ""); // 0x492470 / 0x492696
+    SetSelfBodyName13(kSelfBodyAffil2, ""); // 0x49248C / 0x4926B2
     c.Var(0x16746B8) = 0;   // 0x49244A / 0x492670
     c.Var(0x168726C) = 0;   // 0x492478 / 0x49269E
     c.Var(0x1687450) = 0;   // 0x492494 / 0x4926BA
@@ -461,22 +540,33 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
     //   0x492C20, 0x492C6A, 0x492D12) et JAMAIS sur le `default` — il est donc déplacé dans
     //   les cas (l'ancienne pose inconditionnelle divergeait sur 0xB/0xF/0x10).
     // Le `TODO(msg)` global est résolu : les ids StrTable005 ci-dessous sont relevés un par un
-    //   au décompilé (EA cités). Restent en TODO ancré les écritures vers des BUFFERS DE
-    //   CHAÎNE non modélisés (0x16746A8/0x16746BC/0x168725C/0x1687270/0x1839D00/0x183A101) :
-    //   les poser en Var(int32) serait activement FAUX (ce sont des chaînes), et la grille de
-    //   sélection dword_183A014/018 + le rang dword_1839C38[] sont déclarés HORS PÉRIMÈTRE
-    //   par Game/GuildSystem.h (fichier non détenu par ce front).
+    //   au décompilé (EA cités). Les 4 buffers d'identité d'affiliation de self
+    //   (0x16746A8/0x16746BC/0x168725C/0x1687270) sont désormais CÂBLÉS (case 1 + cases 4/6 via
+    //   ResetGuildStateBlock ; store et faux ami StringInit=strcpy documentés dans son bandeau,
+    //   vague W11/WARP-03). Restent HORS PÉRIMÈTRE (Game/GuildSystem.h, fichier non détenu) : le
+    //   roster nom-par-nom (unk_1839D00/183A101, case 17 @0x492D57..) + la grille de sélection
+    //   dword_183A014/018 + le rang dword_1839C38[].
     OnPacket<TeamFormationDispatch>(sys, 0x53, [&sys](const TeamFormationDispatch& p) {
         switch (p.subOpcode) { // 0x491EED
             case 1: // création de guilde — 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x491EF4
                 if (p.statusCode == 0) {                     // 0x491F0E
-                    // TODO(state) [0x491F36] dword_16746A8 = <chaîne du blob> (COPIE, pas un
-                    //   clear) ; [0x491F57] unk_16746BC = "" ; [0x491F6B] byte_168725C =
-                    //   <chaîne du blob, src = v85/guildBlob> ; [0x491F87] unk_1687270 = "".
-                    //   Buffers de chaîne non modélisés côté C++ — ne pas forcer en Var.
+                    // Pose l'identité d'affiliation de self depuis le blob. Le blob 0x56C o est
+                    // memcpy dans var_580 @0x491EBA, et @0x491F2F `lea ecx,[ebp+var_580]` PROUVE
+                    // que la source est le blob à l'OFFSET 0 (aucun déplacement) : src = guildBlob+0.
+                    // -> `strcpy(dword_16746A8, guildBlob)` @0x491F36 (nom d'affiliation) ;
+                    //    `strcpy(byte_168725C = entity[0]+40, guildBlob)` @0x491F6B (miroir fiche).
+                    // Les deux noms « secondaires » (0x16746BC @0x491F57, 0x1687270 @0x491F87) sont
+                    // effacés (src = `offset String` 0x7EC95F, octet 0 = 0). Détails du store et du
+                    // faux ami StringInit=strcpy : bandeau de ResetGuildStateBlock ci-dessus.
+                    SetBlobName13(kLocalAffilName,
+                                  reinterpret_cast<const char*>(p.guildBlob));   // 0x491F36
                     g_Client.Var(0x16746B8) = 0;             // 0x491F43
+                    SetBlobName13(kLocalAffilName2, "");                          // 0x491F57
+                    SetSelfBodyName13(kSelfBodyAffil,
+                                      reinterpret_cast<const char*>(p.guildBlob)); // 0x491F6B
                     g_Client.Var(0x168726C) = 0;             // 0x491F73
+                    SetSelfBodyName13(kSelfBodyAffil2, "");                       // 0x491F87
                     g_Client.msg.System(Str(392));           // 0x491F9F (0x188)
                     // TODO(ui) [0x491FB4] UI_GuildCreate_Open (0x667DA0).
                 } else if (p.statusCode == 1) {

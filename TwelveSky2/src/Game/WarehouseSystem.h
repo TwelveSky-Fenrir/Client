@@ -26,13 +26,36 @@
 //   opèrent sur dword_1674A4C (curseur 0..19 d'un « râtelier » g_ThrowWeaponRack
 //   9 emplacements, EA 0x4a631a/0x4a6328) et sur une bien plus grosse structure
 //   UI (this+802..+3048, pagination 560/40/4 dwords) qui ne correspond à aucune
-//   des adresses ci-dessus. Le nommage IDA existant ("Warehouse_*"/"UI_Warehouse_*")
-//   semble donc partiellement erroné ou réutilisé pour un système voisin
-//   (équipement de rack d'armes de jet) plutôt que l'entrepôt lui-même. Ce module
-//   implémente néanmoins fidèlement CE QUE FONT ces fonctions (recherche de slot
-//   libre par balayage ligne/colonne, action valide par plage d'index), adapté à
-//   la grille 5×5 réellement issue du blob, et documente l'écart en commentaire
-//   à chaque endroit concerné plutôt que de le passer sous silence.
+//   des adresses ci-dessus. Ce module implémente fidèlement CE QUE FONT ces
+//   fonctions et documente l'écart à chaque endroit concerné.
+//
+// ┌─ RECTIFICATION (Passe 4 / W11, gap INV-02) ────────────────────────────────┐
+// │ Ce bandeau concluait auparavant que le nommage IDA « Warehouse_* » serait  │
+// │ « partiellement erroné ou réutilisé pour un système voisin ». C'EST FAUX,  │
+// │ et cette conclusion RE erronée est retirée : elle induirait les passes     │
+// │ suivantes en erreur (faux ami du même genre que Crt_StringInit /           │
+// │ Crt_FreeBase). Le glissement était côté C++, PAS côté IDA.                 │
+// │                                                                            │
+// │ Warehouse_FindFreeSlot 0x54E240 ne balaie PAS le blob 5×5 : il balaie un   │
+// │ AUTRE conteneur, le VRAI coffre = 2 pages × 28 slots à dword_1673F3C.      │
+// │ Commentaire de tête IDA de 0x54E240, mot pour mot :                        │
+// │   « [game] find free cell in 2-page x 28-slot warehouse grid »             │
+// │ Re-prouvé à l'instruction (2026-07-16), 4 dérivations indépendantes :      │
+// │  1. 0x54E240 : `imul eax, 1C0h` (page = 448 o = 112 dw) / `shl ecx, 4`     │
+// │     (slot = 16 o = 4 dw) / `cmp [ebp+var_8], 1Ch` (28 slots) ;             │
+// │     448/16 = 28 ✔  ; `cmp dword_1673F34, 0 / jle` -> 1 ou 2 pages ;        │
+// │     `retn 8` => __stdcall(int* page, int* slot).                           │
+// │  2. Inv_AddItemQuantity case 12 (aux) : `imul 150h` (336 o) / `imul 0Ch`   │
+// │     (12 o) -> 336/12 = 28 slots/page, dérivation INDÉPENDANTE de 112/4.    │
+// │  3. Frontière mémoire : 0x16751B4 + 0x2A0 = 0x1675454 (aux étal) ;         │
+// │     0x2A0 = 672 = 56 × 12 = 2 pages × 28 EXACTEMENT.                       │
+// │  4. UI_Refine_HitTestEmptySlot 0x5E3750 : `for(i<28)` sur grille 4×7,      │
+// │     `dword_1673F3C[112*page + 4*i] >= 1` = occupé.                         │
+// │ C'est la famille UI_Refine_* qui pilote CE coffre — c'est ELLE qui est mal │
+// │ nommée. Les DEUX conteneurs coexistent : le blob 5×5 (dword_18229CC,       │
+// │ WarehouseGrid ci-dessous, modèle correct et prouvé) et le coffre 2×28      │
+// │ (dword_1673F3C, modélisé plus bas — il ne l'était pas du tout).            │
+// └────────────────────────────────────────────────────────────────────────────┘
 //
 // Règle du projet : ce fichier n'édite AUCUN header existant ; il inclut
 // Game/GameState.h et Game/ClientRuntime.h en lecture seule.
@@ -177,10 +200,18 @@ struct WarehouseState {
     bool DecodeBlob(const uint8_t* data, size_t size);
 
     // -----------------------------------------------------------------
-    // Recherche du premier slot libre (itemId==0) en balayage ligne puis
-    // colonne, à l'image de Warehouse_FindFreeSlot 0x54e240 (boucle
-    // `for(page) for(j<28) if(!occupé) return`), adaptée à la grille 5×5
-    // réelle (25 cellules) issue du blob. Retourne false si pleine.
+    // Premier slot libre (itemId < 1) du BLOB 5×5 dword_18229CC, balayage
+    // ligne puis colonne.
+    //
+    // ⚠ NE CORRESPOND À AUCUNE FONCTION DU BINAIRE. Ce n'est PAS le portage de
+    // Warehouse_FindFreeSlot 0x54E240 (que le C++ lui rattachait à tort — cf.
+    // RECTIFICATION en tête de fichier) : 0x54E240 balaie le coffre 2×28
+    // dword_1673F3C, porté séparément et fidèlement par Vault_FindFreeSlot()
+    // ci-dessous. Ne PAS re-rattacher cette méthode à 0x54E240 : ce serait un
+    // 3e faux rattachement.
+    //
+    // Helper propre au blob, conservé pour DepositIntoFreeSlot. Aucun des deux
+    // n'a d'appelant à ce jour.
     // -----------------------------------------------------------------
     bool FindFreeSlot(int& outRow, int& outCol) const;
 
@@ -216,9 +247,13 @@ struct WarehouseState {
     void CommitAllToInventory();
 
     // -----------------------------------------------------------------
-    // Dépose un objet (venant de l'inventaire) dans la première cellule
-    // libre de la grille — combine FindFreeSlot + écriture, à l'image du
-    // couple Warehouse_FindFreeSlot 0x54e240 + affectation de slot.
+    // Dépose un objet dans la première cellule libre du BLOB — combine
+    // FindFreeSlot + écriture. Helper propre au blob : ne porte AUCUNE
+    // fonction du binaire (l'ancienne mention « à l'image du couple
+    // Warehouse_FindFreeSlot 0x54e240 + affectation de slot » relevait du
+    // faux rattachement corrigé en tête de fichier). Le dépôt réel du
+    // binaire = Warehouse_TryDepositFromInventory(), sur le coffre 2×28.
+    // Sans appelant à ce jour.
     // -----------------------------------------------------------------
     bool DepositIntoFreeSlot(const WarehouseItemCell& item, const WarehouseAuxCell& aux,
                               int& outRow, int& outCol);
@@ -263,6 +298,86 @@ struct WarehouseState {
 
 // Instance globale unique.
 inline WarehouseState g_Warehouse;
+
+// ===========================================================================
+// LE VRAI COFFRE — 2 pages × 28 slots, base dword_1673F3C (gap INV-02).
+//
+// Conteneur DISTINCT du blob 5×5 ci-dessus (cf. RECTIFICATION en tête de
+// fichier). Il n'était modélisé NULLE PART dans ClientSource : un grep de
+// 1673F3C|1673F40|1673F44|1673F48|16751B4|1673F38 sur tout src/ ne renvoyait
+// qu'UNE occurrence, et c'était le flag de page (GameVarDispatch.cpp:480).
+//
+// Layout SoA prouvé par Inv_AddItemQuantity case 12 (0x5B11BE..0x5B12A6), dont
+// le motif d'arguments est IDENTIQUE à celui de la case 6 déjà NOMMÉE
+// (g_QuiverMain/g_QuiverCount/g_QuiverSocket/g_QuiverSerial) => la sémantique
+// {itemId, count, socket, serial} est PROUVÉE, pas devinée :
+//   dword_1673F3C[112*page + 4*slot] = itemId   (a1[7])
+//   dword_1673F40[112*page + 4*slot] += count   (a1[8])   <-- ACCUMULATION
+//   dword_1673F44[112*page + 4*slot] = socket   (a1[9])
+//   dword_1673F48[112*page + 4*slot] = serial   (a1[10])
+//   dword_16751B4/B8/BC[84*page + 3*slot] = aux0/aux1/aux2 (a1[13]/[14]/[15])
+//
+// On stocke via l'échappatoire g_Client.Var(adresseOrigine) (ClientRuntime.h:10-12,
+// 163) plutôt qu'en champ propre : ClientRuntime.h n'appartient pas à ce front, et
+// un nouveau store parallèle créerait DEUX sources de vérité (piège documenté).
+// ===========================================================================
+constexpr uint32_t kVaultItemId        = 0x1673F3C; // [112*page + 4*slot]
+constexpr uint32_t kVaultCount         = 0x1673F40;
+constexpr uint32_t kVaultSocket        = 0x1673F44;
+constexpr uint32_t kVaultSerial        = 0x1673F48;
+constexpr uint32_t kVaultAux0          = 0x16751B4; // [84*page + 3*slot]
+constexpr uint32_t kVaultAux1          = 0x16751B8;
+constexpr uint32_t kVaultAux2          = 0x16751BC;
+// Flag « page 2 débloquée » : posé par Pkt_SetGameVar case 89 (0x4690F8, déjà
+// porté Net/GameVarDispatch.cpp:480) ; lu par 0x54E265, UI_Refine_Draw 0x5E2E75,
+// UI_GameHud_Render 0x67E972/0x67E988.
+constexpr uint32_t kVaultPage2Unlocked = 0x1673F34;
+// Devise du coffre — DWORD 32 bits, PAS un int64 : Inv_AddItemQuantity case 13
+// (0x5B12B5-BE `mov edx, ds:…; add edx, [ecx+1Ch]; mov ds:…, edx`, 3 instructions
+// sur un seul dword ; aucun couple lo/hi).
+constexpr uint32_t kVaultCurrency      = 0x1673F38;
+
+// Décalages en OCTETS dans les tableaux du coffre (strides prouvés ci-dessus).
+inline uint32_t VaultItemOff(int32_t page, int32_t slot) {
+    return 4u * static_cast<uint32_t>(112 * page + 4 * slot);
+}
+inline uint32_t VaultAuxOff(int32_t page, int32_t slot) {
+    return 4u * static_cast<uint32_t>(84 * page + 3 * slot);
+}
+
+// ---------------------------------------------------------------------------
+// Vault_FindFreeSlot — portage FIDÈLE de Warehouse_FindFreeSlot 0x54E240
+// (« [game] find free cell in 2-page x 28-slot warehouse grid »), miroir 1:1 :
+//   pages = (dword_1673F34 > 0) ? 2 : 1        0x54E257/0x54E25E/0x54E265/0x54E267
+//   for (i < pages) for (j < 28)               0x54E280/0x54E29A
+//     if (!dword_1673F3C[112*i + 4*j])         0x54E2AF
+//       { *page = i; *slot = j; return 1; }    0x54E2BF/0x54E2C7/0x54E2C9
+//   return 0;                                  0x54E2D4
+// NB : test d'occupation = `!= 0` ici (0x54E2AF `cmp …, 0 / jnz`), à ne pas
+// confondre avec le `>= 1` de UI_Refine_HitTestEmptySlot 0x5E3895 — on reproduit
+// la forme de 0x54E240, qui est la fonction portée.
+// ---------------------------------------------------------------------------
+bool Vault_FindFreeSlot(int& outPage, int& outSlot);
+
+// ---------------------------------------------------------------------------
+// Warehouse_TryDepositFromInventory — routine d'état pure du DÉPÔT PAR CLIC DROIT
+// (gap INV-03). Miroir de cGameHud_OnRButtonDown 0x6318E0, jumptable 0x6319E4
+// **case 6**, séquence 0x6319EB..0x631B24 — seul appelant du builder
+// Net_SendVaultReq_250 0x592190 (@0x631B05) ET de Warehouse_FindFreeSlot (@0x631A9D).
+//
+// (invPage, invSlot) = sortie du hit-test cGameHud_InvCellAt 0x64F9F0
+// (var_404 = page, var_418 = slot). Retourne true SSI l'opcode 250 a été émis.
+// Le binaire, lui, renvoie eax=1 sur TOUS ces chemins (succès comme refus) : c'est
+// le « handled » du dispatcher UI, à la charge de l'appelant, pas de cette routine.
+//
+// ⚠ CÂBLAGE HORS PÉRIMÈTRE (non tenu par ce front) : l'appelant naturel est
+// UI/InventoryWindow (override OnRButtonDown) + l'adaptateur UI/GameWindows.h:87-88,
+// aucun des deux n'appartenant à W11. L'infrastructure existe déjà côté UI
+// (UIManager.h:130 `virtual bool OnRButtonDown`, dispatch UIManager.cpp:299, et
+// UIManager.h:126-127 documente déjà cGameHud_OnRButtonDown 0x6318E0 @0x5AD7E4).
+// Voir wiringTodoForOrchestrator du rapport W11.
+// ---------------------------------------------------------------------------
+bool Warehouse_TryDepositFromInventory(int invPage, int invSlot);
 
 // ===========================================================================
 // Game_IsNearWarehouseSpot 0x5d8390 : vrai si le joueur est à moins de 1000

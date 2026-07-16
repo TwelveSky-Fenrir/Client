@@ -144,6 +144,25 @@ void ParseCharRecord(const uint8_t* rec, game::CharSlotInfo& out) {
     if (!out.occupied) return; // fidèle : le binaire n'exploite aucun autre champ d'une fiche vide
 
     std::memcpy(&out.job,        rec + kCharRecFieldJob,     4);
+    // +40 = RACE EFFECTIVE de la LISTE. Champ rempli par le SERVEUR uniquement (écho de
+    // l'opcode 17) : data_refs(0x16709E0) = 0 réf — le formulaire de création ne l'écrit
+    // JAMAIS (re-vérifié cette session : `xrefs_to(0x16709E0)` -> aucune référence).
+    // DEUX consommateurs le lisent dans le binaire, tous deux portés en C++ :
+    //   · résolution de motion : `imul eax, 2768h` @0x51C528 puis
+    //     `mov ecx, ds:dword_16693A8[eax]` @0x51C52E (= &unk_1669380 + 0x2768*slot + 0x28)
+    //     -> `call PcModel_ResolveSlotAndApply` (0x4E5A00) @0x51C53A.
+    //     ⚠️ L'EA 0x51C555 parfois citée pour cette lecture est FAUSSE : c'est un
+    //     `jnz short loc_51C5C1` de comparaison flottante sur +0xF59C (animTime).
+    //   · publication du « self » : `Crt_Memcpy(g_SelfCharInvBlock 0x1673170,
+    //     &unk_1669380 + 0x2768*slot, 0x2768)` @0x51C707 -> le bloc+0x28 EST
+    //     g_LocalElementSecondary 0x1673198 (0x1673198 - 0x1673170 = 0x28 = 40), global à
+    //     50 lecteurs dans le jeu (AutoPlay_IsLocalElementMatch 0x45C590,
+    //     Char_BuildEquipSnapshot 0x4CC1C0, cGameHud_Render 0x64A900…).
+    // Sans cette recopie, game::CharSlotInfo::race restait à 0 et les DEUX chemins C++
+    // vivants partaient sur race=0 (Game/CharSelectFlow.cpp::ListMotionFrameCount et
+    // UI/LoginScene.cpp::PublishSelfFromSlot -> g_World.self.elementSecondary).
+    // Cf. aussi Char_RenderModel branche LISTE : `mov eax,[edx+28h]` @0x527536.
+    std::memcpy(&out.race,       rec + kCharRecFieldRace,    4);
     std::memcpy(&out.faction,    rec + kCharRecFieldFaction, 4);
     std::memcpy(&out.face,       rec + kCharRecFieldFace,    4);
     std::memcpy(&out.hairColor, rec + kCharRecFieldHair,    4);
