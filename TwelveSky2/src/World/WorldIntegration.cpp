@@ -201,6 +201,22 @@ bool WorldAssets::SlideMoveGround(const float from[3], const float to[3], float 
     return collision::SlideMoveGround(*m, from, to, speed, dt, outPos); // 0x697330
 }
 
+// Vague B4 — plan-sol pour l'ombre planaire (F_ENTITY3D). Model_RenderPlanarShadow 0x40f720 pick
+// la couche marchable filtrée materialIndex==1 (SegNodeNearestA @0x421128) : côté ClientSource =
+// la maille décodée de la couche Main (.WM). Voir rapport de front pour Main vs .WG.
+bool WorldAssets::GetGroundPlaneForShadow(const float modelPos[3], float modelHeight,
+                                          const float lightDir[3], float maxDist,
+                                          collision::GroundPlane& out) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) { out.valid = false; return false; }
+    return collision::GetGroundPlaneForShadow(*m, modelPos, modelHeight, lightDir, maxDist, out); // 0x40f720
+}
+bool WorldAssets::GetGroundPlaneUnder(float x, float z, collision::GroundPlane& out) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) { out.valid = false; return false; }
+    return collision::GetGroundPlaneUnder(*m, x, z, out); // 0x697130 (descente + plan-sol vertical)
+}
+
 // ---------------------------------------------------------------------------
 // WG-02 — Collision CAMÉRA (Camera_UpdateCollision 0x538580). Chaque oracle vise un slot
 // DIFFÉRENT (prouvé) : sweep terrain = .WG (slot 0 = g_GameWorld @0x5387b9) ; point bloqué =

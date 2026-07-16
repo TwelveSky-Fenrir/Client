@@ -20,6 +20,7 @@
 //     caméra/scène décidé.
 #pragma once
 #include "World/WorldMap.h"
+#include "World/CollisionMesh.h" // Vague B4 : collision::GroundPlane + chaîne pick segment / plan-sol
 #include "Asset/AtmosphereFile.h"
 #include <array>
 #include <cstdint>
@@ -150,6 +151,23 @@ public:
                  float outHit[3], bool twoSide = false) const;                            // 0x6960c0
     bool SlideMoveGround(const float from[3], const float to[3], float speed, float dt,
                          float outPos[3]) const;                                          // 0x697330
+
+    // -----------------------------------------------------------------------
+    // Vague B4 — PLAN-SOL pour l'ombre planaire projetée (F_ENTITY3D). FOURNISSEUR du plan de sol
+    // que Model_RenderPlanarShadow 0x40f720 lit puis passe à D3DXMatrixShadow. Deux voies :
+    //   GetGroundPlaneForShadow : voie fidèle du binaire — pick SEGMENT model+hauteur -> +lightDir
+    //     (Collision_SegPickA 0x420d60), filtre materialIndex==1, extraction plan + biais -d-0.1.
+    //   GetGroundPlaneUnder     : commodité VERTICALE — plan directement sous (x,z) via la descente
+    //     de MapColl_GetGroundHeight 0x697130 (filtre marchable planeB>0). Utile si la lumière est
+    //     ~verticale ou pour un fallback simple.
+    // Opèrent sur la couche .WM Main (walkable, materialIndex==1) — cf. rapport de front pour le
+    // choix Main vs .WG (l'objet `a8` de Model_RenderWithShadow 0x40eee0 relève du Game-layer).
+    // Build-safe : renvoient false / out.valid=false si la couche n'est pas chargée. Le vecteur
+    // lumière à passer à D3DXMatrixShadow À CÔTÉ de out.shadowPlane est { -lightDir, 0.0 }.
+    // -----------------------------------------------------------------------
+    bool GetGroundPlaneForShadow(const float modelPos[3], float modelHeight, const float lightDir[3],
+                                 float maxDist, collision::GroundPlane& out) const;       // 0x40f720
+    bool GetGroundPlaneUnder(float x, float z, collision::GroundPlane& out) const;        // 0x697130
 
     // -----------------------------------------------------------------------
     // WG-02 — Collision CAMÉRA (Camera_UpdateCollision 0x538580). FOURNISSEURS des 4 requêtes du

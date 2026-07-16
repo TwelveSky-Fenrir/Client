@@ -9,6 +9,7 @@
 #include "Scene/SceneManager.h"
 #include "Scene/WorldRenderer.h"
 #include "Gfx/WorldGeometryRenderer.h" // géométrie statique .WO (distinct de WorldRenderer=entités)
+#include "Gfx/GxdRenderer.h"           // GXD_RenderPostBlur 0x4053E0 (bloom, câblé en fin de rendu InGame)
 #include "World/WorldIntegration.h"    // world::WorldAssets (charge réellement Z%03d.WO)
 #include "World/WorldMap.h"            // world::WorldMap::LoadZoneResource / ZoneIdToFileId
 #include "Audio/AudioSystem.h"        // audio::BgmChannel (slot BGM de scène, cSceneMgr +612)
@@ -1535,6 +1536,16 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
         if (worldGeomReady_ && worldGeom_) worldGeom_->Render(camera, screenW_, screenH_);
         if (worldReady_ && world_) world_->Render(camera);
         if (worldGeomReady_ && worldGeom_) worldGeom_->RenderSky(screenW_, screenH_);
+        // (GXD_RenderPostBlur 0x4053E0) Bloom/post-blur : appel UNIQUE et INCONDITIONNEL du
+        // binaire @0x52FB53 (Scene_InGameRender 0x52D0B0), APRÈS tout le rendu 3D (terrain +
+        // entités + ciel) et AVANT Gfx_Begin2D @0x52FB89. Le flag bloomEnabled (g_GxdRenderer+24,
+        // @0x4053ED) vaut 1 par défaut (GXD_InitGlobalState 0x401320) -> bloom actif. RenderPostBlur
+        // s'auto-garde (device/PS12/PS14/handles nuls -> no-op) et gère lui-même son EndScene/
+        // BeginScene, laissant la scène OUVERTE pour le HUD 2D ci-dessous. Les PS12/PS14 du npk
+        // GXDEffect proviennent du ShaderSet du WorldRenderer (chargé quand worldReady_). Le device
+        // du singleton GxdRenderer est attaché à App_Init (App.cpp:374, GXD_DeviceReinit 0x4023F0).
+        if (worldReady_ && world_)
+            gfx::GxdRenderer::Instance().RenderPostBlur(world_->BloomShaderSet());
         if (hudReady_ && hud_) hud_->Render();
         if (windowsReady_ && windows_) windows_->Render();
         break;

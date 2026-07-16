@@ -382,6 +382,14 @@ public:
     // si non prêt.
     void Render(const gfx::Camera& camera);
 
+    // (GXD_RenderPostBlur 0x4053E0) Le bloom/post-blur lit les pixel shaders PS12/PS14 du
+    // npk GXDEffect (this+527404/+527468). Ce ShaderSet — les 12 shaders, chargés par Init()
+    // et attachés au MeshRenderer via AttachShaderSet — en est la seule source côté ClientSource.
+    // MAIN le passe à GxdRenderer::RenderPostBlur depuis SceneManager (site d'origine UNIQUE
+    // @0x52FB53 dans Scene_InGameRender 0x52D0B0, après tout le 3D, avant Gfx_Begin2D @0x52FB89).
+    // Référence NON possédante : valide tant que ce WorldRenderer vit (durée de vie scène InGame).
+    const gfx::ShaderSet& BloomShaderSet() const { return shaderSet_; }
+
 private:
     // -----------------------------------------------------------------------
     // Point d'extension modèle réel — CÂBLÉ sur Gfx/ModelCache (mission

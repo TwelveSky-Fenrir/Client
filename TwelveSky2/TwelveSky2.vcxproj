@@ -182,6 +182,8 @@
     <ClCompile Include="src\Gfx\IconTextureCache.cpp" />
     <ClCompile Include="src\Gfx\MeshRenderer.cpp" />
     <ClCompile Include="src\Gfx\MotionCache.cpp" />
+    <ClCompile Include="src\Gfx\FxRenderer.cpp" />
+    <ClCompile Include="src\Gfx\ParticleSystem.cpp" />
     <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp" />
     <ClCompile Include="src\Gfx\ModelCache.cpp" />
     <ClCompile Include="src\Gfx\Renderer.cpp" />
@@ -250,6 +252,7 @@
     <ClCompile Include="src\UI\WarehouseWindow.cpp" />
     <ClCompile Include="src\UI\Widgets.cpp" />
     <ClCompile Include="src\UI\Win32EditBox.cpp" />
+    <ClCompile Include="src\World\CollisionMesh.cpp" />
     <ClCompile Include="src\World\WorldIntegration.cpp" />
     <ClCompile Include="src\World\WorldMap.cpp" />
     <ClCompile Include="src\Game\PlayerCmdController.cpp" />
@@ -337,6 +340,8 @@
     <ClInclude Include="src\Gfx\MotionCache.h" />
     <ClInclude Include="src\Gfx\PlayerPaperdoll.h" />
     <ClInclude Include="src\Gfx\ModelCache.h" />
+    <ClInclude Include="src\Gfx\FxRenderer.h" />
+    <ClInclude Include="src\Gfx\ParticleSystem.h" />
     <ClInclude Include="src\Gfx\Renderer.h" />
     <ClInclude Include="src\Gfx\ShaderSet.h" />
     <ClInclude Include="src\Gfx\SilverLiningSky.h" />
@@ -398,6 +403,7 @@
     <ClInclude Include="src\UI\WarehouseWindow.h" />
     <ClInclude Include="src\UI\Widgets.h" />
     <ClInclude Include="src\UI\Win32EditBox.h" />
+    <ClInclude Include="src\World\CollisionMesh.h" />
     <ClInclude Include="src\World\WorldIntegration.h" />
     <ClInclude Include="src\World\WorldMap.h" />
     <ClInclude Include="src\Game\PlayerCmdController.h" />

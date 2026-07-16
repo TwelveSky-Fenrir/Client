@@ -62,13 +62,30 @@ public:
     void Render(int screenW, int screenH);
 
     // --- Skybox cube 6 faces (repli fidèle Env_RenderSkyCube 0x6a8f60) --------------------
-    // Ces setters modélisent des champs runtime NON possédés par ce front (objet sky de zone,
-    // g_GfxRenderer+136/+140/+792) — cf. règle #6. Tant qu'ils ne sont pas câblés (TODO côté
-    // front World/zone/asset), skyRadius_ reste 0 -> HasSkyCube()==false -> gradient PLACEHOLDER.
+    // Ces setters modélisent l'état runtime lu par Env_RenderSkyCube (globals du renderer + objet
+    // sky de zone), NON possédé par ce front. ANCRAGE PROUVÉ (Cam_SetProjection 0x69cbef) :
+    //   - skyRadius_ = far plane = g_GfxRenderer+136 (param a3 stocké @0x69cbd5 -> flt_7FFEA0
+    //     0x7FFEA0) ; côté cube = far/√3 (@0x6a8f9b). Image statique = 0 (cache runtime).
+    //   - fogActive_ = g_GfxRenderer+140 = fog-enable (lu @0x69cc06 -> dword_7FFEA4 0x7FFEA4).
+    //   - camPos_ = g_CameraPos 0x800130 (=g_GfxRenderer+792), translation monde @0x6a936e.
+    //   - faceTex_ = descripteurs de face de l'objet sky de zone (this+13, stride 52o, 1er dword =
+    //     IDirect3DTexture9*). ⚠️ SOURCE NON PROUVABLE STATIQUEMENT (cf. .cpp + TS2_SKY_ROSETTA T-12) :
+    //     dans ce build EU, Env_RenderSkyCube est du CODE MORT (a2==NULL aux 8 sites Gfx_BeginFrame
+    //     0x6a2280) -> l'objet sky n'est jamais construit -> aucun loader n'alimente les 6 textures.
+    //     Tant que faceTex_ n'est pas fourni par son propriétaire -> HasSkyCube()==false -> gradient.
+    // faceTex_ NON possédées (raw ptr) : le propriétaire (zone/asset) DOIT les re-fournir après un
+    //   device-lost/reset ; SkyRenderer ne possède AUCUNE ressource D3DPOOL_DEFAULT (cube = DrawPrimitiveUP).
     void SetSkyCubeTextures(IDirect3DTexture9* const faces[6]); // objet sky zone (desc. face 52o, this+13)
-    void SetSkyRadius(float r);          // flt_7FFEA0 = g_GfxRenderer+136 (rayon ciel ; cube actif si >0)
+    void SetSkyRadius(float r);          // r = far plane (flt_7FFEA0 = g_GfxRenderer+136, Cam_SetProjection 0x69cbef a3)
     void SetCameraPosition(float x, float y, float z); // g_CameraPos 0x800130 = g_GfxRenderer+792
-    void SetFogActive(bool on);          // dword_7FFEA4 = g_GfxRenderer+140 (fog à désactiver autour)
+    void SetFogActive(bool on);          // dword_7FFEA4 = g_GfxRenderer+140 (fog-enable, Cam_SetProjection 0x69cbef +140)
+
+    // Point d'activation de la couche 1 (branchement B3) : pousse en un appel l'état runtime que
+    // Gfx_BeginFrame 0x6a2280 fournit à Env_RenderSkyCube (far plane -> rayon, œil-caméra, fog).
+    // N'active PAS le cube à lui seul — sans SetSkyCubeTextures(), HasSkyCube() reste false -> gradient.
+    // À appeler par la scène juste avant Render(), en miroir de Gfx_BeginFrame.
+    void UpdateSkyRuntime(float farPlane, const float camPos[3], bool fogEnabled);
+
     bool HasSkyCube() const;             // true si skyRadius_>0 && >=1 texture de face
 
     // --- Diagnostics (tests, logs de sanité) --------------------------------------------
@@ -135,9 +152,9 @@ private:
     struct SkyCubeVertex { float x, y, z, u, v; }; // 20 o, FVF D3DFVF_XYZ|D3DFVF_TEX1 (0x102) @0x6a934f
 
     IDirect3DTexture9* faceTex_[6] = { nullptr };  // objet sky zone this+13 (desc. face 52o, 1er dword = texture)
-    float  skyRadius_   = 0.0f;   // flt_7FFEA0 = g_GfxRenderer+136 (R ; jamais écrit statiquement => 0 par défaut)
+    float  skyRadius_   = 0.0f;   // flt_7FFEA0 = g_GfxRenderer+136 = far plane (Cam_SetProjection 0x69cbef, a3 @0x69cbd5). Image statique = 0 (cache runtime).
     float  camPos_[3]   = { 0.0f, 0.0f, 0.0f }; // g_CameraPos 0x800130 = g_GfxRenderer+792 (translation monde @0x6a936e)
-    bool   fogActive_   = false;  // dword_7FFEA4 = g_GfxRenderer+140 (fog actif => à désactiver @0x6a933c)
+    bool   fogActive_   = false;  // dword_7FFEA4 = g_GfxRenderer+140 = fog-enable (Cam_SetProjection 0x69cbef +140 @0x69cc06 ; désactivé autour du cube @0x6a933c)
     float  cubeCacheRadius_ = -1.0f; // this+210 (byte 0x348) : cache de reconstruction @0x6a8f88/@0x6a92c6
     SkyCubeVertex cubeVerts_[24];    // this+211 (6 faces × 4 sommets)
 };

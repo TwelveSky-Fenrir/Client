@@ -184,6 +184,27 @@ void SkyRenderer::recomputeColors() {
 //   SilverLiningDirectX9-MT.dll / SilverLining-MT.lib, NON redistribuable. Le cube ci-dessous
 //   est l'étape intermédiaire fidèle : la géométrie/l'état D3D9 exacts d'Env_RenderSkyCube,
 //   alimentés au runtime par les setters (textures ciel de zone, rayon, position caméra).
+//
+// SOURCE DES 6 TEXTURES DE FACE — NON PROUVABLE STATIQUEMENT (honnête, PAS inventé) :
+//   Dans ce build EU, Env_RenderSkyCube 0x6a8f60 est du CODE MORT. Son unique appelant
+//   Gfx_BeginFrame 0x6a2280 ne le lance que si (a2 && *a2), or les 8 sites d'appel de
+//   Gfx_BeginFrame (Scene_IntroRender 0x5188c8, Scene_ServerSelectRender 0x5192a8,
+//   Scene_LoginRender 0x51b078, Scene_CharSelectRender 0x51cf28, Scene_EnterWorldRender
+//   0x52c2b8, Scene_InGameRender 0x52d13a/0x52d187/0x52d1fc) passent TOUS a2 = NULL (push 0).
+//   L'objet sky de zone (le `this` de 0x6a8f60) n'est donc jamais construit et AUCUN loader
+//   n'alimente les 6 textures de face (this+13). Corroboré par Docs/TS2_SKY_ROSETTA.md T-12
+//   (« loader des 6 textures à identifier », PLAUSIBLE, non localisé dans l'IDB). => On NE
+//   FABRIQUE PAS de chemin d'asset. Le cube reste prêt (géométrie/états fidèles ci-dessous)
+//   mais gaté par HasSkyCube() : sans SetSkyCubeTextures(), le repli reste le gradient plein
+//   écran (couche 2 minimale). TODO (ancré T-12 / 0x6a8f60) : si la couche 1 devait être
+//   réactivée, identifier au runtime (x32dbg) l'objet sky et le loader de this+13 AVANT de
+//   porter le moindre chemin d'asset.
+//
+// RAYON = FAR PLANE (prouvé, Cam_SetProjection 0x69cbef) : flt_7FFEA0 (0x7FFEA0) =
+//   g_GfxRenderer+136, écrit par Cam_SetProjection avec le param a3 « far » (@0x69cbd5) ; côté
+//   du cube = far/√3 (@0x6a8f9b). Image statique = 0 (cache runtime) => MAIN doit pousser le far
+//   plane du renderer via UpdateSkyRuntime()/SetSkyRadius(). fog = dword_7FFEA4 = g_GfxRenderer+140
+//   (Cam_SetProjection +140, lu @0x69cc06).
 // =======================================================================================
 
 // Reconstruit les 24 sommets du cube ciel. Env_RenderSkyCube 0x6a8f60 @0x6a8f9b..0x6a92c6.
@@ -298,11 +319,16 @@ void SkyRenderer::renderCube() {
 }
 
 // --- Setters de la skybox cube (état runtime modélisé, cf. SkyRenderer.h) -----------------
+// faceTex_ = raw ptr NON possédés (objet sky zone this+13, 1er dword = texture). Le propriétaire
+// (zone/asset) reste responsable de leur cycle de vie et DOIT les re-fournir après un device-reset
+// (SkyRenderer ne possède aucune ressource D3DPOOL_DEFAULT : le cube passe par DrawPrimitiveUP).
 void SkyRenderer::SetSkyCubeTextures(IDirect3DTexture9* const faces[6]) {
     for (int i = 0; i < 6; ++i) faceTex_[i] = faces ? faces[i] : nullptr;
 }
 
 void SkyRenderer::SetSkyRadius(float r) {
+    // r = far plane du renderer (flt_7FFEA0 = g_GfxRenderer+136, Cam_SetProjection 0x69cbef a3
+    // @0x69cbd5). rebuildCubeVertices applique ensuite le côté = r/√3 (@0x6a8f9b).
     if (r != skyRadius_) {
         skyRadius_ = r;
         cubeCacheRadius_ = -1.0f; // force la reconstruction au prochain rebuildCubeVertices()
@@ -310,11 +336,20 @@ void SkyRenderer::SetSkyRadius(float r) {
 }
 
 void SkyRenderer::SetCameraPosition(float x, float y, float z) {
-    camPos_[0] = x; camPos_[1] = y; camPos_[2] = z; // g_CameraPos 0x800130
+    camPos_[0] = x; camPos_[1] = y; camPos_[2] = z; // g_CameraPos 0x800130 = g_GfxRenderer+792
 }
 
 void SkyRenderer::SetFogActive(bool on) {
-    fogActive_ = on; // dword_7FFEA4 = g_GfxRenderer+140
+    fogActive_ = on; // dword_7FFEA4 = g_GfxRenderer+140 (fog-enable, Cam_SetProjection 0x69cbef +140)
+}
+
+// Branchement B3 (activation couche 1) : miroir de l'état que Gfx_BeginFrame 0x6a2280 fournit à
+// Env_RenderSkyCube 0x6a8f60. Regroupe les 3 globals prouvés (far plane -> rayon, œil-caméra, fog).
+// N'active PAS le cube seul : sans SetSkyCubeTextures(), HasSkyCube()==false -> gradient (repli).
+void SkyRenderer::UpdateSkyRuntime(float farPlane, const float camPos[3], bool fogEnabled) {
+    SetSkyRadius(farPlane);                                         // flt_7FFEA0 = g_GfxRenderer+136 (Cam_SetProjection 0x69cbef a3)
+    if (camPos) SetCameraPosition(camPos[0], camPos[1], camPos[2]); // g_CameraPos 0x800130
+    SetFogActive(fogEnabled);                                       // dword_7FFEA4 = g_GfxRenderer+140
 }
 
 bool SkyRenderer::HasSkyCube() const {
