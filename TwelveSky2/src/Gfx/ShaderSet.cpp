@@ -27,6 +27,9 @@ struct ShaderDef {
 };
 
 // Les 12 shaders GXD, dans l'ordre de GXD_DeviceCreate 0x401610.
+// ex-VeryOldClient (semantic v2, CONFIRMED §1.4) : 01=mAmbient1, 02=mAmbient1_PS, 03=mAmbient2,
+//   04=mAmbient2_PS, 05=mNormal1, 06=mNormal1_PS, 07=mNormal2, 08=mNormal2_PS, 09=mAmbient3,
+//   12=mFilter1_PS, 14=mFilter2_PS, 15=mShadow1. Détail par slot : cf. enum GxdShaderId (ShaderSet.h).
 const ShaderDef kDefs[] = {
     { GxdShaderId::VS01_WorldVP,    "Shader01.fx", "vs_2_0", false,
       { nullptr },
@@ -170,6 +173,7 @@ ShaderSet::~ShaderSet() { Release(); }
 
 bool ShaderSet::CreateVertexDecl() {
     // Déclaration de vertex skinné 76 octets — copie exacte de unk_814A58 (0x814A58).
+    // ex-VeryOldClient: mVertexElementForSKIN2 -> mDECLForSKIN2 (stride 76) — BIT-EXACT, CONFIRMED §1.5.
     // Octets relevés : 7 éléments + D3DDECL_END(). NB : BLENDINDICES est déclaré en
     // D3DDECLTYPE_D3DCOLOR (type 4) tel quel dans le binaire (les 4 indices d'os
     // arrivent au VS via le canal BGRA du D3DCOLOR).

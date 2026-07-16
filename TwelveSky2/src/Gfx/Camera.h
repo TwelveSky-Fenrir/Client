@@ -36,6 +36,7 @@ class Camera {
 public:
     // --- Constantes fidèles au désassemblage -------------------------------------
     // FOV vertical : g_GfxRenderer+128 = 0x42340000 = 45.0f ; g_GxdRenderer+56 = 45.0f.
+    // ex-VeryOldClient: mFovY (v1 Object A @+128 ET v2 Object B @+56, note 45.0). CONFIRMED §1.2.
     static constexpr float kFovDegDefault = 45.0f;
     // Facteurs de conversion : littéraux exacts employés par le binaire.
     static constexpr float kDegToRad = 0.017453292f;      // pi/180 (0x3C8EFA35)
@@ -118,8 +119,9 @@ public:
     // --- Positions dérivées --------------------------------------------------------
     // Oeil reconstruit depuis l'état sphérique (isomorphe aux rotations d'origine) :
     //   oeil = cible + dist * (cos(pitch)*sin(yaw), sin(pitch), cos(pitch)*cos(yaw))
+    // Poussé dans g_GxdRenderer+712 (Camera_SetEyeTarget 0x403420). ex-VeryOldClient: mCameraEye.
     D3DXVECTOR3 Eye() const;
-    // Direction avant normalisée = normalize(cible - oeil) (cf. g_GxdRenderer+736).
+    // Direction avant normalisée = normalize(cible - oeil) (cf. g_GxdRenderer+736). ex-VeryOldClient: mCameraForward.
     D3DXVECTOR3 Forward() const;
     // Récupère le couple (oeil,cible) à pousser vers le renderer (Camera_SetEyeTarget).
     void GetEyeTarget(D3DXVECTOR3& eye, D3DXVECTOR3& at) const { eye = Eye(); at = m_target; }
@@ -135,14 +137,14 @@ private:
     static float ClampPitch(float rad);
     void         ClampDistanceInternal();
 
-    D3DXVECTOR3 m_target{0.0f, 0.0f, 0.0f}; // cible regardée (g_GxdRenderer+724)
+    D3DXVECTOR3 m_target{0.0f, 0.0f, 0.0f}; // cible regardée (g_GxdRenderer+724) — ex-VeryOldClient: mCameraLook
     D3DXVECTOR3 m_up{0.0f, 1.0f, 0.0f};     // up figé (0,1,0) dans le moteur
     float m_distance = kDefaultDistance;    // distance oeil->cible
     float m_yaw   = D3DX_PI;                 // yaw par défaut => oeil sur -Z (0,0,-dist)
     float m_pitch = 0.0f;                    // élévation
-    float m_fovY  = kFovDegDefault * kDegToRad; // FOV vertical (radians)
-    float m_nearZ = 1.0f;                    // plan proche (renderer)
-    float m_farZ  = 15000.0f;                // plan lointain (renderer)
+    float m_fovY  = kFovDegDefault * kDegToRad; // FOV vertical (radians) — ex-VeryOldClient: mFovY (g_GxdRenderer+56)
+    float m_nearZ = 1.0f;                    // plan proche (renderer, g_GxdRenderer+60) — ex-VeryOldClient: mNearPlane
+    float m_farZ  = 15000.0f;                // plan lointain (renderer, g_GxdRenderer+64) — ex-VeryOldClient: mFarPlane
     float m_minDist = kMinDistDefault;       // borne zoom min (Camera_Init+84)
     float m_maxDist = kMaxDistDefault;       // borne zoom max (Camera_Init+88)
     float m_yawVel   = 0.0f;                  // rad/s (orbite continue optionnelle)

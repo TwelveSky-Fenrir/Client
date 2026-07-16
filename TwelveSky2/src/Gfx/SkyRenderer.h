@@ -71,6 +71,10 @@ public:
 private:
     void recomputeColors();
 
+    // Instantané des réglages GLOBAUX de SilverLining.config (lus 1×/session par cAtmosphere_Initialize
+    // 0x793390) ; les données PAR ZONE (heure/lat/lon/flags) arrivent séparément via SetAtmosphere() (.ATM,
+    // Atmosphere_Deserialize 0x795A40). cf. Docs/TS2_SILVERLINING_CONFIG.md §2. Les valeurs par défaut ci-
+    // dessous = defaults SDK stock, PAS transposées de VeryOldClient (build différent).
     struct ConfigSnapshot {
         double defaultLongitude = -122.064840;
         double defaultLatitude  = 30.0;
@@ -83,10 +87,16 @@ private:
         double defaultSecond  = 0.0;
         double defaultTimezone = -8.0;
         bool defaultDst = true;
-        double defaultTurbidity = 2.2;
-        bool disableToneMapping = false;
-        bool enableAtmosphereFromSpace = false;
-        double atmosphereHeight = 300000.0;
+        double defaultTurbidity = 2.2;   // config "default-turbidity" @ cAtmosphere_Initialize 0x793390 (défaut code 2.0, fichier livré 2.2)
+        bool disableToneMapping = false; // config "disable-tone-mapping" (global) / cf. g_SL_ForceToneMapping 0x18C4DEC
+        bool enableAtmosphereFromSpace = false; // config "enable-atmosphere-from-space" @ 0x793390 (défaut true, fichier "no")
+        double atmosphereHeight = 100000.0;     // config "atmosphere-height" @ cAtmosphere_Initialize 0x793390
+                                                // CONFIRMED @0x7935eb : *v20 = 100000.0 puis Cfg_GetDouble(100000.0, "atmosphere-height", v20)
+                                                //   -> défaut réel si la clé est absente = 100000.0 (corrigé depuis 300000.0 ; ex-D-1/T-13). Champ non
+                                                //   consommé par le gradient (cosmétique) mais aligné sur la vérité IDA.
+        // "atmosphere-scale-height-meters" RELU PAR FRAME @ cAtmosphere_RenderFrame 0x793B80 (Cfg_GetDouble → dbl_18636E8).
+        // PLAUSIBLE (VeryOldClient) — non prouvé IDA (8435.0 = hauteur d'échelle de pression terrestre, jamais lue comme littéral dans l'IDB).
+        // ex-VeryOldClient: CAtmosphere::SetSceneFog H = 8435.0 ("Pressure scale height of Earth's atmosphere")
         double atmosphereScaleHeightMeters = 8435.0;
     };
 

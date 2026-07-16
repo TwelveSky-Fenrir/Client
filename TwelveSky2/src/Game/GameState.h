@@ -13,8 +13,8 @@ namespace ts2::game {
 
 // Identité réseau d'une entité : paire u32 (id_hi @payload+0, id_lo @payload+4).
 struct EntityId {
-    uint32_t hi = 0;
-    uint32_t lo = 0;
+    uint32_t hi = 0;  // netId1 (idHi) — ex-VeryOldClient: mServerIndex (avatar/item) / mIndex (monstre) [CONFIRMED, Rosetta §1]
+    uint32_t lo = 0;  // netId2 (idLo) — ex-VeryOldClient: mUniqueNumber [CONFIRMED, Rosetta §1]
     bool valid() const { return hi != 0 || lo != 0; }
     bool operator==(const EntityId& o) const { return hi == o.hi && lo == o.lo; }
 };
@@ -61,25 +61,25 @@ struct FxTimerSlot {
 
 struct CharAnimState {
     // --- Miroir direct de ActionFsm (état/timing/hit-detection) ---
-    int32_t state             = 0;     // entity+244 (CharActionState, miroir "facing")
-    float   animFrame         = 0.0f;  // entity+248
-    bool    hitCheckActive    = false; // entity+624 (idx156)
-    bool    hitFired          = false; // entity+640 (idx160)
-    bool    hitUsesSkillTable = false; // entity+628 (idx157)
+    int32_t state             = 0;     // entity+244 (CharActionState, miroir "facing") — ex-VeryOldClient: aType (ACTION_INFO ; nom aType/aSort permutable, Rosetta §7) [CONFIRMED offset]
+    float   animFrame         = 0.0f;  // entity+248 — ex-VeryOldClient: aFrame [CONFIRMED, Rosetta §2]
+    bool    hitCheckActive    = false; // entity+624 (idx156) — ex-VeryOldClient: mUsingSkill (nom tentatif) [CONFIRMED offset, Rosetta §3.5]
+    bool    hitFired          = false; // entity+640 (idx160) — ex-VeryOldClient: mIsAttack [CONFIRMED offset, Rosetta §3.5]
+    bool    hitUsesSkillTable = false; // entity+628 (idx157) — PLAUSIBLE (VeryOldClient: SGAttackState) — non prouvé IDA [Rosetta §3.5]
     bool    altWeaponSet      = false; // entity+576 (idx144)
     int32_t weaponAnimSlot    = 0;     // entity+220 (idx55)
     int32_t lastSkillEventId  = 0;
-    int32_t actionKind        = 1;     // entity+632 (idx158)
-    int32_t actionSubKind     = 1;     // entity+636 (idx159)
+    int32_t actionKind        = 1;     // entity+632 (idx158) — PLAUSIBLE (VeryOldClient: BAttackState) — non prouvé IDA [Rosetta §3.5]
+    int32_t actionSubKind     = 1;     // entity+636 (idx159) — PLAUSIBLE (VeryOldClient: RAttackState) — non prouvé IDA [Rosetta §3.5]
     int32_t guardSubstate     = 0;     // entity+552
     bool    guardKeyHeld      = false; // entity+548 (entrée, fournie par l'appelant)
-    int32_t modelIndex        = 0;     // entity+92  (idx23)
-    int32_t modelVariant      = 0;     // entity+96  (idx24)
+    int32_t modelIndex        = 0;     // entity+92  (idx23) — ex-VeryOldClient: aTribe (RACE 0..2) [CONFIRMED, Rosetta §3.2]
+    int32_t modelVariant      = 0;     // entity+96  (idx24) — ex-VeryOldClient: aGender (0..1) [CONFIRMED, Rosetta §3.2]
     int32_t weaponClass       = 0;     // Weapon_ClassFromField56 résolu en amont (hors périmètre)
 
     // --- Countdown UI de cast (dword_1675704/1675700 global, ce champ = this+16/+20) ---
-    float cooldownA = 0.0f; // entity+16 (idx4) — décompte lié au global dword_1675704
-    float cooldownB = 0.0f; // entity+20 (idx5) — décompte simple, inconditionnel
+    float cooldownA = 0.0f; // entity+16 (idx4) — décompte lié au global dword_1675704 — PLAUSIBLE (VeryOldClient: mUpdateTimeForRageTime) — non prouvé IDA [Rosetta §3.1]
+    float cooldownB = 0.0f; // entity+20 (idx5) — décompte simple, inconditionnel — PLAUSIBLE (VeryOldClient: mUpdateTime3) — non prouvé IDA [Rosetta §3.1]
 
     // --- Latch générique 10s (entity+748/752) — sémantique exacte non déterminée ---
     bool  genericLatch10s      = false;
@@ -105,19 +105,19 @@ struct CharAnimState {
     bool    fxAuraAttachedLatch = false; // entity+884 (idx221)
 
     // --- Rotation faciale lissée (entity+276/280, 0x572531..0x572649) ---
-    float facingCurrentDeg = 0.0f; // entity+276 (idx69, MUTÉ à 540°/s vers facingTargetDeg)
-    float facingTargetDeg  = 0.0f; // entity+280 (idx70, lu seul)
+    float facingCurrentDeg = 0.0f; // entity+276 (idx69, MUTÉ à 540°/s vers facingTargetDeg) — ex-VeryOldClient: aFront [CONFIRMED, Rosetta §2]
+    float facingTargetDeg  = 0.0f; // entity+280 (idx70, lu seul) — ex-VeryOldClient: aTargetFront [CONFIRMED, Rosetta §2]
 
     // --- Marque de guilde en attente (entity+68) ---
-    bool hasPendingGuildMark = false; // entity+68 (idx17), testé ==1
+    bool hasPendingGuildMark = false; // entity+68 (idx17), testé ==1 — ex-VeryOldClient: aGuildMarkEffect [CONFIRMED, Rosetta §3.2]
 };
 
 // Personnage/joueur distant — tableau dword_1687234 (stride 908, index 0 = self).
 struct PlayerEntity {
-    bool     active = false;              // +0
-    EntityId id;                          // +4/+8
-    float    timestamp = 0.0f;            // +0x0C
-    std::array<uint8_t, 600> body{};      // +0x18 apparence/équip/stats (payload 0x0F)
+    bool     active = false;              // +0 — ex-VeryOldClient: mCheckValidState [CONFIRMED, Rosetta §1/§3.1]
+    EntityId id;                          // +4/+8 — ex-VeryOldClient: mServerIndex (idHi) / mUniqueNumber (idLo) [CONFIRMED, Rosetta §3.1]
+    float    timestamp = 0.0f;            // +0x0C — ex-VeryOldClient: mUpdateTime [CONFIRMED, Rosetta §3.1]
+    std::array<uint8_t, 600> body{};      // +0x18 apparence/équip/stats (payload 0x0F) — ex-VeryOldClient: aEquipForView (snapshot équip distants ; arme = body+148 = equipSnapshot+56, ex mEquip[7]) [CONFIRMED, Rosetta §3.3]
                                            // Layout partiellement reversé : voir
                                            // Docs/TS2_PLAYER_BODY_MODEL.md. Résolu avec
                                            // preuve de décompilation : body+148 (u32 LE)
@@ -132,7 +132,7 @@ struct PlayerEntity {
                                            // équipé en jeu (doc TS2_ENTITY_ARRAY_
                                            // DUALITY_CHECK.md §3 — non localisé
                                            // statiquement).
-    float    x = 0.0f, y = 0.0f, z = 0.0f;// bloc pos @+0xF0
+    float    x = 0.0f, y = 0.0f, z = 0.0f;// bloc pos @+0xF0 — ex-VeryOldClient: aLocation (ACTION_INFO, move-state+12) [CONFIRMED, Rosetta §2]
     // Orientation (cap horizontal, degrés) — mission ROTATION/ORIENTATION, 2026-07-14.
     // body+252 = move-state[216]+36 (bloc move-state = {moveVal@+0, actionState@+4,
     // animFrame@+8, posX@+12, posY@+16, posZ@+20, ..., heading@+36}, cf. bandeau de tête
@@ -167,7 +167,7 @@ struct PlayerEntity {
     // de CharAnimState restant un système séparé, non câblé sur les entités distantes à
     // ce jour (cf. Game/AnimationTick.h, Char_UpdateAnimationFrame jamais appelée depuis
     // EntityManager/WorldRenderer).
-    float    heading = 0.0f;
+    float    heading = 0.0f;              // body+252 = move-state+36 — ex-VeryOldClient: aFront [CONFIRMED, Rosetta §2]
     int      hp = 0, mp = 0;              // +7208 (self.hp dans cGameData)
 
     // Nom du personnage (mission NAMEPLATES, 2026-07-14) : entity+72 raw, soit
@@ -184,7 +184,7 @@ struct PlayerEntity {
     // les buffers `char[13]` (12 caractères + NUL) vus ailleurs dans le protocole
     // (Docs/TS2_PROTOCOL_SPEC.md, ex. friendName/target_name) : 16 o laisse de la marge
     // pour l'alignement sans tronquer un nom légitime.
-    std::string name;
+    std::string name;                     // entity+72 (body+48) — ex-VeryOldClient: aName [CONFLICT §7 C1 résolu : décl. struct IDA disait name[48]@40, décompil. Char_DrawNameplate 0x56EF40 (this+72) prouve @+72 → IDA gagne]
 
     // État minimal ajouté (mission UI buffs, 2026-07-14) : buffs/debuffs actifs du JOUEUR
     // LOCAL (index 0 du tableau = self, cf. commentaire ci-dessus), consommé exclusivement
@@ -197,14 +197,14 @@ struct PlayerEntity {
 
 // Monstre — tableau dword_1766F74 (stride 280).
 struct MonsterEntity {
-    bool     active = false;
-    EntityId id;
-    float    timestamp = 0.0f;
-    std::array<uint8_t, 80> body{};       // body[0] = mob id -> MONSTER_INFO
-    const void* def = nullptr;            // +0x60 record MONSTER_INFO résolu
-    float    radius = 0.0f;               // +0x64
+    bool     active = false;              // +0 — ex-VeryOldClient: mCheckValidState [CONFIRMED, Rosetta §1/§4]
+    EntityId id;                          // +4/+8 — ex-VeryOldClient: mIndex (idHi) / mUniqueNumber (idLo) [CONFIRMED, Rosetta §4]
+    float    timestamp = 0.0f;            // +0x0C — ex-VeryOldClient: mUpdateTime [CONFIRMED, Rosetta §4]
+    std::array<uint8_t, 80> body{};       // body[0] = mob id -> MONSTER_INFO ; +0x10 — ex-VeryOldClient: mDATA (OBJECT_FOR_MONSTER) [CONFIRMED, Rosetta §4]
+    const void* def = nullptr;            // +0x60 record MONSTER_INFO résolu — ex-VeryOldClient: mMONSTER_INFO [CONFIRMED, Rosetta §4]
+    float    radius = 0.0f;               // +0x64 — ex-VeryOldClient: mRadiusForSize [CONFIRMED, Rosetta §4]
     int      hp = 0;                      // +923784 (dans cGameData)
-    float    x = 0.0f, y = 0.0f, z = 0.0f;
+    float    x = 0.0f, y = 0.0f, z = 0.0f;// record+32/36/40 (body+16/20/24) — ex-VeryOldClient: mAction.aLocation [CONFIRMED, Rosetta §4]
     // Orientation (cap horizontal, degrés) — body+40 = move-state[4]+36 (même layout
     // move-state que PlayerEntity, décalé : démarre body+4 au lieu de body+216 — cf.
     // bandeau de tête de Game/EntityManager.cpp). Preuve DIRECTE (pas seulement par
@@ -221,24 +221,24 @@ struct MonsterEntity {
     // fidélité corrigé vis-à-vis de l'ancien commentaire WorldRenderer.h/
     // EntityDrawLogic.h "this+14=scale"). Peuplé par EntityManager (miroir top-level,
     // même convention que x/y/z), consommé par Scene/WorldRenderer.cpp.
-    float    heading = 0.0f;
+    float    heading = 0.0f;              // record+56 (body+40 = move-state[4]+36) — ex-VeryOldClient: mAction.aFront [CONFIRMED, Rosetta §4]
     CharAnimState anim{}; // FSM d'anim/action (Char_UpdateAnimationFrame), cf. ci-dessus
 };
 
 // NPC — tableau dword_17AB534 (stride 152).
 struct NpcEntity {
-    bool     active = false;
-    EntityId id;
-    float    timestamp = 0.0f;
-    std::array<uint8_t, 84> body{};       // body[0] = mob id -> NPC/MobDb
-    const void* def = nullptr;
+    bool     active = false;              // +0 — ex-VeryOldClient: mCheckValidState [CONFIRMED, Rosetta §5 ; ⚠️ VeryOld le place @+4 (layout NPC_OBJECT divergent), seul le RÔLE est aligné, cf. §7 C3]
+    EntityId id;                          // +4/+8 (idHi/idLo) — absent du wrapper VeryOld réduit → IDA seul [CONFIRMED, Rosetta §5]
+    float    timestamp = 0.0f;            // +0x0C — absent VeryOld → IDA seul [CONFIRMED, Rosetta §5]
+    std::array<uint8_t, 84> body{};       // body[0] = mob id -> NPC/MobDb ; +0x10 — PLAUSIBLE (VeryOldClient: nAction) — non prouvé IDA [Rosetta §5]
+    const void* def = nullptr;            // +0x64 — CONFLICT §7 C2 : VeryOld nInfo typé NPC_INFO* @+0, IDA prouve ITEM_INFO* @+100 (MobDb_GetEntry 0x4C3C00) → IDA gagne (type + offset)
     uint32_t action = 0;
     // Position monde @body+16/20/24 (confirmé par décompilation Hex-Rays de
     // Char_SelectAuraEffect 0x5835B0, appelé juste après la copie du body dans
     // Pkt_SpawnNpc 0x467EC0 : this+8/9/10 == record+32/36/40 == body+16/20/24,
     // même convention que MonsterEntity::x/y/z (body+16/20/24). Déjà reçue dans
     // `body` via le réseau (Pkt_SpawnNpc), juste jamais extraite avant ce jalon.
-    float    x = 0.0f, y = 0.0f, z = 0.0f;
+    float    x = 0.0f, y = 0.0f, z = 0.0f;// record+32/36/40 (body+16/20/24) — ex-VeryOldClient: nAction.aLocation [CONFIRMED, Rosetta §5]
     // PAS de champ `heading` ici (mission ROTATION/ORIENTATION, 2026-07-14) :
     // contrairement à PlayerEntity/MonsterEntity (cf. leurs commentaires `heading`),
     // AUCUNE fonction du call-graph de rendu n'appelle Char_Draw/Char_DrawReflection
@@ -251,6 +251,8 @@ struct NpcEntity {
     // (aucun offset confirmé sur ce record précis) ; `StaticNpcLoader.h::angle` est un
     // système NON LIÉ (PNJ de décor statiques chargés par zone via
     // cGameData_LoadZoneNpcInfo, pas les PNJ réseau de ce tableau).
+    // PLAUSIBLE (VeryOldClient: NPC_OBJECT.nFront = cap NPC) — non prouvé IDA : aucun
+    // offset heading confirmé sur ce record 152 o (§8 Rosetta, non ancré → non ajouté).
 };
 
 // Objet au sol — tableau dword_1764D14 (stride 88).
@@ -303,8 +305,8 @@ struct EquipSlot {
 
 // État du joueur local — le « self work block » (globals 0x16731A8.. de l'original).
 struct SelfState {
-    int level          = 1;   // g_SelfLevel 0x16731A8
-    int levelBonus     = 0;   //             0x16731AC
+    int level          = 1;   // g_SelfLevel 0x16731A8 — ex-VeryOldClient: OBJECT_FOR_AVATAR.aLevel1 [CONFIRMED, Rosetta §6]
+    int levelBonus     = 0;   //             0x16731AC — ex-VeryOldClient: aLevel2 [CONFIRMED, Rosetta §6]
     // 4 attributs primaires (les suffixes = offsets ITEM_INFO correspondants).
     int attrExtForce   = 0;   // g_SelfBaseAttr292 0x16731BC
     int attrIntForce   = 0;   //               296 0x16731C4
@@ -325,7 +327,7 @@ struct SelfState {
     // n'expose jamais plus de 2 pages au total (cf. UI/InventoryWindow.h::kMaxBagPages).
     int element        = 0;   // g_LocalElement 0x1673194
     int elementSecondary = 0; //                0x1673198
-    uint32_t weaponId  = 0;   // g_LocalPlayerWeaponId 0x16731E8
+    uint32_t weaponId  = 0;   // g_LocalPlayerWeaponId 0x16731E8 — ex-VeryOldClient: mEquip[7] (arme ; = equip[7].itemId, alias dword_1673248) [CONFIRMED, Rosetta §6]
 
     // Nom du joueur local (13 o NUL-terminé côté binaire, probablement byte_1673184 —
     // adresse aussi référencée ailleurs sous d'autres sémantiques disputées, cf. Game/
@@ -362,7 +364,7 @@ struct SelfState {
     // UI/LoginScene.cpp::CharSelectUpdate() au même point que spawnX/Y/Z/zoneId ci-dessus.
     float spawnRotationDeg = 0.0f;
 
-    std::array<EquipSlot, 13> equip{};   // g_EquipMain 0x16731D8
+    std::array<EquipSlot, 13> equip{};   // g_EquipMain 0x16731D8 — ex-VeryOldClient: mEquip[MAX_EQUIP_SLOT_NUM] (offsets internes NON transposés : VeryOld stocke ITEM_INFO* par slot, IDA {itemId,socket,extra0,extra1} 16 o) [CONFIRMED, Rosetta §6]
 
     // Stats dérivées (calculées par StatEngine à partir de tout ce qui précède).
     int maxHp = 0, maxMp = 0, hp = 0, mp = 0;
@@ -384,7 +386,7 @@ struct SelfState {
     // doivent lire/écrire game::g_Client.inv, PAS un champ ici.
 
     // Blocs bruts reçus par Pkt_EnterWorld (à décoder progressivement).
-    std::vector<uint8_t> charInvBlock; // g_SelfCharInvBlock (10088 o, payload 0x0C)
+    std::vector<uint8_t> charInvBlock; // g_SelfCharInvBlock (10088 o, payload 0x0C) — PLAUSIBLE (VeryOldClient: MYINFO.mUseAvatar / AVATAR_INFO) — non prouvé IDA (VA non ancrée, §8 Rosetta)
     std::vector<uint8_t> zoneState;    // dword_16758D8 (288 o)
 };
 

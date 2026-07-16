@@ -91,6 +91,12 @@ int Combo_FindNearbyFollowup(int motionId, float selfX, float selfY, float selfZ
 
 // ===========================================================================
 // BeginComboMorph EA 0x52CF69.
+// ex-VeryOldClient: EFFECT_OBJECT type 11 (aura de transformation) + SetSantaEffect (type 14) —
+//   PLAUSIBLE (Docs/TS2_FX_ROSETTA.md §1 « Fx_DrawZoneAura » + §4 gap-render). CE bloc porte
+//   seulement l'ÉTAT du morph (g_SelfMorphNpcId 0x1675A98, dword_1675A88..) ; le VISUEL de
+//   l'aura = Fx_DrawZoneAura 0x583F90 (aura animée en boucle sur g_GameTimeSec, gate
+//   g_SelfMorphNpcId) = GAP DE RENDU (couche Gfx, FRONT 2 NON POSSÉDÉ) — NE PAS l'implémenter
+//   ici (build-safe). L'aura consomme le MÊME g_SelfMorphNpcId que cet état.
 // ===========================================================================
 void BeginComboMorph(ComboMorphState& state, int followupMotionId, int currentMotionId,
                       net::NetClient& netClient, const ComboMotionOriginLookup& originLookup) {

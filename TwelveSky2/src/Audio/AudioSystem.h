@@ -179,6 +179,75 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// BgmChannel — « slot BGM » de scène : possède UN SoundBuffer et encapsule le
+// cycle prouvé release -> load -> (si option) play, tel que le binaire le fait
+// pour la musique de fond de zone/menu. C'est le pendant du sous-objet SoundObj
+// que cSceneMgr embarque à +612 (this+153 en DWORD).
+//
+// === Cible IDA (idaTs2 — vérité) ===
+//   Init/reinit + release du slot BGM de cSceneMgr :
+//     cSceneMgr_ReinitBgm          0x517A80  SoundObj_InitBuffers(+612)+SndMgr_InitBgmSlot(+612) (zéro-init)
+//     SndMgr_InitBgmSlot           0x6A80A0  met à 0 les 14 premiers DWORD du SoundObj (+612)
+//     SceneMgr_ReleaseSoundBuffers 0x517B60  Snd_ReleaseBuffers(+612) au destructeur cSceneMgr / App_Shutdown 0x462480
+//   Le zéro-init est assuré ici par le ctor par défaut de SoundBuffer (loaded_=0,
+//   buffers_[]=nullptr) — équivalent observable de SndMgr_InitBgmSlot 0x6A80A0.
+//
+//   Chargement + lecture prouvés (mêmes primitives Snd_* aux DEUX sites BGM) :
+//     Scene_ServerSelectUpdate 0x518B30 (slot cSceneMgr +612, BGM de menu "Z000.BGM") :
+//       0x518bde  Snd_ReleaseBuffers(slot)
+//       0x518bf7  Snd_LoadOggToBuffers(slot, "G03_GDATA\\D10_WORLDBGM\\Z000.BGM", kind=3, voices=1, a5=1)
+//       0x518c03  if (g_BgmEnabled==1)
+//       0x518c14    Snd_Play3D(slot, ..., vol=100, pan=0, a8=0)
+//     World_LoadZoneResource 0x4DCB60 case 12 (slot MONDE g_GameWorld+2236, BGM de zone "Z%03d.BGM") :
+//       0x4dd41d  chemin "G03_GDATA\\D10_WORLDBGM\\Z%03d.BGM" (Z = World_ZoneIdToFileId(zoneId) 0x4db0f0)
+//       0x4dd43e  Snd_LoadOggToBuffers(slot, path, kind=1, voices=1, a5=1)
+//     Player_ResetCombatState 0x50F6xx (joue le slot MONDE à l'entrée en jeu) :
+//       0x50f761  if (g_BgmEnabled==1)
+//       0x50f76e    Snd_Play3D(g_GameWorld+2236, ..., vol=100, pan=0, a8=v4)
+//
+// === Boucle DSBPLAY_LOOPING : arbitrage (IDA lu DIRECTEMENT, Snd_Play3D 0x6A85C0) ===
+//   Le drapeau de boucle dépend du kind ET de l'arg a8 :
+//     - kind==1 (OneShot) : Play(...,flags) avec flags=(a8!=0)?1:0   (branche a8 @0x6a8785)
+//     - kind==2 (Loop)    : Play(...,1) — DSBPLAY_LOOPING TOUJOURS    (@0x6a8742)
+//     - kind==3 (Pool)    : Play(...,flags) avec flags=(a8!=0)?1:0    (branche a8 @0x6a86c2)
+//   Les DEUX sites BGM chargent kind=1 (zone) / kind=3 (menu), PAS kind=2. Le a8 du play
+//   de zone (Player_ResetCombatState, a8=v4) est un local NON initialisé -> indéterminable
+//   statiquement ; le play de menu passe a8=0. La continuité du BGM de zone est en outre
+//   assurée par une RELANCE toutes les 900 s dans Player_UpdateLocalAnim 0x5321EC (hook
+//   AnimationTick::PlayAmbientBgm — HORS de ce module).
+//   -> CHOIX documenté : ce slot autonome charge en PlayMode::Loop (kind=2) pour garantir
+//      un BGM CONTINU (exigence « load+loop » + convention déjà en place dans
+//      World/WorldMap case 12 -> WorldIntegration::LoadWorldBgm + Rosetta §F TODO #1).
+//      Équivalent OBSERVABLE (ambiance continue), PAS une repro bit-exacte du kind.
+//   TODO(fidélité) : si on modélise un jour le slot MONDE (g_GameWorld+2236) séparément,
+//      réconcilier kind exact (1/3) + relance 900 s de Player_UpdateLocalAnim.
+// ---------------------------------------------------------------------------
+class BgmChannel {
+public:
+    // Cycle release -> load -> (si bgmEnabled) play. `path` doit être résoluble par le
+    // PcmLoadCallback de l'AudioSystem (OggVorbisLoadCallback). volumePercent : le binaire
+    // passe 100 en dur aux DEUX sites de play (0x518c14 / 0x50f76e).
+    // Renvoie true si le .BGM a été DÉCODÉ+chargé (que bgmEnabled soit vrai ou non) ;
+    // false si device audio indispo / .BGM absent / décodeur absent -> silencieux, AUCUN
+    // crash (garde exigée « Guard si fichier BGM absent »).
+    bool LoadAndPlay(const std::string& path, bool bgmEnabled, int volumePercent = 100);
+
+    // Snd_Stop 0x6A87B0 — arrête la lecture sans libérer les buffers.
+    void Stop();
+
+    // Snd_ReleaseBuffers 0x6A80D0 (SceneMgr_ReleaseSoundBuffers 0x517B60) — libère tout.
+    void Release();
+
+    bool Loaded()    const { return buf_.Loaded(); }
+    bool IsPlaying() const { return buf_.IsPlaying(); }
+
+private:
+    // SoundObj (60 o) du slot BGM — pendant de cSceneMgr +612. ctor SoundBuffer = zéro-init
+    // (équivalent SndMgr_InitBgmSlot 0x6A80A0).
+    SoundBuffer buf_;
+};
+
+// ---------------------------------------------------------------------------
 // AudioSystem — possède le device IDirectSound8 (g_pDirectSound8), le volume
 // SFX maître (g_SfxMasterVolume 0x84DEEC, 0..100), le callback PCM et le thread
 // de préchargement asynchrone (SndLoader1_Run 0x4E6D60).

@@ -79,10 +79,10 @@ void RecalcTalismanAttackRating() {
 void RegisterMiscHandlers(NetSystem& sys) {
     using namespace game;   // g_Client, g_World, Str()
 
-    // 0x0e SystemMessageBox — valide/affiche une image via un fichier temporaire.
+    // 0x0e ServerBillboardImage (ex-SystemMessageBox, mal nommé) — valide/affiche une image serveur.
     // Original : Billboard_ValidateImageViaTempFile(param, image[1000]). Aucune màj
     // d'état d'entité ; l'image est un nom/chemin de fichier (chaîne C).
-    OnPacket<SystemMessageBox>(sys, 0x0e, [](const SystemMessageBox& p) {
+    OnPacket<ServerBillboardImage>(sys, 0x0e, [](const ServerBillboardImage& p) {
         std::string image(p.image, strnlen(p.image, sizeof p.image));
         (void)image; (void)p.param;
         // TODO(state): Billboard_ValidateImageViaTempFile(p.param, image) — écrit

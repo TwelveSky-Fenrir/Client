@@ -38,8 +38,10 @@ bool ImgFile::Load(const std::string& path) {
     // Classification du payload : texture DXT ? ou table de données ?
     // cTexture_LoadFromImgFile 0x457A20 (UI 2D) / Tex_LoadCompressedDDS 0x6A2E80 (minimaps).
     // ex-VeryOldClient: IMAGE_FOR_GXD — l'en-tête D3DXIMAGE_INFO VeryOld a un layout DIFFÉRENT ;
-    // IDA gagne (7 dwords GXD + FourCC). Détection par scan FourCC seule = CONFIRMED ; la
-    // MATÉRIALISATION pixels DXT/DDS reste un GAP (G5), câblée hors de cette couche.
+    // IDA gagne (en-tête GXD 36 o + FourCC@+28 + DDS embarqué @+36). Détection par scan FourCC
+    // seule = CONFIRMED. La MATÉRIALISATION pixels (parse en-tête GXD + DDS embarqué -> blocs DXT)
+    // est désormais assurée par Texture::LoadFromImgFile (couche CPU) ; l'upload GPU par
+    // gfx::GpuTexture (CreateFromTexture / CreateFromImgFile). Gap G5 fermé côté Asset/.
     const uint8_t* p = payload_.data();
     const size_t n = payload_.size();
     const size_t head = n < 64 ? n : 64;

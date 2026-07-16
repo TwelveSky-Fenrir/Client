@@ -141,7 +141,7 @@ D3DXVECTOR3 Camera::Forward() const
 
 // -----------------------------------------------------------------------------
 // Matrice de vue : LookAtLH(oeil, cible, up) — cf. GXD_BeginScene (0x4046E3),
-// où l'up est figé à (0,1,0).
+// où l'up est figé à (0,1,0). Résultat = g_GxdRenderer+748. ex-VeryOldClient: mViewMatrix.
 // -----------------------------------------------------------------------------
 void Camera::BuildViewMatrix(D3DXMATRIX& out) const
 {
@@ -152,6 +152,7 @@ void Camera::BuildViewMatrix(D3DXMATRIX& out) const
 // -----------------------------------------------------------------------------
 // Matrice de projection : PerspectiveFovLH(fovY, aspect, near, far) — cf.
 // Gfx_InitDevice (0x69BFC6), FOV vertical = 45deg converti en radians.
+// Résultat = g_GxdRenderer+648. ex-VeryOldClient: mPerspectiveMatrix.
 // -----------------------------------------------------------------------------
 void Camera::BuildProjMatrix(D3DXMATRIX& out, float aspect) const
 {

@@ -38,18 +38,24 @@ namespace ts2::game {
 
 // NpcDefRecord — 11736 o. Table "mNPC" (005_00005.IMG). Slot vide si id == 0 (garde
 // en tete de NpcDefTbl_ValidateRecord : `if (!*(DWORD*)rec) return 1;`).
+// Cross-check VeryOldClient : classe NPC (VeryOldClient/GameSystem/CNPC.cpp, singleton mNPC).
+// Detail par offset : Docs/TS2_TABLES_ROSETTA.md §6. NB : VeryOld nHeadImg[6] est un champ
+// RUNTIME (overlay mNPC_nHeadImg dans CNPC::Init), ABSENT du record fichier 11736 o.
 struct NpcDefRecord {
-    uint32_t id;                 // +0     1..500, DOIT valoir index+1 (0 = slot vide)
-    char     name[25];           // +4     nom du PNJ (ex. rec[0] = "Blacksmith Wu"), null dans [0..24]
+    uint32_t id;                 // +0     1..500, DOIT valoir index+1 (0 = slot vide) ; ex-VeryOldClient: nIndex (CONFIRMED)
+    char     name[25];           // +4     nom du PNJ (ex. rec[0] = "Blacksmith Wu"), null dans [0..24] ; ex-VeryOldClient: nName (CONFIRMED)
     uint8_t  _pad29[3];          // +29    reserve (alignement)
     uint32_t fieldA;              // +32    (1..5) role inconnu — precede la grille de textes, peut-etre
-                                   //        le nombre de sous-menus/dialogues actifs sur les 5 disponibles
+                                   //        le nombre de sous-menus/dialogues actifs sur les 5 disponibles.
+                                   //        ex-VeryOldClient: nSpeechNum (PLAUSIBLE, resout la supposition)
     char     textGrid[5][5][51]; // +36    grille 5x5 de chaines (<=51 o, null-terminees) — texte de
-                                   //        dialogue/menu du PNJ (5 "pages" x 5 lignes, hypothese)
+                                   //        dialogue/menu du PNJ (5 "pages" x 5 lignes, hypothese).
+                                   //        ex-VeryOldClient: nSpeech[5][5][51] (CONFIRMED, structure 5x5x51 identique)
     uint8_t  _pad1311[1];        // +1311  reserve (alignement)
-    uint32_t fieldB;              // +1312  (1..5)  role inconnu
-    uint32_t fieldC;              // +1316  (1..17) role inconnu (17 ~ nb. de zones/maps ?)
+    uint32_t fieldB;              // +1312  (1..5)  role inconnu ; ex-VeryOldClient: nTribe (PLAUSIBLE, tribus 1..4 + neutre ?)
+    uint32_t fieldC;              // +1316  (1..17) role inconnu (17 ~ nb. de zones/maps ?) ; ex-VeryOldClient: nType (PLAUSIBLE)
     uint32_t fieldD;              // +1320  (1..10000) role inconnu (coordonnee monde ? cf. ITEM_INFO champs 192/196/200 bornes similaires)
+                                   //        ex-VeryOldClient: nDataSortNumber2D (PLAUSIBLE, corrige la supposition : index/tri image 2D portrait)
     // RESOLU (Docs/TS2_NPC_MESH_DRAW.md §2-3, decompilation Npc_DrawMesh 0x57FF00) :
     // kindIndex+1 du modele visuel PNJ. `Npc_DrawMesh` lit `*(DWORD*)(*this+1324) - 1` sur
     // l'enregistrement runtime pointe par g_NpcRenderArray[i].ptr (resolu via
@@ -57,25 +63,28 @@ struct NpcDefRecord {
     // g_NpcMeshCatalog (66 entrees, stem "N%03d%03d001.SOBJECT") apres verif Model_GetNpcMeshSlot
     // (borne dure 0x41=65, donc fieldE doit valoir [1,66]). Cote ClientSource : voir
     // Gfx/ModelCache.h::GetForNpc, qui calcule kindIndex = fieldE - 1.
-    uint32_t fieldE;              // +1324  kindIndex+1 du modele PNJ (N*.SOBJECT), [1,66]
+    uint32_t fieldE;              // +1324  kindIndex+1 du modele PNJ (N*.SOBJECT), [1,66] ; ex-VeryOldClient: nDataSortNumber3D (CONFIRMED, role modele 3D prouve)
     // fieldF[1] (+1332) RESOLU (meme doc, meme fonction) : portee d'interaction/clic du PNJ,
     // comparee via Target_IsBeyondClickRange((float*)this+5, fieldF[1]) -- hauteur/rayon de la
     // garde anti-clipping camera, meme role que ItemInfo.drawSize pour Char_Draw. fieldF[0]/[2]
     // restent de role inconnu.
-    uint32_t fieldF[3];           // +1328  3x (1..1000) [1]=portee d'interaction (RESOLU), [0]/[2] inconnus
-    uint32_t fieldG[100];         // +1340  100x (1..2) — probablement des drapeaux booleens (etat/dispo)
+    uint32_t fieldF[3];           // +1328  3x (1..1000) [1]=portee d'interaction (RESOLU), [0]/[2] inconnus ; ex-VeryOldClient: nSize[3] (PLAUSIBLE)
+    uint32_t fieldG[100];         // +1340  100x (1..2) — probablement des drapeaux booleens (etat/dispo) ; ex-VeryOldClient: nMenu[100] (PLAUSIBLE, 100 entrees de menu actif/inactif)
     // <100000 par valeur : correlation forte avec ITEM_INFO (garde d'integrite = 99999 objets,
     // cf. GameDatabase.h). Hypothese : identifiants d'objets vendus par ce PNJ marchand (3 categories x 28 slots).
+    // ex-VeryOldClient: nShopInfo[3][28] (PLAUSIBLE, structure 3x28 identique + role boutique).
     uint32_t shopItemIds[3][28];  // +1740
     // <=300 par valeur : correlation forte avec SKILL_INFO (garde d'integrite = 300 competences,
     // cf. GameDatabase.h). Hypothese : identifiants de competences enseignees par ce PNJ (3x8).
+    // ex-VeryOldClient: nSkillInfo1[3][8] (PLAUSIBLE, structure 3x8 identique).
     uint32_t teachSkillIds[3][8]; // +2076
     // <=300 par valeur : meme borne que SKILL_INFO. Hypothese : matrice de pre-requis/couts de
     // competences (3 groupes x 3 x 3 x 8 slots) — structure imbriquee non elucidee en detail.
+    // ex-VeryOldClient: nSkillInfo2[3][3][3][8] (PLAUSIBLE, structure 3x3x3x8 identique).
     uint32_t skillMatrix[3][3][3][8]; // +2172
     // <=100000000 (1e8) par valeur, indexe par 145 (== garde LEVEL_INFO) x 15. Hypothese : table de
     // couts (or ?) par niveau de joueur x 15 emplacements (ex. cout d'entrainement d'une competence
-    // scalant avec le niveau).
+    // scalant avec le niveau). ex-VeryOldClient: nGambleCostInfo[145][15] (PLAUSIBLE, cout de pari par niveau).
     uint32_t levelCostTable[145][15]; // +3036
 };
 static_assert(sizeof(NpcDefRecord) == 11736, "NpcDefRecord doit faire 11736 o");
@@ -83,13 +92,16 @@ static_assert(sizeof(NpcDefRecord) == 11736, "NpcDefRecord doit faire 11736 o");
 // QuestDefRecord — 8444 o. Table "mQUEST" (005_00006.IMG). Slot vide si name == ""
 // (garde en tete de QuestDefTbl_ValidateRecord : `if (!Crt_Strcmp(rec->name, "")) return 1;` —
 // CONTRAIREMENT aux autres tables, ce n'est PAS id==0 qui marque un slot vide ici).
+// Cross-check VeryOldClient : classe QUEST (VeryOldClient/GameSystem/CQUEST.cpp, singleton mQUEST).
+// Cross-check semantique FORT (Docs/TS2_TABLES_ROSETTA.md §7) : le champ CHAINE (name) est le
+// marqueur de slot vide dans les DEUX builds (VeryOld qSubject = "cle de vacuite").
 struct QuestDefRecord {
-    uint32_t id;                 // +0    1..1000, DOIT valoir index+1
-    char     name[51];           // +4    titre de la quete (ex. rec[0] = "[Intro] Banker Bai & Beggar Xiao")
+    uint32_t id;                 // +0    1..1000, DOIT valoir index+1 ; ex-VeryOldClient: qIndex (CONFIRMED)
+    char     name[51];           // +4    titre de la quete (ex. rec[0] = "[Intro] Banker Bai & Beggar Xiao") ; ex-VeryOldClient: qSubject[51] (CONFIRMED, cle de vacuite)
     uint8_t  _pad55[1];          // +55   reserve (alignement)
     uint32_t fieldA;              // +56   (1..4)   role inconnu — peut-etre le type de quete
     uint32_t fieldB;              // +60   (1..1000) role inconnu
-    uint32_t levelReq;            // +64   (1..145) — correlation forte avec LEVEL_INFO : niveau requis
+    uint32_t levelReq;            // +64   (1..145) — correlation forte avec LEVEL_INFO : niveau requis ; ex-VeryOldClient: qLevel (PLAUSIBLE, corr. de borne ; aucun accesseur observe)
     uint32_t fieldD;              // +68   (1..2)   role inconnu — drapeau (repetable ?)
     uint32_t fieldE;              // +72   (1..8)   role inconnu — categorie/chaine de quetes ?
     uint32_t fieldF;              // +76   (0..200) role inconnu
@@ -99,6 +111,7 @@ struct QuestDefRecord {
     uint32_t fieldI;              // +116  (1..500) role inconnu
     uint8_t  _unk120[16];         // +120  16 o NON couverts par le validateur
     // 3 paires (categorie 1..6, valeur <=1e8) : hypothese = table de recompenses (item/or/exp x montant).
+    // ex-VeryOldClient: qReward[3][2] (type 1..6 / valeur) (PLAUSIBLE, meme forme).
     struct { uint32_t category; uint32_t value; } rewards[3]; // +136
     uint32_t fieldK;              // +160  (0..1000) role inconnu
     // 10 blocs de dialogue (correspond au commentaire desassemblage "10 blocs de dialogue") :

@@ -12,7 +12,8 @@ namespace ts2::asset {
 
 enum class ImgKind {
     Unknown,
-    TextureDxt,// texture 2D : en-tête + FourCC DXT1/DXT3 + pixels
+    TextureDxt,// texture 2D : en-tête GXD 36 o + FourCC DXT1/DXT3 + DDS embarqué (matérialisée
+               // par Texture::LoadFromImgFile — cTexture_LoadFromImgFile 0x457A20)
     Table,     // table de données : nom embarqué + enregistrements
     Raw,       // payload décompressé sans marqueur reconnu
 };

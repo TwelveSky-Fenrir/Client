@@ -136,16 +136,23 @@ void SkyRenderer::SetAtmosphere(const asset::AtmosphereFile& atm) {
                 atm.Path().c_str(), hourOfDay_, latitude_, longitude_,
                 forceBlackSky_ ? 1 : 0, atm.RenderFlagSkipCelestial() ? 1 : 0);
     } else {
-        // Repli documenté : on reprend les coordonnées/heure par défaut du vrai
-        // SilverLining.config au lieu d'une teinte arbitraire inventée.
-        hourOfDay_ = static_cast<double>(config_.defaultHour)
-                   + static_cast<double>(config_.defaultMinute) / 60.0
-                   + config_.defaultSecond / 3600.0;
-        latitude_ = config_.defaultLatitude;
-        longitude_ = config_.defaultLongitude;
+        // Repli CORRIGÉ (D-2/T-14 — IDA gagne) : quand la donnée d'atmosphère de zone manque
+        // ("Atmosphere.DAT"/.ATM absent), le moteur d'origine NE retombe PAS sur les défauts
+        // SilverLining.config (30/-122) mais sur une géo Séoul codée en dur, prouvée par :
+        //   World_LoadMap 0x4116B0 @0x41184b : Env_SetGeoLocation(this, 37.6, 127.0, 0.0)
+        //   (branche prise quand File_IfstreamOpen("Atmosphere.DAT") échoue -> v9[2]&4 != 0 || !v9[21]).
+        //   Env_SetGeoLocation 0x411D30 override lat/lon [-90,90]/[-180,180] puis fixe DateTime
+        //   2010-07-26 15:00 (@0x411dcf..0x411de7 : v10=2010/v11=7/v12=26/v13=15) et turbidité 2.0.
+        // Rappel : les défauts config_ (30/-122, 2006-08-15 12:00) restent les valeurs stock du
+        //   SilverLining.config (cAtmosphere_Initialize 0x793390) — À NE PAS confondre avec ce
+        //   fallback Séoul du chemin World_LoadMap. lat/lon ne pilotent pas encore le gradient (T-5) ;
+        //   l'heure 15:00, elle, EST consommée par le modèle jour/nuit -> repli fidèle observable.
+        latitude_  = 37.6;   // World_LoadMap 0x4116B0 @0x41184b -> Env_SetGeoLocation(.,37.6,.)
+        longitude_ = 127.0;  // World_LoadMap 0x4116B0 @0x41184b -> Env_SetGeoLocation(.,.,127.0)
+        hourOfDay_ = 15.0;   // Env_SetGeoLocation 0x411D30 @0x411de7 : v13=15 (2010-07-26 15:00, min/sec=0)
         forceBlackSky_ = false;
-        TS2_WARN("SkyRenderer::SetAtmosphere : .ATM invalide/absent -> repli config SilverLining (heure=%.2f).",
-                 hourOfDay_);
+        TS2_WARN("SkyRenderer::SetAtmosphere : .ATM invalide/absent -> repli Seoul 37.6/127.0 15:00 "
+                 "(fidele World_LoadMap 0x4116B0 -> Env_SetGeoLocation 0x411D30).");
     }
     recomputeColors();
 }
@@ -154,6 +161,9 @@ void SkyRenderer::recomputeColors() {
     if (forceBlackSky_) {
         // Reproduit fidèlement l'override "ciel noir" du moteur d'origine (@+642, cf. bandeau
         // .h / Docs/TS2_SILVERLINING_CONFIG.md §3.2-3.3) : zénith ET horizon en noir opaque.
+        // CONFIRMED — cAtmosphere_RenderFrame 0x793B80 : si @+642, les 3 échantillons (ciel base
+        //   dword_811860.., ciel secondaire dword_811AAC.., horizon qword_8117A0..) sont forcés à (0,0,0,1)
+        //   au lieu du calcul Perez (SL_GetSkyColorRGBA/SL_GetHorizonColor). (Flag .ATM — pas d'indice VeryOldClient.)
         zenithColor_ = horizonColor_ = D3DCOLOR_ARGB(0xFF, 0, 0, 0);
         return;
     }

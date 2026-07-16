@@ -59,20 +59,28 @@ public:
     //   TS2_SILVERLINING_ENGINE_AVAILABLE == 0). En mode repli, retourne toujours false
     //   (EngineUnavailable) après avoir réellement chargé/sondé le backend DLL. L'appelant DOIT
     //   conserver son propre repli (ex. Gfx/SkyRenderer gradient) quand Init() renvoie false.
+    // ex-VeryOldClient: CAtmosphere::Create(pResourcePath, pDevice) — CONFIRMED (licence 0x791B40 +
+    //   Atmosphere::Initialize(1,…) 0x793390 ; chemin backend fidèle à SL_Renderer_LoadBackendDLL 0x71F300).
     bool Init(IDirect3DDevice9* device, const char* resourceDir);
 
     // Pousse l'heure/position géographique de la zone (fichier .ATM réel déjà parsé) dans les
     // AtmosphericConditions du moteur. No-op en mode repli.
+    // ex-VeryOldClient: CAtmosphere::SetTimeAndLocation — CONFIRMED (SetLocation/SetTime ; valeurs = .ATM
+    //   de zone, Atmosphere_Deserialize 0x795A40).
     void UpdateTime(const asset::AtmosphereFile& atm);
 
     // Rendu ciel AVANT la géométrie de monde : SetCameraMatrix/SetProjectionMatrix + BeginFrame
     // (ciel/soleil/lune/étoiles). Fenêtre = Env_UpdateFrame 0x412550 dans l'original. No-op sans moteur.
+    // ex-VeryOldClient: CAtmosphere::StartRender (SetViewProjectionMatrix + BeginFrame) — CONFIRMED,
+    //   cf. cAtmosphere_RenderFrame 0x793B80.
     void RenderSkyBefore(const Camera& camera);
 
     // Rendu nuages/précipitations APRÈS la scène : EndFrame (tri back-to-front). No-op sans moteur.
+    // ex-VeryOldClient: CAtmosphere::EndRender (Atmosphere::EndFrame) — CONFIRMED, cf. Atmosphere_DrawFrame 0x794FE0.
     void RenderSkyAfter(const Camera& camera);
 
     // Détruit l'objet Atmosphere (le dtor décharge le backend via ShutdownShaderSystem) / libère l'état.
+    // ex-VeryOldClient: CAtmosphere::Destroy — CONFIRMED, cf. cAtmosphere_dtor 0x791C40.
     void Shutdown();
 
     // --- Diagnostics (tests, logs de sanité) --------------------------------------------------
@@ -83,14 +91,25 @@ public:
     bool BackendDllFound() const { return backendDllFound_; }
 
 private:
+#if TS2_SILVERLINING_ENGINE_AVAILABLE
+    // Dérive l'éclairage solaire (D3DLIGHT9) + le fog GXD depuis l'objet Atmosphere SDK et les pousse
+    // dans le device — appelé par RenderSkyBefore APRÈS BeginFrame (fenêtre = juste après
+    // cAtmosphere_RenderFrame dans Env_UpdateFrame 0x412550). Fidèle à Env_UpdateSunLight 0x412210 +
+    // Env_UpdateFogState 0x412370. No-op hors mode moteur (méthode non déclarée).
+    void applySceneLightingAndFog();
+#endif
+
     IDirect3DDevice9* dev_ = nullptr;
     bool ready_ = false;           // moteur réel initialisé (jamais true en mode repli)
     bool backendDllFound_ = false; // backend DLL réellement chargé+résolu (diagnostic)
 
     // Flags de rendu de la zone (mémorisés par UpdateTime, consommés par RenderSkyBefore en mode
     // moteur — fidèle à cAtmosphere_RenderFrame @+352/@+642, cf. TS2_SILVERLINING_CONFIG.md §3.3).
-    bool skipCelestial_ = false;   // AtmosphereFile::RenderFlagSkipCelestial() (@+352)
-    bool forceBlackSky_ = false;   // AtmosphereFile::RenderFlagForceBlackSky() (@+642)
+    bool skipCelestial_ = false;   // AtmosphereFile::RenderFlagSkipCelestial() (@+352) — CONFIRMED : @+352 gate
+                                   //   tout le bloc soleil/lune/étoiles/AtmoFromSpace dans 0x793B80 (if(!@+352)).
+    bool forceBlackSky_ = false;   // AtmosphereFile::RenderFlagForceBlackSky() (@+642) — CONFIRMED : @+642 force
+                                   //   les 3 échantillons ciel/horizon à (0,0,0,1) dans 0x793B80.
+                                   //   (flags .ATM @+643/@+644 encore non identifiés, cf. CONFIG §3.2 — pas d'indice VeryOldClient.)
 
     // SilverLining::Atmosphere* opaque : gardé en void* pour que ce header n'impose PAS l'include SDK
     // (le module compile sans external/SilverLining/Include). Utilisé seulement en mode moteur.

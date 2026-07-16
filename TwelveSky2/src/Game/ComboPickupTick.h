@@ -148,6 +148,10 @@ int Combo_FindNearbyFollowup(int motionId, float selfX, float selfY, float selfZ
 // Scene_InGameUpdate, cf. Game/InGameTickFlow.h étape 12c pour le contexte d'appel : appelé
 // UNIQUEMENT quand Combo_FindNearbyFollowup a trouvé un candidat ET qu'aucun morph n'est déjà
 // en cours — gardes reproduites côté INGameTickFlow_Update, PAS ici).
+// ex-VeryOldClient: EFFECT_OBJECT type 11 (aura de transformation attachée à un bone) +
+// SetSantaEffect (type 14) — PLAUSIBLE (Docs/TS2_FX_ROSETTA.md §1 + §4 gap-render). CE bloc porte
+// seulement l'ÉTAT du morph (g_SelfMorphNpcId 0x1675A98) ; le VISUEL de l'aura =
+// Fx_DrawZoneAura 0x583F90 = GAP DE RENDU (couche Gfx, FRONT 2 NON POSSÉDÉ) — non implémenté ici.
 // ===========================================================================
 //
 //   g_MorphInProgress = 1;                       // 0x1675A88

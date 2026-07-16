@@ -9,6 +9,9 @@
 //
 // ===========================================================================================
 // 1. Fx_MeleeSwingTick 0x5803A0 (+ Fx_MeleeSwingTick_Loop 0x580400 / _Once 0x5804A0)
+// ex-VeryOldClient: EFFECT_OBJECT::Update (FSM mObjType 1..14) — CONFIRMED (Docs/TS2_FX_ROSETTA.md
+// §1). Build EU SANS mega-struct EFFECT_OBJECT[1000] (CONFLICT 3-A, IDA gagne) : les timers de
+// swing sont portés ici ; slots d'attache (Fx_Attach*) et pool SoA projectiles sont séparés.
 // ===========================================================================================
 // Étape 7 de Game/InGameTickFlow.h (host.TickGroundItemEffect). Malgré son nom IDA
 // ("traînée de coup d'arme mêlée", cf. Docs/TS2_FX_CATALOG.md §2), CETTE fonction est
@@ -80,15 +83,25 @@
 // Étape 10 de Game/InGameTickFlow.h (host.GetFxAuraCount / IsFxAuraActive /
 // UpdateHomingProjectile). Identification CONFIRMÉE (mission "aura/objets-de-monde",
 // 2026-07-14, cf. commentaires Game/AnimationTick.h/InGameTickFlow.h/MiscManagers.cpp) :
-// g_FxAuraCount N'EST PAS un pool de buffs/auras — c'est le compteur du pool SoA de
-// PROJECTILES D'ATTAQUE dword_17D06F4 (stride 64 dw), alloué par
-// Fx_SpawnAttackProjectile(Alt) 0x582530/0x582A10, mis à jour par
-// Fx_HomingProjectileUpdate 0x5862D0 (2497 instructions — trajectoire en arc, collisions,
-// notification réseau Op18, rendu — HORS PÉRIMÈTRE de cette mission, cf.
-// Docs/TS2_FX_CATALOG.md §2). AUCUN conteneur SoA n'existe côté ClientSource à ce jour :
-// conformément à la consigne de mission ("NE PAS l'inventer si absent, juste documenter"),
-// les 3 fonctions ci-dessous sont un câblage MINIMAL et SÛR (ne plantent jamais, ne
-// prétendent pas modéliser le pool) — PAS une réécriture de Fx_HomingProjectileUpdate.
+// g_FxAuraCount N'EST PAS un pool de buffs/auras — c'est la CAPACITÉ (1000, cf.
+// cGameData_InitPools @0x5575DC) du pool SoA UNIFIÉ de FX dword_17D06F4 (stride 64 dw =
+// 256 o/slot). Un slot porte soit un PROJECTILE d'attaque (états FSM 1..4/12..13), soit un
+// effet d'attache (états 5..11/14, pool #2 render, NON POSSÉDÉ). Ce module possède le
+// sous-ensemble PROJECTILE alloué par Fx_SpawnAttackProjectile(Alt) 0x582530/0x582A10
+// (états 3→4) et le tick FSM partagé Fx_HomingProjectileUpdate 0x5862D0 pour CES états.
+//
+// IMPLÉMENTÉ (mission « FX pool #1 » — remplace l'ancien câblage vide) : le layout du slot
+// (64 dw, ancré offset par offset dans le .cpp), l'allocation (spawn), et le tick homing des
+// états 3 (arc parabolique weaponId==113 / homing direct Alt / homing vers entité vivante) et
+// 4 (anim d'impact) sont portés FIDÈLEMENT (trajectoire, arrivée, transition d'état, payload
+// de rapport Op18). Tables arme→motion (Anim_MapWeaponToMotion1/2/3 0x5475F0/547970/547CF0) et
+// helpers math (Math_MoveProjectileArc 0x588640, Math_AngleBetween2D 0x53FB20, Math_Dist3D
+// 0x53FAA0) portés inline. Les effets HORS PÉRIMÈTRE (anim d'impact via
+// ModelObj_GetSubObjectCount, rapport réseau Op18, son positionnel, immunité élémentaire via
+// g_LocalPlayerSheet non modélisée) sont différés via g_FxProjectileHost (callbacks nuls =
+// dégradation sûre : le projectile vole et transitionne fidèlement, seuls les effets de bord
+// sont différés). Les états 1/2/12/13 (projectiles d'AUTRES spawns non possédés) et 5..11/14
+// (pool #2 render) sont ignorés (no-op fidèle `default:` @0x5862D0).
 //
 // ===========================================================================================
 // 3. Objets de zone / nœuds de ressource (dword_1687230 / dword_180EEF4)
@@ -152,7 +165,9 @@ inline std::vector<GroundItemTickExt> g_GroundItemTickExt;
 void ResetGroundItemTickExt(int groundItemIndex);
 
 // Callback opaque vers Model_GetWeaponEffectFrameCount 0x4E5A40 (HORS PÉRIMÈTRE — table de
-// modèles/assets). `effectDefHandle` = GroundItemTickExt::effectDefHandle (toujours 0
+// modèles/assets). ex-VeryOldClient: EFFECT_OBJECT.mFrame (borné par le nb de frames du mesh MOB
+// via Model_GetNpcMeshSlot 0x4E5910 → Motion_GetFrameCount 0x4D7830) — CONFIRMED
+// (Docs/TS2_FX_ROSETTA.md §1). `effectDefHandle` = GroundItemTickExt::effectDefHandle (toujours 0
 // aujourd'hui, cf. ci-dessus) ; `variant` = GroundItemTickExt::mode (même champ que le
 // dispatch loop/once, double usage fidèle à l'original). nul, ou retour <= 0 -> le timer
 // avance mais NE boucle/complète JAMAIS (même politique de dégradation que
@@ -172,32 +187,105 @@ void TickGroundItemEffect(GameWorld& world, int groundItemIndex, float dt,
                            const GroundAuraWorldObjectTickHost& host);
 
 // ===========================================================================
-// 2. Pool de projectiles d'attaque (g_FxAuraCount / dword_17D06F4) — cf. commentaire de tête
+// 2. Pool de projectiles d'attaque FX (g_FxAuraCount / dword_17D06F4) — cf. commentaire de tête
+// ===========================================================================
+// IMPLÉMENTÉ (mission « FX pool #1 », Règle #0 : ancres IDA dans le .cpp). Pool SoA unifié
+// dword_17D06F4 (base 0x17D06F4, stride 64 dw = 256 o/slot, capacité g_FxAuraCount
+// 0x168722C = 1000). Spawn Fx_SpawnAttackProjectile(Alt) 0x582530/0x582A10 → état 3 ; tick
+// FSM Fx_HomingProjectileUpdate 0x5862D0 (états 3→4 possédés ; 1/2/12/13 = autres spawns non
+// possédés ; 5..11/14 = attache render, pool #2 non possédé). ex-VeryOldClient: EFFECT_OBJECT
+// types 1→2 / 3→4 / 12→13 — PLAUSIBLE (taxonomie seule ; SoA stride 64 EU ≠
+// EFFECT_OBJECT[1000], CONFLICT 3-A). Effets de bord render/net/audio/feuille-élément différés
+// via g_FxProjectileHost (ci-dessous).
 // ===========================================================================
 
-// g_FxAuraCount (0x168722C). Lit le VRAI compteur via l'échappatoire longue traîne
-// (Game/ClientRuntime.h::g_Client.Var, clé = adresse d'origine) plutôt qu'un stub renvoyant
-// 0 en dur : dès qu'un futur système de spawn de projectiles écrira
-// `game::g_Client.Var(0x168722C) = n;` (miroir de `*(this+1721) = n` dans
-// cGameData_InitPools/Fx_SpawnAttackProjectile), cet accesseur reflétera la vraie valeur
-// SANS modification ici. Vaut 0 aujourd'hui (rien ne peuple encore ce slot côté
-// ClientSource) — c'est le VRAI état actuel du jeu réécrit, pas une valeur inventée.
+// Champs lus par Fx_SpawnAttackProjectile @0x582530 sur son `this` = un enregistrement
+// MONSTRE dword_1766F74 (l'appelant Char_Update 0x581E10 passe le monstre en tick d'attaque).
+// L'appelant du câblage (Char_Update → spawn, mission séparée) remplit cette structure depuis
+// le monstre + son MONSTER_INFO (`this+96`). Offsets d'origine (octets) en commentaire.
+struct FxProjectileSpawnParams {
+    EntityId owner;             // caller+4 / caller+8 (id du tireur)          @0x5825B5/0x5825C7
+    EntityId target;            // caller+68 / caller+72 (id de la cible)      @0x582601/0x582613
+    float    startX = 0.0f;     // caller+32                                   @0x58281F
+    float    startYRaw = 0.0f;  // caller+36 (avant ajout de heightOffset)     @0x58283D
+    float    startZ = 0.0f;     // caller+40                                   @0x58284F
+    float    targetX = 0.0f;    // caller+44                                   @0x5828D7
+    float    targetY = 0.0f;    // caller+48                                   @0x5828E9
+    float    targetZ = 0.0f;    // caller+52                                   @0x5828FB
+    float    heading = 0.0f;    // caller+56 (cap initial, deg)                @0x58286F
+    uint32_t weaponId = 0;      // (*(caller+96))+244 (id arme/skill)          @0x5825DF
+    int32_t  weaponSubtype = 0; // (*(caller+96))+236 (switch élément wep113)  @0x58268F
+    int32_t  heightOffset = 0;  // (*(caller+96))+328 (ajouté à startYRaw)     @0x58283D
+    int32_t  speed = 0;         // (*(caller+96))+332 (vitesse, int→float)     @0x582913
+};
+
+// Miroir du payload Op18 (this+180 = slot dw[45..56]) passé à Net_SendPacket_Op18
+// (&g_AutoPlayMgr, this+180) @0x4B4CF0. Rempli à l'impact ; l'émission réseau réelle est
+// faite par le host (HORS PÉRIMÈTRE réseau).
+struct FxImpactReport {
+    int32_t  type = 4;          // dw[45] = 4                                  @0x58291F
+    EntityId owner;             // dw[46]/dw[47] (tireur)                      @0x582935/0x582947
+    EntityId target;            // dw[48]/dw[49] (= id du joueur local à l'impact)
+    float    impactX = 0.0f, impactY = 0.0f, impactZ = 0.0f; // dw[50..52] (pos du joueur local)
+    int32_t  flag1 = 1, flag2 = 0, flag3 = 0;                // dw[53..55]
+    int32_t  homing = 0;        // dw[56] (0 = spawn normal, 1 = Alt)
+};
+
+// Effets de bord HORS PÉRIMÈTRE du tick FX (render/net/audio/feuille-élément). Callback nul =
+// no-op sûr (le pool fonctionne : spawn/vol/transition restent fidèles). Peuplé par l'agent de
+// consolidation ; EA d'origine en commentaire.
+struct FxProjectileHost {
+    // ModelObj_GetSubObjectCount(&unk_B551B8 + 148*motionIndex, 0) 0x4D7080 : nb de frames du
+    // modèle de vol/impact du projectile. <=0 (défaut) → pas de gating d'anim : l'état 4 se
+    // termine immédiatement (le projectile disparaît sans jouer l'anim d'impact ; trajectoire
+    // et rapport restent fidèles). @0x58659F (état3) / @0x58717D (état4)
+    std::function<int(int motionIndex)> GetProjectileFrameCount;
+    // Net_SendPacket_Op18(&g_AutoPlayMgr, slot+180) 0x4B4CF0 : rapport de hit auto (émis quand
+    // la cible du projectile est le joueur local). Nul → pas de rapport. @0x5867B6/@0x5869E2
+    std::function<void(const FxImpactReport&)> NotifyProjectileImpact;
+    // Snd3D_PlayPositional(&flt_1487CBC[48*soundId], .., pos, self, 1) 0x4DA450 : son d'impact
+    // positionnel (soundId = Anim_MapWeaponToMotion3(weaponId)). Nul → silencieux. @0x586A1E
+    std::function<void(int soundId, float x, float y, float z)> PlayImpactSound;
+    // dw[10] (elemImmune), calculé au spawn pour weaponId==113 : g_LocalElement (0x1673194 =
+    // Game/GameState.h self.element) + Char_GetPairedElement (0x557C00) sur g_LocalPlayerSheet
+    // (0x1685748, feuille NON modélisée). true supprime le rapport Op18 d'auto-hit (immunité
+    // élémentaire). Nul → false (jamais immunisé, cas courant). Switch fidèle (weaponSubtype) :
+    //   0x12→false ; 0x23→ !elem||elem==paired(0) ; 0x24→ elem==1||elem==paired(1) ;
+    //   0x25→ elem==2||elem==paired(2) ; 0x26→ elem==3||elem==paired(3).  @0x58268F..0x5827A6
+    std::function<bool(int weaponSubtype)> IsLocalElementImmune;
+};
+
+// Host FX partagé (peuplé par l'agent de consolidation — mission séparée). Nul par défaut :
+// le pool fonctionne (spawn/vol/transition) sans rendu/réseau/audio.
+inline FxProjectileHost g_FxProjectileHost;
+
+// cGameData_InitPools 0x5575D0 (pool FX) : fixe g_FxAuraCount=1000 (@0x5575DC) et RAZ les slots
+// (actif=0). À appeler à l'entrée en monde (Pkt_EnterWorld @0x4642A4 fait la même boucle de
+// clear). Idempotent ; la capacité par défaut vaut déjà 1000 sans cet appel.
+void Fx_InitProjectilePool();
+
+// Fx_SpawnAttackProjectile 0x582530 : alloue le 1er slot libre en état 3 (homing) depuis `p`.
+// Retour = (index<<8) du slot alloué, ou g_FxAuraCount si le pool est plein (fidèle : `return
+// i` sans alloc). Si Anim_MapWeaponToMotion1(weaponId)==-1 → slot libéré, retour (index<<8).
+// Faces homing : weaponId==113 → arc parabolique ; sinon homing vers l'entité vivante ciblée.
+int Fx_SpawnAttackProjectile(const FxProjectileSpawnParams& p);
+// Fx_SpawnAttackProjectileAlt 0x582A10 : variante « homing direct vers cible fixe » (dw[12]=1,
+// dw[56]=1 ; PAS de branche weaponId==113). Même allocation/retour.
+int Fx_SpawnAttackProjectileAlt(const FxProjectileSpawnParams& p);
+
+// g_FxAuraCount (0x168722C) — CAPACITÉ du pool (borne de la boucle du tick étape 10, cf.
+// Game/InGameTickFlow.cpp). = 1000 (cGameData_InitPools @0x5575DC).
 int GetFxAuraCount();
 
-// dword_17D06F4[64*index] (état du slot, 1er dword = actif). Le pool SoA de projectiles
-// N'EST PAS modélisé en C++ (aucun tableau équivalent dans GameState.h/ClientRuntime.h) :
-// impossible de lire un état de slot réel sans l'inventer (consigne explicite de mission).
-// Renvoie TOUJOURS false (repli sûr et documenté, PAS un TODO caché) — en pratique jamais
-// atteint tant que GetFxAuraCount()==0 (cas actuel : la boucle étape 10 est bornée par
-// GetFxAuraCount(), cf. Game/InGameTickFlow.cpp).
+// dword_17D06F4[64*index] (1er dw du slot = actif). Garde d'index @0x52CB8F (boucle du tick).
 bool IsFxAuraActive(int index);
 
-// Fx_HomingProjectileUpdate 0x5862D0 (2497 instructions, 326 blocs — trajectoire en arc,
-// collisions, notification réseau Op18, rendu/son — HORS PÉRIMÈTRE de cette mission, cf.
-// Docs/TS2_FX_CATALOG.md §2 pour le détail). No-op DOCUMENTÉ : ne PLANTE jamais, ne fait
-// rien tant que le pool SoA réel n'existe pas côté ClientSource (cf. IsFxAuraActive
-// ci-dessus — jamais atteint en pratique aujourd'hui). Présent uniquement pour compléter la
-// signature du hook host.UpdateHomingProjectile.
+// Fx_HomingProjectileUpdate 0x5862D0 : tick FSM d'un slot. Implémente FIDÈLEMENT les états 3
+// (vol homing : arc wep113 / homing direct Alt / homing vers entité vivante) et 4 (anim
+// d'impact). Les états 1/2/12/13 (projectiles d'AUTRES spawns NON POSSÉDÉS :
+// Effect_SpawnSkillProjectile 0x573A90, …) et 5..11/14 (attache/particules, pool #2 render NON
+// POSSÉDÉ) ne sont pas produits par ce module → ignorés (no-op sûr, `default: return` fidèle).
+// Guard d'index + garde d'actif de tête @0x5862D6.
 void UpdateHomingProjectile(int index, float dt);
 
 // ===========================================================================

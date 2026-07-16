@@ -7,12 +7,15 @@
 //   g_GxdVertexDecl         0x814A58  (déclaration D3DVERTEXELEMENT9 du vertex 76 o)
 //   Shader_LoadVS03_SkinnedLit 0x409AB0 / Shader_LoadPS04_Tex 0x409CC0
 //       (skinning GPU 4 influences via mKeyMatrix, cf. Docs/TS2_GXD_ENGINE.md §2.2)
+//       ex-VeryOldClient: mAmbient2_VS (02.Ambient2.vs.fx / MakeShaderProgram03) +
+//       mAmbient2_PS (02.Ambient2.ps.fx / MakeShaderProgram04) — Pass 2 skinnée, CONFIRMED §1.4.
 //
 // Ici on utilise le DirectX SDK June 2010 (d3dx9) exactement comme le binaire d'origine :
 // D3DXCompileShader + ID3DXConstantTable (SetMatrixArray/SetMatrix/SetFloatArray),
 // D3DXCreateTextureFromFileInMemoryEx, D3DXMatrix*.
 //
 // Le device physique est celui de ts2::gfx::Renderer (== Object B +524 dword_18C5104).
+// ex-VeryOldClient: pDevice @+524 de TW2AddIn::GXD (v2), == g_GfxRenderer+604 (device partagé).
 #pragma once
 #include "Gfx/Renderer.h"
 #include "Asset/Model.h"
@@ -26,6 +29,8 @@ namespace ts2::gfx {
 // ---------------------------------------------------------------------------
 //  Vertex skinné GPU — 76 octets, layout EXACT de la déclaration g_GxdVertexDecl
 //  (relevé à 0x814A58 ; cf. Docs/TS2_GXD_ENGINE.md §4.3) :
+//  ex-VeryOldClient: mVertexElementForSKIN2 -> mDECLForSKIN2 (stride 76, BLENDINDICES D3DCOLOR) —
+//  concordance BIT-EXACTE IDA=VeryOld, CONFIRMED Docs/TS2_GXD_ROSETTA.md §1.5.
 //    [0]  POSITION     FLOAT3   @ 0
 //    [1]  BLENDWEIGHT  FLOAT4   @ 12  (4 poids)
 //    [2]  BLENDINDICES D3DCOLOR @ 28  (4 indices d'os empaquetés)
@@ -173,28 +178,34 @@ private:
     void resetBlendMode(uint32_t blendMode);
 
     IDirect3DDevice9*            dev_  = nullptr;
-    IDirect3DVertexDeclaration9* decl_ = nullptr; // g_SkinVertexDecl (0x1945918)
+    IDirect3DVertexDeclaration9* decl_ = nullptr; // g_SkinVertexDecl (0x1945918) — ex-VeryOldClient: mDECLForSKIN2 (cible=global de fichier, PAS membre)
 
     // Slot de shader skinné (reproduit GXD_ShaderSlot : VS/PS + ID3DXConstantTable + handles).
-    IDirect3DVertexShader9* vs_    = nullptr;
-    IDirect3DPixelShader9*  ps_    = nullptr;
-    LPD3DXCONSTANTTABLE     ctVs_  = nullptr;
-    LPD3DXCONSTANTTABLE     ctPs_  = nullptr;
-    D3DXHANDLE hKeyMatrix_       = nullptr; // mKeyMatrix[kMaxBones]
-    D3DXHANDLE hWorldViewProj_   = nullptr; // mWorldViewProjMatrix
-    D3DXHANDLE hLightDirection_  = nullptr; // mLightDirection (espace objet)
-    D3DXHANDLE hLightAmbient_    = nullptr; // mLightAmbient
-    D3DXHANDLE hLightDiffuse_    = nullptr; // mLightDiffuse
-    UINT       sampler0_         = 0;       // registre de mTexture0
+    // ex-VeryOldClient: mAmbient2_VS_Shader / mAmbient2_PS_Shader (+ _ConstantTable), Shader03/04.
+    IDirect3DVertexShader9* vs_    = nullptr; // g_GxdSh03_VS 0x1945970 — ex-VeryOldClient: mAmbient2_VS_Shader
+    IDirect3DPixelShader9*  ps_    = nullptr; // g_GxdSh04_PS 0x194598C — ex-VeryOldClient: mAmbient2_PS_Shader
+    LPD3DXCONSTANTTABLE     ctVs_  = nullptr; // g_GxdSh03VS_CT 0x194596C — ex-VeryOldClient: mAmbient2_VS_ConstantTable
+    LPD3DXCONSTANTTABLE     ctPs_  = nullptr; // g_GxdSh04PS_CT 0x1945988 — ex-VeryOldClient: mAmbient2_PS_ConstantTable
+    D3DXHANDLE hKeyMatrix_       = nullptr; // mKeyMatrix[kMaxBones] — g_GxdSh03_hKeyMatrix 0x1945974 — ex-VeryOldClient: mAmbient2_VS_KeyMatrix
+    D3DXHANDLE hWorldViewProj_   = nullptr; // mWorldViewProjMatrix — ex-VeryOldClient: mAmbient2_VS_WorldViewProjMatrix
+    D3DXHANDLE hLightDirection_  = nullptr; // mLightDirection (espace objet) — ex-VeryOldClient: mAmbient2_VS_LightDirection
+    D3DXHANDLE hLightAmbient_    = nullptr; // mLightAmbient — ex-VeryOldClient: mAmbient2_VS_LightAmbient
+    D3DXHANDLE hLightDiffuse_    = nullptr; // mLightDiffuse — ex-VeryOldClient: mAmbient2_VS_LightDiffuse
+    UINT       sampler0_         = 0;       // registre de mTexture0 — ex-VeryOldClient: mAmbient2_PS_Texture0
 
     D3DXMATRIX  view_;
     D3DXMATRIX  proj_;
     D3DXMATRIX  viewProj_;
+    // ex-VeryOldClient: mLight (v2 / Object B @+1120) — Amb 0.3 / Diff 0.7 / Dir (-1,-1,1).
+    // PLAUSIBLE (P-9) : floats corroborés par v2 ; prouvés bit-exact IDA au chunk device (0x402711).
+    // Discriminant v1/v2 : bien 0.3/0.7 (v2), PAS 0.4/0.5 (v1).
     D3DXVECTOR3 lightDirWorld_ = D3DXVECTOR3(-1.0f, -1.0f, 1.0f);
     D3DXVECTOR3 lightAmbient_  = D3DXVECTOR3(0.3f, 0.3f, 0.3f);
     D3DXVECTOR3 lightDiffuse_  = D3DXVECTOR3(0.7f, 0.7f, 0.7f);
 
     // g_CurrentShaderPass (0x194591C) : évite de re-binder VS/PS entre subsets identiques.
+    // ex-VeryOldClient: mPresentShaderProgramNumber (PLAUSIBLE, P-12 — offset 0x194591C non nommé
+    //   formellement dans gxd_findings ; à ne pas confondre avec currentPassId Object B+526884).
     int currentPass_ = 0;
 
     // Palette de secours (identité) si aucune palette valide n'est fournie.

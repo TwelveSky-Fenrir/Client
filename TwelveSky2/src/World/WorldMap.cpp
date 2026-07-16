@@ -2,10 +2,38 @@
 // Voir WorldMap.h pour les EA sources. Toutes les branches des quatre fonctions cibles
 // sont couvertes ; les chemins de fichiers et la table zoneId->fileId sont byte-exacts.
 #include "WorldMap.h"
+#include "Asset/WorldChunk.h" // vues terrain typées (CollisionMesh/Face/QuadNode/TerrainVertex) — Gaps G4/G5/G7
 
+#include <cmath>   // sqrt/fabs — requêtes de collision (namespace collision, Gaps G02/G03/G04)
+#include <cstdint>
 #include <cstdio>
 
 namespace ts2::world {
+
+namespace {
+// Retours vides quand aucune maille n'est liée (build-safe : jamais de déréférencement nul).
+const std::vector<asset::CollisionFace>     kEmptyFaces;
+const std::vector<asset::CollisionQuadNode> kEmptyNodes;
+const std::vector<asset::TerrainVertex>     kEmptyVertices;
+const std::vector<uint32_t>                 kEmptyFaceIndices;
+} // namespace
+
+// ===========================================================================
+// Accesseurs de données terrain typées (Gaps G4/G5/G7). Forwardent vers la maille
+// liée par SetCollisionMesh ; vecteurs vides si aucune maille (voir WorldMap.h).
+// ===========================================================================
+const std::vector<asset::CollisionFace>& WorldMap::Faces() const {
+    return collisionMesh_ ? collisionMesh_->tris : kEmptyFaces;
+}
+const std::vector<asset::CollisionQuadNode>& WorldMap::Quadtree() const {
+    return collisionMesh_ ? collisionMesh_->nodes : kEmptyNodes;
+}
+const std::vector<asset::TerrainVertex>& WorldMap::Vertices() const {
+    return collisionMesh_ ? collisionMesh_->vertices : kEmptyVertices;
+}
+const std::vector<uint32_t>& WorldMap::FaceIndices() const {
+    return collisionMesh_ ? collisionMesh_->triIndices : kEmptyFaceIndices;
+}
 
 namespace {
 
@@ -249,6 +277,9 @@ std::string WorldMap::ZoneModelPathWM(int fileId, int z291Variant) {
 
 // ===========================================================================
 // Chemin .WJ secondaire (World_LoadZoneResource case 6, second switch 0x4dd0b4).
+// CONFLICT C-01 (Docs/TS2_WORLD_ROSETTA.md §2) : la couche .WJ est ABSENTE de VeryOldClient
+// (WORLD_FOR_GXD = que des .WM) ; introduite par la cible — IDA GAGNE (ancre : second switch
+// 0x4dd0b4 -> MapColl_LoadFaces this+0x150). NE PAS backporter l'absence de WJ.
 // ===========================================================================
 std::string WorldMap::ZoneModelPathWJ(int fileId) {
     switch (fileId) {
@@ -379,7 +410,11 @@ bool WorldMap::LoadMap(const std::string& mapName, const std::string& drmKey) {
 
     // --- Branche succès : atmosphere[+644]=1, this+4=1, météo par défaut, Atmosphere.DAT ---
     // *(atmosphere+644) = 1  (marqueur interne de l'objet atmosphère).
-    valid_ = true;                       // this+4 = 1
+    // CONFLICT C-03 (TS2_WORLD_ROSETTA.md §2) : la cible pose `*(this+4)=1` ICI (World_LoadMap
+    // 0x41176E), MÊME octet que byte_18C67C8, ce qui ARME le court-circuit `||` de la case 7
+    // (1x/session jusqu'à World_UnloadMap 0x411a80). Fidélité : `atmosphereLoaded_` devrait être
+    // posé ici aussi ; ne l'étant pas, la case 7 relance LoadMap à chaque zone. Correctif = jalon compilé.
+    valid_ = true;                       // this+4 = 1  (= byte_18C67C8, cf. CONFLICT C-03)
     // Str_Assign(mapName) : mémorise le nom de map (byte_815190 côté binaire) — omis (leaf).
     weather_.fill(0);                    // memcpy(this+180, &dword_18C5358, 0x68) : template 104 o, tout à 0.
 
@@ -460,9 +495,20 @@ unsigned char WorldMap::LoadZoneResource(int zoneId, ResourceKind kind) {
                 // wm reste Z170_1.WM (déjà renvoyé par ZoneModelPathWM).
             }
             // MapColl_LoadFaces(this+0xA8, wm) — collision principale.
+            // CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (WM1->mRANGE1). Ancre IDA :
+            // MapColl_LoadFaces 0x694510. NB : la donnée chargée reste un buffer opaque
+            // (CollisionMesh.raw) jamais décodé ni requêté ici -> voir TODO hauteur de sol dans
+            // WorldIntegration.cpp::LoadFaces (gaps G01/G02, TS2_WORLD_ROSETTA.md §3).
             if (hooks_.loadFaces) hooks_.loadFaces(hooks_.user, CollisionSlot::Main, wm.c_str());
 
-            // Chemin .WJ secondaire -> MapColl_LoadFaces(this+0x150, wj).
+            // Gap G02 : relier la maille décodée de la couche principale (this+0xA8) pour les
+            // requêtes de sol/collision (résout le TODO SetCollisionMesh). La MapColl runtime
+            // porte faces+quadtree in situ ; ici on pointe la donnée déjà décodée par G01.
+            if (hooks_.queryCollisionMesh)
+                collisionMesh_ = hooks_.queryCollisionMesh(hooks_.user, CollisionSlot::Main);
+
+            // Chemin .WJ secondaire -> MapColl_LoadFaces(this+0x150, wj) — CONFLICT C-01 (WJ
+            // absent de VeryOldClient, IDA gagne ; cf. ZoneModelPathWJ 0x4dd0b4 ci-dessus).
             std::string wj = ZoneModelPathWJ(fileId);
             v3 = hooks_.loadFaces ? (hooks_.loadFaces(hooks_.user, CollisionSlot::WJ, wj.c_str()) ? 1 : 0) : 0;
             return static_cast<unsigned char>(v3);
@@ -471,6 +517,10 @@ unsigned char WorldMap::LoadZoneResource(int zoneId, ResourceKind kind) {
             // a2 == -1 -> saut (renvoie v3 = kind à l'entrée).
             if (zoneId == -1) return static_cast<unsigned char>(v3);
             // if (atmosphereLoaded || World_LoadMap(...)) { charger .ATM }
+            // Structure byte-exacte (World_LoadZoneResource 0x4dcb60 case 7 : `byte_18C67C8 ||
+            // World_LoadMap 0x4116b0`). CONFLICT C-03 : le flag byte_18C67C8 n'étant jamais armé
+            // par LoadMap ici (cf. WorldMap.cpp branche succès), ce court-circuit reste toujours
+            // faux -> LoadMap relancé à chaque zone (l'original 1x/session).
             bool proceed = atmosphereLoaded_;
             if (!proceed) {
                 bool ok = LoadMap(kAtmosphereResourceDir); // -> dword_18C67C4, device g_GfxRenderer_pDevice
@@ -549,8 +599,362 @@ int WorldMap::LoadCurrentZoneModel(int mode) {
 
     // MapColl_Free(this+0xA8) puis MapColl_LoadFaces(this+0xA8, path).
     if (hooks_.freeFaces) hooks_.freeFaces(hooks_.user, CollisionSlot::Main);
-    return hooks_.loadFaces ? (hooks_.loadFaces(hooks_.user, CollisionSlot::Main, path.c_str()) ? 1 : 0)
-                            : 0;
+    // Le free ci-dessus a pu invalider la maille précédemment liée : on la déreliera puis
+    // reliera après le rechargement (Gap G02, cohérence avec la couche Main courante).
+    collisionMesh_ = nullptr;
+    const int rc = hooks_.loadFaces
+                       ? (hooks_.loadFaces(hooks_.user, CollisionSlot::Main, path.c_str()) ? 1 : 0)
+                       : 0;
+    if (hooks_.queryCollisionMesh)
+        collisionMesh_ = hooks_.queryCollisionMesh(hooks_.user, CollisionSlot::Main);
+    return rc;
+}
+
+// ===========================================================================
+// namespace collision — moteur de requête terrain (Gaps G02/G03/G04).
+// Portage byte-fidèle des MapColl_* (voir WorldMap.h pour la correspondance this[]->mesh).
+// Chaque fonction porte les ancres @EA de la cible. Toutes build-safe.
+// ===========================================================================
+namespace collision {
+namespace {
+
+// this[1] : la MapColl est active dès qu'une maille (faces + quadtree) est chargée.
+inline bool MeshActive(const asset::CollisionMesh& m) {
+    return !m.nodes.empty() && !m.tris.empty();
+}
+inline float Dot3(float ax, float ay, float az, float bx, float by, float bz) {
+    return ax * bx + ay * by + az * bz;
+}
+
+// Descente de localisation de point en XZ, commune à MapColl_GetGroundHeight 0x697130
+// (0x697148..0x6971d9) et MapColl_PointInMeshXZ 0x695dc0 (0x695dd9..0x695e80).
+// Renvoie l'index de la FEUILLE contenant (x,z), ou -1 si (x,z) est hors du quadtree.
+int LocateLeafXZ(const asset::CollisionMesh& m, float x, float z) {
+    const auto& nodes = m.nodes;
+    uint32_t nodeIdx = 0;                                   // racine = this[35] index 0
+    if (nodes[0].child[0] != -1) {                          // 0x697159 : racine non-feuille
+        for (;;) {
+            const asset::CollisionQuadNode& n = nodes[nodeIdx];
+            int c = 0;
+            for (; c < 4; ++c) {                            // 0x697182 : scan des 4 enfants
+                const int32_t ci = n.child[c];
+                if (ci < 0 || static_cast<size_t>(ci) >= nodes.size())
+                    continue;                               // guard OOB (données malformées)
+                const asset::CollisionQuadNode& cn = nodes[static_cast<size_t>(ci)];
+                if (x >= cn.bboxMin[0] && x <= cn.bboxMax[0] &&   // 0x6971ba : test bbox XZ
+                    z >= cn.bboxMin[2] && z <= cn.bboxMax[2])
+                    break;
+            }
+            if (c == 4) return -1;                          // 0x6971c3 : aucun enfant contenant
+            nodeIdx = static_cast<uint32_t>(n.child[c]);    // 0x6971c7 : descente
+            if (nodes[nodeIdx].child[0] == -1) break;       // 0x6971d9 : feuille atteinte
+        }
+    }
+    return static_cast<int>(nodeIdx);
+}
+
+} // namespace
+
+// MapColl_RayHitTriangle 0x695ae0.
+bool RayHitTriangle(const asset::CollisionMesh& mesh, uint32_t faceIndex,
+                    float px, float py, float pz) {
+    if (faceIndex >= mesh.tris.size()) return false;        // guard (this[22] + 156*faceIndex)
+    const asset::CollisionFace& f = mesh.tris[faceIndex];
+    // edge0 = v1-v0, edge1 = v2-v0, q = point-v0 (0x695af4..0x695b47).
+    const float e0x = f.v1.position[0] - f.v0.position[0];
+    const float e0y = f.v1.position[1] - f.v0.position[1];
+    const float e0z = f.v1.position[2] - f.v0.position[2];
+    const float e1x = f.v2.position[0] - f.v0.position[0];
+    const float e1y = f.v2.position[1] - f.v0.position[1];
+    const float e1z = f.v2.position[2] - f.v0.position[2];
+    const float qx = px - f.v0.position[0];
+    const float qy = py - f.v0.position[1];
+    const float qz = pz - f.v0.position[2];
+    const float d00 = Dot3(e0x, e0y, e0z, e0x, e0y, e0z);   // |e0|^2
+    const float d01 = Dot3(e1x, e1y, e1z, e0x, e0y, e0z);   // e1·e0
+    const float dp0 = Dot3(qx, qy, qz, e0x, e0y, e0z);      // q·e0
+    const float d11 = Dot3(e1x, e1y, e1z, e1x, e1y, e1z);   // |e1|^2
+    const float dp1 = Dot3(qx, qy, qz, e1x, e1y, e1z);      // q·e1
+    const float denom = d11 * d00 - d01 * d01;              // 0x695be8
+    if (denom == 0.0f) return false;                        // 0x695bf9
+    const float inv = 1.0f / denom;
+    const float u = (d11 * dp0 - dp1 * d01) * inv;          // 0x695c12
+    if (u < 0.0f) return false;                             // 0x695c23
+    const float v = inv * (dp1 * d00 - dp0 * d01);          // 0x695c36
+    if (v < 0.0f) return false;                             // 0x695c43
+    return (u + v) <= 1.0f;                                 // 0x695c62
+}
+
+// MapColl_PointInTriangleXZ 0x695c70.
+bool PointInTriangleXZ(const asset::CollisionMesh& mesh, uint32_t faceIndex,
+                       float px, float pz) {
+    if (faceIndex >= mesh.tris.size()) return false;
+    const asset::CollisionFace& f = mesh.tris[faceIndex];
+    // Barycentrique dans le plan XZ (0x695c84..0x695d18).
+    const float e0x = f.v1.position[0] - f.v0.position[0];
+    const float e0z = f.v1.position[2] - f.v0.position[2];
+    const float e1x = f.v2.position[0] - f.v0.position[0];
+    const float e1z = f.v2.position[2] - f.v0.position[2];
+    const float qx = px - f.v0.position[0];
+    const float qz = pz - f.v0.position[2];
+    const float d00 = e0z * e0z + e0x * e0x;                // |e0_xz|^2
+    const float d01 = e1z * e0z + e1x * e0x;                // e1·e0 (xz)
+    const float dp0 = qz * e0z + qx * e0x;                  // q·e0 (xz)
+    const float d11 = e1z * e1z + e1x * e1x;                // |e1_xz|^2
+    const float dp1 = qz * e1z + qx * e1x;                  // q·e1 (xz)
+    const float denom = d11 * d00 - d01 * d01;              // 0x695d2b
+    if (denom == 0.0f) return false;                        // 0x695d3c
+    const float inv = 1.0f / denom;
+    const float u = (d11 * dp0 - dp1 * d01) * inv;          // 0x695d55
+    if (u < 0.0f) return false;                             // 0x695d66
+    const float v = inv * (dp1 * d00 - dp0 * d01);          // 0x695d79
+    if (v < 0.0f) return false;                             // 0x695d86
+    return (u + v) <= 1.0f;                                 // 0x695da5
+}
+
+// MapColl_GetGroundHeight 0x697130 — « le sol nul » comblé.
+bool GetGroundHeight(const asset::CollisionMesh& mesh, float x, float z,
+                     float& outGroundY, bool a5CeilingGiven, float a6Ceiling,
+                     bool a7TwoSide, bool a8OnlyOne) {
+    if (!MeshActive(mesh)) return false;                    // 0x697135 : if (!this[1]) return 0
+    const int leaf = LocateLeafXZ(mesh, x, z);              // descente XZ jusqu'à la feuille
+    if (leaf < 0) return false;                             // hors quadtree (0x6971c3/0x697226)
+    const asset::CollisionQuadNode& node = mesh.nodes[static_cast<size_t>(leaf)];
+    const float ceiling = a5CeilingGiven ? a6Ceiling : mesh.nodes[0].bboxMax[1]; // 0x6971e5 (node0 +16)
+    bool hit = false;                                       // v18
+    for (uint32_t i = 0; i < node.trisNum; ++i) {           // 0x697215 : faces de la feuille
+        const size_t idx = static_cast<size_t>(node.trisIndex) + i;
+        if (idx >= mesh.triIndices.size()) break;           // guard
+        const uint32_t faceIdx = mesh.triIndices[idx];      // trisIndex[i] -> face
+        if (faceIdx >= mesh.tris.size()) continue;          // guard
+        const asset::CollisionFace& f = mesh.tris[faceIdx];
+        const float b = f.plane[1];                         // this[22]+156*f+128 (= normal.y)
+        if (!a7TwoSide && b <= 0.0f) continue;              // 0x697259 : filtre marchable
+        if (b == 0.0f) continue;                            // 0x697288 : garde division
+        // y = (d - a*x - c*z) / b — plane-solve (0x6972ad, plan @+124/+128/+132/+136).
+        const float y = (f.plane[3] - x * f.plane[0] - z * f.plane[2]) / b;
+        if (y <= ceiling && RayHitTriangle(mesh, faceIdx, x, y, z)) {   // 0x6972ca
+            if (!hit) {
+                outGroundY = y;                             // 0x6972df
+                hit = true;
+                if (a8OnlyOne) return true;                 // 0x6972ec : 1er hit
+            } else if (y > outGroundY) {
+                outGroundY = y;                             // 0x6972fb : retenir le plus haut
+            }
+        }
+    }
+    return hit;                                             // 0x697318
+}
+
+// World_IsPointOnGround 0x540d40.
+bool IsPointOnGround(const asset::CollisionMesh& mesh, float x, float y, float z) {
+    float out = 0.0f;                                       // plafond = y+20 ; a5=1, a7=0, a8=1
+    return GetGroundHeight(mesh, x, z, out, true, y + 20.0f, false, true); // 0x540d59/0x540d93
+}
+
+// MapColl_PointInMeshXZ 0x695dc0.
+bool PointInMeshXZ(const asset::CollisionMesh& mesh, float x, float z) {
+    if (!MeshActive(mesh)) return false;                    // 0x695dc3
+    const int leaf = LocateLeafXZ(mesh, x, z);
+    if (leaf < 0) return false;
+    const asset::CollisionQuadNode& node = mesh.nodes[static_cast<size_t>(leaf)];
+    for (uint32_t i = 0; i < node.trisNum; ++i) {           // 0x695e9d : aucun filtre marchable
+        const size_t idx = static_cast<size_t>(node.trisIndex) + i;
+        if (idx >= mesh.triIndices.size()) break;
+        if (PointInTriangleXZ(mesh, mesh.triIndices[idx], x, z)) return true;
+    }
+    return false;                                           // 0x695eb9/0x695ec4
+}
+
+// MapColl_RayPlaneTriHit 0x695ee0.
+bool RayPlaneTriHit(const asset::CollisionMesh& mesh, uint32_t faceIndex,
+                    const float start[3], const float dir[3], float outHit[3], bool twoSide) {
+    if (faceIndex >= mesh.tris.size()) return false;
+    const asset::CollisionFace& f = mesh.tris[faceIndex];
+    const float denom = f.plane[1] * dir[1] + f.plane[2] * dir[2] + f.plane[0] * dir[0]; // 0x695f1b : n·dir
+    if (twoSide) {
+        if (denom == 0.0f) return false;                    // 0x695f4a
+    } else if (denom >= 0.0f) {
+        return false;                                       // 0x695f30 : une seule face
+    }
+    // t = (d - n·start) / (n·dir) — 0x695f77.
+    const float t = (f.plane[3]
+                     - (f.plane[2] * start[2] + f.plane[0] * start[0] + f.plane[1] * start[1]))
+                    / denom;
+    if (t < 0.0f) return false;                             // 0x695f86
+    outHit[0] = t * dir[0] + start[0];                      // 0x695f9d
+    outHit[1] = t * dir[1] + start[1];
+    outHit[2] = t * dir[2] + start[2];
+    return RayHitTriangle(mesh, faceIndex, outHit[0], outHit[1], outHit[2]); // 0x695f32
+}
+
+// Collide_SegmentAABB 0x69fb20 — SAT segment(point p, vecteur dir) vs AABB [bmin,bmax].
+// Les termes « *0.0 » du désassemblage (axes unitaires de l'AABB) valent exactement 0 et
+// sont donc élidés sans perte de fidélité.
+bool SegmentAABB(const float p[3], const float dir[3],
+                 const float bmin[3], const float bmax[3]) {
+    if (p[0] >= bmin[0] && p[0] <= bmax[0] &&               // 0x69fb78 : point dans la boîte
+        p[1] >= bmin[1] && p[1] <= bmax[1] &&
+        p[2] >= bmin[2] && p[2] <= bmax[2])
+        return true;
+    const float hx = (bmax[0] - bmin[0]) * 0.5f;            // demi-extents
+    const float hy = (bmax[1] - bmin[1]) * 0.5f;
+    const float hz = (bmax[2] - bmin[2]) * 0.5f;
+    const float mx = p[0] - (bmin[0] + bmax[0]) * 0.5f;     // centre boîte -> point
+    const float my = p[1] - (bmax[1] + bmin[1]) * 0.5f;
+    const float mz = p[2] - (bmax[2] + bmin[2]) * 0.5f;
+    // Axes de face de l'AABB (0x69fc60/0x69fcbc/0x69fd06).
+    if (std::fabs(mx) > hx && mx * dir[0] >= 0.0f) return false;
+    if (std::fabs(my) > hy && my * dir[1] >= 0.0f) return false;
+    if (std::fabs(mz) > hz && mz * dir[2] >= 0.0f) return false;
+    const float adx = std::fabs(dir[0]);
+    const float ady = std::fabs(dir[1]);
+    const float adz = std::fabs(dir[2]);
+    // Axes croisés dir × axes-AABB (0x69fd86/0x69fdb9/0x69fde2).
+    if (std::fabs(mz * dir[1] - my * dir[2]) > adz * hy + ady * hz) return false;
+    if (std::fabs(mx * dir[2] - mz * dir[0]) > adz * hx + adx * hz) return false;
+    if (ady * hx + adx * hy < std::fabs(my * dir[0] - mx * dir[1])) return false;
+    return true;                                            // 0x69fc64
+}
+
+// MapColl_RaycastNearest 0x6960c0 — descente quadtree récursive, impact le plus proche.
+bool RaycastNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
+                    const float start[3], const float dir[3],
+                    uint32_t& outFaceIndex, float outHit[3], bool twoSide) {
+    if (nodeIndex >= mesh.nodes.size()) return false;       // guard (child == -1 => 0xFFFFFFFF)
+    const asset::CollisionQuadNode& node = mesh.nodes[nodeIndex];
+    if (node.trisNum == 0) return false;                    // 0x6960d7 : sous-arbre sans face
+    if (!SegmentAABB(start, dir, node.bboxMin, node.bboxMax)) return false; // 0x6960fd
+    float best = -1.0f;                                     // v34
+    if (node.child[0] == -1) {                              // 0x696123 : feuille
+        for (uint32_t i = 0; i < node.trisNum; ++i) {
+            const size_t idx = static_cast<size_t>(node.trisIndex) + i;
+            if (idx >= mesh.triIndices.size()) break;       // guard
+            const uint32_t faceIdx = mesh.triIndices[idx];
+            float hp[3];
+            if (RayPlaneTriHit(mesh, faceIdx, start, dir, hp, twoSide)) {   // 0x696282
+                const float dx = hp[0] - start[0];
+                const float dy = hp[1] - start[1];
+                const float dz = hp[2] - start[2];
+                const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);  // 0x6962d1
+                if (best == -1.0f || dist < best) {         // 0x6962e6 / 0x69631b
+                    best = dist;
+                    outFaceIndex = faceIdx;
+                    outHit[0] = hp[0]; outHit[1] = hp[1]; outHit[2] = hp[2];
+                }
+            }
+        }
+    } else {                                                // 0x696129 : nœud interne (4 enfants)
+        for (int c = 0; c < 4; ++c) {
+            uint32_t childFace = 0;
+            float childHit[3];
+            if (RaycastNearest(mesh, static_cast<uint32_t>(node.child[c]),
+                               start, dir, childFace, childHit, twoSide)) {  // 0x69615d
+                const float dx = childHit[0] - start[0];
+                const float dy = childHit[1] - start[1];
+                const float dz = childHit[2] - start[2];
+                const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);   // 0x6961a8
+                if (best == -1.0f || dist < best) {         // 0x6961bd / 0x6961f0
+                    best = dist;
+                    outFaceIndex = childFace;
+                    outHit[0] = childHit[0]; outHit[1] = childHit[1]; outHit[2] = childHit[2];
+                }
+            }
+        }
+    }
+    return best != -1.0f;                                   // 0x69623f
+}
+
+// MapColl_SlideMoveGround 0x697330 — glisse plaqué à la maille marchable (XZ) + résolution sol.
+// L'original renvoie les bits du y résolu (ou un passthrough) ; on expose un bool propre
+// (sol trouvé ?) + outPos toujours rempli.
+bool SlideMoveGround(const asset::CollisionMesh& mesh, const float from[3],
+                     const float to[3], float speed, float dt, float outPos[3]) {
+    if (!MeshActive(mesh) || speed <= 0.0f || dt <= 0.0f) { // 0x697365
+        outPos[0] = from[0]; outPos[1] = from[1]; outPos[2] = from[2]; // 0x6974a4
+        return false;
+    }
+    const float maxStep = speed * dt;                       // 0x697380
+    outPos[0] = from[0];                                    // 0x697384 (y résolu en fin)
+    outPos[2] = from[2];                                    // 0x697392
+    float dx = to[0] - outPos[0];
+    float dz = to[2] - outPos[2];
+    float dist = std::sqrt(dx * dx + dz * dz);              // 0x6973ae
+    bool doSnap = (dist <= maxStep);                        // 0x6973b9
+    if (!doSnap) {
+        for (;;) {                                          // 0x6973cf : marche par pas maxStep
+            const float inv = 1.0f / dist;
+            const float sx = dx * inv * maxStep + outPos[0];
+            const float sz = dz * inv * maxStep + outPos[2];
+            if (!PointInMeshXZ(mesh, sx, sz)) break;        // 0x6973f8 : pas hors maille -> stop
+            outPos[0] = sx; outPos[2] = sz;                 // 0x697405 : valide le pas
+            dx = to[0] - outPos[0];
+            dz = to[2] - outPos[2];
+            dist = std::sqrt(dx * dx + dz * dz);            // 0x697426
+            if (dist <= maxStep) { doSnap = true; break; }  // 0x697431 : cible atteignable
+        }
+    }
+    if (doSnap && PointInMeshXZ(mesh, to[0], to[2])) {      // 0x69744b : snap direct sur 'to'
+        outPos[0] = to[0]; outPos[2] = to[2];               // 0x69745c
+    }
+    // Hauteur de sol au point final (a5=0,a6=0,a7=0,a8=1) — 0x697476.
+    const bool found = GetGroundHeight(mesh, outPos[0], outPos[2], outPos[1],
+                                       false, 0.0f, false, true);
+    if (!found) {                                           // 0x69747d : pas de sol -> reste sur place
+        outPos[0] = from[0]; outPos[1] = from[1]; outPos[2] = from[2];
+    }
+    return found;
+}
+
+// ---------------------------------------------------------------------------
+// TODO(G04) — MapColl_SweepSphereNearest 0x696ad0 (sweep sphère/rayon épais vs quadtree,
+// impact le plus proche). NON porté cette passe (build-safe : sol/raycast/slide couvrent le
+// socle mouvement/picking). Dépendances à porter d'abord, toutes @EA :
+//   - Collide_AABBOverlap_0 0x6a0600 (recouvrement AABB/AABB min-max) — trivial.
+//   - Collide_TriAABB 0x6a00e0 (SAT triangle vs AABB, 13 axes) ->
+//         Collide_ProjectTriOnAxis 0x69f9c0 + Collide_ProjectBoxOnAxis 0x69fa80.
+//     NB : 0x696ad0 passe g_GfxRenderer 0x7ffe18 comme 1er arg de Collide_TriAABB (scratch/
+//     contexte NON utilisé pour la géométrie ; a3=face base, a4=AABBmin, a5=AABBmax).
+//   - Sphère : AABB de [start,end] gonflée de ±rayon (a5), puis marche le long du segment
+//     normalisé en re-testant Collide_TriAABB (0x696e08/0x696eea) jusqu'au 1er recouvrement ;
+//     distance² retenue = plus proche (0x696f32). Récursion 4 enfants identique à RaycastNearest.
+// À implémenter au jalon collision-mouvement dédié.
+// ---------------------------------------------------------------------------
+
+} // namespace collision
+
+// ===========================================================================
+// Requêtes de sol / collision exposées par WorldMap — délèguent à collision:: sur la maille
+// principale liée (collisionMesh_). Build-safe : false / no-op tant qu'aucune maille n'est liée.
+// ===========================================================================
+bool WorldMap::GetGroundHeight(float x, float z, float probeCeilingY, float& outGroundY) const {
+    if (!collisionMesh_) return false;                      // maille non liée -> sol indéterminé
+    // Forme consommateur (Char_Update 0x581e10 / World_IsPointOnGround 0x540d40) :
+    // a5=1 (plafond = probeCeilingY), a7=0, a8=1 (1er hit).
+    return collision::GetGroundHeight(*collisionMesh_, x, z, outGroundY, true, probeCeilingY,
+                                      false, true);
+}
+bool WorldMap::HasGroundAt(float x, float z) const {
+    if (!collisionMesh_) return false;
+    float out = 0.0f;                                       // IsGroundBlocked-shape (plafond défaut)
+    return collision::GetGroundHeight(*collisionMesh_, x, z, out, false, 0.0f, false, true);
+}
+bool WorldMap::IsPointOnGround(float x, float y, float z) const {
+    if (!collisionMesh_) return false;
+    return collision::IsPointOnGround(*collisionMesh_, x, y, z);
+}
+bool WorldMap::Raycast(const float start[3], const float dir[3], uint32_t& outFaceIndex,
+                       float outHit[3], bool twoSide) const {
+    if (!collisionMesh_) return false;
+    return collision::RaycastNearest(*collisionMesh_, 0, start, dir, outFaceIndex, outHit, twoSide);
+}
+bool WorldMap::SlideMoveGround(const float from[3], const float to[3], float speed, float dt,
+                               float outPos[3]) const {
+    if (!collisionMesh_) {                                  // pas de maille : reste sur place
+        outPos[0] = from[0]; outPos[1] = from[1]; outPos[2] = from[2];
+        return false;
+    }
+    return collision::SlideMoveGround(*collisionMesh_, from, to, speed, dt, outPos);
 }
 
 } // namespace ts2::world

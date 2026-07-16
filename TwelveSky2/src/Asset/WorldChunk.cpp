@@ -12,13 +12,6 @@ namespace {
 
 // ---- helpers bornés (calqués sur Reader.skip/take du parseur Python) ---------
 
-// Vérifie n <= restant en 64 bits (évite le débordement de size_t en build 32-bit)
-// puis saute n octets. Lève AssetError si hors limites (comme Reader.skip).
-void SkipChecked(ByteReader& r, uint64_t n) {
-    if (n > r.Remaining()) throw AssetError("saut hors limites");
-    r.Skip(static_cast<size_t>(n));
-}
-
 // Copie n octets consécutifs dans un vecteur, en validant d'abord la borne.
 std::vector<uint8_t> ReadBlob(ByteReader& r, uint64_t n) {
     if (n > r.Remaining()) throw AssetError("lecture de bloc hors limites");
@@ -110,25 +103,68 @@ AnimTrack ReadAnimTrack(ByteReader& r) {
     return at;
 }
 
+// Décode un sommet terrain 40o (FVF 530 = XYZ|NORMAL|TEX2). Gap G7.
+// Position@0 (prouvée barycentrique) puis normal@12, uv0@24, uv1@32 (interprétation FVF).
+void ReadTerrainVertex(ByteReader& r, TerrainVertex& v) {
+    v.position[0] = r.F32(); v.position[1] = r.F32(); v.position[2] = r.F32(); // +0
+    v.normal[0]   = r.F32(); v.normal[1]   = r.F32(); v.normal[2]   = r.F32(); // +12
+    v.uv0[0] = r.F32(); v.uv0[1] = r.F32();                                    // +24
+    v.uv1[0] = r.F32(); v.uv1[1] = r.F32();                                    // +32
+}
+
 // parse_collision_mesh : opère sur le buffer déjà décompressé (buf déplacé dans mesh.raw).
+// Décodage TYPÉ (Gaps G4/G5/G7) : ordre de lecture = miroir de MapColl_LoadFaces 0x694510.
+// Layouts prouvés via IDA (voir WorldChunk.h : CollisionFace/CollisionQuadNode/TerrainVertex).
 CollisionMesh ParseCollisionMesh(std::vector<uint8_t> buf) {
     CollisionMesh cm;
     ByteReader m(buf);
+
+    // --- Faces (Gap G4) : numTri × 156o -----------------------------------
     const uint32_t numTri = m.U32();
-    SkipChecked(m, 156ull * numTri);        // triangles : 156 octets chacun
+    cm.tris.reserve(numTri);
+    cm.vertices.reserve(static_cast<size_t>(numTri) * 3u);
+    for (uint32_t i = 0; i < numTri; ++i) {
+        CollisionFace f{};
+        f.materialIndex = m.U32();               // +0
+        ReadTerrainVertex(m, f.v0);              // +4
+        ReadTerrainVertex(m, f.v1);              // +44
+        ReadTerrainVertex(m, f.v2);              // +84
+        f.plane[0] = m.F32(); f.plane[1] = m.F32();          // +124/+128 (a,b)
+        f.plane[2] = m.F32(); f.plane[3] = m.F32();          // +132/+136 (c,d)
+        f.sphereCenter[0] = m.F32();                          // +140
+        f.sphereCenter[1] = m.F32();                          // +144
+        f.sphereCenter[2] = m.F32();                          // +148
+        f.sphereRadius    = m.F32();                          // +152
+        // Sommets à plat (miroir du VB dynamique Terrain_Render a1+164, upload 120o/face).
+        cm.vertices.push_back(f.v0);
+        cm.vertices.push_back(f.v1);
+        cm.vertices.push_back(f.v2);
+        cm.tris.push_back(f);
+    }
+
+    // --- Quadtree (Gap G5) : numNodes nœuds disque -> nœuds 48o + index agrégé ---
     const uint32_t numNodes = m.U32();
-    const uint32_t field34  = m.U32();       // (this+34) compteur global d'index
+    const uint32_t field34  = m.U32();       // (this+34) compteur global d'index (leafFaceRefTotal)
+    cm.nodes.reserve(numNodes);
     uint32_t totalIdx = 0;
     for (uint32_t i = 0; i < numNodes; ++i) {
-        SkipChecked(m, 12);                  // min[3] float
-        SkipChecked(m, 12);                  // max[3] float
-        const uint32_t numIdx = m.U32();     // nb d'index de triangles dans ce nœud
-        const uint32_t hasIdx = m.U32();     // flag
+        CollisionQuadNode node{};
+        node.bboxMin[0] = m.F32(); node.bboxMin[1] = m.F32(); node.bboxMin[2] = m.F32(); // +0
+        node.bboxMax[0] = m.F32(); node.bboxMax[1] = m.F32(); node.bboxMax[2] = m.F32(); // +12
+        const uint32_t numIdx = m.U32();     // +24 disque : nb d'index de faces dans ce nœud
+        const uint32_t hasIdx = m.U32();     // +28 disque : flag hasFaceRefs
+        node.trisNum   = numIdx;
+        node.trisIndex = static_cast<uint32_t>(cm.triIndices.size()); // offset dans le buffer agrégé
         if (hasIdx) {
-            SkipChecked(m, 4ull * numIdx);   // index u32
+            for (uint32_t k = 0; k < numIdx; ++k)
+                cm.triIndices.push_back(m.U32()); // index u32 dans tris[] (feuille)
             totalIdx += numIdx;
         }
-        SkipChecked(m, 16);                  // children[4] u32 (quadtree)
+        node.child[0] = m.I32();             // +32 disque : children[4] u32
+        node.child[1] = m.I32();             //   child[0]==-1 => feuille
+        node.child[2] = m.I32();
+        node.child[3] = m.I32();
+        cm.nodes.push_back(node);
     }
     if (!m.Eof())
         throw AssetError("collision : octets restants après le quadtree");

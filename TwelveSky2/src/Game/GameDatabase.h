@@ -25,30 +25,49 @@ namespace ts2::game {
 // LEVEL_INFO — 44 o = 11 dwords. Champs prouves par LevelTable_ValidateEntry 0x4C2430.
 // Les stats de base sont lues par LevelTable_GetStatK (Stat3=extAtk .. Stat9=ratingMax) ;
 // il n'y a AUCUNE base de MP dans cette table (cf. TS2_GAMEPLAY_LOGIC.md 2.4).
+// Cross-check VeryOldClient : classe LEVEL (VeryOldClient/GameSystem/CLEVEL.cpp). En-tete
+// +0..+12 CONFIRMED ; bloc stats +16..+40 = CONFLICT J-1 (bloc REORDONNE entre builds +
+// pas de base MP dans ce build) — cf. Docs/TS2_TABLES_ROSETTA.md §2 + Journal J-1. IDA prime,
+// noms VeryOld = indice semantique SEUL, jamais de transposition d'offset/valeur.
 struct LevelInfo {
-    uint32_t level;            // +0  1..145 (doit valoir index+1)
-    int32_t  expCumul;         // +4  experience cumulee (< expNext ; == expCumul[niv+1]-1)
-    int32_t  expNext;          // +8  seuil du niveau suivant (1..2 000 000 000)
-    uint32_t meta;             // +12 champ meta (<= 100)
-    int32_t  baseExtAttack;    // +16 base attaque externe   (Stat3)
-    int32_t  baseIntAttack;    // +20 base attaque interne   (Stat4)
-    int32_t  baseExtDefense;   // +24 base defense externe   (Stat5)
-    int32_t  baseIntDefense;   // +28 base defense interne   (Stat6)
-    int32_t  baseMaxHp;        // +32 base PV max            (Stat7)
-    int32_t  baseAtkRatingMin; // +36 base rating min degats (Stat8)
-    int32_t  baseAtkRatingMax; // +40 base rating max degats (Stat9)
+    uint32_t level;            // +0  1..145 (doit valoir index+1) ; ex-VeryOldClient: lIndex (CONFIRMED)
+    int32_t  expCumul;         // +4  experience cumulee (< expNext ; == expCumul[niv+1]-1) ; ex-VeryOldClient: lRangeInfo[0] (expMin) (CONFIRMED)
+    int32_t  expNext;          // +8  seuil du niveau suivant (1..2 000 000 000) ; ex-VeryOldClient: lRangeInfo[1] (expMax) (CONFIRMED)
+    uint32_t meta;             // +12 champ meta (<= 100) ; ex-VeryOldClient: lRangeInfo[2] (facteur%) (CONFIRMED, borne<=100 => %)
+    // +16..+40 : bloc stats consumer-prouve (Char_Calc* 0x4D0530/0x4D1830/0x4D2830/0x4D34B0/
+    // 0x4D4ED0/0x4CD970/0x4CE3F0). VeryOld nomme ce bloc dans un ORDRE DIFFERENT (CONFLICT J-1) :
+    // ne PAS lire les ex-VeryOldClient ci-dessous comme le role du champ — c'est le nom VeryOld
+    // aligne par ORDINAL, dementi par le consumer IDA (IDA gagne).
+    int32_t  baseExtAttack;    // +16 base attaque externe   (Stat3) ; ex-VeryOldClient: lAttackPower  (CONFLICT J-1 — IDA=atk EXT)
+    int32_t  baseIntAttack;    // +20 base attaque interne   (Stat4) ; ex-VeryOldClient: lDefensePower (CONFLICT J-1 — IDA=atk INT, sens oppose)
+    int32_t  baseExtDefense;   // +24 base defense externe   (Stat5) ; ex-VeryOldClient: lAttackSuccess(CONFLICT J-1 — IDA=def EXT)
+    int32_t  baseIntDefense;   // +28 base defense interne   (Stat6) ; ex-VeryOldClient: lAttackBlock  (CONFLICT J-1 — IDA=def INT)
+    int32_t  baseMaxHp;        // +32 base PV max            (Stat7) ; ex-VeryOldClient: lElementAttack(CONFLICT J-1 — IDA=PV MAX)
+    int32_t  baseAtkRatingMin; // +36 base rating min degats (Stat8) ; ex-VeryOldClient: lLife        (CONFLICT J-1 — le vrai HP est +32)
+    int32_t  baseAtkRatingMax; // +40 base rating max degats (Stat9) ; ex-VeryOldClient: lMana        (CONFLICT J-1 — lMana N'EXISTE PAS dans ce build)
 };
 static_assert(sizeof(LevelInfo) == 44, "LevelInfo doit faire 44 o");
 
 // ITEM_INFO — 436 o. Champs prouves par MobDb_ValidateEntry 0x4C2C50 + TS2_GAMEPLAY_LOGIC.md 2.4.
 // Les champs `fieldNNN` sont valides (bornes connues) mais leur role reste a documenter.
 // Les offsets de stats (+292..+432) sont ceux consommes par le moteur de stats (Char_Calc*).
+// Cross-check VeryOldClient : classe ITEM (VeryOldClient/GameSystem/CITEM.cpp, singleton mITEM ;
+// accesseur ITEM::ReturnDataAddr == MobDb_GetEntry 0x4C3C00). ATTENTION: MODELE DIVERGENT : VeryOld a
+// 5 attrs (Str/Dex/Vit/Int/Luck) la ou IDA n'a que 4 champs de contribution (+292/296/300/304) —
+// NE PAS mapper 1:1. Detail par offset : Docs/TS2_TABLES_ROSETTA.md §3 + Journal J-A/J-B/J-C.
 struct ItemInfo {
-    uint32_t itemId;         // +0   1-based ; 0 = slot vide. (== index+1)
-    char     name[25];       // +4   nom (terminaison nulle dans [0..24])
+    uint32_t itemId;         // +0   1-based ; 0 = slot vide. (== index+1) ; ex-VeryOldClient: iIndex (CONFIRMED)
+    char     name[25];       // +4   nom (terminaison nulle dans [0..24]) ; ex-VeryOldClient: iName (CONFIRMED)
+    // +29 : layout 3x51 PROUVE (record 436 o) ; le LABEL `model` n'est PAS prouve par un lecteur.
+    // ex-VeryOldClient: iDescription[3][51] (PLAUSIBLE, memes dims — J-A : revue relabel model->description recommandee).
     char     model[3][51];   // +29  3 noms de modeles (51 o chacun)
     uint8_t  _pad182[2];     // +182 reserve
+    // +184 : classificateur SECONDAIRE prouve (Item_MeetsEquipRequirement 0x64ECD0).
+    // ex-VeryOldClient: iType/iSort (PLAUSIBLE, J-B — iType(1..8)/iSort(1..99) ne couvrent pas 1..6 ; valeurs non transposees).
     uint32_t category;       // +184 categorie (1..6 ; 5=equip/arme, 6=classe4)
+    // +188 : classificateur MAITRE (Item_GetEquipCategory 0x54C940, Weapon_ClassFromEquip 0x4CC9F0,
+    // Item_IsUpgradeableWeapon 0x4C9960 ==28=arme). ex-VeryOldClient: iType (CONFIRMED role ;
+    // ATTENTION: plages divergentes IDA 1..36 vs VeryOld 1..8 — nom aligne, valeurs JAMAIS transposees).
     uint32_t typeCode;       // +188 type (1..36 ; 28=arme, 29=arme elem., 30=monture/costume, 35/36=pet)
     // +192 IconID (1-based, PAS confondre avec itemId/+0) : index dans le pool d'icones
     // g_AssetMgr_ItemIconSlots (dossier G03_GDATA\D01_GIMAGE2D\002\, 4000 slots), formate
@@ -56,44 +75,80 @@ struct ItemInfo {
     // (`v133 = *(ITEM_INFO+192) - 1` = index pool 0-based ; Sprite2D_BuildPath demontre que
     // le suffixe fichier = index pool 0-based + 1 = IconID tel quel, donc AUCUN offset a
     // appliquer entre ce champ et le numero de fichier). Voir Docs/TS2_UI_ICON_ATLAS_CONFIRMED.md.
-    uint32_t iconId;         // +192 (1..10000)
-    uint32_t field196;       // +196 (<= 10000)
-    uint32_t field200;       // +200 (<= 10000)
-    uint32_t itemLevel;      // +204 niveau item (1..145 ; seuils scaling 45/100/113/146)
-    uint32_t field208;       // +208 (<= 12)
+    uint32_t iconId;         // +192 (1..10000) ; ex-VeryOldClient: iDataNumber2D (CONFIRMED, index 0-based icone)
+    uint32_t field196;       // +196 (<= 10000) ; ex-VeryOldClient: iDataNumber3D (PLAUSIBLE, adjacence 2D)
+    uint32_t field200;       // +200 (<= 10000) ; ex-VeryOldClient: iAddDataNumber3D (PLAUSIBLE)
+    uint32_t itemLevel;      // +204 niveau item (1..145 ; seuils scaling 45/100/113/146) ; ex-VeryOldClient: iLevel (CONFIRMED)
+    uint32_t field208;       // +208 (<= 12)  ; ex-VeryOldClient: iMartialLevel ? (PLAUSIBLE, non tranche Rosetta)
     uint32_t field212;       // +212 (1..4)
-    uint32_t subtype;        // +216 sous-type (1..14 ; 2/4/5/6/7/9=classe1, 11..14=classe2 gemmes)
-    uint32_t field220;       // +220 (1..2 000 000 000)
+    uint32_t subtype;        // +216 sous-type (1..14 ; 2/4/5/6/7/9=classe1, 11..14=classe2 gemmes) ; ex-VeryOldClient: iEquipInfo[2] (CONFIRMED, code slot d'equip)
+    uint32_t field220;       // +220 (1..2 000 000 000) ; ex-VeryOldClient: iBuyCost (CONFIRMED, prix d'achat unitaire ; UI_NpcShop_OnRDown_Buy 0x5E5000, map==291 => x0.9)
     uint32_t field224;       // +224 (<= 2 000 000 000)
-    uint32_t field228;       // +228 (<= 2 000 000 000)
-    uint32_t field232;       // +232 (1..145)
+    uint32_t field228;       // +228 (<= 2 000 000 000) ; prerequis de stat (compare a dword_1673180) ; correspondant VeryOld non tranche (PLAUSIBLE)
+    uint32_t field232;       // +232 (1..145) ; ex-VeryOldClient: iLevelLimit / iMartialLevelLimit (PLAUSIBLE, 2 champs VeryOld, mapping 1:1 non prouve)
     uint32_t field236;       // +236 (<= 12)
-    uint32_t flags[11];      // +240 11 drapeaux (chacun 1..2)
-    uint32_t skillFlag;      // +284 1=normal, 2=skill, 3=upgrade
+    uint32_t flags[11];      // +240 11 drapeaux (chacun 1..2) ; ex-VeryOldClient: famille iCheck* (~13 flags drop/sell/trade/...) (PLAUSIBLE, corr. de FAMILLE, comptes 11 vs 13 divergents)
+    uint32_t skillFlag;      // +284 1=normal, 2=skill, 3=upgrade (scalingMode ; Equip_ComputeGemSetBonus 0x54E420 ==2) ; aucun champ VeryOld aligne (PLAUSIBLE role IDA)
     uint32_t field288;       // +288 (< 366)
-    int32_t  attrPrimaryA;   // +292 base Force externe (atk/def ext)
-    int32_t  attrPrimaryB;   // +296 base Force interne (atk/def int)
-    int32_t  attrRatingMin;  // +300 base rating min / def interne (x0.9)
-    int32_t  attrRatingMax;  // +304 base rating max
-    int32_t  critRate;       // +308 taux crit plat
-    int32_t  extAttack;      // +312 attaque externe plate
-    int32_t  intAttack;      // +316 attaque interne plate
-    int32_t  extDefense;     // +320 defense externe plate
-    int32_t  intDefense;     // +324 defense interne plate
-    int32_t  maxHp;          // +328 PV max plats
-    int32_t  maxMp;          // +332 PM max plats
-    int32_t  accuracy;       // +336 precision plate
+    // +292..+304 : bloc attrs. ATTENTION: MODELE DIVERGENT (J-C) : 5 attrs VeryOld vs 4 champs IDA — pas de mapping 1:1.
+    int32_t  attrPrimaryA;   // +292 base Force externe (atk/def ext) ; ex-VeryOldClient: iStrength (Force externe / waegong) (PLAUSIBLE J-C)
+    int32_t  attrPrimaryB;   // +296 base Force interne (atk/def int) ; ex-VeryOldClient: iIntelligent (Force interne / naegong) (PLAUSIBLE, meme divergence de modele)
+    int32_t  attrRatingMin;  // +300 base rating min / def interne (x0.9) ; attr defensif sec. (Char_SumGemStatC slot4) ; aucun champ VeryOld (PLAUSIBLE)
+    int32_t  attrRatingMax;  // +304 base rating max ; attr offensif sec. (Char_SumGemStatA slots 2,7) ; aucun champ VeryOld (PLAUSIBLE)
+    int32_t  critRate;       // +308 taux crit plat ; ex-VeryOldClient: iCritical (PLAUSIBLE, nomme par bornes, hors bloc reader-prouve 312..336)
+    int32_t  extAttack;      // +312 attaque externe plate (Char_CalcExternalAttack) ; ex-VeryOldClient: iAttackPower (CONFIRMED, VeryOld a UN seul iAttackPower => aligne sur l'externe)
+    int32_t  intAttack;      // +316 attaque interne plate (Char_CalcInternalAttack) ; variante interne (PLAUSIBLE, VeryOld ne distingue pas int/ext)
+    int32_t  extDefense;     // +320 defense externe plate (Char_CalcExternalDefense) ; ex-VeryOldClient: iDefensePower (CONFIRMED, aligne sur def externe)
+    int32_t  intDefense;     // +324 defense interne plate (Char_CalcInternalDefense) ; pas de champ VeryOld distinct (PLAUSIBLE)
+    int32_t  maxHp;          // +328 PV max plats (reader-prouve) ; absent VeryOld (CONFIRMED cote IDA, indice VeryOld null)
+    int32_t  maxMp;          // +332 PM max plats (Char_CalcMaxMP) ; absent VeryOld (PLAUSIBLE, nomme par bornes)
+    int32_t  accuracy;       // +336 precision plate (reader-prouve) ; ex-VeryOldClient: iAttackSucess (CONFIRMED, precision = taux de reussite d'attaque)
     uint32_t field340;       // +340 (<= 16)
     uint32_t field344;       // +344 (<= 10000)
-    uint32_t field348;       // +348 (<= 300)
+    uint32_t field348;       // +348 (<= 300) ; id competence acquise (cat 5 = manuel ; Pkt_ItemActionDispatch 0x46A320 G0) ; ex-VeryOldClient: iGainSkillNumber (CONFIRMED)
     uint32_t field352;       // +352 (<= 100)
     uint32_t field356;       // +356 (<= 1000)
-    int32_t  regen;          // +360 regen / reduction % cout MP
-    int32_t  evasion;        // +364 esquive plate
-    int32_t  resistAll;      // +368 resistance elementaire globale
+    int32_t  regen;          // +360 regen / reduction % cout MP (Player_CastSkill 0x53BC40) ; aucun champ VeryOld aligne (PLAUSIBLE)
+    int32_t  evasion;        // +364 esquive plate ; ex-VeryOldClient: iAttackBlock (blocage/makgi) (PLAUSIBLE — blocage != esquive (hoepi), a lever en dynamique, cf. GAP-4)
+    int32_t  resistAll;      // +368 resistance elementaire globale ; ex-VeryOldClient: iElementDefensePower (PLAUSIBLE, non prouve par lecteur nomme)
+    // +372..+435 ferme le record 436 o. ex-VeryOldClient: queue composite (iPotionType[2], iLastAttackBonusInfo[2],
+    // iCapeInfo[3], iBonusSkillInfo[N][2]) (PLAUSIBLE, corr. STRUCTURELLE paires cle/valeur, pas champ-a-champ).
     struct { int32_t key; int32_t val; } resist[8]; // +372..+432 : 8 paires (cle,valeur)
 };
 static_assert(sizeof(ItemInfo) == 436, "ItemInfo doit faire 436 o");
+
+// SKILL_INFO — 776 o. Table SKILL (005_00003.IMG), chargee brute dans kTables[2]
+// (g_World.db.skill). Layout PROUVE en octet par SkillGrowthTbl_ValidateRecord 0x4C4160
+// (lit chaque offset en dur), l'interpolation SkillGrowthTbl_InterpStatByLevel 0x4C4EE0
+// (blocs statMin/statMax + denominateur levelNorm) et l'accesseur SkillGrowthTbl_GetRecord
+// 0x4C4E90 (base + 776*(id-1)). Cross-check VeryOldClient : classe SKILL (VeryOldClient/
+// GameSystem/CSKILL.cpp, singleton mSKILL ; SKILL::ReturnDataAddr == SkillGrowthTbl_GetRecord).
+// Detail par offset : Docs/TS2_TABLES_ROSETTA.md §4. Les champs `fieldNNN` portent la borne
+// PROUVEE par le validateur ; +568/+572 sont un GAP (dwords [142]/[143] non attribues).
+struct SkillInfo {
+    uint32_t skillId;             // +0   1..300, DOIT valoir index+1 (0 = slot vide) [SkillGrowthTbl_ValidateRecord 0x4C4160] ; ex-VeryOldClient: sIndex (CONFIRMED)
+    char     name[25];            // +4   nom (NUL-term dans [0..24], rec0 "Mercy Healing") [validateur : scan 25 o -> echoue si pas de NUL] ; ex-VeryOldClient: sName[25] (CONFIRMED)
+    char     description[10][51]; // +29  10 chaines de 51 o (NUL-term) [validateur : boucle 10 x 51] ; ex-VeryOldClient: sDescription[10][51] (CONFIRMED, dims identiques)
+    uint8_t  _pad539[1];          // +539 reserve (aligne dword[135] a +540)
+    uint32_t field540;            // +540 (validateur [1,4]) ; ex-VeryOldClient: element_flag ? (PLAUSIBLE, Rosetta §4 dword[135])
+    uint32_t category;            // +544 (validateur [1,5]) type de competence (4/5 = posture/stance) [Player_CastSkill 0x53BC40] ; ex-VeryOldClient: sType (CONFIRMED role, Rosetta §4)
+    uint32_t field548;            // +548 (validateur [1,10000]) ; ex-VeryOldClient: subcategory / sAttackType (PLAUSIBLE, Rosetta §4 dword[137])
+    uint32_t field552;            // +552 (validateur [1,4]) ; ex-VeryOldClient: req_element/branche / sTribeInfo[2] (PLAUSIBLE, Rosetta §4 dword[138])
+    uint32_t field556;            // +556 (validateur [1,10]) ; req_weapon_type (1=any, sinon item.+188 - 11) (PLAUSIBLE, Rosetta §4 dword[139])
+    uint32_t spCost;              // +560 (validateur [1,1000]) cout en points de competence (apprentissage : dword_16731D4 -= rec[0x230]) ; ex-VeryOldClient: sLearnSkillPoint (CONFIRMED, Rosetta §4)
+    uint32_t levelNorm;           // +564 (validateur [1,1000]) denominateur d'interpolation = niveau-cap [SkillGrowthTbl_InterpStatByLevel 0x4C4EE0 : / (int)rec[141]] ; ex-VeryOldClient: sMaxUpgradePoint (CONFIRMED)
+    uint32_t field568;            // +568 (validateur [0,10])  GAP (dword[142] non attribue, Rosetta §4)
+    uint32_t field572;            // +572 (validateur [0,1000]) GAP (dword[143] non attribue, Rosetta §4)
+    // +576 / +676 : deux blocs de 25 stats interpolees par niveau (v = statMin + level *
+    // (statMax - statMin) / levelNorm, division ENTIERE) [SkillGrowthTbl_InterpStatByLevel
+    // 0x4C4EE0, cases 1..25 : statMin = rec[144+(k-1)], statMax = rec[169+(k-1)]]. statIndex 1
+    // = cout MP (Player_CastSkill / Skill_CastStoredAtTarget 0x53E740 : g_SelfMana -= cost).
+    // ex-VeryOldClient: sGradeInfo[0]/[1] (grade min/max) (CONFIRMED ; sous-champs 22 vs 25 =
+    // build different, valeurs jamais transposees).
+    int32_t  statMin[25];         // +576 (dword[144..168]) bornes basses par palier
+    int32_t  statMax[25];         // +676 (dword[169..193]) bornes hautes par palier (ferme le record 776 o)
+};
+static_assert(sizeof(SkillInfo) == 776, "SkillInfo doit faire 776 o");
 
 #pragma pack(pop)
 
@@ -112,8 +167,15 @@ bool LoadGameDatabases(const std::string& gameDataDir);
 // (le client indexe record[level-1].)
 const LevelInfo* GetLevelInfo(int level);
 
-// Accesseur type ITEM_INFO. `itemId` 1-based ; index = itemId-1 (cf. MobDb_GetEntry 0x4C3C00).
+// Accesseur type ITEM_INFO. `itemId` 1-based ; index = itemId-1 (cf. MobDb_GetEntry 0x4C3C00,
+// `base+436*(id-1)`, garde id!=0). ex-VeryOldClient: ITEM::ReturnDataAddr (CONFIRMED, logique identique).
 // Renvoie nullptr hors bornes OU si le slot est vide (champ itemId == 0).
 const ItemInfo* GetItemInfo(uint32_t itemId);
+
+// Accesseur type SKILL_INFO. `skillId` 1-based (1..300) ; index = skillId-1 (cf.
+// SkillGrowthTbl_GetRecord 0x4C4E90, `base+776*(id-1)`, garde id!=0 & record[0]!=0).
+// ex-VeryOldClient: SKILL::ReturnDataAddr (CONFIRMED, logique identique). Renvoie nullptr
+// hors bornes OU si le slot est vide (champ skillId == 0).
+const SkillInfo* GetSkillInfo(uint32_t skillId);
 
 } // namespace ts2::game

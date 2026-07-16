@@ -1,6 +1,7 @@
 // Asset/Texture.cpp — fidèle à RE/asset_parsers/textures.py (validé 203/205).
 #include "Asset/Texture.h"
 #include "Asset/FileUtil.h"
+#include "Asset/ImgFile.h"   // matérialisation .IMG famille T (LoadFromImgFile) — Asset_DecompressImg 0x53F5E0
 #include "Core/Log.h"
 #include <cstring>
 
@@ -93,11 +94,25 @@ bool Texture::LoadFile(const std::string& path) {
                      "non decode (hors perimetre du client de jeu) : %s", path.c_str());
             return true;
         case TextureFamily::ImgGxd: {
-            family = TextureFamily::ImgGxd;
-            imgRawSize    = Rd32(data.data());
-            imgPackedSize = Rd32(data.data() + 4);
-            TS2_WARN("Texture : enveloppe IMG-GXD (raw=%u packed=%u) -> decoder via ImgFile : %s",
-                     imgRawSize, imgPackedSize, path.c_str());
+            // Enveloppe GXD [rawSize][packedSize][zlib]. Décompression + classification
+            // déléguées à ImgFile (qui encapsule Asset_DecompressImg 0x53F5E0), puis
+            // matérialisation de la famille T. cTexture_LoadFromImgFile 0x457A20.
+            const uint32_t rawSz    = Rd32(data.data());
+            const uint32_t packedSz = Rd32(data.data() + 4);
+            ImgFile img;
+            if (img.Load(path) && img.Kind() == ImgKind::TextureDxt && LoadFromImgFile(img)) {
+                imgRawSize    = rawSz;    // LoadFromImgFile()->Clear() les a effacées : ré-expose
+                imgPackedSize = packedSz; // les tailles d'enveloppe (informatives).
+                return true;
+            }
+            // Famille D (table de données) ou matérialisation impossible : enveloppe détectée,
+            // pixels vides (comportement historique préservé pour les non-textures).
+            Clear();
+            family        = TextureFamily::ImgGxd;
+            imgRawSize    = rawSz;
+            imgPackedSize = packedSz;
+            TS2_WARN("Texture : enveloppe IMG-GXD (raw=%u packed=%u) non materialisee en texture : %s",
+                     rawSz, packedSz, path.c_str());
             return true;
         }
         default:
@@ -183,6 +198,81 @@ bool Texture::LoadFromDdsMemory(const uint8_t* b, size_t n) {
     format = PixelFormat::DxtBlocks;
     pixels.assign(b + 128, b + 128 + total);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// .IMG texture GXD (famille T) — cTexture_LoadFromImgFile 0x457A20 / Tex_LoadCompressedDDS 0x6A2E80
+//
+// Format PROUVÉ (les DEUX loaders sont byte-identiques ; désassemblage + extraction réelle
+// sur 001_00001/002, 002_00001, Z001_MINIMAP01/02) — le payload décompressé est :
+//   +0  u32 width       (LOGIQUE,  ex. 261)   -> copié brut dans le sprite : qmemcpy 0x1C @0x457B67
+//   +4  u32 height      (LOGIQUE,  ex. 90)
+//   +8  u32[5]          (dw2=1 dw3=1 dw4=0x14/0x15 dw5=3 dw6=2 ; flags/type, NON lus par le loader)
+//   +28 u32 D3DFORMAT   (FourCC "DXT1"/"DXT3")               -> v11[7], passé comme Format à D3DX
+//   +32 u32 dataSize    (taille du fichier image embarqué)   -> v11[8], SrcDataSize
+//   +36 u8[dataSize]    = fichier DDS Microsoft STANDARD ("DDS ", header 124 o), déjà pow2
+// Le binaire fait : D3DXCreateTextureFromFileInMemoryEx(dev, payload+36, dataSize,
+//   NextPow2(width), NextPow2(height), 1 mip, DXTn, D3DPOOL_MANAGED, ...) — 0x457BC5 / 0x6A3040.
+//
+// RÉSOLUTION de la question ouverte "2 sous-formes" (TS2_ASSET_ROSETTA.md / gap G5) : il n'y a
+// qu'UN format. Le DDS embarqué est DÉJÀ arrondi à la puissance de 2 (261x90 logique -> DDS
+// 512x128), donc NextPow2(logique) == dimensions du DDS et D3DX ne redimensionne PAS. On
+// matérialise donc le DDS tel quel (width/height = dims physiques pow2) et on conserve les
+// dimensions LOGIQUES à part (imgLogicalWidth/Height), exactement comme le sprite d'origine
+// (qmemcpy de l'en-tête brut AVANT NextPow2 ; getters Sprite2D_GetWidth/GetHeight 0x4D6CD0/0x4D6D20).
+//
+// COUCHE CPU PURE — pas de "upload D3D9" ici : Asset/ ne dépend PAS de d3d9/d3dx9 (sinon tout
+// consommateur headless d'Asset — AssetSelfTest, parseurs — hériterait du SDK Direct3D, et on
+// dupliquerait gfx::GpuTexture). L'upload GPU via le device existant reste donc dans la couche
+// Gfx, déjà fidèle et gardée (`if(!dev) return false`) :
+//   - gfx::GpuTexture::CreateFromTexture(dev, asset::Texture)  -> blocs DXT via CreateTexture+LockRect
+//     (consomme le résultat de CE parse : PixelFormat::DxtBlocks + width/height/fourCC/mipCount),
+//   - gfx::GpuTexture::CreateFromImgFile(dev, asset::ImgFile)  -> réplique D3DX exacte de 0x457A20.
+// ---------------------------------------------------------------------------
+bool Texture::LoadFromImgTexturePayload(const uint8_t* payload, size_t size) {
+    Clear();
+    if (!payload || size < 36) {
+        TS2_ERR("IMG-tex : payload < 36 o (en-tete GXD incomplet)");
+        return false;
+    }
+
+    const uint32_t w0     = Rd32(payload + 0);   // width  logique (en-tête GXD +0)
+    const uint32_t h0     = Rd32(payload + 4);   // height logique (en-tête GXD +4)
+    const uint32_t fccVal = Rd32(payload + 28);  // FourCC/D3DFORMAT (en-tête GXD +28)
+    const uint32_t dataSz = Rd32(payload + 32);  // taille du fichier embarqué (en-tête GXD +32)
+
+    if (dataSz > size - 36) {   // size >= 36 garanti ci-dessus -> pas d'overflow (Win32 size_t 32-bit)
+        TS2_ERR("IMG-tex : bloc image hors payload (dataSize=%u, payload=%zu)", dataSz, size);
+        return false;
+    }
+    const uint8_t* embedded = payload + 36;      // fichier image embarqué (SrcData)
+
+    // Sous-forme PROUVÉE (11839/11839 .IMG famille T) : le fichier embarqué est un DDS standard.
+    if (dataSz >= 4 && std::memcmp(embedded, "DDS ", 4) == 0) {
+        if (!LoadFromDdsMemory(embedded, dataSz)) return false;  // width/height=pow2, fourCC, blocs DXT
+        // Conserve les dimensions LOGIQUES de l'en-tête GXD (LoadFromDdsMemory a mis les pow2).
+        imgLogicalWidth  = w0;
+        imgLogicalHeight = h0;
+        return true;
+    }
+
+    // Sous-forme NON observée dans le corpus. D3DXCreateTextureFromFileInMemoryEx accepterait
+    // aussi BMP/TGA/PNG, mais aucun décodeur CPU de ces conteneurs n'existe dans cette couche.
+    // TODO(0x457A20 @0x457BC5 / D3DXCreateTextureFromFileInMemoryEx @0x6BB660) : si un tel
+    // fichier apparaissait, le matérialiser passerait par le pont GPU gfx::GpuTexture::
+    // CreateFromImgFile (chemin D3DX déjà fidèle), PAS ici — Asset/ reste sans dépendance D3D9.
+    TS2_ERR("IMG-tex : fichier embarque non-DDS (FourCC en-tete 0x%08X) non decode en CPU",
+            static_cast<unsigned>(fccVal));
+    return false;
+}
+
+bool Texture::LoadFromImgFile(const ImgFile& img) {
+    if (img.Kind() != ImgKind::TextureDxt) {
+        TS2_ERR("IMG-tex : ImgFile kind != TextureDxt (payload non-texture)");
+        return false;
+    }
+    const std::vector<uint8_t>& pl = img.Payload();
+    return LoadFromImgTexturePayload(pl.data(), pl.size());
 }
 
 // ---------------------------------------------------------------------------

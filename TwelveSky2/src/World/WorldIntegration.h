@@ -84,9 +84,23 @@ public:
     const std::string& GameDataDir() const { return gameDataDir_; }
 
     // Accès aux chunks chargés (nullptr si absent/non chargé).
+    // Collision (.WM/.WJ/.WM2) — CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (mRANGE*). Ancre
+    // IDA : MapColl_LoadFaces 0x694510. TODO terrain WM (hauteur de sol) : buffer chargé mais JAMAIS
+    // décodé typé (CollisionTri 156o + QuadNode 48o) ni requêté -> sol nul partout. Voir SPEC
+    // TS2_WORLD_ROSETTA.md §3 G01 (décodage) + G02 (MapColl_GetGroundHeight 0x697130) ; consommateurs
+    // G03 (Char_Update 0x581e10 ...). Requêtes raycast/sweep/slide = G04 (MapColl_RaycastNearest 0x6960c0).
     const asset::WorldChunk* Collision(CollisionSlot slot) const;
+    // Terrain .WG — CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWG. Ancre IDA : MapColl_LoadMapFile
+    // 0x697b30. TODO terrain WG (surface non rendue) : parsé (EOF-exact) mais consommé par AUCUN
+    // renderer -> les objets .WO flottent sans sol. Voir SPEC TS2_WORLD_ROSETTA.md §3 G05
+    // (Terrain_Render 0x698670, vertex 40o FVF 530) ; lightmap .SHADOW = G06 ; eau = G07.
     const asset::WorldChunk* Faces()   const { return wg_.get(); }
+    // Objets statiques .WO — CONFIRMED ex-VeryOldClient: LoadWO (mMObject). Ancre IDA :
+    // MapColl_LoadObjectsA 0x6980d0. RÉELLEMENT rendu par Gfx/WorldGeometryRenderer (placement OK).
     const asset::WorldChunk* Objects() const { return wo_.get(); }
+    // FX de zone .WP — CONFIRMED ex-VeryOldClient: LoadWP (mPSystem). Ancre IDA :
+    // MapColl_LoadObjectsB 0x6983b0. TODO hors-FRONT 4 : parsé mais JAMAIS consommé (point d'entrée
+    // de rendu WP non identifié dans l'IDB) -> X01 (FRONT 8), cf. TS2_WORLD_ROSETTA.md §3.Z. Ne pas inventer.
     const asset::WorldChunk* FxNodes() const { return wp_.get(); }
 
     // État d'atmosphère RÉEL de la zone courante (fichier Z%03d.ATM, parsé byte-exact par
@@ -96,6 +110,23 @@ public:
     // l'heure réelle de la zone.
     const asset::AtmosphereFile& Atmosphere() const { return atmosphere_; }
     const SilverLiningConfig& SilverLining() const { return silverLining_; }
+
+    // -----------------------------------------------------------------------
+    // Requêtes de sol / collision terrain (Gaps G02/G03/G04), sur la couche principale (.WM,
+    // CollisionSlot::Main). Fournisseurs prêts à câbler aux hooks consommateurs hors périmètre
+    // (host.GetGroundHeight Game/EntityLifecycleTick.h:199 ; IsPointOnGround Game/AnimationTick.h:95 ;
+    // IsGroundBlocked ICameraCollisionQueries AnimationTick.h:190). Délèguent au moteur
+    // ts2::world::collision:: (World/WorldMap.h), portage byte-fidèle des MapColl_*. Build-safe :
+    // renvoient false / no-op si la couche .WM n'est pas chargée/décodée. Ancres IDA sur chaque ligne.
+    // -----------------------------------------------------------------------
+    bool GetGroundHeight(float x, float z, float probeCeilingY, float& outGroundY) const; // 0x697130
+    bool HasGroundAt(float x, float z) const;                                             // 0x697130 (plafond défaut)
+    bool IsPointOnGround(float x, float y, float z) const;                                // 0x540d40
+    bool PointInMeshXZ(float x, float z) const;                                           // 0x695dc0
+    bool Raycast(const float start[3], const float dir[3], uint32_t& outFaceIndex,
+                 float outHit[3], bool twoSide = false) const;                            // 0x6960c0
+    bool SlideMoveGround(const float from[3], const float to[3], float speed, float dt,
+                         float outPos[3]) const;                                          // 0x697330
 
 private:
     // --- Implémentations des hooks (signatures WorldLoadHooks, `user` = this*). ---
@@ -119,6 +150,12 @@ private:
     static bool LoadWorldSound(void* user, const char* path);
     static bool LoadWorldBgm(void* user, const char* path);
     static bool LoadDataFile(void* user, const char* path);
+    // Hook queryCollisionMesh (WorldLoadHooks) : relie la maille décodée (Gap G01/G02) d'une
+    // couche à WorldMap pour ses requêtes de sol. nullptr si la couche n'est pas chargée.
+    static const asset::CollisionMesh* QueryCollisionMesh(void* user, CollisionSlot slot);
+
+    // Maille de collision décodée de la couche principale (.WM Main), nullptr si absente.
+    const asset::CollisionMesh* MainCollisionMesh() const;
 
     std::string gameDataDir_;
 
@@ -128,6 +165,9 @@ private:
     std::unique_ptr<asset::WorldChunk> wg_;
     std::unique_ptr<asset::WorldChunk> wo_;
     std::unique_ptr<asset::WorldChunk> wp_;
+    // .SHADOW chargée (case 5) mais JAMAIS liée au stage 1 (lightmap sur uv1) : TODO terrain SHADOW,
+    // voir SPEC TS2_WORLD_ROSETTA.md §3 G06 ; ancre IDA : Terrain_Render 0x698670 (stage 1 = UV set 1).
+    // Dépend du rendu terrain G05 (aucun terrain rendu -> ombre jamais appliquée).
     std::unique_ptr<asset::Texture>    shadow_;
     std::array<std::unique_ptr<asset::Texture>, 3> minimaps_;
     std::unique_ptr<asset::WSound>     wsound_;

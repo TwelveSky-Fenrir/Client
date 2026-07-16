@@ -186,6 +186,19 @@
 //  matrice Rz*Ry*Rx*T, tailles VB/IB, tout concorde avec Asset/WorldChunk.h et les bandeaux
 //  IDA existants) ; les manques restants (sway réel, tex2/materials, terrain/eau, FX,
 //  éphéméride/keyframes .ATM réelles) étaient déjà honnêtement documentés avant cet audit.
+//
+//  MISE À JOUR 2026-07-16 (STAGE RENDER — Gap G1 « le sol ») : le point 3 de l'audit ci-dessus
+//  (« TERRAIN / SOL VISIBLE non rendu ») est RÉSOLU pour la surface diffuse. buildTerrain() +
+//  renderTerrain() (cf. .cpp) consomment enfin WorldAssets::Faces() (asset::MapFaceChunk décodé
+//  typé : CollisionFace 156o + TerrainVertex 40o) : les faces .WG sont groupées par materialIndex
+//  et dessinées via meshRenderer_ (world=identité, texture diffuse par matériau), fidèle à
+//  Terrain_Render 0x698670 (SetFVF 530 = XYZ|NORMAL|TEX2 @0x698e6d, batch/matériau, appelé AVANT
+//  les .WO par Scene_InGameRender @0x52d9be). Les props .WO ne flottent plus sans sol. RESTES
+//  (TODO précis, ancres dans renderTerrain()) : cull quadtree/frustum par frame (perf, dessine
+//  tout pour l'instant — correct), G6 eau/bump-env (catégorie de matériau non décodée + pipeline
+//  skinné sans BUMPENVMAP), G8 lightmap .SHADOW au stage 1 (uv1 ; le vertex réutilisé n'a qu'un
+//  TEXCOORD0 — texture .SHADOW déjà chargée dans WorldAssets::shadow_, prête à câbler). L'eau et
+//  l'ombre nécessitent un chemin fixed-function multitexture dédié (jalon ultérieur).
 #pragma once
 #include "Gfx/Renderer.h"
 #include "Gfx/MeshRenderer.h"
@@ -253,6 +266,12 @@ public:
     // N positions distinctes (une par instance) et pas une seule matrice globale.
     size_t PlannedDrawCallCount() const;
 
+    // --- Terrain .WG (Gap G1 « le sol », ancre IDA : Terrain_Render 0x698670) : logs de sanité. ---
+    // Nombre de lots GPU terrain (chunks <=65535 sommets, groupés par matériau) réellement
+    // uploadés, et total de faces terrain (3 sommets/face, 120o/face copiés @0x698e21).
+    size_t TerrainBatchCount() const { return terrainBatches_.size(); }
+    size_t TerrainFaceCount()  const { return terrainFaceCount_; }
+
 private:
     struct StaticObject {
         SkinnedMesh mesh; // un seul LOD (le .WO n'a pas de niveaux de LOD multiples)
@@ -264,8 +283,26 @@ private:
         size_t count = 0;
     };
 
+    // Lot de dessin terrain (Gap G1) : un morceau (<=65535 sommets, contrainte INDEX16) des
+    // faces d'UN matériau, prêt pour un DrawIndexedPrimitive via meshRenderer_. La texture est
+    // une réf NON-possédante dans terrainTextures_ (libérée une seule fois par releaseTerrain()).
+    // Ancre IDA : Terrain_Render 0x698670 (batch par matériau, DrawPrimitiveUP stride 40 @0x698ff3).
+    struct TerrainBatch {
+        SkinnedLod         lod;              // VB(76o)/IB(INDEX16) — possédés par ce lot
+        IDirect3DTexture9* diffuse = nullptr; // réf dans terrainTextures_ (NON possédée ici)
+    };
+
     void releaseObjects();
     bool uploadPart(const asset::WorldMeshPart& part, StaticObject& out);
+    // Gap G1 : construit les lots GPU du terrain .WG (WorldAssets::Faces()) — faces groupées par
+    // materialIndex, sommets TerrainVertex 40o -> GpuSkinVertex 76o (repère MONDE, world=identité).
+    // Build-safe : no-op si device/.WG absent. Ancre IDA : Terrain_Render 0x698670.
+    bool buildTerrain(const world::WorldAssets& assets);
+    void releaseTerrain();
+    // Gap G1 : dessine tous les lots terrain via meshRenderer_ (world=identité, palette identité),
+    // CULLMODE=NONE encadré (sauvegarde/restaure) pour garantir la visibilité du sol. Le cull par
+    // quadtree/frustum de l'original reste un TODO (cf. .cpp). Appelée par Render() AVANT les .WO.
+    void renderTerrain();
     static IDirect3DTexture9* createTextureFromBlock(IDirect3DDevice9* dev,
                                                       const asset::TextureBlock& tex);
     // Construit World = Rz(rot.z)*Ry(rot.y)*Rx(rot.x)*T(pos), cf. bandeau .h point 4.
@@ -274,11 +311,25 @@ private:
     IDirect3DDevice9*           dev_ = nullptr;
     MeshRenderer                 meshRenderer_;
     SkyRenderer                  skyRenderer_;  // ciel dérivé du .ATM réel (cf. bandeau MISE À JOUR)
+    // TODO terrain WO (tick d'anim non câblé) : ces 3 états (objects_/modelRanges_/instances_) sont
+    // LA SOURCE (auxRecords/models) qu'attend l'avance de phase d'anim des sous-objets .WO, aujourd'hui
+    // non reliée. Voir SPEC TS2_WORLD_ROSETTA.md §3 G08 ; ancre IDA : MapColl_UpdateObjectAnim 0x694a00
+    // (site d'appel unique Scene_InGameUpdate 0x52c600 @0x52c94b, kAnimFps=15.0). À EXPOSER (hors passe).
     std::vector<StaticObject>    objects_;      // parts GPU uploadées, groupées par gabarit
     std::vector<ModelRange>      modelRanges_;  // modelRanges_[modelIndex] -> plage dans objects_
-    std::vector<asset::AuxRecord> instances_;   // copie de ObjectChunk::auxRecords (placements)
+    std::vector<asset::AuxRecord> instances_;   // copie de ObjectChunk::auxRecords ; CONFIRMED ex-VeryOldClient: MOBJECTINFO
     size_t                       skippedMultiAnchor_ = 0;     // parts ignorées (échec réel, cf. pt.5)
     size_t                       multiAnchorStaticCount_ = 0; // parts A>1 rendues en pose statique
+
+    // --- Terrain .WG (Gap G1) : le SOL. Source = WorldAssets::Faces() (asset::MapFaceChunk),
+    // décodé typé (CollisionFace 156o + TerrainVertex 40o) par le stage DECODE. terrainTextures_
+    // = une texture diffuse par matériau (nullptr si absente) ; terrainBatches_ = lots GPU
+    // (chunks <=65535 sommets) groupés par matériau. Ancre IDA : Terrain_Render 0x698670
+    // (a1+88=faces, face.materialIndex@0 -> texture a1+16[+48], vertex 40o FVF 530). ---
+    std::vector<IDirect3DTexture9*> terrainTextures_; // POSSÉDÉES (une par matériau, ordre .WG)
+    std::vector<TerrainBatch>       terrainBatches_;   // lots prêts à dessiner (réfs textures ci-dessus)
+    size_t                          terrainFaceCount_ = 0; // total faces terrain uploadées (sanité)
+
     bool                         ready_ = false;
 };
 

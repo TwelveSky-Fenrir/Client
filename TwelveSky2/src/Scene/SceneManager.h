@@ -25,6 +25,9 @@ namespace gfx { class Renderer; class Camera; class WorldGeometryRenderer; }
 namespace net { class NetSystem; }
 namespace ui  { class LoginScene; class GameHud; class GameWindows; }
 namespace world { class WorldAssets; class WorldMap; }
+// Slot BGM de scène (Audio/AudioSystem.h) : forward-déclaré + tenu par pointeur pour
+// ne pas tirer dsound.h dans ce header léger (comme login_/hud_/world_).
+namespace audio { class BgmChannel; }
 
 enum class Scene {
     None         = 0,
@@ -86,6 +89,15 @@ private:
     // l'entrée en jeu (init HUD la 1re fois).
     void  ConsumePending();
 
+    // --- Slot BGM de scène (cSceneMgr +612 : cSceneMgr_ReinitBgm 0x517A80 /
+    //     SceneMgr_ReleaseSoundBuffers 0x517B60). ---
+    // Charge+joue le .BGM de la zone (World_LoadZoneResource 0x4DCB60 case 12,
+    //   "G03_GDATA\D10_WORLDBGM\Z%03d.BGM") dans le slot, en boucle si l'option
+    //   g_BgmEnabled (0x84DEF0) est active. Guard si fileId inconnu / fichier absent.
+    void  LoadZoneBgm(int zoneId);
+    // Snd_ReleaseBuffers 0x6A80D0 (SceneMgr_ReleaseSoundBuffers 0x517B60) sur le slot.
+    void  ReleaseBgm();
+
     Scene scene_      = Scene::None; // +0
     int   subState_   = 0;           // +4
     int   frameCount_ = 0;           // +8
@@ -104,6 +116,9 @@ private:
     std::unique_ptr<world::WorldAssets>       worldAssets_;
     std::unique_ptr<world::WorldMap>          worldMap_;
     std::unique_ptr<gfx::WorldGeometryRenderer> worldGeom_;
+    // Slot BGM de scène = sous-objet SoundObj à cSceneMgr +612 dans l'original
+    //   (cSceneMgr_ReinitBgm 0x517A80). Tenu par pointeur ici (header léger).
+    std::unique_ptr<audio::BgmChannel>        bgm_;
     gfx::Renderer* renderer_ = nullptr;
     net::NetSystem* net_     = nullptr;
     void* notifyHwnd_ = nullptr;

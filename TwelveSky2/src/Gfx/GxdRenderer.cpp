@@ -10,6 +10,7 @@ namespace ts2::gfx {
 
 GxdRenderer& GxdRenderer::Instance() {
     static GxdRenderer s_instance; // équivalent du global g_GxdRenderer @ 0x18C4EF8
+                                   // ex-VeryOldClient: TW2AddIn::GXD (v2 / Object B)
     return s_instance;
 }
 
@@ -23,7 +24,7 @@ void GxdRenderer::Shutdown() {
     m_farZ = 0.0f;
     m_currentShaderId = 0;
     m_useLinearFilter = false;
-    m_anisoCapable = false;
+    m_depthBiasCapable = false;
     m_twoSidedStencil = false;
 }
 
@@ -72,6 +73,8 @@ void GxdRenderer::BuildMatrices() {
 // Matériau + lumière directionnelle par défaut (partie de GXD_DeviceReinit).
 // ---------------------------------------------------------------------------
 void GxdRenderer::BuildDefaultMaterialAndLight() {
+    // ex-VeryOldClient: mMaterial (+1052) + mLight (+1120). Garde-fou v1/v2 : la lumière est
+    // Amb 0.3 / Diff 0.7 (v2 / Object B, PROUVÉ BIT-EXACT à 0x402711), PAS 0.4/0.5 (v1 / Object A).
     // Matériau : diffuse/ambient blancs opaques, specular/emissive noirs, power 0. (+1052)
     ZeroMemory(&m_material, sizeof(m_material));
     m_material.Diffuse  = D3DXCOLOR(1.0f, 1.0f, 1.0f, 1.0f);
@@ -97,6 +100,8 @@ void GxdRenderer::BuildDefaultMaterialAndLight() {
 
 // ---------------------------------------------------------------------------
 // GXD_DeviceReinit 0x4023F0
+// ex-VeryOldClient: TW2AddIn::GXD::InitForAddIn(sx,sy,near,far,d3d,dev,res) (GXDCore.cpp:523)
+//   — reuses_device=true : reçoit un IDirect3D9*+IDirect3DDevice9* DÉJÀ créés par Object A.
 // ---------------------------------------------------------------------------
 bool GxdRenderer::DeviceReinit(IDirect3D9* d3d, IDirect3DDevice9* device,
                                int width, int height, float nearZ, float farZ,
@@ -119,7 +124,9 @@ bool GxdRenderer::DeviceReinit(IDirect3D9* d3d, IDirect3DDevice9* device,
     if (m_caps.VertexShaderVersion < 0xFFFE0200u) { if (outError) *outError = 3; return false; }
     if (m_caps.PixelShaderVersion  < 0xFFFF0200u) { if (outError) *outError = 4; return false; }
 
-    m_anisoCapable    = (m_caps.RasterCaps  & D3DPRASTERCAPS_ANISOTROPY) != 0; // (+28)
+    // GXD_DeviceReinit 0x4023F0 @0x402928 : this+28 = (RasterCaps & 0x4000000) != 0.
+    // ex-VeryOldClient: mCheckDepthBias. 0x4000000 = D3DPRASTERCAPS_DEPTHBIAS (PAS ANISOTROPY 0x20000).
+    m_depthBiasCapable = (m_caps.RasterCaps & D3DPRASTERCAPS_DEPTHBIAS) != 0; // (+28)
     m_twoSidedStencil = (m_caps.StencilCaps & D3DSTENCILCAPS_TWOSIDED)   != 0; // (+32)
     m_maxAnisotropy   = m_caps.MaxAnisotropy;
 
@@ -176,6 +183,8 @@ bool GxdRenderer::SetupFrame() {
 
 // ---------------------------------------------------------------------------
 // GXD_ConfigSamplerStates 0x403B50
+// ex-VeryOldClient: TW2AddIn::GXD::SetDefaultTextureSamplerState
+//   (ANISOTROPIC vs LINEAR selon mSamplerOptionValue = champ +8 / m_useLinearFilter).
 // ---------------------------------------------------------------------------
 void GxdRenderer::ConfigSamplerStates() {
     if (!m_device) return;

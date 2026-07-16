@@ -201,6 +201,7 @@ bool GpuTexture::UploadRgba8(IDirect3DDevice9* dev, const asset::Texture& s) {
 
 // ---------------------------------------------------------------------------------------
 // Pont .IMG (cTexture_LoadFromImgFile 0x457A20) — réplique exacte
+// ex-VeryOldClient: TEXTURE_FOR_GXD::Load2 (conteneur zlib -> DXT1/3/5 -> CreateTextureFromFileInMemoryEx)
 // ---------------------------------------------------------------------------------------
 bool GpuTexture::CreateFromImgFile(IDirect3DDevice9* dev, const asset::ImgFile& img) {
     if (!dev) { TS2_ERR("GpuTexture : device nul"); return false; }
@@ -291,7 +292,8 @@ bool GpuTexture::CreateFromImgFile(const Renderer& r, const asset::ImgFile& img)
 }
 
 // ---------------------------------------------------------------------------------------
-// Chargeur générique D3DX depuis un fichier image complet en mémoire (Tex_LoadFromFile)
+// Chargeur générique D3DX depuis un fichier image complet en mémoire (Tex_LoadFromFile 0x6A9910)
+// ex-VeryOldClient: TEXTURE_FOR_GXD::Load (D3DXGetImageInfo + CreateTextureFromFileInMemoryEx, DXT1/3/5)
 // ---------------------------------------------------------------------------------------
 bool GpuTexture::CreateFromImageFileInMemory(IDirect3DDevice9* dev, const void* data, uint32_t size) {
     if (!dev || !data || size == 0) { TS2_ERR("GpuTexture : arguments invalides (image memoire)"); return false; }

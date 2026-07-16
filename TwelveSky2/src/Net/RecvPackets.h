@@ -374,14 +374,15 @@ struct ItemDropResult {
     static ItemDropResult Parse(const uint8_t* payload, size_t len);
 };
 
-// Pkt_SystemMessageBox (opcode 0x0e / 14 déc) — boîte de dialogue système avec image serveur.
+// Pkt_SystemMessageBox 0x464650 (opcode 0x0e / 14 déc) — chargement d'IMAGE serveur
+// (Billboard_ValidateImageViaTempFile -> TEMP.IMG -> Tex_LoadCompressedDDS ; ex-nom trompeur "SystemMessageBox").
 // Payload : [param:u32][image:char[1000]] = 1004 octets.
-struct SystemMessageBox {
+struct ServerBillboardImage {
     uint32_t param;        // payload+0 : id/type transmis à Billboard_ValidateImageViaTempFile
     char     image[1000];  // payload+4 : chemin/nom du fichier image (chaîne C)
     // TODO(state): appeler Billboard_ValidateImageViaTempFile(param, image) —
     //   valide l'image via un fichier temporaire puis l'affiche dans la boîte de dialogue.
-    static SystemMessageBox Parse(const uint8_t* payload, size_t len);
+    static ServerBillboardImage Parse(const uint8_t* payload, size_t len);
 };
 
 // Pkt_ChatNotice (opcode 0x14 / 20 déc) — ligne de notice système (chat).
@@ -1897,9 +1898,9 @@ inline ItemDropResult ItemDropResult::Parse(const uint8_t* payload, size_t len) 
     return p;
 }
 
-inline SystemMessageBox SystemMessageBox::Parse(const uint8_t* payload, size_t len) {
+inline ServerBillboardImage ServerBillboardImage::Parse(const uint8_t* payload, size_t len) {
     ts2::asset::ByteReader r(payload, len);
-    SystemMessageBox p{};
+    ServerBillboardImage p{};
     p.param = r.U32();
     r.Read(p.image, sizeof(p.image));
     return p;

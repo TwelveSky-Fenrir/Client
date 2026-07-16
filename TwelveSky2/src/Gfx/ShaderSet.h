@@ -3,6 +3,11 @@
 // Réimplémentation fidèle des 12 loaders Shader_LoadVSxx/PSxx (0x409730..0x40ACB0),
 // appelés en séquence par GXD_DeviceCreate 0x401610 / GXD_DeviceReinit 0x4023F0.
 // Réf. Docs/TS2_GXD_ENGINE.md §2.2.
+// ex-VeryOldClient: TW2AddIn::GXD::InitShader -> MakeShaderProgram01..16 (v2). CONFIRMED §1.4.
+// NB CONFLICT (D-4, hors passe apply) : côté cible les slots shader sont des GLOBALS DE FICHIER
+//   (bloc 0x1945918+), PAS des membres de g_GxdRenderer comme les mAmbientN_*/mNormalN_* de
+//   VeryOldClient — ne JAMAIS transposer ces champs VeryOld en offsets de struct. ShaderSet les
+//   modélise en structs indépendantes = fidèle à la NATURE (non-membre), pas au layout figé.
 //
 // Schéma d'origine (identique pour les 12) :
 //   Npk_OpenFile("./GXDEFFECT/GXDEffect.npk", clé {1,4,4,1})
@@ -34,19 +39,21 @@ namespace ts2::gfx {
 
 // Identifiants des 12 shaders, dans l'ordre de chargement de GXD_DeviceCreate.
 // Les numéros 10, 11, 13 sont absents de la séquence (non chargés par le client).
+// Mapping VeryOldClient (v2 TW2AddIn) -> slots IDA : CONFIRMED Docs/TS2_GXD_ROSETTA.md §1.4.
+// Les 4 slots no-op (10/11/13/16) = MakeShaderProgram10/11/13/16 (return TRUE, npk=null).
 enum class GxdShaderId : int {
-    VS01_WorldVP = 0,   // Shader01.fx vs — 0x409730 — mWorldViewProjMatrix, mLightAmbient
-    PS02_Tex,           // Shader02.fx ps — 0x4098F0 — mTexture0
-    VS03_SkinnedLit,    // Shader03.fx vs — 0x409AB0 — mKeyMatrix + WVP + dir/amb/diff
-    PS04_Tex,           // Shader04.fx ps — 0x409CC0 — mTexture0
-    VS05_Skinned,       // Shader05.fx vs — 0x409E80 — mKeyMatrix + WVP + mLightDirection
-    PS06_MultiTex,      // Shader06.fx ps — 0x40A060 — tex0/tex1 + amb/diff
-    VS07_SkinnedEye,    // Shader07.fx vs — 0x40A290 — mKeyMatrix + WVP + dir + mCameraEye
-    PS08_MultiTex3,     // Shader08.fx ps — 0x40A490 — tex0/tex1/tex2 + amb/diff
-    VS09_Skinned,       // Shader09.fx vs — 0x40A700 — mKeyMatrix + WVP
-    PS12_PostBlur,      // Shader12.fx ps — 0x40A8E0 — mTexture0 + mTexture0PostSize
-    PS14_PostBlur,      // Shader14.fx ps — 0x40AAD0 — mTexture0 + mTexture0PostSize
-    VS15_WorldVP,       // Shader15.fx vs — 0x40ACB0 — mWorldViewProjMatrix
+    VS01_WorldVP = 0,   // Shader01.fx vs — 0x409730 — mWorldViewProjMatrix, mLightAmbient  // ex-VeryOldClient: mAmbient1_VS (MakeShaderProgram01)
+    PS02_Tex,           // Shader02.fx ps — 0x4098F0 — mTexture0                              // ex-VeryOldClient: mAmbient1_PS (MakeShaderProgram02)
+    VS03_SkinnedLit,    // Shader03.fx vs — 0x409AB0 — mKeyMatrix + WVP + dir/amb/diff        // ex-VeryOldClient: mAmbient2_VS (MakeShaderProgram03) — Pass 2 (SEUL câblé au rendu actif)
+    PS04_Tex,           // Shader04.fx ps — 0x409CC0 — mTexture0                              // ex-VeryOldClient: mAmbient2_PS (MakeShaderProgram04)
+    VS05_Skinned,       // Shader05.fx vs — 0x409E80 — mKeyMatrix + WVP + mLightDirection     // ex-VeryOldClient: mNormal1_VS (MakeShaderProgram05) — Pass 3 (défaut in-game le + fréquent)
+    PS06_MultiTex,      // Shader06.fx ps — 0x40A060 — tex0/tex1 + amb/diff                   // ex-VeryOldClient: mNormal1_PS (MakeShaderProgram06)
+    VS07_SkinnedEye,    // Shader07.fx vs — 0x40A290 — mKeyMatrix + WVP + dir + mCameraEye     // ex-VeryOldClient: mNormal2_VS (MakeShaderProgram07) — Pass 4 (spéculaire/Fresnel)
+    PS08_MultiTex3,     // Shader08.fx ps — 0x40A490 — tex0/tex1/tex2 + amb/diff              // ex-VeryOldClient: mNormal2_PS (MakeShaderProgram08)
+    VS09_Skinned,       // Shader09.fx vs — 0x40A700 — mKeyMatrix + WVP                        // ex-VeryOldClient: mAmbient3_VS (MakeShaderProgram09) — ombre plate (PS NULL)
+    PS12_PostBlur,      // Shader12.fx ps — 0x40A8E0 — mTexture0 + mTexture0PostSize           // ex-VeryOldClient: mFilter1_PS (MakeShaderProgram12) — bloom H
+    PS14_PostBlur,      // Shader14.fx ps — 0x40AAD0 — mTexture0 + mTexture0PostSize           // ex-VeryOldClient: mFilter2_PS (MakeShaderProgram14) — bloom V
+    VS15_WorldVP,       // Shader15.fx vs — 0x40ACB0 — mWorldViewProjMatrix                    // ex-VeryOldClient: mShadow1_VS (MakeShaderProgram15) — volume d'ombre stencil
     kCount
 };
 
@@ -107,6 +114,7 @@ public:
 
     // Déclaration de vertex skinné 76 o (POSITION/BLENDWEIGHT/BLENDINDICES/
     // TANGENT/BINORMAL/NORMAL/TEXCOORD). Créée depuis unk_814A58.
+    // ex-VeryOldClient: mVertexElementForSKIN2 -> mDECLForSKIN2 (stride 76), CONFIRMED §1.5.
     IDirect3DVertexDeclaration9* SkinnedVertexDecl() const { return vertexDecl_; }
 
     // Lie le shader courant (SetVertexShader / SetPixelShader).

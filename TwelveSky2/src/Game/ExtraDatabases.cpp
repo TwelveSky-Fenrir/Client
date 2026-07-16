@@ -39,9 +39,12 @@ constexpr uint32_t kHeader = 4;
 // en verite le manager "mNPC" (rec0 "Blacksmith Wu", [Error::mNPC.Init()]).
 // NpcTbl_LoadImg 0x4C8090 (pas de magic, count 1000, stride 8444) -> en verite le manager
 // "mQUEST" (rec0 "[Intro] Banker Bai & Beggar Xiao", [Error::mQUEST.Init()]).
+// Cross-check VeryOldClient (noms de classe seulement, Docs/TS2_TABLES_ROSETTA.md §6/§7) :
+// mNPC = classe NPC (CNPC.cpp), mQUEST = classe QUEST (CQUEST.cpp). Le magic NPC 0x1022 est le
+// 6e magic de garde famille D (split : 5 dans GameDatabase.cpp, ce 6e ici) — cf. GAP-1 §11.
 const ExtraTableSpec kExtraTables[] = {
-    { "005_00005.IMG", 0x1022,  500, 11736, "NPC_DEF (mNPC)",     &ExtraDatabases::npc   },
-    { "005_00006.IMG", 0x0000, 1000,  8444, "QUEST_DEF (mQUEST)", &ExtraDatabases::quest },
+    { "005_00005.IMG", 0x1022,  500, 11736, "NPC_DEF (mNPC)",     &ExtraDatabases::npc   }, // ex-VeryOldClient: NPC/CNPC.cpp (CONFIRMED)
+    { "005_00006.IMG", 0x0000, 1000,  8444, "QUEST_DEF (mQUEST)", &ExtraDatabases::quest }, // ex-VeryOldClient: QUEST/CQUEST.cpp (CONFIRMED) ; magic=0 (count brut, accord VeryOld xorKey 0x0)
 };
 
 // Sous-dossier commun (identique a GameDatabase.cpp — chemin en dur dans le binaire).
@@ -69,6 +72,9 @@ bool LoadOneExtraTable(const std::string& gameDataDir, const ExtraTableSpec& s, 
     }
 
     // count = premier dword (^ magic si applicable ; magic=0 pour 005_00006 = pas de XOR).
+    // GAP-1 (XOR-magic garde du compteur) : garde au bon endroit (chargeur de table, PAS
+    // Asset/ImgFile). magic 0x1022 = NPC (VeryOld xorKey DIFFERENT, non transpose) ; magic 0 = QUEST
+    // (count brut). NE PAS deplacer/reimplementer cette passe. Cf. Docs/TS2_TABLES_ROSETTA.md §11.
     uint32_t first = 0;
     std::memcpy(&first, payload.data(), 4);
     const uint32_t count = first ^ s.magic;

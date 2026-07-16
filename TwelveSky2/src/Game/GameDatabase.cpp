@@ -30,11 +30,20 @@ struct TableSpec {
 };
 
 // Ordre et constantes preleves dans le desassemblage (Docs/TS2_IMG_FORMAT.md 4.1).
+// magic/count/header/stride = VERITE IDA (jamais transposes de VeryOld). Cross-check classes
+// VeryOldClient (noms de classe seulement, Docs/TS2_TABLES_ROSETTA.md §1) ; ATTENTION: MISNOMERS IDB :
+// MobDb_LoadImg=ITEM, ItemDefTbl_LoadImg=MONSTER, AnchorTbl_LoadImg=SOCKET (decalage d'un cran).
 const TableSpec kTables[] = {
+    // LevelTable_LoadImg 0x4C2680 -> mLEVEL 0x8E7208. ex-VeryOldClient: LEVEL/CLEVEL.cpp (CONFIRMED)
     { "005_00001.IMG", 0x0E31,   145,  34,  44, "LEVEL_INFO",   &GameDatabases::level   },
+    // MobDb_LoadImg 0x4C3930 (misnomer) -> mITEM 0x8E71EC. ex-VeryOldClient: ITEM/CITEM.cpp (CONFIRMED)
     { "005_00002.IMG", 0x1CB3, 99999,  67, 436, "ITEM_INFO",    &GameDatabases::item    },
+    // SkillGrowthTbl_LoadImg 0x4C4BC0. ex-VeryOldClient: SKILL/CSKILL.cpp (CONFIRMED)
     { "005_00003.IMG", 0x0C7E,   300,  84, 776, "SKILL_INFO",   &GameDatabases::skill   },
+    // ItemDefTbl_LoadImg 0x4C62A0 (misnomer) -> mMONSTER 0x8E71FC. ex-VeryOldClient: MONSTER (CONFIRMED)
     { "005_00004.IMG", 0x1583, 10000,  88, 944, "MONSTER_INFO", &GameDatabases::monster },
+    // AnchorTbl_LoadImg 0x4C7390 (misnomer) -> mSOCKET 0x8E71D0. ex-VeryOldClient: GSOCKET/CSOCKET.cpp
+    // (CONFIRMED table ; ATTENTION: CONFLICT J-4 sur le count : IDA=3031 vs VeryOld 2891 valides/3000 fixes — IDA gagne).
     { "005_00010.IMG", 0x0FDB,  3031, 103,  20, "SOCKET_INFO",  &GameDatabases::socketT },
 };
 
@@ -63,6 +72,11 @@ bool LoadOneTable(const std::string& gameDataDir, const TableSpec& s, DataTable&
     }
 
     // count = premier dword XOR magic (cf. Crt_Memcpy(&v, hMem, 4); v ^ magic).
+    // GAP-1 (XOR-magic garde du compteur, famille D) : cette garde vit DEJA au bon endroit —
+    // dans le chargeur de table, JAMAIS dans Asset/ImgFile (qui s'arrete a l'enveloppe
+    // [rawSize][packedSize][zlib]). 5 magics ici (0xE31/0x1CB3/0xC7E/0x1583/0xFDB), le 6e (NPC
+    // 0x1022) dans ExtraDatabases.cpp. ATTENTION: magics VeryOld DIFFERENTS (build alt.) — NE PAS
+    // transposer, NE PAS deplacer/reimplementer cette passe. Cf. Docs/TS2_TABLES_ROSETTA.md §11 GAP-1.
     uint32_t first = 0;
     std::memcpy(&first, payload.data(), 4);
     const uint32_t count = first ^ s.magic;
@@ -120,6 +134,15 @@ const ItemInfo* GetItemInfo(uint32_t itemId) {
     const ItemInfo* it = reinterpret_cast<const ItemInfo*>(r);
     // Slot vide (itemId == 0) => introuvable, comme MobDb_GetEntry 0x4C3C00.
     return (it && it->itemId != 0) ? it : nullptr;
+}
+
+const SkillInfo* GetSkillInfo(uint32_t skillId) {
+    if (skillId < 1) return nullptr;
+    const uint8_t* r = g_World.db.skill.record(skillId - 1);
+    const SkillInfo* sk = reinterpret_cast<const SkillInfo*>(r);
+    // Slot vide (skillId == 0) => introuvable, comme SkillGrowthTbl_GetRecord 0x4C4E90
+    // (`if (*(base+776*(id-1))) return ... ; return 0;` — teste le 1er dword du record).
+    return (sk && sk->skillId != 0) ? sk : nullptr;
 }
 
 } // namespace ts2::game

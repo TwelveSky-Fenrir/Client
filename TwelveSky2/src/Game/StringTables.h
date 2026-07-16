@@ -277,12 +277,14 @@ private:
 // TOUTES les tables et renvoie false si au moins une a échoué, en laissant
 // les autres exploitables (même choix que Game/GameDatabase.cpp::LoadGameDatabases).
 // ---------------------------------------------------------------------------
+// Cross-check VeryOldClient (noms de classe seulement) : les 5 singletons IDA (chaine d'erreur
+// [Error::mXXX.Init()]) concordent EXACTEMENT avec les classes VeryOld (CONFIRMED, identite manager).
 struct StringTables {
-    BannedWordDict bannedWords; // 001.DAT -> mBADWORD
-    TipsTable      notices;     // 002.DAT -> mGAMENOTICE
-    StrTable003    zoneNames;   // 003.DAT -> mZONENAME
-    StrTable005    messages;    // 005.DAT -> mMESSAGE  <- game::Str(id) doit lire ICI
-    ColorPalette   colors;      // codee en dur -> mFONTCOLOR
+    BannedWordDict bannedWords; // 001.DAT -> mBADWORD    ; ex-VeryOldClient: BADWORD (GameData/CBADWORD.cpp) (CONFIRMED)
+    TipsTable      notices;     // 002.DAT -> mGAMENOTICE ; ex-VeryOldClient: GAMENOTICE (GameData/CGAMENOTICE.cpp) (CONFIRMED)
+    StrTable003    zoneNames;   // 003.DAT -> mZONENAME   ; ex-VeryOldClient: ZONENAME (GameData/CZONENAME.cpp) (CONFIRMED)
+    StrTable005    messages;    // 005.DAT -> mMESSAGE  <- game::Str(id) doit lire ICI ; ex-VeryOldClient: MESSAGE (GameData/CGAMEMESSAGE.cpp) (CONFIRMED)
+    ColorPalette   colors;      // codee en dur -> mFONTCOLOR ; ex-VeryOldClient: FONTCOLOR (GameConfig/CFONTCOLOR.cpp) (CONFIRMED)
 };
 
 bool LoadStringTables(StringTables& out, const std::string& gameDataDir,

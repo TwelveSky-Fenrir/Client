@@ -128,7 +128,7 @@ const char* IncomingName(std::uint8_t opcode) {
     switch (static_cast<Incoming>(opcode)) {
     case Incoming::EnterWorld:                 return "Pkt_EnterWorld";
     case Incoming::ZoneChangeInfo:             return "Pkt_ZoneChangeInfo";
-    case Incoming::SystemMessageBox:           return "Pkt_SystemMessageBox";
+    case Incoming::ServerBillboardImage:       return "Pkt_SystemMessageBox";
     case Incoming::SpawnCharacter:             return "Pkt_SpawnCharacter";
     case Incoming::CharStateUpdate:            return "Pkt_CharStateUpdate";
     case Incoming::CharStatDelta:              return "Pkt_CharStatDelta";
@@ -153,7 +153,7 @@ const char* IncomingName(std::uint8_t opcode) {
     case Incoming::WarehouseUpdate:            return "Pkt_WarehouseUpdate";
     case Incoming::VendorItemEntry:            return "Pkt_VendorItemEntry";
     case Incoming::TradeResult:                return "Pkt_TradeResult";
-    case Incoming::SmithUpgradeResult:         return "Pkt_SmithUpgradeResult";
+    case Incoming::QuestInteractResult:        return "Pkt_SmithUpgradeResult";
     case Incoming::ToggleObserver:             return "Pkt_ToggleObserver";
     case Incoming::WhisperReceive:             return "Pkt_WhisperReceive";
     case Incoming::PartyChatOrInvite:          return "Pkt_PartyChatOrInvite";
@@ -197,8 +197,8 @@ const char* IncomingName(std::uint8_t opcode) {
     case Incoming::OnConfirmPromptOpen_Dlg14:  return "Net_OnConfirmPromptOpen_Dlg14";
     case Incoming::OnConfirmPromptClose_Dlg14: return "Net_OnConfirmPromptClose_Dlg14";
     case Incoming::OnResultDialog399:          return "Net_OnResultDialog399";
-    case Incoming::OnTeamFormationDispatch:    return "Net_OnTeamFormationDispatch";
-    case Incoming::OnGuildNoticeChat:          return "Net_OnGuildNoticeChat";
+    case Incoming::OnGuildWorkDispatch:        return "Net_OnTeamFormationDispatch";
+    case Incoming::OnFactionNoticeChat:        return "Net_OnGuildNoticeChat";
     case Incoming::OnFactionChatMessage:       return "Net_OnFactionChatMessage";
     case Incoming::OnTeamSlotAssign:           return "Net_OnTeamSlotAssign";
     case Incoming::OnSelfFactionChat:          return "Net_OnSelfFactionChat";
@@ -213,7 +213,7 @@ const char* IncomingName(std::uint8_t opcode) {
     case Incoming::OnZoneBuffStatus:           return "Net_OnZoneBuffStatus";
     case Incoming::OnServerNameNotice:         return "Net_OnServerNameNotice";
     case Incoming::Sub_4A55E0:                 return "sub_4A55E0";
-    case Incoming::OnScriptTrigger:            return "Net_OnScriptTrigger";
+    case Incoming::OnGameGuardChallenge:       return "Net_OnScriptTrigger";
     case Incoming::OnBossHpDecrement:          return "Net_OnBossHpDecrement";
     case Incoming::OnBossSpawnNotice:          return "Net_OnBossSpawnNotice";
     case Incoming::OnPetSlotDispatch:          return "Net_OnPetSlotDispatch";

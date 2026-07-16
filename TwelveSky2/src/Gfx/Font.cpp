@@ -55,6 +55,8 @@ bool Font::RemoveTtfResource(bool trVariant) {
 }
 
 // ---------------------------------------------------------------- MakeDefaultDesc
+// ex-VeryOldClient: GXD::mFontInfo (type D3DXFONT_DESC, 56 o) — CONFIRMED §1.5. VeryOld donne le
+//   TYPE mais aucune valeur ; les valeurs (Height 12, Width 6, CLEARTYPE...) sont 100 % IDA (App_Init 0x461C96).
 D3DXFONT_DESCA Font::MakeDefaultDesc(bool trVariant) {
     D3DXFONT_DESCA d = {}; // Crt_Memset(&v4, 0, 56) — sizeof(D3DXFONT_DESCA) == 56
     d.Height          = 12;                        // var_428 = 0x0C
@@ -83,11 +85,11 @@ bool Font::InitWithDesc(IDirect3DDevice9* device, const D3DXFONT_DESCA& desc,
     clipW_ = clipW;
     clipH_ = clipH;
 
-    // j_D3DXCreateSprite 0x6BB654 : renderer @+152 (dword).
+    // j_D3DXCreateSprite 0x6BB654 : renderer A @+608 (dword idx 152). ex-VeryOldClient: mGraphicSprite.
     HRESULT hr = D3DXCreateSprite(device, &sprite_);
     if (FAILED(hr)) { TS2_ERR("Font: D3DXCreateSprite (0x%08lX)", hr); Shutdown(); return false; }
 
-    // j_D3DXCreateFontIndirectA 0x6BB64E : renderer @+153 (dword).
+    // j_D3DXCreateFontIndirectA 0x6BB64E : renderer A @+612 (dword idx 153). ex-VeryOldClient: mGraphicFont.
     hr = D3DXCreateFontIndirectA(device, &desc, &font_);
     if (FAILED(hr)) { TS2_ERR("Font: D3DXCreateFontIndirectA (0x%08lX)", hr); Shutdown(); return false; }
 

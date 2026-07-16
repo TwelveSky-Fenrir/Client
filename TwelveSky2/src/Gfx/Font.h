@@ -119,8 +119,15 @@ private:
     // C'est l'appel vtable+56 (ID3DXFont::DrawTextA) répété par 0x405DC0.
     void DrawRun(const char* text, int x, int y, D3DCOLOR color) const;
 
-    ID3DXSprite* sprite_ = nullptr; // ID3DXSprite (renderer @+152 dword / +608 o)
-    ID3DXFont*   font_   = nullptr; // ID3DXFont   (renderer @+153 dword / +612 o)
+    // ex-VeryOldClient: GXD::mGraphicSprite / GXD::mGraphicFont (v1 / Object A). CONFIRMED §1.5.
+    // Object A (g_GfxRenderer 0x7FFE18) : pSprite @+608 (0x800078), pFont @+612 (0x80007C).
+    // Object B (g_GxdRenderer 0x18C4EF8) : pSprite @+528 (0x18C5108), pFont @+532 (0x18C510C) —
+    //   c'est le font/sprite RÉELLEMENT utilisés par Font_DrawTextStyled 0x405DC0 (ancre principale
+    //   de cette classe). NB CONFLICT (D-6, hors passe apply) : Font FUSIONNE les 2 instances A/B ;
+    //   l'ancrage mélange offsets A (+608/+612) et routine B (0x405DC0) — à trancher en journal.
+    ID3DXSprite* sprite_ = nullptr; // ID3DXSprite (renderer A @+152 dword / +608 o ; B @+528) — ex-VeryOldClient: mGraphicSprite
+    ID3DXFont*   font_   = nullptr; // ID3DXFont   (renderer A @+153 dword / +612 o ; B @+532) — ex-VeryOldClient: mGraphicFont
+    // NB CONFLICT (D-7, hors passe apply) : +120/+124 NON PROUVÉ ; Object B lit W/H écran à +48/+52.
     int          clipW_  = 0;       // largeur écran (renderer @+30 dword / +120 o)
     int          clipH_  = 0;       // hauteur écran (renderer @+31 dword / +124 o)
 };

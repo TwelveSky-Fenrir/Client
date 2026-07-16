@@ -57,9 +57,9 @@ inline void     WrF32(uint8_t* b, size_t o, float    v) { std::memcpy(b + o, &v,
 // ---- offsets JOUEUR (relatifs au body de 600 o).
 constexpr size_t kPMoveState   = 216;  // bloc move-state (72 o)
 constexpr size_t kPMoveStateLen = 72;
-constexpr size_t kPActionState = 220;  // move-state+4
-constexpr size_t kPAnimFrame   = 224;  // move-state+8
-constexpr size_t kPPosX        = 228;  // move-state+12 -> flt_1687330
+constexpr size_t kPActionState = 220;  // move-state+4 — ex-VeryOldClient: aType (ACTION_INFO ; aType/aSort permutable, Rosetta §7)
+constexpr size_t kPAnimFrame   = 224;  // move-state+8 — ex-VeryOldClient: aFrame
+constexpr size_t kPPosX        = 228;  // move-state+12 -> flt_1687330 — ex-VeryOldClient: aLocation[0] (Y/Z suivent)
 constexpr size_t kPPosY        = 232;  // flt_1687334
 constexpr size_t kPPosZ        = 236;  // flt_1687338
 constexpr size_t kPHeading     = 252;  // move-state+36 -> cap horizontal (degrés), cf.
@@ -68,6 +68,7 @@ constexpr size_t kPHeading     = 252;  // move-state+36 -> cap horizontal (degr�
                                         // ROTATION/ORIENTATION, 2026-07-14). MÊME champ
                                         // que CharAnimState::facingCurrentDeg
                                         // (entity+276 = body+252).
+                                        // ex-VeryOldClient: aFront (ACTION_INFO) [CONFIRMED, Rosetta §2]
 constexpr size_t kPLevelCtr    = 84;   // dword_16872A0 (compteur de niveau par entite)
 constexpr size_t kPHp          = 292;  // dword_1687370 (barre de combat AR-min courant)
 constexpr size_t kPMp          = 300;  // dword_1687378 (barre de combat AR-max courant)
@@ -83,12 +84,13 @@ constexpr size_t kPName        = 48;   // nom du personnage (char[], NUL-termin�
                                         // GameState.h::PlayerEntity::name pour la preuve
                                         // de décompilation (Char_DrawNameplate 0x56EF40,
                                         // this+72 = body+48) et la note sur la longueur.
+                                        // ex-VeryOldClient: aName [CONFLICT §7 C1 résolu, name@+72].
 constexpr size_t kPNameBufLen  = 16;   // borne de lecture (cf. commentaire ci-dessus)
 
 // ---- offsets MONSTRE (relatifs au body de 80 o).
 constexpr size_t kMMoveState   = 4;    // move-state (72 o)
 constexpr size_t kMMoveStateLen = 72;
-constexpr size_t kMPosX        = 16;   // unk_1766F94
+constexpr size_t kMPosX        = 16;   // unk_1766F94 — ex-VeryOldClient: mAction.aLocation[0]
 constexpr size_t kMPosY        = 20;   // unk_1766F98
 constexpr size_t kMPosZ        = 24;   // unk_1766F9C
 constexpr size_t kMHeading     = 40;   // move-state[4]+36 -> cap horizontal (degrés),
@@ -96,6 +98,7 @@ constexpr size_t kMHeading     = 40;   // move-state[4]+36 -> cap horizontal (de
                                         // la preuve de décompilation directe (Char_Draw
                                         // 0x5805C0, mission ROTATION/ORIENTATION,
                                         // 2026-07-14).
+                                        // ex-VeryOldClient: mAction.aFront [CONFIRMED, Rosetta §4]
 
 // ---- offsets NPC (relatifs au body de 84 o) — cf. bandeau de tête de fichier.
 constexpr size_t kNPosX        = 16;

@@ -1,17 +1,25 @@
 // Gfx/GxdRenderer.h — singleton renderer du moteur GXD (g_GxdRenderer @ 0x18C4EF8).
+// ex-VeryOldClient: TW2AddIn::GXD (v2 / Object B, Core/TW2AddIn/GXDHeader.h) — la BONNE
+//   classe des deux GXD homonymes (celle qui porte les 12 shaders skinnés), CONFIRMED
+//   Docs/TS2_GXD_ROSETTA.md §1.1/§3 ; NE PAS confondre avec v1 Core/GXD = Object A
+//   (g_GfxRenderer 0x7FFE18, cf. Renderer.h). Discriminant prouvé : lumière 0.3/0.7 (v2),
+//   PAS 0.4/0.5 (v1).
 // Empile, au-dessus de ts2::gfx::Renderer, les états « haut niveau » du device :
 // matrices projection/vue/monde, matériau, lumière directionnelle, viewport et états
 // d'échantillonnage de textures.
 //
 // Fidèle au désassemblage (voir Docs/TS2_GXD_ENGINE.md) :
-//   GXD_DeviceReinit        0x4023F0  -> DeviceReinit
-//   GXD_BeginScene          0x404640  -> SetupFrame
-//   GXD_ConfigSamplerStates 0x403B50  -> ConfigSamplerStates
+//   GXD_DeviceReinit        0x4023F0  -> DeviceReinit        // ex-VeryOldClient: TW2AddIn::GXD::InitForAddIn (GXDCore.cpp:523, reuses_device=true)
+//   GXD_BeginScene          0x404640  -> SetupFrame          // ex-VeryOldClient: BeginForDrawing (v2)
+//   GXD_ConfigSamplerStates 0x403B50  -> ConfigSamplerStates // ex-VeryOldClient: SetDefaultTextureSamplerState
 //   GXD_SetDirectionalLight 0x403980  -> SetDirectionalLight
 //   GXD_WorldToScreen       0x405C00  -> WorldToScreen
 //
 // La struct d'origine démarre à 0x18C4EF8 ; les commentaires « (+N) » donnent l'offset
-// du champ correspondant dans cette struct.
+// du champ correspondant dans cette struct. Champs COM device B (CONFIRMED §1.1) :
+//   pD3D9 @+160 (0x18C4F98) · pDevice @+524 (0x18C5104) · pSprite @+528 (0x18C5108) ·
+//   pFont @+532 (0x18C510C) · pDInput8 @+5440 (0x18C6438). PIÈGE : dword_18C5104 = le
+//   CHAMP pDevice (base+524), PAS la base du renderer.
 #pragma once
 #include <windows.h>
 #include <d3d9.h>
@@ -73,7 +81,7 @@ public:
     const D3DLIGHT9&    Light()    const { return m_light; }
 
     void SetUseLinearFilter(bool v) { m_useLinearFilter = v; } // (+8, dword_18C4F00)
-    bool AnisotropyCapable() const { return m_anisoCapable; }
+    bool DepthBiasCapable() const { return m_depthBiasCapable; }
     bool TwoSidedStencil()   const { return m_twoSidedStencil; }
 
 private:
@@ -82,33 +90,39 @@ private:
     void BuildFrustumPlanes();           // Frustum_BuildPlanes 0x406090
     bool FrustumContains(const D3DXVECTOR3& world) const; // Frustum_ContainsPoint5 0x406560
 
-    IDirect3D9*       m_d3d      = nullptr;
-    IDirect3DDevice9* m_device   = nullptr;
+    IDirect3D9*       m_d3d      = nullptr; // pD3D9 @+160  — ex-VeryOldClient: (device COM B)
+    IDirect3DDevice9* m_device   = nullptr; // pDevice @+524 (0x18C5104) — ex-VeryOldClient: (device COM B, == g_GfxRenderer+604)
 
-    int   m_width  = 0;      // (+48 ; viewport +568)
-    int   m_height = 0;      // (+52 ; viewport +572)
-    float m_fovDeg = 45.0f;  // (+56) informatif ; la projection utilise PI/4 rad
-    float m_nearZ  = 0.0f;   // (+60)
-    float m_farZ   = 0.0f;   // (+64)
+    int   m_width  = 0;      // (+48 ; viewport +568)  ex-VeryOldClient: mScreenXSize
+    int   m_height = 0;      // (+52 ; viewport +572)  ex-VeryOldClient: mScreenYSize
+    float m_fovDeg = 45.0f;  // (+56) informatif ; la projection utilise PI/4 rad — ex-VeryOldClient: mFovY (45.0)
+    float m_nearZ  = 0.0f;   // (+60)  ex-VeryOldClient: mNearPlane
+    float m_farZ   = 0.0f;   // (+64)  ex-VeryOldClient: mFarPlane
 
-    D3DVIEWPORT9 m_viewport{};        // (+560) X,Y,W,H,MinZ=0,MaxZ=1
-    D3DXMATRIX   m_matHalfViewport;   // (+584) NDC [-1,1] -> pixels
-    D3DXMATRIX   m_matProj;           // (+648) D3DXMatrixPerspectiveFovLH
-    D3DXVECTOR3  m_eye{0.0f, 0.0f, -10.0f}; // (+712)
-    D3DXVECTOR3  m_at{0.0f, 0.0f, 0.0f};     // (+724)
-    D3DXVECTOR3  m_viewDir{0.0f, 0.0f, 0.0f};// (+736) normalize(at-eye)
-    D3DXMATRIX   m_matView;           // (+748) D3DXMatrixLookAtLH
-    D3DXMATRIX   m_matWorld;          // (+988) identité
-    D3DMATERIAL9 m_material{};        // (+1052)
-    D3DLIGHT9    m_light{};           // (+1120)
+    D3DVIEWPORT9 m_viewport{};        // (+560) X,Y,W,H,MinZ=0,MaxZ=1  ex-VeryOldClient: mViewport
+    D3DXMATRIX   m_matHalfViewport;   // (+584) NDC [-1,1] -> pixels    ex-VeryOldClient: mViewportMatrix
+    D3DXMATRIX   m_matProj;           // (+648) D3DXMatrixPerspectiveFovLH  ex-VeryOldClient: mPerspectiveMatrix
+    D3DXVECTOR3  m_eye{0.0f, 0.0f, -10.0f}; // (+712)  ex-VeryOldClient: mCameraEye
+    D3DXVECTOR3  m_at{0.0f, 0.0f, 0.0f};     // (+724)  ex-VeryOldClient: mCameraLook
+    D3DXVECTOR3  m_viewDir{0.0f, 0.0f, 0.0f};// (+736) normalize(at-eye)  ex-VeryOldClient: mCameraForward
+    D3DXMATRIX   m_matView;           // (+748) D3DXMatrixLookAtLH  ex-VeryOldClient: mViewMatrix
+    D3DXMATRIX   m_matWorld;          // (+988) identité           ex-VeryOldClient: mWorldMatrix
+    D3DMATERIAL9 m_material{};        // (+1052)  ex-VeryOldClient: mMaterial
+    D3DLIGHT9    m_light{};           // (+1120)  ex-VeryOldClient: mLight (v2: Amb 0.3/Diff 0.7 — PAS v1 0.4/0.5)
 
-    D3DCAPS9 m_caps{};                // (+164)
+    D3DCAPS9 m_caps{};                // (+164)  ex-VeryOldClient: mGraphicSupportInfo
     DWORD    m_maxAnisotropy = 1;     // caps.MaxAnisotropy (g_GxdMaxAnisotropy @ +272)
-    int      m_currentShaderId = 0;   // (+526884) programme courant, remis à 0 par frame
+    int      m_currentShaderId = 0;   // (+526884) programme courant, remis à 0 par frame — ex-VeryOldClient: mPresentShaderProgramNumber (0=fixed,6=Filter1,7=Filter2)
 
-    bool m_useLinearFilter = false;  // (+8) 0 => anisotrope (défaut), !=0 => linéaire
-    bool m_anisoCapable    = false;  // (+28) D3DPRASTERCAPS_ANISOTROPY
-    bool m_twoSidedStencil = false;  // (+32) D3DSTENCILCAPS_TWOSIDED
+    bool m_useLinearFilter = false;  // (+8) 0 => anisotrope (défaut), !=0 => linéaire — ex-VeryOldClient: mSamplerOptionValue (ctor=0)
+    // GXD_DeviceReinit 0x4023F0 (test à 0x402928 : this+200 = caps+36 = RasterCaps & 0x4000000).
+    // ex-VeryOldClient: mCheckDepthBias. Le bit 0x4000000 = D3DPRASTERCAPS_DEPTHBIAS (depth-bias
+    // hérité), PAS l'anisotropie (0x20000). NB : la Rosetta §2 étiquette ce bit
+    // « SLOPESCALEDEPTHBIAS », mais 0x4000000 EST DEPTHBIAS (SLOPESCALEDEPTHBIAS = 0x2000000) —
+    // IDA gagne, on teste le bit 0x4000000 tel quel. L'anisotropie ne dépend PAS de ce champ :
+    // le filtre anisotrope est piloté par m_useLinearFilter (+8) et m_maxAnisotropy, cf. ConfigSamplerStates.
+    bool m_depthBiasCapable = false; // (+28) RasterCaps & D3DPRASTERCAPS_DEPTHBIAS (0x4000000)
+    bool m_twoSidedStencil = false;  // (+32) D3DSTENCILCAPS_TWOSIDED — ex-VeryOldClient: mCheckTwoSideStencilFunction (StencilCaps&0x100)
 
     // Plans de frustum (Frustum_BuildPlanes 0x406090, this+309..332 dans l'original,
     // soit 6 plans de 4 floats extraits de la matrice combinée vue*projection par la

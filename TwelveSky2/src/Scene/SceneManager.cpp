@@ -10,7 +10,9 @@
 #include "Scene/WorldRenderer.h"
 #include "Gfx/WorldGeometryRenderer.h" // géométrie statique .WO (distinct de WorldRenderer=entités)
 #include "World/WorldIntegration.h"    // world::WorldAssets (charge réellement Z%03d.WO)
-#include "World/WorldMap.h"            // world::WorldMap::LoadZoneResource (dispatch .WO)
+#include "World/WorldMap.h"            // world::WorldMap::LoadZoneResource / ZoneIdToFileId
+#include "Audio/AudioSystem.h"        // audio::BgmChannel (slot BGM de scène, cSceneMgr +612)
+#include "Config/GameOptions.h"       // config::g_Options.BgmEnabled (g_BgmEnabled 0x84DEF0)
 #include "Gfx/SpriteBatch.h"    // gfx::g_GameTimeSec
 #include "Game/GameState.h"     // game::g_World (zoneId)
 #include "Game/ClientRuntime.h" // game::Str (messages d'erreur EnterWorld)
@@ -34,6 +36,7 @@
 #include "Core/Log.h"
 #include <windows.h>
 #include <cstring>
+#include <cstdio>   // std::snprintf (chemin BGM "Z%03d.BGM")
 
 // TODO journalisé UNE SEULE FOIS par point d'intégration (évite le flood de logs pour les
 // hooks appelés à 30 Hz depuis InGameTickFlow_Update — cf. case Scene::InGame ci-dessous).
@@ -100,6 +103,12 @@ void SceneManager::Init(gfx::Renderer& renderer, net::NetSystem& net, void* noti
     worldGeom_ = std::make_unique<gfx::WorldGeometryRenderer>();
     worldGeomReady_ = false;
 
+    // Slot BGM de scène (cSceneMgr +612) : ctor par défaut = zéro-init, équivalent de
+    // cSceneMgr_ReinitBgm 0x517A80 -> SndMgr_InitBgmSlot 0x6A80A0 (SoundObj remis à 0).
+    // Le device audio (DirectSoundCreate8) est créé ailleurs (AudioSystem::Init, cf. App) ;
+    // ici on ne fait qu'allouer le slot. LoadZoneBgm charge le .BGM à l'entrée en jeu.
+    bgm_ = std::make_unique<audio::BgmChannel>();
+
     if (!gameDataDir_.empty()) {
         worldAssets_ = std::make_unique<world::WorldAssets>(gameDataDir_);
         worldMap_    = std::make_unique<world::WorldMap>(worldAssets_->MakeHooks());
@@ -118,6 +127,9 @@ void SceneManager::Shutdown() {
     if (hud_)     { hud_->Shutdown();     hud_.reset(); }
     if (world_)   { world_->Shutdown();   world_.reset(); }
     if (worldGeom_) { worldGeom_->Shutdown(); worldGeom_.reset(); }
+    // SceneMgr_ReleaseSoundBuffers 0x517B60 -> Snd_ReleaseBuffers(cSceneMgr+153) 0x6A80D0 :
+    //   libère le slot BGM au destructeur de cSceneMgr (App_Shutdown 0x462480).
+    if (bgm_) { bgm_->Release(); bgm_.reset(); }
     worldMap_.reset();
     worldAssets_.reset();
     renderer_ = nullptr;
@@ -127,6 +139,7 @@ void SceneManager::Shutdown() {
 void SceneManager::StartIntro() { Change(Scene::Intro); }
 
 void SceneManager::Change(Scene s) {
+    const Scene prev = scene_;   // sert au release du slot BGM en QUITTANT InGame (voir bas)
     TS2_LOG("Scene : %s -> %s", SceneName(scene_), SceneName(s));
     scene_ = s;
     subState_ = 0;
@@ -180,6 +193,67 @@ void SceneManager::Change(Scene s) {
             }
         }
     }
+
+    // --- Slot BGM de scène (cSceneMgr +612) : câblage enter-world / exit ---
+    // Entrée en jeu = "enter-world" : charge+joue en boucle le .BGM de la zone courante,
+    //   comme World_LoadZoneResource 0x4DCB60 case 12 (chemin "G03_GDATA\D10_WORLDBGM\Z%03d.BGM")
+    //   puis le play gaté g_BgmEnabled (Player_ResetCombatState 0x50f761/0x50f76e ; MÊME cycle
+    //   release->load->play que Scene_ServerSelectUpdate 0x518B30 sur le slot cSceneMgr +612).
+    //   Hors des gardes du bloc géométrie ci-dessus : le BGM doit se charger même si le rendu
+    //   .WO échoue. Filet de sécurité robuste pour les chemins qui forcent Change(InGame)
+    //   directement ; le flux EnterWorld (host.LoadZoneResource idx=12) ne charge, lui, qu'un
+    //   SoundBuffer throwaway côté WorldAssets. LoadZoneBgm fait Release AVANT reload (0x518bde).
+    // TODO(zone-change en cours de partie) : un warp/MapWarp (Game/MapWarp.h) ne repasse PAS
+    //   par Change(InGame) aujourd'hui (même limite que la géométrie .WO, cf. lignes ci-dessus).
+    //   Quand le flux de warp sera câblé, il devra rappeler LoadZoneBgm(nouveauZoneId) pour
+    //   recharger l'ambiance (World_LoadZoneResource case 12 est ré-appelée par zone dans le binaire).
+    if (s == Scene::InGame) {
+        LoadZoneBgm(game::g_World.zoneId);
+    } else if (prev == Scene::InGame) {
+        // Sortie du jeu (retour menu / déconnexion) : coupe l'ambiance de zone.
+        //   SceneMgr_ReleaseSoundBuffers 0x517B60 -> Snd_ReleaseBuffers 0x6A80D0.
+        ReleaseBgm();
+    }
+}
+
+// --- Slot BGM de scène : chargement (enter-world/zone-change) + release (exit) ---
+// Voir Audio/AudioSystem.h (BgmChannel) pour l'arbitrage complet des ancres IDA.
+void SceneManager::LoadZoneBgm(int zoneId) {
+    if (!bgm_) return;
+    // World_LoadZoneResource 0x4DCB60 case 12 : Z = World_ZoneIdToFileId(zoneId) 0x4db0f0.
+    //   fileId == -1 -> la zone n'a pas de BGM (le binaire saute le chargement, `if (v3 != -1)`
+    //   @0x4dd406) : on coupe l'éventuel BGM précédent et on sort.
+    const int fileId = world::WorldMap::ZoneIdToFileId(zoneId);
+    if (fileId < 0) {
+        TS2_LOG("SceneManager: zone %d sans fileId -> pas de BGM.", zoneId);
+        ReleaseBgm();
+        return;
+    }
+    // 0x4dd41d : chaîne .rdata "G03_GDATA\\D10_WORLDBGM\\Z%03d.BGM" (aG03GdataD10Wor_0 @0x7a7cc8).
+    //   Le décodeur (OggVorbisLoadCallback via asset::ReadOggFile) attend un chemin résoluble
+    //   -> on préfixe la racine GameData, comme World/WorldIntegration::LoadWorldBgm.
+    char rel[64];
+    std::snprintf(rel, sizeof(rel), "G03_GDATA\\D10_WORLDBGM\\Z%03d.BGM", fileId); // 0x4dd41d
+    const std::string full = gameDataDir_.empty() ? std::string(rel)
+                                                   : (gameDataDir_ + "\\" + rel);
+    // g_BgmEnabled 0x84DEF0 (option f12) — gate du play (0x518c03 / 0x50f761). vol=100 en dur
+    //   aux deux sites de play (0x518c14 / 0x50f76e) ; MusicVolume (option idx10) s'applique
+    //   ailleurs (sons positionnels / UI), pas au play du slot BGM.
+    const bool enabled = (config::g_Options.BgmEnabled == 1);
+    if (bgm_->LoadAndPlay(full, enabled, 100)) {
+        TS2_LOG("SceneManager: BGM zone %d (Z%03d.BGM) chargee%s.", zoneId, fileId,
+                enabled ? " et jouee (boucle)" : " (option BGM off : silencieuse)");
+    } else {
+        // Guard exigée : .BGM absent / device audio indispo / décodeur Ogg absent -> muet,
+        //   AUCUN crash (client silencieux pour cette zone, comme un DirectSound non dispo).
+        TS2_WARN("SceneManager: BGM zone %d (Z%03d.BGM) indisponible "
+                 "(fichier absent, audio non initialise ou decodeur Ogg absent).", zoneId, fileId);
+    }
+}
+
+void SceneManager::ReleaseBgm() {
+    // SceneMgr_ReleaseSoundBuffers 0x517B60 -> Snd_ReleaseBuffers(cSceneMgr+153) 0x6A80D0.
+    if (bgm_) bgm_->Release();
 }
 
 void SceneManager::ConsumePending() {
@@ -229,8 +303,11 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             // reste du shell. Sûr même si windows_ n'est pas encore construit (InGame
             // pas encore atteint) : la liste de dialogues enregistrés est alors vide
             // (UIManager::ResetAll() itère dialogs_, vector par défaut vide).
-            // Snd_ReleaseBuffers 0x6A80D0 (audio) reste TODO : SceneManager ne détient
-            // aucune instance Audio/AudioSystem.h à ce jour (hors périmètre de ce câblage).
+            // Volet audio : le SLOT BGM de scène (cSceneMgr +612) est désormais géré par
+            //   bgm_ (release sur sortie d'InGame et à Shutdown, SceneMgr_ReleaseSoundBuffers
+            //   0x517B60 ; reload à l'entrée via LoadZoneBgm). Reste TODO ICI : le release de
+            //   la BANQUE de sons de MONDE (WSndMgr_Free 0x4db060, slot distinct g_GameWorld+…)
+            //   au reset d'enter-world — hors périmètre de ce câblage BGM.
             ui::UIManager::Instance().ResetAll();
         };
         host.LoadZoneResource = [this](int zoneId, int idx) {

@@ -255,6 +255,30 @@ bool SoundBuffer::UpdatePlaying(int volumePercent, int pan) {
 }
 
 // ===========================================================================
+// BgmChannel — slot BGM de scène (voir AudioSystem.h pour les ancres IDA)
+// ===========================================================================
+
+bool BgmChannel::LoadAndPlay(const std::string& path, bool bgmEnabled, int volumePercent) {
+    // 0x518bde Snd_ReleaseBuffers(slot) : repart d'un slot PROPRE — release AVANT reload,
+    //   exactement comme Scene_ServerSelectUpdate juste avant Snd_LoadOggToBuffers.
+    buf_.Release();
+    // 0x518bf7 / 0x4dd43e Snd_LoadOggToBuffers(slot, path, kind, voices=1, a5=1).
+    //   PlayMode::Loop (kind=2) -> DSBPLAY_LOOPING forcé (Snd_Play3D 0x6a8742) : ambiance
+    //   CONTINUE. Voir la note d'en-tête (choix observable-équivalent, TODO fidélité kind).
+    //   Échec (device absent / .BGM introuvable / décodeur Ogg absent) -> false, silencieux.
+    if (!buf_.LoadFromPath(path, PlayMode::Loop, 1))
+        return false;
+    // 0x518c03 / 0x50f761 : le play est GATÉ par l'option g_BgmEnabled==1 (0x84DEF0).
+    // 0x518c14 / 0x50f76e Snd_Play3D(slot, ..., vol=100, pan=0).
+    if (bgmEnabled)
+        buf_.Play(volumePercent, 0);
+    return true;
+}
+
+void BgmChannel::Stop()    { buf_.Stop(); }      // Snd_Stop 0x6A87B0
+void BgmChannel::Release() { buf_.Release(); }   // Snd_ReleaseBuffers 0x6A80D0
+
+// ===========================================================================
 // AudioSystem
 // ===========================================================================
 

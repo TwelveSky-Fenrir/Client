@@ -38,7 +38,10 @@ constexpr float kDeg2Rad = 0.017453292519943295f; // 0.017453292 (×π/180)
 
 // ---------------------------------------------------------------------------
 //  Programme de shaders skinné — reconstruction fidèle de Shader03 (VS SkinnedLit)
-//  + Shader04 (PS texturé). La source d'origine vit chiffrée dans
+//  + Shader04 (PS texturé). ex-VeryOldClient: mAmbient2_VS / mAmbient2_PS (02.Ambient2.*.fx,
+//  MakeShaderProgram03/04). Handles CONFIRMED (§1.4) ; corps HLSL = RECONSTRUCTION cohérente
+//  PLAUSIBLE (P-11, source .fx chiffrée absente IDB+VeryOld).
+//  La source d'origine vit chiffrée dans
 //  ./GXDEFFECT/GXDEffect.npk (Shader03.fx/Shader04.fx) ; on la recompile ici par
 //  D3DXCompileShader exactement comme les loaders Shader_LoadVSxx (point d'entrée
 //  "Main", profils vs_2_0/ps_2_0). Uniformes IDENTIQUES au relevé (§2.2) :
@@ -176,6 +179,7 @@ void MeshRenderer::Shutdown() {
 }
 
 // Déclaration de vertex 76 o — copie EXACTE de g_GxdVertexDecl (0x814A58).
+// ex-VeryOldClient: mVertexElementForSKIN2 -> mDECLForSKIN2 (stride 76) — BIT-EXACT, CONFIRMED §1.5.
 bool MeshRenderer::buildVertexDeclaration() {
     static const D3DVERTEXELEMENT9 kDecl[] = {
         { 0,  0, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION,     0 },
@@ -435,6 +439,7 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
     D3DXVec3Normalize(&lightObj, &lightObj);
 
     // 5) Palette d'os -> mKeyMatrix (SetMatrixArray, method +88 de l'ID3DXConstantTable).
+    //    g_GxdSh03_hKeyMatrix 0x1945974 — ex-VeryOldClient: mAmbient2_VS_KeyMatrix.
     //    Palette de secours (identité) si aucune tranche valide n'est fournie.
     const D3DXMATRIX* palMats = identityPalette_;
     UINT boneCount = 1;

@@ -59,6 +59,7 @@ bool SpriteBatch::Create(IDirect3DDevice9* dev) {
     Destroy();
     if (!dev) { TS2_ERR("SpriteBatch::Create : device nul"); return false; }
     // GXD_DeviceCreate 0x401610 : D3DXCreateSprite(device, &pSprite) ; erreur -> code 8.
+    // ex-VeryOldClient: GXD::mGraphicSprite (Object A @+608 / dword_800078 ; Object B pSprite @+528).
     HRESULT hr = D3DXCreateSprite(dev, &sprite_);
     if (FAILED(hr)) {
         TS2_ERR("D3DXCreateSprite a echoue (0x%08lX)", hr);

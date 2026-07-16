@@ -15,6 +15,10 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool windowed) {
     D3DDISPLAYMODE dm = {};
     d3d_->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &dm);
 
+    // ex-VeryOldClient: mGraphicPresentParameters (v1 present_params, PLAUSIBLE — Docs/TS2_GXD_ROSETTA.md P-1).
+    // Confirmés IDA (Gfx_InitDevice 0x69B9B0) : DISCARD, D24S8, IMMEDIATE, count 1, HW=68/SW=36.
+    // NUANCE non transposable : v1 pose pp_.Flags = D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL — à vérifier
+    // sur 0x69B9B0 avant de l'ajouter ici (VeryOldClient seul ne suffit pas, cf. P-1).
     ZeroMemory(&pp_, sizeof(pp_));
     pp_.Windowed               = windowed ? TRUE : FALSE;
     pp_.SwapEffect             = D3DSWAPEFFECT_DISCARD;
@@ -51,6 +55,8 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool windowed) {
 
 // GXD_ConfigSamplerStates 0x403B50 — branche « this[2] == 0 » (défaut d'origine, dword_18C4F00
 // jamais mis à 1 par un chemin câblé côté ClientSource) : filtrage ANISOTROPIC sur les étages
+// ex-VeryOldClient: TW2AddIn::GXD::SetDefaultTextureSamplerState (méthode d'Object B recopiée dans
+//   Object A ; le repli ANISO->LINEAR est une déviation ClientSource assumée — PLAUSIBLE, P-2).
 // 0..2 avec MAXANISOTROPY = caps.MaxAnisotropy, adressage WRAP (U,V). Repli LINEAR si le device
 // ne supporte pas l'anisotrope (D3DPRASTERCAPS_ANISOTROPY absent ou MaxAnisotropy <= 1) : le
 // binaire d'origine ne fait pas ce repli explicitement (il dépend du pilote pour clamper), mais

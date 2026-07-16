@@ -49,16 +49,92 @@ struct AnimTrack {
 };
 
 // -------------------------------------------------------------------------
-// Maillage de collision partagé (MapColl_LoadFaces ; 1er bloc de WG).
+// Vertex terrain (Gap G7) — FVF 530 = 0x212 = D3DFVF_XYZ|NORMAL|TEX2, 40 octets.
+// Deux jeux d'UV : uv0 = texture diffuse (stage 0), uv1 = lightmap/.SHADOW (stage 1).
+// Réf IDA : Terrain_Render 0x698670 — SetFVF(530) @0x698e6d ; stride 40 dans tous les
+// DrawPrimitiveUP (device vtbl+332, ex. @0x698ff3/@0x69913c/@0x69945d) ; 120o=3*40/face
+// copiés via qmemcpy(dst, v48+1, 0x78) @0x698e21 (v48+1 = saut du materialIndex).
+// Position @+0 prouvée par les tests barycentriques : MapColl_RayHitTriangle 0x695ae0
+// (lit face+4/+8/+12 puis face+44/+48/+52) et MapColl_PointInTriangleXZ 0x695c70 (face+84).
+// DISTINCT du MobjVertex 32o des .WO (voir Gfx). Layout normal/uv/uv2 = interprétation FVF.
+// -------------------------------------------------------------------------
+struct TerrainVertex {
+    float position[3];   // +0x00  repère MONDE (world = identité au rendu terrain)
+    float normal[3];     // +0x0C  unitaire (D3DFVF_NORMAL)
+    float uv0[2];        // +0x18  texcoord set 0 (diffuse, stage 0)
+    float uv1[2];        // +0x20  texcoord set 1 (lightmap/shadow, stage 1 — support G6)
+};
+static_assert(sizeof(TerrainVertex) == 40, "TerrainVertex doit faire 40 octets (FVF 530)");
+
+// -------------------------------------------------------------------------
+// Face de collision / rendu terrain (Gap G4) — 156 octets, ordre AUTORITATIF IDA.
+// CONFLICT C-02 (TS2_WORLD_ROSETTA.md §2) : materialIndex EN PREMIER (@0). VeryOldClient
+// le plaçait @152 -> IGNORÉ (IDA gagne). Total 156o confirmé des deux côtés.
+// Réf IDA (offsets prouvés) :
+//   - materialIndex@0    : 120o de sommets copiés depuis face+4 (Terrain_Render qmemcpy @0x698e21)
+//   - v0@+4 v1@+44 v2@+84 (stride 40) : MapColl_RayHitTriangle 0x695af4/0x695afc / PointInTriangleXZ 0x695c98
+//   - plane@+124/+128/+132/+136 (a,b,c,d) : MapColl_GetGroundHeight plane-solve 0x6972ad
+//                                            + backface Terrain_Render 0x698dd4 (v47[31..34])
+//   - sphereCenter@+140 / sphereRadius@+152 : Cam_FrustumTestSphere2x(v47+35, v47[38]) @0x698de9
+// -------------------------------------------------------------------------
+struct CollisionFace {
+    uint32_t      materialIndex;    // +0x00  (aussi « mTextureIndex ») ; ==1 => marchable couche .WM
+    TerrainVertex v0;               // +0x04
+    TerrainVertex v1;               // +0x2C
+    TerrainVertex v2;               // +0x54
+    float         plane[4];         // +0x7C  planeA/B/C/D = normal.xyz + D (tris+124/+128/+132/+136)
+    float         sphereCenter[3];  // +0x8C  centre de la sphère englobante (tris+140/+144/+148)
+    float         sphereRadius;     // +0x98  rayon de la sphère englobante (tris+152)
+
+    // planeB (= normal.y) : diviseur du plane-solve ; > 0 => face orientée vers le haut,
+    // marchable par défaut (MapColl_GetGroundHeight filtre 0x697259, solve 0x6972ad).
+    bool PlaneFacesUp() const { return plane[1] > 0.0f; }
+    // Tag marchable de la couche .WM (variante WORLD2). Rosetta §1.A / §3 G04 : mTextureIndex==1.
+    bool IsWalkableTag() const { return materialIndex == 1; }
+};
+static_assert(sizeof(CollisionFace) == 156, "CollisionFace doit faire 156 octets");
+
+// -------------------------------------------------------------------------
+// Nœud de quadtree de collision (Gap G5) — 48 octets, layout RUNTIME.
+// Réf IDA : MapColl_GetGroundHeight 0x697130 — base quadtree = *(this+35) ;
+//   bboxMin@+0 / bboxMax@+12 (test XZ @0x6971ba) ; ceiling = node0.bboxMax.y @+16 (@0x6971e5) ;
+//   trisNum@+24 (@0x6971fc) ; trisIndex@+28 (@0x69726c) ; child[4]@+32 (@0x697171/@0x697159).
+// Racine = nœud index 0 ; feuille <=> child[0] == -1.
+// Le format DISQUE est à taille variable (48o fixe + 4*faceRefCount si hasFaceRefs) ; on le
+// reconstruit ici en tableau 48o fixe + buffer d'index agrégé (CollisionMesh::triIndices).
+// `trisIndex` = OFFSET (en entrées u32) dans triIndices (le runtime y garde un pointeur vif).
+// -------------------------------------------------------------------------
+struct CollisionQuadNode {
+    float    bboxMin[3];   // +0x00
+    float    bboxMax[3];   // +0x0C   (node0 +16 = bboxMax.y = plafond monde par défaut)
+    uint32_t trisNum;      // +0x18   nombre d'index de faces (feuille)
+    uint32_t trisIndex;    // +0x1C   offset dans CollisionMesh::triIndices (ptr vif à l'origine)
+    int32_t  child[4];     // +0x20   4 enfants ; child[0]==-1 => feuille
+
+    bool IsLeaf() const { return child[0] == -1; }
+};
+static_assert(sizeof(CollisionQuadNode) == 48, "CollisionQuadNode doit faire 48 octets");
+
+// -------------------------------------------------------------------------
+// Maillage de collision partagé (MapColl_LoadFaces 0x694510 ; 1er bloc de WG).
 //   numTri + (156o * triangles) + numNodes + field34 + quadtree.
-//   Chaque nœud : min[3]f max[3]f numIdx u32 hasIdx u32 [index u32*numIdx] children[4]u32.
+//   Chaque nœud disque : min[3]f max[3]f numIdx u32 hasIdx u32 [index u32*numIdx] children[4]u32.
+// Décodage typé (Gaps G4/G5/G7) : `raw` reste conservé (fidélité byte-exacte + rétro-compat),
+// et les champs typés ci-dessous exposent la même donnée prête à consommer.
 // -------------------------------------------------------------------------
 struct CollisionMesh {
     uint32_t numTri       = 0;       // nombre de triangles (156 octets chacun)
     uint32_t numNodes     = 0;       // nombre de nœuds du quadtree
-    uint32_t field34      = 0;       // (this+34) compteur global d'index
+    uint32_t field34      = 0;       // (this+34) compteur global d'index (leafFaceRefTotal)
     uint32_t totalIndices = 0;       // somme des index de triangles (nœuds avec hasIdx)
     std::vector<uint8_t> raw;        // buffer décompressé complet (triangles + quadtree)
+
+    // --- Vues typées décodées depuis `raw` (ordre de lecture = MapColl_LoadFaces 0x694510) ---
+    std::vector<CollisionFace>     tris;        // Gap G4 : numTri faces (156o) décodées
+    std::vector<CollisionQuadNode> nodes;       // Gap G5 : numNodes nœuds (48o), racine = index 0
+    std::vector<uint32_t>          triIndices;  // buffer d'index de faces agrégé (feuilles -> tris[])
+    std::vector<TerrainVertex>     vertices;    // Gap G7 : 3*numTri sommets à plat (miroir du VB
+                                                //   dynamique Terrain_Render a1+164, upload FVF 530)
 };
 
 // -------------------------------------------------------------------------

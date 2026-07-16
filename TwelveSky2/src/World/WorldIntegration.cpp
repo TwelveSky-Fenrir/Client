@@ -130,6 +130,7 @@ WorldLoadHooks WorldAssets::MakeHooks() {
     h.loadWorldSound       = &LoadWorldSound;
     h.loadWorldBgm         = &LoadWorldBgm;
     h.loadDataFile         = &LoadDataFile;
+    h.queryCollisionMesh   = &QueryCollisionMesh; // Gap G02 : relie la maille décodée à WorldMap
     return h;
 }
 
@@ -140,6 +141,62 @@ const asset::WorldChunk* WorldAssets::Collision(CollisionSlot slot) const {
     case CollisionSlot::Secondary: return wmSecondary_.get();
     }
     return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Requêtes de sol / collision terrain (Gaps G02/G03/G04). La maille décodée (Gap G01) d'une
+// couche .WM est exposée à WorldMap via le hook queryCollisionMesh, et directement ici via
+// des méthodes qui délèguent au moteur ts2::world::collision:: (portage byte-fidèle des
+// MapColl_*, cf. World/WorldMap.cpp). Toutes build-safe (false si la couche .WM est absente).
+// ---------------------------------------------------------------------------
+const asset::CollisionMesh* WorldAssets::MainCollisionMesh() const {
+    const asset::WorldChunk* c = Collision(CollisionSlot::Main); // wm_ (.WM = collision pure)
+    if (!c) return nullptr;
+    const asset::MapCollisionChunk* mc = c->AsCollision();       // .WM -> MapCollisionChunk
+    return mc ? &mc->mesh : nullptr;
+}
+// Hook WorldLoadHooks::queryCollisionMesh — appelé par WorldMap après un loadFaces réussi.
+const asset::CollisionMesh* WorldAssets::QueryCollisionMesh(void* user, CollisionSlot slot) {
+    auto* self = static_cast<WorldAssets*>(user);
+    const asset::WorldChunk* c = self->Collision(slot);
+    if (!c) return nullptr;
+    const asset::MapCollisionChunk* mc = c->AsCollision(); // couches .WM/.WJ/.WM2 (les .WG = AsFace)
+    return mc ? &mc->mesh : nullptr;
+}
+
+bool WorldAssets::GetGroundHeight(float x, float z, float probeCeilingY, float& outGroundY) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) return false;
+    // MapColl_GetGroundHeight 0x697130 forme consommateur (a5=1, a6=probeCeilingY, a7=0, a8=1).
+    return collision::GetGroundHeight(*m, x, z, outGroundY, true, probeCeilingY, false, true);
+}
+bool WorldAssets::HasGroundAt(float x, float z) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) return false;
+    float out = 0.0f; // IsGroundBlocked-shape : plafond défaut (racine bboxMax.y), a8=1
+    return collision::GetGroundHeight(*m, x, z, out, false, 0.0f, false, true);
+}
+bool WorldAssets::IsPointOnGround(float x, float y, float z) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) return false;
+    return collision::IsPointOnGround(*m, x, y, z); // World_IsPointOnGround 0x540d40
+}
+bool WorldAssets::PointInMeshXZ(float x, float z) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) return false;
+    return collision::PointInMeshXZ(*m, x, z); // MapColl_PointInMeshXZ 0x695dc0
+}
+bool WorldAssets::Raycast(const float start[3], const float dir[3], uint32_t& outFaceIndex,
+                          float outHit[3], bool twoSide) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) return false;
+    return collision::RaycastNearest(*m, 0, start, dir, outFaceIndex, outHit, twoSide); // 0x6960c0
+}
+bool WorldAssets::SlideMoveGround(const float from[3], const float to[3], float speed, float dt,
+                                  float outPos[3]) const {
+    const asset::CollisionMesh* m = MainCollisionMesh();
+    if (!m) { outPos[0] = from[0]; outPos[1] = from[1]; outPos[2] = from[2]; return false; }
+    return collision::SlideMoveGround(*m, from, to, speed, dt, outPos); // 0x697330
 }
 
 // ---------------------------------------------------------------------------
@@ -187,26 +244,46 @@ bool WorldAssets::FreeZoneSound(void* user) {
     if (self->soundBank_) self->soundBank_.reset();
     return true;
 }
+// CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWG. Ancre IDA : MapColl_LoadMapFile 0x697b30.
+// TODO terrain WG (surface non rendue) : chargé + parsé (EOF-exact) mais consommé par AUCUN
+// renderer (Faces() sans appelant de dessin) -> voir SPEC TS2_WORLD_ROSETTA.md §3 G05
+// (Terrain_Render 0x698670, 2x/frame depuis Scene_InGameRender 0x52d0b0). Landing = WorldGeometryRenderer.
 bool WorldAssets::LoadMapFileWG(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wg_ = std::make_unique<asset::WorldChunk>();
     return self->wg_->Load(self->gameDataDir_ + "\\" + path);
 }
+// CONFIRMED ex-VeryOldClient: LoadWO (mMObject). Ancre IDA : MapColl_LoadObjectsA 0x6980d0.
+// Réellement rendu par Gfx/WorldGeometryRenderer (gabarits + auxRecords/placement).
 bool WorldAssets::LoadObjectsWO(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wo_ = std::make_unique<asset::WorldChunk>();
     return self->wo_->Load(self->gameDataDir_ + "\\" + path);
 }
+// CONFIRMED ex-VeryOldClient: LoadWP (mPSystem). Ancre IDA : MapColl_LoadObjectsB 0x6983b0.
+// TODO hors-FRONT 4 : parsé (FxNodes()) mais JAMAIS rendu (torches/feux/cascades invisibles) ->
+// X01 (FRONT 8), point d'entrée de rendu WP non identifié dans l'IDB, cf. TS2_WORLD_ROSETTA.md §3.Z.
 bool WorldAssets::LoadObjectsWP(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wp_ = std::make_unique<asset::WorldChunk>();
     return self->wp_->Load(self->gameDataDir_ + "\\" + path);
 }
+// CONFIRMED ex-VeryOldClient: mShadowTexture (dispatch case 5). Ancre IDA : Tex_LoadFromFile 0x6a9910.
+// PLAUSIBLE (VeryOldClient) — non prouvé IDA : décodage = DDS plain (loader distinct de
+// Tex_LoadCompressedDDS 0x6a2e80 des minimaps ; interne de 0x6a9910 non décompilé cette passe).
+// TODO terrain SHADOW : texture chargée dans shadow_ mais JAMAIS appliquée (lightmap stage 1 / uv1)
+// -> voir SPEC TS2_WORLD_ROSETTA.md §3 G06 (dépend du rendu terrain G05).
 bool WorldAssets::LoadShadowTexture(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->shadow_ = std::make_unique<asset::Texture>();
     return self->shadow_->LoadDDS(self->gameDataDir_ + "\\" + path);
 }
+// CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (WM1/2/3 -> mRANGE1/2/3). Ancre IDA :
+// MapColl_LoadFaces 0x694510. TODO terrain WM (hauteur de sol) : le chunk est chargé (framing GXD
+// byte-exact) mais son `CollisionMesh.raw` n'est JAMAIS décodé typé ni requêté -> sol nul partout.
+// Voir SPEC TS2_WORLD_ROSETTA.md §3 : G01 (décoder raw -> CollisionTri 156o [matIndex@0, plan@124]
+// + QuadNode 48o), puis G02 = porter MapColl_GetGroundHeight 0x697130 (descente quadtree XZ +
+// plane-solve y=(d - x*a - z*c)/b + barycentrique MapColl_RayHitTriangle 0x695ae0). Landing = World/.
 bool WorldAssets::LoadFaces(void* user, CollisionSlot slot, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     auto chunk = std::make_unique<asset::WorldChunk>();

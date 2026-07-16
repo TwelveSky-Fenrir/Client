@@ -60,8 +60,10 @@ void GXD_SetupLitSpritePass(IDirect3DDevice9* dev);
 // ---------------------------------------------------------------------------
 // SpriteBatch — enveloppe de ID3DXSprite.
 // Le renderer d'origine range ce sprite à g_GxdRenderer+528 (0x18C5108 /
-// g_GxdRenderer_pSprite) et en cache un alias plat à dword_800078. Ici on
+// g_GxdRenderer_pSprite = pSprite @+528 d'Object B) et en cache un alias plat à
+// dword_800078 (= pSprite @+608 d'Object A / g_GfxRenderer). Ici on
 // encapsule l'interface ; l'alias « actif » est géré par SetActiveSprite().
+// ex-VeryOldClient: GXD::mGraphicSprite (v1 / Object A @+608). CONFIRMED §1.1/§1.5.
 class SpriteBatch {
 public:
     SpriteBatch() = default;
@@ -117,6 +119,7 @@ extern float g_GameTimeSec;
 // ---------------------------------------------------------------------------
 // SpriteTexture — texture embarquée dans Sprite2D à l'offset +0x68, remplie par
 // Tex_LoadCompressedDDS 0x6A2E80 (conteneur DDS-GXD zlib -> D3DXCreateTexture...).
+// ex-VeryOldClient: GImage / TEXTURE_FOR_GXD (40 o) — layout CONFIRMED §1.5.
 // Disposition exacte (indices Tex[i] du désassemblage) :
 struct SpriteTexture {
     int                valid;        // +0x00  Tex[0] : 0 tant que non chargée, 1 sinon

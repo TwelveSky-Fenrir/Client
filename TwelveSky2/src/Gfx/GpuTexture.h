@@ -5,6 +5,10 @@
 //   - cTexture_LoadFromImgFile  0x457A20  (.IMG texture GXD : en-tête propriétaire + FourCC + fichier image)
 //   - Tex_ReadFromMemory        0x417D20  (payload packé + mips DDS ; référence de sémantique LOD)
 // Import binaire d'origine : D3DXCreateTextureFromFileInMemoryEx @0x1960338.
+// ex-VeryOldClient: TEXTURE_FOR_GXD (CTEXTURE_FOR_GXD.cpp) — Load(HANDLE) = conteneur zlib .IMG ;
+//   Load2(BYTE*) = [fileDataSize][origSize][compSize][comp] -> Decompress -> DXT1/3/5 ->
+//   D3DXCreateTextureFromFileInMemoryEx (D3DPOOL_MANAGED). Pipeline confirmé (texture_pipeline).
+//   NB : classe homonyme v1 (Core/GXD) et v2 (TW2AddIn) — même sémantique de chargement.
 //
 // Contrairement au Renderer (qui n'utilise que le D3D9 du Windows SDK), CE module a le
 // droit d'utiliser la couche D3DX legacy (DirectX SDK June 2010) : c'est le pont exact
