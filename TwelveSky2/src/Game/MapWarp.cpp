@@ -49,6 +49,12 @@ void ArmFullWarp(FactionWarpResolution& r, int32_t warpModeCode, int32_t flagA4,
     g_Client.Var(WarpAddr::WarpModeCode)    = warpModeCode;
     g_Client.Var(WarpAddr::WarpSub)         = 0;
     g_Client.Var(WarpAddr::WarpTargetNpc)   = townNpcId;
+    // M8 — g_TargetZoneId = townNpcId (0x1675A9C) : EA 0x55c69a/0x55c5ee (non-Ex),
+    // homologues Default/Map37/Ex et 0x5f5d46 (teleport). WarpTargetNpc ci-dessus EST déjà
+    // g_TargetZoneId (cf. MapWarp.h WarpAddr::WarpTargetNpc == 0x1675A9C) ; on en pose ici le
+    // MIROIR consommé par SceneManager pour recharger la BONNE zone (sans lui le rechargement
+    // retombe sur la zone courante). GameState.h:545 documente pendingWarpZoneId == 0x1675A9C.
+    g_World.pendingWarpZoneId = townNpcId;                 // g_TargetZoneId 0x1675A9C
     g_Client.Var(WarpAddr::WarpFlagA0)      = 0;
     g_Client.Var(WarpAddr::WarpFlagA4)      = flagA4;
     g_Client.VarF(WarpAddr::WarpDelay)      = 0.0f;
@@ -65,13 +71,20 @@ void ArmFullWarp(FactionWarpResolution& r, int32_t warpModeCode, int32_t flagA4,
     r.townNpcId    = townNpcId;
     r.x = x; r.y = y; r.z = z;
 
-    // Net_SendPacket_Op20(&g_AutoPlayMgr, warpModeCode, townNpcId) — EA 0x55C66F / 0x55C87F /
-    //   0x55C993 / 0x55CBC9 (Town/Default/Map37/Ex) et 0x5F5DD6 (Warp_SendTeleport). Émis via
-    //   l'alias i32 Net_SendWarpRequest : townNpcId (140/138/139/165/166) >= 128 est ZÉRO-étendu
-    //   sur 32 bits (cf. Net/SendPackets.cpp — le builder int8_t partagé sign-étendrait à tort).
-    //   Émission conditionnée à nc != nullptr (comportement "résolution seule" préservé sinon).
-    //   Les 4 tirages de nonces du paquet suivent le tirage de facing ci-dessus (ordre fidèle).
-    if (nc) ts2::net::Net_SendWarpRequest(*nc, warpModeCode, townNpcId);
+    // Net_SendPacket_Op20(&g_AutoPlayMgr, dword_1675A8C, v4) — INCONDITIONNEL dans le binaire :
+    //   EA 0x55C66F / 0x55C87F / 0x55C993 / 0x55CBC9 (Town/Default/Map37/Ex) et 0x5F5DD6
+    //   (Warp_SendTeleport). Émis via l'alias i32 Net_SendWarpRequest : townNpcId
+    //   (140/138/139/165/166) >= 128 est ZÉRO-étendu sur 32 bits (cf. Net/SendPackets.cpp — le
+    //   builder int8_t partagé sign-étendrait à tort). H1 : le param `nc` valant nullptr chez TOUS
+    //   les appelants actuels, on émet via le singleton global net::g_NetClient 0x8156A0
+    //   (GlobalNetClient()) — c'est EXACTEMENT ce que fait le binaire (Op20 adresse g_NetClient
+    //   directement). Le garde `if (client)` reste une sécurité de réécriture (pointeur null tant
+    //   qu'aucune connexion n'est amorcée ; un warp n'arrive qu'en jeu, post-handshake) — pas un
+    //   écart de fidélité. Les 4 tirages de nonces d'Op20 suivent le tirage de facing ci-dessus :
+    //   l'émission désormais RÉELLE rétablit le flux RNG fidèle (auparavant ces 4 tirages étaient
+    //   sautés -> désync vs binaire).
+    ts2::net::NetClient* client = nc ? nc : ts2::net::GlobalNetClient();
+    if (client) ts2::net::Net_SendWarpRequest(*client, warpModeCode, townNpcId);
     // TODO(monde) au retour serveur (op 0x0d ZoneChangeInfo, cf. World/WorldMap.*/World_LoadMap
     //   déjà écrit ailleurs) : charger effectivement la carte cible et positionner l'acteur à
     //   (x,y,z)/facing ci-dessus, puis remettre g_MorphInProgress à 0 (observé côté
@@ -163,11 +176,12 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
             //   EA 0x55CA82 (Net_QueueMoveTo 0x5119B0) ; mode1 : Net_QueueRespawnMove(...)
             //   EA 0x55CABE (Net_QueueRespawnMove 0x5117A0) -> émetteurs op1/op0 (via Op15) du
             //   g_PlayerCmdController : module NON implémenté / NON possédé par ce front.
-            // TODO(net/state) puis Net_SendAutoHuntSync(*nc, 0, appearance68, autoHunt44)
-            //   EA 0x55CA9C (mode0) / 0x55CAD9 (mode1) — Op99 0x4BD140. appearance68=byte_16755B0
-            //   (68 o) + autoHunt44=g_AutoHuntMode 0x16755F4 (44 o) : ÉTAT POSSÉDÉ PAR LE FRONT
-            //   AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:94-98), non modélisé ici. Émettre
-            //   des blobs nuls serait INFIDÈLE (règle #6) -> laissé en TODO ancré.
+            // TODO(net/state) puis Net_SendAutoHuntSync(*client, 0, appearance68, autoHunt44)
+            //   EA 0x55CA9C (mode0) / 0x55CAD9 (mode1) — Op99 0x4BD140. Le client réseau est
+            //   désormais disponible (ts2::net::GlobalNetClient() 0x8156A0) ; le blocage restant
+            //   est l'ÉTAT : appearance68=byte_16755B0 (68 o) + autoHunt44=g_AutoHuntMode 0x16755F4
+            //   (44 o), POSSÉDÉ PAR LE FRONT AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:94-98),
+            //   non modélisé ici. Émettre des blobs nuls serait INFIDÈLE (règle #6) -> TODO ancré.
         } else {
             r.action = WarpAction::None; // mode inconnu : le binaire ne fait rien non plus
         }
@@ -188,12 +202,14 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
     }
 
     g_Client.Var(WarpAddr::InvDirtyEnable) = 0; // g_InvDirtyEnable=0  EA 0x55CB0C
-    // TODO(net/state) Net_SendAutoHuntSync(*nc, 0, appearance68, autoHunt44) — EA 0x55CB21
+    // TODO(net/state) Net_SendAutoHuntSync(*client, 0, appearance68, autoHunt44) — EA 0x55CB21
     //   (Op99 0x4BD140), pré-confirmation émise AVANT l'Op20 d'ArmFullWarp ci-dessous (ordre
-    //   binaire : Op99 PUIS Op20). appearance68=byte_16755B0 (68 o) + autoHunt44=g_AutoHuntMode
-    //   0x16755F4 (44 o) : ÉTAT POSSÉDÉ PAR LE FRONT AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:
-    //   94-98), non modélisé ici -> émettre des zéros serait INFIDÈLE (règle #6), laissé en TODO ancré.
-    //   if (nc) ts2::net::Net_SendAutoHuntSync(*nc, 0, kAppearance68, kAutoHunt44);
+    //   binaire : Op99 PUIS Op20). Le client réseau est désormais disponible
+    //   (ts2::net::GlobalNetClient() 0x8156A0) ; le blocage restant est l'ÉTAT : appearance68=
+    //   byte_16755B0 (68 o) + autoHunt44=g_AutoHuntMode 0x16755F4 (44 o), POSSÉDÉ PAR LE FRONT
+    //   AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:94-98), non modélisé ici -> émettre des zéros
+    //   serait INFIDÈLE (règle #6), laissé en TODO ancré.
+    //   if (auto* c = nc ? nc : ts2::net::GlobalNetClient()) Net_SendAutoHuntSync(*c, 0, kApp68, kAH44);
     ArmFullWarp(r, /*warpModeCode=*/7, /*flagA4=*/1, r.townNpcId, r.x, r.y, r.z, nc); // 0x55CB26..0x55CBC9
     return r;
 }

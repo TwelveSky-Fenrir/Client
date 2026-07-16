@@ -53,6 +53,20 @@ struct NetClient {
     void   StoreCipher(const Cipher& c) { xorKey = c.Key(); seq = c.Seq(); }
 };
 
+// --- Instance réseau unique (récupère la globalité du binaire) --------------
+// Le binaire n'a qu'UN objet réseau : g_NetClient 0x8156A0 (singleton adressé
+// DIRECTEMENT par les 234 builders — Net_SendPacket_Op20 0x4B5000, Op19 0x4B4E70
+// @0x4b4fc2 Net_CloseSocket(&g_NetClient), etc. — jamais reçu en paramètre). La
+// réécriture l'a niché dans NetSystem::nc_ (== App::net_.nc_) et le passe par
+// référence ; ce pointeur restaure l'accès "longue traîne" pour les émetteurs qui,
+// dans le binaire, lisent g_NetClient sans le recevoir (ex. Map_BeginWarpToFactionTown
+// 0x55C510 -> Op20). Renseigné par ConnectLoginServer/ConnectGameServer (Net/Login.cpp)
+// sur l'objet actif ; nullptr tant qu'aucune connexion n'a été amorcée.
+// NB : on stocke un POINTEUR (pas un 2e NetClient) — un second objet n'aurait ni socket
+// ni clé XOR négociée, divergeant de l'objet que remplit le handshake.
+inline NetClient* g_NetClientPtr = nullptr;                 // &g_NetClient 0x8156A0
+inline NetClient* GlobalNetClient() { return g_NetClientPtr; }
+
 // Net_CloseSocket (0x463000) : si la session login est active, la ferme et la
 // réinitialise. Reproduit à l'octet près le comportement du binaire :
 //   if (loginReady) { loginReady = 0; closesocket(sock); sock = -1; }

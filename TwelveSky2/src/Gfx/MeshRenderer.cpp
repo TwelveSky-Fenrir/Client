@@ -611,6 +611,17 @@ void MeshRenderer::resetBlendMode(uint32_t blendMode) {
 //  Ombres — Model_RenderWithShadow 0x40EEE0 / Model_BuildShadowVolume 0x40DC70
 // ===========================================================================
 
+// FRONT FX-F4 (tache ombre) : DEFERRED -- cette fonction reste NON cablee dans le chemin de dessin
+// des entites, intentionnellement (regle #3 : ne pas laisser du code reverse silencieusement mort,
+// mais ne pas non plus dessiner un effet que le binaire d'origine ne produit jamais). Chaine de
+// xrefs verifiee : Model_RenderWithShadow 0x40EEE0 n'est atteint que par SObject_DrawAnimated
+// 0x4d9050, dont les 3 seuls appelants -- Char_DrawShadow 0x580ce0, Npc_DrawMeshShadow 0x5800e0,
+// Char_DrawWeaponEffectVariantA 0x568fe0 -- ont 0 xref chacun (code mort). Le corps d'entite en jeu
+// passe par SObject_DrawEx 0x4d9330 (Char_Draw/Char_RenderModel 0x527020), qui n'appelle JAMAIS
+// l'ombre-volume. Cabler DrawModelShadow dans WorldRenderer::renderOne dessinerait donc une ombre
+// que l'original ne dessine jamais (coherent avec le bandeau WorldRenderer.h : Char_DrawShadow
+// 0 xref = ombres portees jamais dessinees ; g_ShadowsEnabled 0x18C4F14 + SetShadowParams jamais
+// appeles cote entites). La fonction reste en place, prete si une preuve de chemin vivant apparait.
 void MeshRenderer::DrawModelShadow(const SkinnedModel& model,
                                    const D3DXVECTOR3&  position,
                                    const D3DXVECTOR3&  rotationDeg,

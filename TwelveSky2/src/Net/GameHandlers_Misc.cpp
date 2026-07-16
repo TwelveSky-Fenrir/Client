@@ -29,6 +29,8 @@
 #include "Net/Login.h"         // net::ConnectGameServer 0x462A70, net::kLoginHostCom, codes kNet*
 #include "Net/SendPackets.h"   // net::Net_SendPacket_Op21 0x4B5190
 #include "Game/ClientRuntime.h"
+#include "Game/StatEngine.h"   // game::StatEngine::CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0) — M3
+#include "Game/BitPacking.h"   // game::Stat_UnpackCombined/PackCombined (0x54CE40/0x54CEB0) — M4
 #include "Game/MapWarp.h"      // game::BeginWarpToMap37/BeginWarpToFactionTown (0x62/0x8f)
 #include "Game/MotionPoolsCoordResolver.h" // game::g_CoordResolver (résolution coords warp)
 #include "Game/SocialSystem.h" // game::g_Achievements/PostAchievementNotice (AchievementNotice 0x99)
@@ -63,20 +65,19 @@ inline float    RdF32(const uint8_t* p) { float v; std::memcpy(&v, p, sizeof v);
 // Recalcul des bornes de rating d'attaque (dword_168736C/1687370/1687374/1687378 = base
 // min/cur min/base max/cur max), motif identique à Net/GameVarDispatch.cpp::
 // ratingRecalcBothClamp (cases 32/40/71 du même moteur de stats, majoritaire dans ce
-// dispatcher : 3 occurrences sur 5). Original : Char_CalcAttackRatingMin/Max (0x4CD970/
-// 0x4CE3F0) sur g_EquipSnapshotScratch (snapshot d'équipement dédié, absent de ce module) ;
-// on approx par g_World.self.atkRatingMin/Max déjà calculées par StatEngine (même
-// approximation assumée que GameVarDispatch.cpp, pour rester cohérent — PAS un nouvel
-// écart introduit ici). Utilisé par PetSlotDispatch (0x66) cases 6/7/8 (RE/
-// net_handler_notes.md : « recalcule bornes d'attaque -> dword_168736C/1687370/1687374/
-// 1687378 »).
+// dispatcher : 3 occurrences sur 5). M3 : recalcul LIVE fidèle — le binaire (0x4A5790,
+// cases 6/7/8) appelle Char_CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0) sur
+// g_EquipSnapshotScratch à CHAQUE appel ; on reproduit via StatEngine::CalcAttackRatingMin/
+// Max(g_World.self, g_World.db) (mêmes EA 0x4CD970/0x4CE3F0), comme GameVarDispatch.cpp.
+// Utilisé par PetSlotDispatch (0x66) cases 6/7/8.
 void RecalcTalismanAttackRating() {
-    const int32_t mn = game::g_World.self.atkRatingMin;
-    game::g_Client.Var(0x168736C) = mn;                                          // base min
-    if (game::g_Client.VarGet(0x1687370) > mn) game::g_Client.Var(0x1687370) = mn; // cur min (clamp)
-    const int32_t mx = game::g_World.self.atkRatingMax;
-    game::g_Client.Var(0x1687374) = mx;                                          // base max
-    if (game::g_Client.VarGet(0x1687378) > mx) game::g_Client.Var(0x1687378) = mx; // cur max (clamp)
+    // 0x4A59BF.. : dword_168736C = Char_CalcAttackRatingMin(...) ; clamp dword_1687370.
+    const int32_t mn = game::StatEngine::CalcAttackRatingMin(game::g_World.self, game::g_World.db); // 0x4CD970
+    game::g_Client.Var(0x168736C) = mn;                                          // dword_168736C base min
+    if (game::g_Client.VarGet(0x1687370) > mn) game::g_Client.Var(0x1687370) = mn; // dword_1687370 cur min (clamp)
+    const int32_t mx = game::StatEngine::CalcAttackRatingMax(game::g_World.self, game::g_World.db); // 0x4CE3F0
+    game::g_Client.Var(0x1687374) = mx;                                          // dword_1687374 base max
+    if (game::g_Client.VarGet(0x1687378) > mx) game::g_Client.Var(0x1687378) = mx; // dword_1687378 cur max (clamp)
 }
 } // namespace
 
@@ -360,36 +361,51 @@ void RegisterMiscHandlers(NetSystem& sys) {
             g_Client.inv.weight -= 100000000;  // g_InvWeight -= 1e8
             g_Client.msg.System(Str(1511));
             break;
-        case 6:  // active un attribut de talisman (recalcul AR)
-            if (p.value != 0 && slot >= 0) {
-                // TODO(state): « pose l'attribut » exact — Stat_UnpackCombined(v,hi,lo) sur
-                //   dword_1675664[slot] (slot<10) ou dword_167568C[slot] (slot>=10) puis
-                //   écriture d'un champ d'attribut cible non identifié précisément dans
-                //   RE/net_handler_notes.md (juste « pose l'attribut », pas le champ exact ni
-                //   la formule hi/lo -> attribut) : NE PAS FORCER une correspondance devinée.
-                //   Game/BitPacking.h fournit Stat_UnpackCombined/PackCombined (prêtes à
-                //   l'emploi dès que le champ cible sera confirmé).
-                RecalcTalismanAttackRating();
-                g_Client.msg.System(Str(2165));
+        case 6:  // active un attribut de talisman (recalcul AR). 0x4A58AE
+            if (p.value != 0) {                                   // 0x4A58AE : if (v13)
+                if (slot >= 0) {                                  // 0x4A58DD
+                    int32_t hi, lo, packed;
+                    if (slot >= 10) {                             // 0x4A58F9
+                        // Unpack dword_1675664[slot], force lo=0, repack, écrit v12.
+                        game::Stat_UnpackCombined(g_Client.VarGet(0x1675664 + static_cast<uint32_t>(slot) * 4u), hi, lo); // 0x54CE40
+                        game::Stat_PackCombined(hi, 0, packed);   // v15=0 ; 0x54CEB0
+                        g_Client.Var(0x1675664 + static_cast<uint32_t>(slot) * 4u) = packed;              // 0x4A599E
+                        g_Client.Var(0x167568C + static_cast<uint32_t>(slot) * 4u) = static_cast<int32_t>(p.value); // 0x4A59AE
+                    } else {
+                        game::Stat_UnpackCombined(g_Client.VarGet(0x167568C + static_cast<uint32_t>(slot) * 4u), hi, lo); // 0x4A5916
+                        game::Stat_PackCombined(hi, 0, packed);   // 0x4A5933
+                        g_Client.Var(0x167568C + static_cast<uint32_t>(slot) * 4u) = packed;              // 0x4A5940
+                        g_Client.Var(0x16756B4 + static_cast<uint32_t>(slot) * 4u) = static_cast<int32_t>(p.value); // 0x4A5950
+                    }
+                    RecalcTalismanAttackRating();                 // 0x4A59BF..
+                    g_Client.msg.System(Str(2165));               // 0x4A5A25
+                }
+                // slot<0 : no-op (aucun message) — fidèle à 0x4A58D1 "return result"
             } else {
-                g_Client.msg.System(Str(2166));
+                g_Client.msg.System(Str(2166));                  // 0x4A58C1 : value==0 UNIQUEMENT
             }
             break;
-        case 7:  // pose une valeur dans le slot (recalcul AR)
-            if (slot >= 0) {
-                g_Client.Var(0x167568C + static_cast<uint32_t>(slot) * 4u) =
-                    static_cast<int32_t>(p.value);
+        case 7:  // pose une valeur dans le slot (recalcul AR). 0x4A5A3C
+            if (slot < 0) break;                                  // 0x4A5A41 : no-op
+            if (slot >= 10) {
+                if (slot >= 20) break;                            // 0x4A5A7E : no-op
+                g_Client.Var(0x167568C + static_cast<uint32_t>(slot) * 4u) = static_cast<int32_t>(p.value); // 0x4A5A88
+            } else {
+                g_Client.Var(0x16756B4 + static_cast<uint32_t>(slot) * 4u) = static_cast<int32_t>(p.value); // 0x4A5A65
             }
-            RecalcTalismanAttackRating();
-            g_Client.msg.System(Str(2213));
+            RecalcTalismanAttackRating();                         // 0x4A5AA0..
+            g_Client.msg.System(Str(2213));                      // 0x4A5B07
             break;
-        case 8:  // idem 7, message différent
-            if (slot >= 0) {
-                g_Client.Var(0x167568C + static_cast<uint32_t>(slot) * 4u) =
-                    static_cast<int32_t>(p.value);
+        case 8:  // idem 7, message différent. 0x4A5B1E
+            if (slot < 0) break;                                  // 0x4A5B23 : no-op
+            if (slot >= 10) {
+                if (slot >= 20) break;                            // 0x4A5B5F : no-op
+                g_Client.Var(0x167568C + static_cast<uint32_t>(slot) * 4u) = static_cast<int32_t>(p.value); // 0x4A5B6A
+            } else {
+                g_Client.Var(0x16756B4 + static_cast<uint32_t>(slot) * 4u) = static_cast<int32_t>(p.value); // 0x4A5B46
             }
-            RecalcTalismanAttackRating();
-            g_Client.msg.System(Str(2181));
+            RecalcTalismanAttackRating();                         // 0x4A5B82..
+            g_Client.msg.System(Str(2181));                      // 0x4A5BE9
             break;
         default: break;
         }

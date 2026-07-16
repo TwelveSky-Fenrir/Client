@@ -819,16 +819,19 @@ void GameHud::DrawTextPass(int hp, int maxHp, int mp, int maxMp, int level, int 
     font_.DrawTextStyled(buf, layout_.portrait.x + 4, layout_.portrait.y + 4,
                          kTextColor, gfx::kStyleShadow);
 
-    // Libellés cur/max centrés sur chaque barre.
-    auto centeredLabel = [&](const HudRect& r, int cur, int mx) {
+    // Valeurs "%d/%d" HP/MP ALIGNÉES À DROITE sur le bord x=207, comme le binaire
+    // (et comme EXP/Maîtrise plus bas dans ce fichier). HP : x=0xCF-largeur, y=7
+    // (UI_GameHud_Render 0x67A3C0 @0x67A4DC 'mov ecx,0CFh; sub ecx,eax' / push 7 @0x67A4C6).
+    // MP : x=0xCF-largeur, y=21 (@0x67A57E 'mov edx,0CFh; sub edx,ecx' / push 15h @0x67A568).
+    // L'ancien rendu centré sur la barre (centeredLabel) était infidèle.
+    auto rightAlignedLabel = [&](int cur, int mx, int y) {
         std::snprintf(buf, sizeof(buf), "%d/%d", cur, mx);
         const int tw = font_.MeasureText(buf);
-        const int tx = r.x + (r.w - tw) / 2;
-        const int ty = r.y + (r.h - 12) / 2; // hauteur police par défaut = 12
-        font_.DrawTextStyled(buf, tx, ty, kTextColor, gfx::kStyleShadow);
+        font_.DrawTextStyled(buf, layout_.frame.x + 207 - tw, layout_.frame.y + y,
+                             kTextColor, gfx::kStyleShadow);
     };
-    centeredLabel(layout_.hpBar, hp, maxHp);
-    centeredLabel(layout_.mpBar, mp, maxMp);
+    rightAlignedLabel(hp, maxHp, 7);  // HP : y=7  @0x67A4C6
+    rightAlignedLabel(mp, maxMp, 21); // MP : y=21 @0x67A568
 
     // §1 texte EXP + Maîtrise (mission W4-F2, UI_GameHud_Render 0x67A690-0x67A782).
     // Recalcul local (idempotent, coût nul) : DrawTextPass ne reçoit pas progress/span.

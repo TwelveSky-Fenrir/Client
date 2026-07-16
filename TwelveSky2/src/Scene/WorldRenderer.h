@@ -416,6 +416,18 @@ private:
     void renderOne(const DrawableEntity& ent, const game::DrawCullContext& cull,
                   const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXMATRIX& viewProj);
 
+    // FRONT FX-F4 (M1) : slots shaders REELS du npk GXDEffect (Shader03 VS03_SkinnedLit 0x409AB0
+    // + Shader04 PS04_Tex 0x409CC0 + VS15 volume d'ombre 0x40ACB0), charges depuis
+    // "./GXDEFFECT/GXDEffect.npk" (cle XTEA {1,4,4,1}, cf. Shader_LoadVS03 0x409AB0 : Npk_OpenFile
+    // + Npk_FindEntryByName("Shader03.fx") + j_D3DXCompileShader "Main"/"vs_2_0" + GetConstantByName
+    // mKeyMatrix/mWorldViewProjMatrix/mLightDirection/mLightAmbient/mLightDiffuse). POSSEDE ici
+    // (duree de vie = WorldRenderer) ; meshRenderer_.AttachShaderSet(&shaderSet_) n'en prend qu'une
+    // reference NON possedante. Sans ce cablage, DrawSkinnedSubset retombe sur le HLSL reconstruit
+    // (fallback) et les vrais Shader03/04 du npk ne sont jamais utilises (cf. MeshRenderer.cpp:510).
+    // DECLARE AVANT meshRenderer_ : les membres etant detruits en ordre inverse de declaration,
+    // ceci garantit que ~MeshRenderer (qui lache sa reference) s'execute AVANT ~ShaderSet (qui
+    // libere VS/PS/CT/decl) meme sans Shutdown() explicite.
+    gfx::ShaderSet    shaderSet_;
     gfx::MeshRenderer meshRenderer_;
     gfx::Font         font_;
     std::unique_ptr<gfx::ModelCache> modelCache_; // cf. Init() pour le choix de gameDataDir="."

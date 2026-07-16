@@ -624,7 +624,28 @@ void App::FrameTick() {
         // Camera_UpdateFromInput(&g_CameraCtrl) 0x462619 : 1×/frame gardée, AVANT la boucle
         // Update. Émet le déplacement WASD (Net_SendCmd_251), gère caméra/quickslots/F12 et
         // route le reliquat clavier vers scene_.OnKeyDown.
+        //
+        // M7 — Camera_UpdateFromInput 0x50B7D0 fait un read-modify-write IN SITU sur
+        // flt_1687330/34/38 (self entity +252 = game::g_World.Self().x/y/z, cf. GameState.h:135) :
+        // il LIT la position self, y accumule le delta WASD (@0x50b870..0x50b929) puis la
+        // reinjecte et l'envoie via Net_SendCmd_251. selfPos_ de PlayerInputController est un
+        // modele local (defaut {0,0,0}) ; sans cette synchro, WASD partirait toujours de
+        // l'origine (position serveur ignoree). On seede AVANT Update et on reinjecte APRES,
+        // exactement comme le binaire opere sur le global in situ. Gate scene==InGame : (a)
+        // fidele au gate g_SceneMgr==6 de 0x50b7ec ; (b) evite que Self() (qui auto-cree
+        // players[0] si vide, GameState.h:552) ne fabrique un self fantome pendant Intro/Login.
+        // // 0x50B7D0 / flt_1687330 (self+252)
+        const bool inGameForSelf = (scene_.Current() == Scene::InGame);
+        if (inGameForSelf) {
+            const game::PlayerEntity& self = game::g_World.Self();  // dword_1687234[0] (self)
+            g_playerInput.SetSelfPosition(self.x, self.y, self.z);  // <- flt_1687330/34/38
+        }
         g_playerInput.Update(input_, camera_, net_.Client(), scene_.Current());
+        if (inGameForSelf) {
+            const float* p = g_playerInput.SelfPosition();          // -> flt_1687330/34/38 mutes
+            game::PlayerEntity& self = game::g_World.Self();
+            self.x = p[0]; self.y = p[1]; self.z = p[2];            // reinjection in situ (0x50b870..)
+        }
 
         // Boucle de rattrapage (do/while : on est déjà dans la garde) — 0x46263B..0x462677.
         do {

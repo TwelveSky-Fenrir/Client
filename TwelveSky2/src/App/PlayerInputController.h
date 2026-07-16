@@ -36,7 +36,7 @@ namespace ts2 {
 
 // Forward-decl (le .h reste leger : la definition complete de NetClient est tiree
 // par le .cpp via Net/SendPackets.h -> Net/NetClient.h).
-namespace net { class NetClient; }
+namespace net { struct NetClient; }
 
 // Etat de controle miroir de g_CameraCtrl 0x1668F60 (seuls les champs de CONTROLE ;
 // les champs souris/zoom +52..+88 vivent dans gfx::Camera). Defauts = Camera_Init

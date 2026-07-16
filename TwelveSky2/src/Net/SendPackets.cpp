@@ -1,5 +1,6 @@
 // Net/SendPackets.cpp — définitions des builders sortants (généré).
 #include "Net/SendPackets.h"
+#include <cstring>   // std::memcpy (Net_SendCmd_251, Net_SendUdpReport)
 
 namespace ts2::net {
 
@@ -1585,10 +1586,20 @@ void Net_SendVaultReq_255(NetClient& nc, int8_t a1, int8_t a2, int8_t a3, int8_t
 }
 
 void Net_SendCmd_251(NetClient& nc, const void* data) {
-    // opcode 0xFB (251) — requete d'action : charge utile brute de 12 octets
+    // Net_SendCmd_251 0x592870 -> Net_SendPacket_Op19 0x4B4E70 (opcode 0x13), PAS un
+    // opcode 251 à plat. Binaire : _BYTE v2[108]; Crt_Memcpy(v2, data, 12) (EA 0x592894) ;
+    // Net_SendPacket_Op19(&g_AutoPlayMgr, 507, v2) (EA 0x5928ae).
+    // Op19 (0x4B4E70) : opcode 0x13 @+8 ; sous-code 507=0x1FB int32 LE @+9 (Crt_Memcpy(this+9,
+    //   &a2,4) EA 0x4b4f0f) ; charge 100 o @+13 (Crt_Memcpy(this+13,a3,0x64) EA 0x4b4f24) ;
+    //   *(this+15000)=113 (longueur fil 9+4+100) ; XOR clé complet ; ++seq.
+    // Les 12 premiers octets du bloc de 100 = data ; les 88 restants = pile v2 NON initialisée
+    //   côté binaire (fidèlement remplacés par des zéros ici, aucune fuite de pile reproduite).
     PacketWriter w;
-    w.WriteBytes(data, 12);
-    w.Finalize(0xFB, DefaultRng(), nc.xorKey, nc.seq);
+    w.WriteI32(507);                 // this+9 : sous-code 0x1FB (i32, PAS char4LE ni u8 -> 507 intact)
+    uint8_t block[100] = {0};        // bloc payload 100 o (v2, 12 utiles + 88 à 0)
+    std::memcpy(block, data, 12);    // Crt_Memcpy(v2, data, 12) EA 0x592894
+    w.WriteBytes(block, 100);        // this+13 : 100 octets
+    w.Finalize(0x13, DefaultRng(), nc.xorKey, nc.seq); // opcode 19, longueur totale 113
     NetSend(nc, w.Data(), (int)w.Size());
 }
 

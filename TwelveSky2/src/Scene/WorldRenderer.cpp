@@ -131,6 +131,20 @@ bool WorldRenderer::Init(gfx::Renderer& renderer, int screenW, int screenH) {
     // "G01_GFONT\..." deja consommes ailleurs dans ClientSource sans prefixe).
     modelCache_ = std::make_unique<gfx::ModelCache>(meshRenderer_, std::string("."));
 
+    // FRONT FX-F4 (M1) : charge les shaders REELS du npk et les cable sur meshRenderer_ AVANT la
+    // 1ere frame. Best-effort comme le cube/police : un echec (npk absent) laisse meshRenderer_ sur
+    // son fallback HLSL reconstruit, sans bloquer l'init. Ancre IDA : GXD_DeviceCreate 0x401610
+    // charge les 12 Shader_LoadVSxx/PSxx en sequence ; ShaderSet::LoadFromFile reproduit ce chemin
+    // (defaut "./GXDEFFECT/GXDEffect.npk", cle {1,4,4,1} -- cf. Shader_LoadVS03 0x409AB0 : Npk_OpenFile
+    // + Npk_FindEntryByName("Shader03.fx")). AttachShaderSet avec un ShaderSet valide (VS03/PS04)
+    // suffit a basculer DrawSkinnedSubset sur les vrais shaders (cf. MeshRenderer.cpp:510).
+    if (shaderSet_.LoadFromFile(device_)) {
+        meshRenderer_.AttachShaderSet(&shaderSet_); // slots VS03/PS04 reels (0x409AB0/0x409CC0)
+        TS2_LOG("WorldRenderer : ShaderSet npk cable (Shader03/04 reels).");
+    } else {
+        TS2_WARN("WorldRenderer : GXDEffect.npk indisponible -> shaders HLSL reconstruits (fallback).");
+    }
+
     if (!buildPlaceholderCube(device_))
         TS2_WARN("WorldRenderer::Init : placeholder cube indisponible (D3DXCreateBox).");
     if (!font_.Init(device_, screenW, screenH))
@@ -146,6 +160,10 @@ void WorldRenderer::Shutdown() {
     modelCache_.reset(); // ~ModelCache -> Clear() -> libere VB/IB/textures GPU residents
     SafeRelease(cubeMesh_);
     meshRenderer_.Shutdown();
+    // FRONT FX-F4 (M1) : ORDRE IMPERATIF -- meshRenderer_.Shutdown() a deja lache sa reference
+    // (shaderSet_ interne = nullptr, cf. MeshRenderer.cpp:195), on peut donc liberer VS/PS/CT/decl
+    // du npk sans qu'aucun draw ne reference des shaders deja liberes.
+    shaderSet_.Release();
     device_ = nullptr;
     ready_  = false;
 }

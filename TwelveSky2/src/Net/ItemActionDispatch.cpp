@@ -27,21 +27,28 @@
 //     23,24  | C SpecialContainer  | 0x46AC7F  | ranger dans conteneur special
 //     26     | D AutoPotionBelt    | 0x46AE24  | ceinture auto-potion
 //     35,36  | E ThrowWeaponRack   | 0x46AF76  | rack d'armes de jet / familier
-//     25,27  | (defaut)            | 0x46B168  | consommable : mega-switch d'effets
-//     30,33,34| (defaut)           |           |
-//    hors 5..36 (defaut)           |           |
+//     25,27  | (cascade route 5)   | 0x46B10F  | consommable : mega-switch d'effets
+//     30,33,34| (cascade route 5)   |           | (def_46A44F, PAS l'epilogue 0x46B168)
+//    hors 5..36 (cascade directe)  | 0x46B10F  |
 //   ---------------------------------------------------------------------------
 //
-//  Tous les blocs, apres leur traitement, retombent sur le DEFAUT (def_46B168,
-//  0x46B168) : un ENORME sous-switch (>1000 cas, sur var_480 = identifiant d'effet
-//  de l'objet) qui applique l'effet consommable (potions, buffs, teleports,
-//  transformations, etc.) et consomme la pile. Hors perimetre ici -> TODO precis.
+//  DEUX cibles de saut DISTINCTES (correction H3, prouvee IDA 0x46A426) :
+//    - def_46B168 (label 0x487CFE, code 0x46B168) = EPILOGUE / no-op de RETOUR.
+//      Tous les blocs A-E (et leurs sorties anticipees flag!=0) y sautent : ils
+//      RETOURNENT, ils ne tombent PAS sur la cascade.
+//    - def_46A44F (0x46B10F) = LA CASCADE : un ENORME sous-switch (>1000 cas, sur
+//      var_480 = item->itemId) qui applique l'effet consommable (potions, buffs,
+//      teleports, transformations, etc.). Elle n'est atteinte QUE par la route 5 du
+//      switch externe (typeCodes 25,27,30,33,34) ET par les typeCodes hors [5,36]
+//      (46A435 cmp 0x1F ; 46A43C ja def_46A44F). Hors perimetre ici -> voir
+//      Net/ItemEffectDispatch.cpp.
 //
 //  Ce module implemente FIDELEMENT : l'en-tete, le routage externe, le bloc A
-//  (apprentissage de competence, complet), le bloc B (echange d'equipement), et
-//  les stockages + vidage de cellule des blocs C/D/E. Les queues profondes
-//  (recalcul de stats, formatage de messages localises, mega-switch d'effets)
-//  sont laissees en // TODO(@EA).
+//  (apprentissage de competence, complet), le bloc B (echange d'equipement, avec
+//  l'etat FSM self.mode pose au tail = g_SelfActionState 0x1687328), et les
+//  stockages + vidage de cellule des blocs C/D/E. Les queues profondes (recalcul
+//  de stats, formatage de messages localises, mega-switch d'effets) sont laissees
+//  en // TODO(@EA).
 //
 //  Etat mute : g_Client.inv (grille), g_World.self (equip/points de comp.), et la
 //  longue traine de globals SoA via g_Client.Var(adresseOrigine).
@@ -243,6 +250,12 @@ void HandleEquipSwap(const ItemInfo* item, uint32_t row, uint32_t col) {
     g_Client.Var(kInvAux1 + (row % 100) * 0x300 + (col % 100) * 0x0C) = oldAux1;
     g_Client.Var(kInvAux2 + (row % 100) * 0x300 + (col % 100) * 0x0C) = oldAux2;
 
+    // Tail bloc B (equip-swap reussi) : etat FSM de self. (0x46abcb)
+    //   mov ds:g_SelfActionState(0x1687328), 1  -- valeur 1, inconditionnelle sur le
+    //   chemin swap-reussi. self.mode ≡ g_SelfActionState (lu par CombatResultApply
+    //   quand mode in {1,5,6,7}). Sans cet ecrivain, SelfModeDeclenche() lit toujours 0.
+    g_World.self.mode = 1;                                      // (0x46abcb) g_SelfActionState = 1
+
     // TODO(@0x46AB16..0x46B168) : queue du bloc B — recalcul des stats derivees
     //   (Char_CalcAttackRatingMin/Max 0x4CD970/0x4CE3F0, snapshot g_EquipSnapshotScratch),
     //   effet sonore et rafraichissement UI, avant de tomber sur le defaut.
@@ -336,46 +349,45 @@ void ApplyItemActionDispatch(const uint8_t* payload, uint32_t len) {
     if (!item) return;                                      // (0x46A40D) nul -> retour
 
     // --- Switch externe sur item->typeCode (ITEM_INFO +0xBC). (0x46A426) ---
-    // Hors 5..36 : on saute l'aiguillage et on tombe directement sur le defaut.
-    // Chaque bloc, apres traitement (ou echec via `break`), reconverge sur le defaut.
+    // H3 (BUG CRITIQUE corrige) : la cascade def_46A44F 0x46B10F (mega-switch d'effets)
+    // est atteinte UNIQUEMENT par la route 5 (typeCodes 25,27,30,33,34) et par les
+    // typeCodes hors [5,36]. Les blocs A-E, eux, RETOURNENT (ils sautent a l'epilogue
+    // def_46B168 0x487CFE, DISTINCT de la cascade) — ils ne doivent PAS enchainer sur
+    // ApplyItemEffectDispatch.
     const uint32_t typeCode = item->typeCode;
-    if (typeCode >= 5 && typeCode <= 36) {
-        switch (kTypeRoute[typeCode - 5]) {
-        case 0: // A — apprentissage de competence
-            if (flag != 0) break;                           // (0x46A456) flag!=0 -> defaut
-            HandleSkillLearn(item, row, col);
-            break;
-        case 1: // B — echange d'equipement
-            if (flag != 0) break;                           // (0x46A8A1) flag!=0 -> defaut
-            HandleEquipSwap(item, row, col);
-            break;
-        case 2: // C — conteneur special
-            HandleSpecialContainer(item, flag, row, col, dstD);
-            break;
-        case 3: // D — ceinture auto-potion
-            if (flag != 0) break;                           // (0x46AE24) flag!=0 -> defaut
-            HandleAutoPotionBelt(item, row, col, dstD);
-            break;
-        case 4: // E — rack d'armes de jet / familier
-            HandleThrowWeaponRack(item, flag, row, col, dstD);
-            break;
-        case 5: // defaut direct
-        default:
-            break;
-        }
+
+    // Hors [5,36] : 46A435 cmp var_474,0x1F ; 46A43C ja def_46A44F -> cascade directe.
+    if (typeCode < 5 || typeCode > 36) {
+        ApplyItemEffectDispatch(item, flag, row, col, dstD);    // def_46A44F 0x46B10F
+        return;
     }
 
-    // =======================================================================
-    //  DEFAUT def_46B168 (0x46B168) — mega-switch d'effets consommables.
-    //  Tous les blocs A..E ci-dessus retombent sur ce defaut (le binaire y `jmp`
-    //  inconditionnellement) : on l'appelle donc en fin, `flag` transmis tel quel
-    //  (chaque handler re-teste var_414, fidele au binaire).
-    //
-    //  Cle du switch (def_46A44F 0x46B10F) : var_480 = ITEM_INFO[+0] == item->itemId.
-    //  Aiguillage par plages sur item->itemId (sous-tables byte_487E90/488014/4882F8/
-    //  4884B4/488584/4886F0), handlers 0x46B658.. . Voir Net/ItemEffectDispatch.cpp.
-    ApplyItemEffectDispatch(item, flag, row, col, dstD);
-    return;
+    switch (kTypeRoute[typeCode - 5]) {                         // byte_487D28[typeCode-5] -> jpt_46A44F 0x487D10
+    case 0: // A — apprentissage. flag!=0 -> def_46B168 (epilogue) ; sinon traite -> def_46B168.
+        if (flag == 0) HandleSkillLearn(item, row, col);        // 0x46A456 ; 0x46A45F jmp def_46B168
+        return;                                                 // toutes sorties bloc A -> def_46B168 (RETOUR, pas cascade)
+    case 1: // B — echange d'equipement. flag!=0 -> def_46B168.
+        if (flag == 0) HandleEquipSwap(item, row, col);         // 0x46A8A1
+        return;
+    case 2: // C — conteneur special (gere flag en interne). 0x46AC7F -> def_46B168.
+        HandleSpecialContainer(item, flag, row, col, dstD);
+        return;
+    case 3: // D — ceinture auto-potion. flag!=0 -> def_46B168.
+        if (flag == 0) HandleAutoPotionBelt(item, row, col, dstD); // 0x46AE24
+        return;
+    case 4: // E — rack d'armes de jet / familier (gere flag en interne). 0x46AF76 -> def_46B168.
+        HandleThrowWeaponRack(item, flag, row, col, dstD);
+        return;
+    case 5: // route defaut du switch externe = def_46A44F cascade (typeCodes 25,27,30,33,34).
+    default:
+        // =======================================================================
+        //  CASCADE def_46A44F (0x46B10F) — mega-switch d'effets consommables.
+        //  Cle du switch : var_480 = ITEM_INFO[+0] == item->itemId. Aiguillage par
+        //  plages sur item->itemId (sous-tables byte_487E90/488014/4882F8/4884B4/
+        //  488584/4886F0), handlers 0x46B658.. . Voir Net/ItemEffectDispatch.cpp.
+        ApplyItemEffectDispatch(item, flag, row, col, dstD);    // def_46A44F 0x46B10F
+        return;
+    }
 }
 
 } // namespace ts2::game

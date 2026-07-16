@@ -96,6 +96,8 @@ constexpr uint32_t kBuffTimer_16746F0 = 0x16746F0; // dword_16746F0 (+= 0xB4 = 1
 
 // Numero de serie « objet transforme » (loc_46C612 : InstanceSerial = 100000001).
 constexpr uint32_t kTransformSerial = 0x5F5E101;
+// Variante loc_46C681 (tpl 1036) : InstanceSerial = 100000002 (DIFFERENT de 1035).
+constexpr uint32_t kTransformSerial2 = 0x5F5E102; // 46C6F8 : g_InvGrid_InstanceSerial = 0x5F5E102
 
 // --- Ids de chaines localisees 005.DAT (StrTable005_Get), valeurs exactes du binaire ---
 constexpr int kMsg_RatingMin   = 0x25F; // loc_46B658
@@ -106,6 +108,7 @@ constexpr int kMsg_DecrStack   = 0x122; // loc_46BABE (tpl 1026)
 constexpr int kMsg_Generic386  = 0x386; // loc_46BC20 (tpl 1109) et loc_46BD82 (tpl 591)
 constexpr int kMsg_Respec      = 0x124; // loc_46C3FC
 constexpr int kMsg_Transform   = 0x265; // loc_46C59B
+constexpr int kMsg_Transform2  = 0x266; // loc_46C681 (tpl 1036) : msg 0x266 (=614)
 constexpr int kMsg_Blocked     = 0x264; // loc_46C56C/loc_46C653 (branche flag!=0)
 constexpr int kMsg_BuffTimer   = 0x128; // loc_46C81F
 constexpr int kMsg_BuffTimer2  = 0x556; // loc_46C935
@@ -338,14 +341,19 @@ void H_Transform1035(uint32_t flag, uint32_t row, uint32_t col, uint32_t dstD) {
 }
 
 // loc_46C653 (tpl 1036) : si flag!=0 -> msg 0x264 ; sinon (loc_46C681) remplace la cellule
-//   par dstD puis Count = 0 (puis suite NON décompilée dans ce jalon).
-void H_SysMsgOrTransform1036(uint32_t flag) {
+//   par l'objet cible dstD : itemId = dstD ; Count = 0 ; Durability = 0 ;
+//   InstanceSerial = 100000002 (0x5F5E102, ≠ 1035). GridX/GridY conserves. Son ; msg 0x266.
+void H_SysMsgOrTransform1036(uint32_t flag, uint32_t row, uint32_t col, uint32_t dstD) {
     if (flag != 0) {                                    // 46C653
         PlayUseSfxAndMsg(kMsg_Blocked);                 // 46C662 (msg 0x264)
         return;
     }
-    // TODO [loc_46C681 0x46C681] : branche flag==0 (transformation) non entierement
-    //   decompilee (itemId=dstD, Count=0, puis suite) -> ne pas inventer.
+    InvCell& cell = g_Client.inv.At(row % 100, col % 100); // loc_46C681 (var_42C row *0x600, var_43C col *0x18)
+    cell.itemId     = dstD;                             // 46C69C : g_InvMain = var_428
+    cell.flag       = 0;                                // 46C6B8 : g_InvGrid_Count = 0
+    cell.color      = 0;                                // 46C6D8 : g_InvGrid_Durability = 0
+    cell.durability = kTransformSerial2;                // 46C6F8 : g_InvGrid_InstanceSerial = 0x5F5E102
+    PlayUseSfxAndMsg(kMsg_Transform2);                  // 46C70E (son) + 46C71A (msg 0x266)
 }
 
 // --- Archetype « timer/buff a duree » ---
@@ -399,7 +407,7 @@ void ApplyItemEffectDispatch(const ItemInfo* item, uint32_t flag,
         case 0x02: H_DecrementStack(flag, row, col, kMsg_DecrStack); return; // loc_46BABE (tpl 1026)
         case 0x04: H_FullStatRespec(flag, row, col);    return;  // loc_46C3FC (tpl 1028)
         case 0x05: H_Transform1035(flag, row, col, dstD); return; // loc_46C56C (tpl 1035)
-        case 0x06: H_SysMsgOrTransform1036(flag);       return;  // loc_46C653 (tpl 1036)
+        case 0x06: H_SysMsgOrTransform1036(flag, row, col, dstD); return; // loc_46C653 (tpl 1036)
         case 0x08: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return; // loc_46C81F (tpl 1041)
         // 0x03 loc_46BDC6 ; 0x07 loc_46C739 ; 0x09..0x2B : handlers non portes.
         // TODO [jpt_46B1BA 0x487F60] : cases 0x03,0x07,0x09..0x2B (loc_46BDC6/46C739/...).

@@ -106,6 +106,10 @@ bool SendAll(SOCKET s, const uint8_t* buf, int len) {
 // Net_ConnectLoginServer 0x462870
 // ---------------------------------------------------------------------------
 int ConnectLoginServer(NetClient& nc, const char* host, uint16_t port) {
+    // Publie l'objet actif comme singleton global (&g_NetClient 0x8156A0) : dans le
+    // binaire l'objet réseau est unique et adressé directement par les builders qui ne
+    // le reçoivent pas (cf. Net/NetClient.h g_NetClientPtr). `nc` == App::net_.nc_.
+    g_NetClientPtr = &nc;                     // &g_NetClient 0x8156A0
     if (nc.loginReady)                       // *(this+8) déjà positionné
         return kNetErrState;                 // *a4 = 1
 
@@ -212,6 +216,32 @@ int LoginRequest(NetClient& nc, const char* username, const char* password,
         std::memcpy(g_CharRecords[0], nc.recvBuf + 367,   kCharRecordSize);
         std::memcpy(g_CharRecords[1], nc.recvBuf + 10456, kCharRecordSize);
         std::memcpy(g_CharRecords[2], nc.recvBuf + 20545, kCharRecordSize);
+
+        // 3 deltas de solde ajoutés sur record[i]+16 (Net_LoginRequest 0x51B8E0) :
+        //   dword_1669390[0] += v15  (EA 0x51bd15) — 0x1669390-0x1669380(record[0]) = 16
+        //   dword_166BAF8    += v16  (EA 0x51bd26) — 0x166BAF8-0x166BAE8(record[1]) = 16
+        //   dword_166E260    += v17  (EA 0x51bd38) — 0x166E260-0x166E250(record[2]) = 16
+        // Sources v15/v16/v17 = recvBuf+30634/30638/30642 (EA 0x51bc9a/0x51bcb0/0x51bcc6,
+        // MEMORY[0x81CE6A/6E/72] - recvBuf base 0x8156C0 = 0x778A/0x778E/0x7792 = 30634/38/42).
+        // Le binaire lit/écrit les globales record[i] directement ; ici les fiches sont
+        // copiées dans g_CharRecords -> on applique le delta au même champ +16 (int32).
+        int32_t d0, d1, d2;
+        std::memcpy(&d0, nc.recvBuf + 30634, 4); // v15 EA 0x51bc9a
+        std::memcpy(&d1, nc.recvBuf + 30638, 4); // v16 EA 0x51bcb0
+        std::memcpy(&d2, nc.recvBuf + 30642, 4); // v17 EA 0x51bcc6
+        auto addAt16 = [](uint8_t* rec, int32_t d) {
+            int32_t v; std::memcpy(&v, rec + 16, 4); v += d; std::memcpy(rec + 16, &v, 4);
+        };
+        addAt16(g_CharRecords[0], d0); // record[0]+16 (dword_1669390)
+        addAt16(g_CharRecords[1], d1); // record[1]+16 (dword_166BAF8)
+        addAt16(g_CharRecords[2], d2); // record[2]+16 (dword_166E260)
+        // Notice « gain crédité » si un delta > 0 (EA 0x51bd57..0x51bd75 : UI_NoticeDlg_Open
+        // 0x5C0280 + StrTable005_Get(g_LangId, 1785) 0x4C1D10) = sous-système UI/StrTable NON
+        // possédé par ce front -> OMIS (documenté). TODO [ancre 0x51bd68/0x51bd75] : brancher la
+        // notice quand la couche UI LoginScene sera câblée.
+        // OMIS aussi : les 3 int32 de queue dword_167616C/unk_1676170/unk_1676174 <- recvBuf+
+        // 30647/30651/30655 (EA 0x51bcda/0x51bcee/0x51bd02) — globales séparées non modélisées,
+        // hors champ des fiches (aucun += dans le binaire, simple persistance).
     }
     return result;
 }
@@ -220,6 +250,10 @@ int LoginRequest(NetClient& nc, const char* username, const char* password,
 // Net_ConnectGameServer 0x462A70  (handshake d'authentification serveur de jeu)
 // ---------------------------------------------------------------------------
 int ConnectGameServer(NetClient& nc, const char* host, uint16_t port, HWND notifyWnd) {
+    // Idem ConnectLoginServer : publie l'objet actif comme singleton global
+    // (&g_NetClient 0x8156A0). Garantit que GlobalNetClient() est valide avant tout
+    // warp (qui ne survient qu'en jeu, post-handshake).
+    g_NetClientPtr = &nc;                      // &g_NetClient 0x8156A0
     if (!nc.loginReady)                        // *(this+8) requis
         return kNetErrState;                   // *a4 = 1
 

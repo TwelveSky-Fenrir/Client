@@ -700,19 +700,40 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
     dev_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
 
-    // Lightmap stage 1 (uv1) si présente : MODULATE(4), pas MODULATE2X. @0x698f54 / @0x698f68.
-    if (shadowTex_) {
-        dev_->SetTexture(1, shadowTex_);
-        dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE); // = 4
-        dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-        dev_->SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_CURRENT);
-        dev_->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);          // uv1
-    } else {
-        dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    }
+    // FRONT FX-F4 (M5) : la lightmap .SHADOW (stage 1 MODULATE) n'est PAS activee globalement.
+    // Terrain_Render 0x698670 ne la lie QUE pour cat==2 (enable @0x698f54, boucle @0x698f97) et
+    // cat==4 (boucle @0x69902d), puis la DESACTIVE (@0x6990ba) AVANT cat1/eau/alpha-test. On
+    // reproduit cette porte PAR COUCHE ci-dessous (les couches sont triees par rang : cat2/cat4 en
+    // premier). Stage 1 desactive au depart.
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    bool lightmapBound = false;
 
     // Dessin des couches, déjà triées par rang (catégorie, subOrder).
     for (const TerrainLayer& layer : terrainLayers_) {
+        // FRONT FX-F4 (M5) : lightmap stage 1 UNIQUEMENT pour cat==2 et cat==4 (Terrain_Render
+        // 0x698670 : enable @0x698f54 avant la boucle cat2 @0x698f97, disable @0x6990ba avant
+        // cat1 @0x6990d4). Comme les couches sont triees par rang (cat2=0, cat4=1, puis cat1/eau/
+        // alpha-test), cette bascule active la lightmap sur les premieres couches puis la coupe des
+        // la 1ere couche non-cat2/cat4 -> equivalent fonctionnel exact des deux points IDA.
+        const bool wantLightmap = (shadowTex_ != nullptr) &&
+                                  (layer.category == 2 || layer.category == 4);
+        if (wantLightmap && !lightmapBound) {
+            // ENABLE -- calque @0x698f54 (COLOROP=MODULATE) + @0x698f68 (SetTexture stage 1 =
+            // *(a1+72) lightmap). COLORARG1/2 + TEXCOORDINDEX=1 explicites (l'original herite ces
+            // valeurs de Terrain_PushRenderState 0x69cb80 ; TEXCOORDINDEX=1 requis pour uv1).
+            dev_->SetTexture(1, shadowTex_);
+            dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE); // = 4
+            dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            dev_->SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_CURRENT);
+            dev_->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);          // uv1
+            lightmapBound = true;
+        } else if (!wantLightmap && lightmapBound) {
+            // DISABLE -- calque @0x6990ba (COLOROP=DISABLE) + @0x6990cb (SetTexture stage 1 = 0).
+            dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+            dev_->SetTexture(1, nullptr);
+            lightmapBound = false;
+        }
+
         const bool alphaTest = (layer.subOrder == 1);
         dev_->SetRenderState(D3DRS_ALPHATESTENABLE, alphaTest ? TRUE : FALSE);
         if (alphaTest) {
@@ -773,19 +794,18 @@ void WorldGeometryRenderer::bindWaterStates(IDirect3DTexture9* waterDiffuse) {
     dev_->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 0);
 }
 
-// Restaure les états de stage après une couche eau (retour au chemin diffuse + lightmap éventuelle).
+// Restaure le stage 0 diffuse après une couche eau et DESACTIVE le stage 1.
 void WorldGeometryRenderer::unbindWaterStates() {
     dev_->SetTextureStageState(0, D3DTSS_COLOROP,  D3DTOP_SELECTARG1);
     dev_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    dev_->SetTexture(1, shadowTex_);                        // ré-installe la lightmap (ou nullptr)
-    if (shadowTex_) {
-        dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE);
-        dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-        dev_->SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_CURRENT);
-        dev_->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);
-    } else {
-        dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    }
+    // FRONT FX-F4 (M5) : NE PAS reinstaller la lightmap ici. Terrain_Render 0x698670 desactive le
+    // stage 1 apres une passe eau (@0x699377 SetTextureStageState(1,COLOROP,DISABLE) ; @0x69939c
+    // SetTexture(1,0)) et ne remet JAMAIS la lightmap sur le stage 1 (l'eau vient toujours APRES la
+    // desactivation cat4 @0x6990ba). La machine a etats de renderTerrain() garde d'ailleurs
+    // lightmapBound=false apres l'eau (l'eau n'a jamais wantLightmap), donc aucune reactivation
+    // parasite.
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev_->SetTexture(1, nullptr);
 }
 
 //  Render — dessine d'abord le SOL .WG (Gap G1, renderTerrain()) puis une matrice monde PAR

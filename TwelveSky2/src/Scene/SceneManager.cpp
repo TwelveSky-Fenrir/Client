@@ -145,6 +145,16 @@ void SceneManager::Change(Scene s) {
     subState_ = 0;
     frameCount_ = 0;
 
+    // M6 — chaque ENTREE en scene EnterWorld repart de subState 0 dans le binaire : op 0x18
+    // Pkt_GameServerConnectResult 0x469CF0 (@0x469d9f, g_SceneSubState=0) et le flux normal
+    // posent g_SceneSubState 0x1676184 = 0, et Scene_EnterWorldUpdate 0x52BFF0 lit son etat
+    // courant dans *(this+1)==g_SceneSubState. enterWorldState_ modelise ce champ pour cette
+    // scene -> reset symetrique du reset deja present dans ReloadZone. Sans lui, une 2e entree
+    // EnterWorld reprend d'un etat perime (WaitServerAck/Failed du cycle precedent -> machine
+    // gelee). // 0x1676184 / 0x52BFF0
+    if (s == Scene::EnterWorld)
+        enterWorldState_ = game::EnterWorldFlowState{};
+
     // Entrée en jeu : initialise le HUD et les fenêtres de jeu une seule fois (device stable).
     if (s == Scene::InGame && hud_ && !hudReady_ && renderer_) {
         hudReady_ = hud_->Init(*renderer_, screenW_, screenH_);
@@ -304,6 +314,18 @@ void SceneManager::ConsumePending() {
 
 void SceneManager::Update(double dt, gfx::Camera& camera) {
     ++frameCount_;
+    // H2 — op 0x18 Pkt_GameServerConnectResult 0x469CF0 pose g_SceneMgr=5 (@0x469d95, case 0 /
+    // sous-resultat 0 ; confirme IDA : g_SceneSubState=0 @0x469d9f, dword_1676188=0 @0x469da9)
+    // PENDANT InGame (reconnexion/relais serveur). Le handler reseau (Net/GameHandlers_Misc.cpp
+    // op 0x18) arme game::g_World.sceneReloadPending, mais ce flag n'est lu QUE par la
+    // case Scene::EnterWorld ci-dessous -> jamais atteint depuis InGame (reload mort). On
+    // reproduit ICI le basculement scene 6->5 : le switch dispatchera alors sur case EnterWorld
+    // LA MEME frame (comme le binaire ou g_SceneMgr==5 avant cSceneMgr_Update), laquelle
+    // consommera le flag via sa branche sceneReloadPending existante (ReloadZone). NE PAS clear
+    // le flag ici (la case EnterWorld le fera). // 0x469d95 / g_SceneMgr 0x1676180=5
+    if (scene_ == Scene::InGame && game::g_World.sceneReloadPending) {
+        Change(Scene::EnterWorld);
+    }
     switch (scene_) {
     case Scene::Intro:
         // Automate fidèle Scene_IntroUpdate 0x517FE0 (Game/IntroFlow.h) : 90 + 33×3 + 90
@@ -810,6 +832,15 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         const bool justEnteredInGame = (inGameTickState_.state == game::InGameTickState::InitCamera);
 
         game::InGameTickFlow_Update(inGameTickState_, host, static_cast<float>(dt));
+
+        // M2 — MapColl_UpdateObjectAnim 0x694A00, appelee 1x/frame depuis Scene_InGameUpdate
+        // 0x52C600 @0x52c94b (xref UNIQUE confirmee IDA). Cote ClientSource, WorldGeometryRenderer::
+        // TickWorldAnim est l'equivalent documente (WorldGeometryRenderer.h:271-277, kAnimFps=15.0) :
+        // seul writer de wavePhase_ (matrice bump-env eau) + phase de flipbook de sway par instance
+        // .WO. Jamais appele avant ce cablage -> eau/sway figes. Garde one-shot worldGeomReady_
+        // (device chaud requis, meme garde que le rendu .WO). // 0x694A00
+        if (worldGeomReady_ && worldGeom_)
+            worldGeom_->TickWorldAnim(static_cast<float>(dt));
 
         // InGame_InitCamera (one-shot, si justEnteredInGame) + Camera_UpdateCollision (chaque
         // frame) : câblage RÉEL via gfx::TickThirdPersonCamera (Gfx/CameraThirdPersonBridge.h),

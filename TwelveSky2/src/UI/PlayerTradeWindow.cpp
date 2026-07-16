@@ -28,7 +28,11 @@ const PanelSkin kPanelBg("G03_GDATA\\D01_GIMAGE2D\\001\\001_01341.IMG");
 
 constexpr uint32_t kTradePartnerIdLo = 0x168741C; // g_TradePartnerIdLo (partenaire mot 0)
 constexpr uint32_t kTradePartnerVal1 = 0x1687420; // dword_1687420      (partenaire mot 1)
-constexpr uint32_t kTradeAgreeLocal  = 0x1687424; // dword_1687424 (« accord local », confirmé)
+// dword_1687424 : 3e mot de données PARTENAIRE écrit par le serveur (0x8156C1+8),
+// via Pkt_TradeRequestPrompt 0x48FD20 (@0x48FDA0 dword_1687424[0]=v7[2]). Comparé au
+// code d'action par Pkt_TradeActionResult 0x48FEA0 (@0x48FEFE 'if(dword_1687424==v7)').
+// PAS un drapeau d'accord local (interprétation W4-F3 réfutée).
+constexpr uint32_t kTradePartnerWord2 = 0x1687424; // dword_1687424 (partenaire mot 2)
 // CORRECTIF W4-F3 (data_refs sur 0x1675B24) : l'ancien kTradeState=0x1675B24 était FAUX.
 // Ce global est g_PendingOrderKind (type d'ordre monde / ciblage : AutoPlay_UpdateTargeting
 // 0x45D080, Game_OnWorldLeftClick 0x536690, Player_InteractWithPlayer 0x5392E0,
@@ -199,7 +203,6 @@ void PlayerTradeWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     // peuvent changer entre deux frames via les handlers réseau).
     const int32_t partnerIdLo = game::g_Client.VarGet(kTradePartnerIdLo);
     const int32_t partnerVal1 = game::g_Client.VarGet(kTradePartnerVal1);
-    const int32_t localAgree  = game::g_Client.VarGet(kTradeAgreeLocal);
     const bool    hasPartner  = (partnerIdLo != 0) || (partnerVal1 != 0);
 
     if (ctx.phase == UiPhase::Panels) {
@@ -248,11 +251,9 @@ void PlayerTradeWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     }
     const int infoY = box.y + box.h - kPanelPad - kBtnH - kInfoH;
     ctx.Text(line1, box.x + kPanelPad, infoY, kColText);
-
-    char line2[96];
-    std::snprintf(line2, sizeof(line2), "Accord local : %s",
-                  (localAgree != 0) ? "oui" : "non");
-    ctx.Text(line2, box.x + kPanelPad, infoY + 16, kColTextDim);
+    // Label « Accord local : oui/non » RETIRÉ : 0x1687424 (kTradePartnerWord2) n'est pas
+    // un drapeau d'accord local mais le 3e mot de données partenaire fourni par le serveur,
+    // comparé au code d'action par Pkt_TradeActionResult 0x48FEA0 (@0x48FEFE). (W4-F3 réfuté.)
 
     // Libellés des boutons.
     const char* acceptLbl = "Accepter";
