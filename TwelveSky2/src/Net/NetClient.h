@@ -91,8 +91,16 @@ bool NetSend(NetClient& nc, const void* data, int len);
 //                (128 o) renvoyé par le serveur login ; ce jeton est ensuite renvoyé
 //                tel quel au serveur de jeu dans le paquet d'authentification.
 inline uint8_t  g_AccountName[128] = {};
-// dword_1673194 : 4 octets « élément local » annexés au paquet d'auth game.
-inline uint32_t g_LocalElement     = 0;
+// dword_1673194 : « élément local » (0..3 ; 3 = indépendant) annexé au paquet
+// d'auth game à l'offset +137 (cf. Net_ConnectGameServer 0x462A70, lecture
+// &g_LocalElement EA 0x462d5d). SOURCE UNIQUE : le binaire n'a qu'UN seul global
+// 0x1673194 ; la réécriture l'avait dédoublé (ici + game::g_World.self.element)
+// -> l'élément partait à 0 au handshake. Référence-alias sur
+// game::g_World.self.element : lecture/écriture via net::g_LocalElement OU via
+// game::g_World.self.element frappent le MÊME entier 32-bit (règle d'aliasing
+// signé/non-signé respectée). Définie dans Net/Login.cpp (qui inclut GameState.h)
+// pour ne pas tirer GameState.h dans tous les TU réseau.
+extern uint32_t& g_LocalElement;   // == game::g_World.self.element (dword_1673194)
 // dword_1669294 : niveau GM renvoyé par le serveur login.
 inline uint32_t g_GmAuthLevel      = 0;
 

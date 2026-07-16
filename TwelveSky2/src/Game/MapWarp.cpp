@@ -4,7 +4,7 @@
 // Rappel de périmètre : ce module pose l'INTENTION de warp (guardes + globals de mise en
 // scène) sans effectuer l'envoi réseau ni le chargement de carte réels (TODO cités).
 #include "Game/MapWarp.h"
-#include <cstdlib>
+#include "Net/SendPackets.h"   // tire Net/NetClient.h + Net/Rng.h (DefaultRng, Net_SendWarpRequest)
 #include <cstring>
 
 namespace ts2::game {
@@ -26,11 +26,13 @@ int32_t SelfActionState() {
     return Rd32(self.body.data() + kSelfActionStateOffset);
 }
 
-// flt_1675AC4 = (float)(Rng_Next() % 360) — TODO(rng) Rng_Next 0x7603FD (Net/Rng.h, non
-// inclus ici pour rester autonome) : générateur exact non câblé, l'angle de façade n'a
-// aucun impact gameplay (cosmétique, écrasé par le rendu au warp effectif).
+// flt_1675AC4 = (float)(Rng_Next() % 360) — Rng_Next 0x7603FD (net::DefaultRng, MÊME flux
+// rand() que les nonces des builders : 1 tirage facing PUIS 4 tirages nonces par warp, cf.
+// ordre partagé dans ComboPickupTick.cpp:120-124). Sites : 0x55c64e/0x55c85e/0x55cba8 +
+// 0x5f5daf (Warp_SendTeleport). L'angle de façade est cosmétique mais l'ORDRE des tirages
+// doit rester fidèle (le facing consomme un tirage avant les nonces du paquet émis ensuite).
 float RandomFacingDeg() {
-    return static_cast<float>(std::rand() % 360);
+    return static_cast<float>(ts2::net::DefaultRng().NextMod(360));
 }
 
 // Bloc commun d'armement du warp complet (dword_1675A8C.. flt_1675AC8), fidèle aux 3
@@ -41,7 +43,8 @@ float RandomFacingDeg() {
 // (le memset de 72 o est équivalent ici à "tout Var() non explicitement réécrit reste à sa
 // valeur par défaut 0" — g_Client.Var() renvoie 0 pour une clé jamais posée.)
 void ArmFullWarp(FactionWarpResolution& r, int32_t warpModeCode, int32_t flagA4,
-                  int32_t townNpcId, float x, float y, float z) {
+                  int32_t townNpcId, float x, float y, float z,
+                  ts2::net::NetClient* nc = nullptr) {
     g_Client.Var(WarpAddr::MorphInProgress) = 1;          // /*g_MorphInProgress = 1*/
     g_Client.Var(WarpAddr::WarpModeCode)    = warpModeCode;
     g_Client.Var(WarpAddr::WarpSub)         = 0;
@@ -62,10 +65,13 @@ void ArmFullWarp(FactionWarpResolution& r, int32_t warpModeCode, int32_t flagA4,
     r.townNpcId    = townNpcId;
     r.x = x; r.y = y; r.z = z;
 
-    // TODO(net) Net_SendPacket_Op20(&unk_846C08, warpModeCode, townNpcId) — EA 0x55C66F /
-    //   0x55C87F / 0x55C993 / 0x55CBC9 (Net/SendPackets.h a déjà le builder Net_SendPacket_Op20,
-    //   NetClient& non disponible depuis ce module Game/ autonome). L'appelant réseau doit
-    //   émettre ce paquet en réaction au FactionWarpResolution retourné ici.
+    // Net_SendPacket_Op20(&g_AutoPlayMgr, warpModeCode, townNpcId) — EA 0x55C66F / 0x55C87F /
+    //   0x55C993 / 0x55CBC9 (Town/Default/Map37/Ex) et 0x5F5DD6 (Warp_SendTeleport). Émis via
+    //   l'alias i32 Net_SendWarpRequest : townNpcId (140/138/139/165/166) >= 128 est ZÉRO-étendu
+    //   sur 32 bits (cf. Net/SendPackets.cpp — le builder int8_t partagé sign-étendrait à tort).
+    //   Émission conditionnée à nc != nullptr (comportement "résolution seule" préservé sinon).
+    //   Les 4 tirages de nonces du paquet suivent le tirage de facing ci-dessus (ordre fidèle).
+    if (nc) ts2::net::Net_SendWarpRequest(*nc, warpModeCode, townNpcId);
     // TODO(monde) au retour serveur (op 0x0d ZoneChangeInfo, cf. World/WorldMap.*/World_LoadMap
     //   déjà écrit ailleurs) : charger effectivement la carte cible et positionner l'acteur à
     //   (x,y,z)/facing ci-dessus, puis remettre g_MorphInProgress à 0 (observé côté
@@ -89,7 +95,8 @@ void ResolveCoords(int32_t element, int32_t townNpcId, const IFactionTownCoordRe
 // Map_BeginWarpToFactionTown 0x55C510 / Map_BeginWarpToFactionTownEx 0x55C9A0.
 // ---------------------------------------------------------------------------
 FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t mode,
-                                              const IFactionTownCoordResolver* resolver) {
+                                              const IFactionTownCoordResolver* resolver,
+                                              ts2::net::NetClient* nc) {
     FactionWarpResolution r{};
     r.element   = element;
     r.townNpcId = FactionTownNpcId(element);
@@ -124,7 +131,7 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
         // 0x55C5C7 : a2 (mode) != 0 -> code 3 / flagA4=0 ; a2==0 -> code 7 / flagA4=1.
         const int32_t warpModeCode = (mode != 0) ? 3 : 7;
         const int32_t flagA4       = (mode != 0) ? 0 : 1;
-        ArmFullWarp(r, warpModeCode, flagA4, r.townNpcId, r.x, r.y, r.z);
+        ArmFullWarp(r, warpModeCode, flagA4, r.townNpcId, r.x, r.y, r.z, nc);
         return r;
     }
 
@@ -151,12 +158,16 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
             // 0x55CA82 (mode0) / 0x55CAA7 (mode1) : pas de warp de carte, juste un
             // repositionnement local + confirmation réseau.
             r.action = WarpAction::MoveInPlace;
-            g_Client.Var(WarpAddr::InvDirtyEnable) = 0; // /*g_InvDirtyEnable = 0*/
-            // TODO(net) mode0 : Net_QueueMoveTo(&g_PlayerCmdController, (x,y,z), 0,-1,0,0,0,0)
+            g_Client.Var(WarpAddr::InvDirtyEnable) = 0; // g_InvDirtyEnable=0  EA 0x55CA87 (mode0) / 0x55CAC3 (mode1)
+            // TODO(net) mode0 : Net_QueueMoveTo(&g_PlayerCmdController, {x,y,z}, 0,-1,0,0,0,0)
             //   EA 0x55CA82 (Net_QueueMoveTo 0x5119B0) ; mode1 : Net_QueueRespawnMove(...)
-            //   EA 0x55CABE (Net_QueueRespawnMove 0x5117A0) ; puis dans les deux cas
-            //   Net_SendOp99(&unk_846C08, 0) EA 0x55CA9C/0x55CAD9 (Net/SendPackets.h a déjà
-            //   Net_SendOp99). Non exécuté ici (pas de NetClient dans ce module Game/).
+            //   EA 0x55CABE (Net_QueueRespawnMove 0x5117A0) -> émetteurs op1/op0 (via Op15) du
+            //   g_PlayerCmdController : module NON implémenté / NON possédé par ce front.
+            // TODO(net/state) puis Net_SendAutoHuntSync(*nc, 0, appearance68, autoHunt44)
+            //   EA 0x55CA9C (mode0) / 0x55CAD9 (mode1) — Op99 0x4BD140. appearance68=byte_16755B0
+            //   (68 o) + autoHunt44=g_AutoHuntMode 0x16755F4 (44 o) : ÉTAT POSSÉDÉ PAR LE FRONT
+            //   AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:94-98), non modélisé ici. Émettre
+            //   des blobs nuls serait INFIDÈLE (règle #6) -> laissé en TODO ancré.
         } else {
             r.action = WarpAction::None; // mode inconnu : le binaire ne fait rien non plus
         }
@@ -176,10 +187,14 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
         return r;
     }
 
-    g_Client.Var(WarpAddr::InvDirtyEnable) = 0; // 0x55CB0C
-    // TODO(net) Net_SendOp99(&unk_846C08, 0) — EA 0x55CB21, envoyé AVANT l'armement complet
-    //   (pré-confirmation), en plus de Net_SendPacket_Op20 émis par ArmFullWarp ci-dessous.
-    ArmFullWarp(r, /*warpModeCode=*/7, /*flagA4=*/1, r.townNpcId, r.x, r.y, r.z); // 0x55CB26..0x55CBC9
+    g_Client.Var(WarpAddr::InvDirtyEnable) = 0; // g_InvDirtyEnable=0  EA 0x55CB0C
+    // TODO(net/state) Net_SendAutoHuntSync(*nc, 0, appearance68, autoHunt44) — EA 0x55CB21
+    //   (Op99 0x4BD140), pré-confirmation émise AVANT l'Op20 d'ArmFullWarp ci-dessous (ordre
+    //   binaire : Op99 PUIS Op20). appearance68=byte_16755B0 (68 o) + autoHunt44=g_AutoHuntMode
+    //   0x16755F4 (44 o) : ÉTAT POSSÉDÉ PAR LE FRONT AUTOPLAY/APPARENCE (cf. UI/AutoPlayWindow.cpp:
+    //   94-98), non modélisé ici -> émettre des zéros serait INFIDÈLE (règle #6), laissé en TODO ancré.
+    //   if (nc) ts2::net::Net_SendAutoHuntSync(*nc, 0, kAppearance68, kAutoHunt44);
+    ArmFullWarp(r, /*warpModeCode=*/7, /*flagA4=*/1, r.townNpcId, r.x, r.y, r.z, nc); // 0x55CB26..0x55CBC9
     return r;
 }
 
@@ -189,7 +204,8 @@ FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex, int32_t m
 // "normal" (code 7, flagA4=1 — mêmes constantes que le a2==0 de la variante non-Ex).
 // ---------------------------------------------------------------------------
 FactionWarpResolution BeginWarpToFactionTownDefault(int32_t element,
-                                                     const IFactionTownCoordResolver* resolver) {
+                                                     const IFactionTownCoordResolver* resolver,
+                                                     ts2::net::NetClient* nc) {
     FactionWarpResolution r{};
     r.element   = element;
     r.townNpcId = FactionTownNpcId(element);
@@ -210,14 +226,14 @@ FactionWarpResolution BeginWarpToFactionTownDefault(int32_t element,
         r.blockedByMorphInProgress = true;
         return r;
     }
-    ArmFullWarp(r, /*warpModeCode=*/7, /*flagA4=*/1, r.townNpcId, r.x, r.y, r.z); // 0x55C7E6..0x55C87F
+    ArmFullWarp(r, /*warpModeCode=*/7, /*flagA4=*/1, r.townNpcId, r.x, r.y, r.z, nc); // 0x55C7E6..0x55C87F
     return r;
 }
 
 // ---------------------------------------------------------------------------
 // Map_BeginWarpToMap37 0x55C8A0 — cible fixe (id 37), coordonnées EXACTES codées en dur.
 // ---------------------------------------------------------------------------
-FactionWarpResolution BeginWarpToMap37() {
+FactionWarpResolution BeginWarpToMap37(ts2::net::NetClient* nc) {
     FactionWarpResolution r{};
     r.element   = -1;   // sans objet : cette variante ne dépend pas de g_LocalElement
     r.townNpcId = 37;
@@ -237,8 +253,31 @@ FactionWarpResolution BeginWarpToMap37() {
     // Coordonnées codées en dur dans le binaire — AUCUN résolveur nécessaire ici.
     r.coordsResolved = true;
     ArmFullWarp(r, /*warpModeCode=*/11, /*flagA4=*/1, /*townNpcId=*/37,
-                /*x=*/6.0f, /*y=*/97.0f, /*z=*/-3259.0f); // 0x55C8FA..0x55C993
+                /*x=*/6.0f, /*y=*/97.0f, /*z=*/-3259.0f, nc); // 0x55C8FA..0x55C993
     return r;
+}
+
+// ---------------------------------------------------------------------------
+// Warp_SendTeleport 0x5F5CE0 — __stdcall(u16 a1, float* a2). Corps = strictement
+// ArmFullWarp(mode=6, flagA4=1, townNpcId=v3[a1], x/y/z=a2[0..2]) gardé par
+// (a1<=3 && !g_MorphInProgress), suivi de Op20(nc, 6, v3[a1]) (EA 0x5f5dd6).
+// ---------------------------------------------------------------------------
+bool Warp_SendTeleport(uint16_t zoneSel, const float* pos, ts2::net::NetClient* nc) {
+    // v3[4] = {138,139,165,166} — EA 0x5f5ce9 / f0 / f7 / fe.
+    static constexpr int32_t kTeleportZoneIds[4] = {138, 139, 165, 166};
+    // 0x5f5d1a : if (a1 <= 3u && !g_MorphInProgress) — sinon renvoie a1 sans rien faire.
+    if (zoneSel > 3u || g_Client.VarGet(WarpAddr::MorphInProgress) != 0) return false;
+
+    FactionWarpResolution r{};
+    r.element        = -1;                        // sans objet : téléportation par zone directe
+    r.townNpcId      = kTeleportZoneIds[zoneSel]; // g_TargetZoneId = v3[a1]  EA 0x5f5d46
+    r.valid          = true;
+    r.coordsResolved = true;
+    r.x = pos[0]; r.y = pos[1]; r.z = pos[2];     // flt_1675AAC/AB0/AB4  EA 0x5f5d7e/8a/96
+    // ArmFullWarp reproduit 0x5f5d20..0x5f5dbb (MorphInProgress=1, mode=6, sub=0, memset72,
+    // flagA0=0, flagA4=1, delay=0, x/y/z, facing=Rng%360 x2) + Op20(nc,6,zone) EA 0x5f5dd6.
+    ArmFullWarp(r, /*warpModeCode=*/6, /*flagA4=*/1, r.townNpcId, r.x, r.y, r.z, nc); // 0x5f5d20..0x5f5dd6
+    return true;
 }
 
 } // namespace ts2::game

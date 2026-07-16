@@ -15,10 +15,12 @@
 // PÉRIMÈTRE (imposé par la mission) : ce module calcule la RÉSOLUTION (ville/NPC cible,
 // coordonnées si un résolveur est fourni, code de warp) et les GARDES (mort/cooldown/
 // morph déjà en cours), et pose l'INTENTION de warp dans les globals "longue traîne"
-// (g_Client.Var, mêmes adresses que le binaire). Il n'effectue AUCUNE téléportation
-// réelle : le rendu monde (World_LoadMap, déjà écrit dans World/WorldMap.*) et l'envoi
-// réseau (Net_SendPacket_Op20/Net_SendOp99/Net_QueueMoveTo/Net_QueueRespawnMove, module
-// Net/SendPackets.*) sont HORS PÉRIMÈTRE — TODO précis à chaque point d'usage, EA citée.
+// (g_Client.Var, mêmes adresses que le binaire). Quand un NetClient est fourni, il émet
+// désormais le paquet de warp réel (Net_SendWarpRequest = Op20 0x4B5000). RESTENT HORS
+// PÉRIMÈTRE (TODO précis à chaque point d'usage, EA citée) : le rendu monde (World_LoadMap,
+// déjà écrit dans World/WorldMap.*), l'Op99 apparence/auto-hunt (blobs possédés par le front
+// autoplay/apparence, non modélisés) et les émetteurs op0/op1 Net_QueueMoveTo/RespawnMove
+// (module PlayerCmdController non implémenté).
 //
 // ---------------------------------------------------------------------------------------
 // Dérivation de "*(this+1784)" (this=g_LocalPlayerSheet 0x1685748, index DWORD) :
@@ -37,6 +39,11 @@
 #include "Game/EntityManager.h"
 #include <cstdint>
 
+// Forward-decl seule (evite de tirer winsock/Net dans les ~8 consommateurs de
+// MapWarp.h) : l'include complet Net/SendPackets.h n'est fait que dans MapWarp.cpp,
+// meme schema eprouve que Game/ComboPickupTick.
+namespace ts2::net { struct NetClient; }
+
 namespace ts2::game {
 
 // ---------------------------------------------------------------------------
@@ -54,7 +61,9 @@ namespace WarpAddr {
     // Crt_Memset(&dword_1675AA0, 0, 72) puis réécrit champ par champ dans le binaire.
     constexpr uint32_t WarpModeCode    = 0x1675A8C; // dword_1675A8C — code envoyé au serveur (3, 7 ou 11)
     constexpr uint32_t WarpSub         = 0x1675A90; // dword_1675A90 — toujours 0 dans les 4 fonctions
-    constexpr uint32_t WarpTargetNpc   = 0x1675A9C; // dword_1675A9C — id NPC/ville cible (== townNpcId)
+    constexpr uint32_t WarpTargetNpc   = 0x1675A9C; // dword_1675A9C — id NPC/ville cible (== townNpcId) ;
+                                                    //   MEME global que g_TargetZoneId du binaire (Warp_SendTeleport 0x5F5CE0, EA 0x5f5d46)
+
     constexpr uint32_t WarpFlagA0      = 0x1675AA0; // dword_1675AA0 — toujours 0
     constexpr uint32_t WarpFlagA4      = 0x1675AA4; // dword_1675AA4 — 0 (mode forcé) ou 1 (mode normal)
     constexpr uint32_t WarpDelay       = 0x1675AA8; // flt_1675AA8 — toujours 0.0
@@ -148,20 +157,33 @@ inline int32_t FactionTownNpcId(int32_t element) {
 // (ex=true). `mode` == a2 d'origine (toujours 0 sur tous les sites d'appel observés SAUF
 // Char_TickDeathRespawn qui appelle la variante Ex avec mode=1 lors de la mort du joueur).
 // `resolver` peut être nullptr (x/y/z resteront à 0, cf. IFactionTownCoordResolver).
+// `nc` (trailing, défaut nullptr) : si fourni, l'émission réseau réelle (Net_SendWarpRequest
+// = Op20 0x4B5000) est effectuée ; sinon comportement "résolution seule" préservé (tous les
+// appelants actuels passent nullptr). Le câblage effectif du NetClient relève de fronts ultérieurs.
 FactionWarpResolution BeginWarpToFactionTown(int32_t element, bool ex = false, int32_t mode = 0,
-                                              const IFactionTownCoordResolver* resolver = nullptr);
+                                              const IFactionTownCoordResolver* resolver = nullptr,
+                                              ts2::net::NetClient* nc = nullptr);
 
 // Map_BeginWarpToFactionTownDefault 0x55C740 — même table faction->ville, MAIS sans la
 // garde "mort" (*(this+1784)!=12) : utilisée quand l'appelant sait déjà que le warp doit
 // avoir lieu inconditionnellement (aucun appelant recensé dans le désassemblage — fonction
 // probablement destinée à un point d'entrée externe/outil, conservée pour fidélité).
 FactionWarpResolution BeginWarpToFactionTownDefault(int32_t element,
-                                                     const IFactionTownCoordResolver* resolver = nullptr);
+                                                     const IFactionTownCoordResolver* resolver = nullptr,
+                                                     ts2::net::NetClient* nc = nullptr);
 
 // Map_BeginWarpToMap37 0x55C8A0 — téléportation fixe vers la carte/NPC 37, coordonnées
 // EXACTES codées en dur dans le binaire (6.0, 97.0, -3259.0). Seul appelant recensé :
 // sub_4A55E0 (trampoline nu, rôle exact non élucidé — probablement une commande outil/
 // debug ou un raccourci UI hors périmètre gameplay joueur normal).
-FactionWarpResolution BeginWarpToMap37();
+FactionWarpResolution BeginWarpToMap37(ts2::net::NetClient* nc = nullptr);
+
+// Warp_SendTeleport 0x5F5CE0 — téléportation par mot-clé/summon vers l'une des 4 zones
+// v3[4]={138,139,165,166} (EA 0x5f5ce9/f0/f7/fe). Gardé par (zoneSel<=3 && !g_MorphInProgress,
+// EA 0x5f5d1a) ; corps = ArmFullWarp(mode=6, flagA4=1, townNpcId=v3[zoneSel], pos) + Op20(nc,6,
+// v3[zoneSel]) (EA 0x5f5d20..0x5f5dd6). `pos` = 3 floats {x,y,z}. Si nc!=nullptr, émet réellement
+// le paquet (Net_SendWarpRequest, alias i32 : zoneId >=128 zéro-étendu). Renvoie true si armé.
+// Appelé par Warp_ProcessKeyword 0x5F54E0 (12x) et Net_OnSummonSpawn 0x4AA810 (non possédés).
+bool Warp_SendTeleport(uint16_t zoneSel, const float* pos, ts2::net::NetClient* nc = nullptr);
 
 } // namespace ts2::game

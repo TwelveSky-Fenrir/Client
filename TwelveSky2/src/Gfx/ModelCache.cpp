@@ -152,41 +152,56 @@ PlayerBodyModel ModelCache::GetForPlayerBody(int race, int gender, int costumeSl
 }
 
 const SkinnedModel* ModelCache::GetForMonster(uint32_t monsterDefId) {
-    // RÉSOLU (Docs/TS2_MONSTER_NPC_MODEL.md §2/§4) : kindIndex = MONSTER_INFO.field244 - 1.
+    // RÉSOLU (Docs/TS2_MONSTER_NPC_MODEL.md §2/§4) : kindIndex = MONSTER_INFO.kindIndexP1 - 1.
     // Preuve : Char_Draw 0x5805C0 lit `*(DWORD*)(*(this+24) + 244) - 1` et le passe tel quel à
     // Model_GetNpcMotionSlot 0x4E5960, qui borne `a2` à [0, 0x14C]=[0,332] -- exactement les 333
     // modèles M*.SOBJECT catalogués par AssetMgr_InitAllSlots 0x4DEB50 (preuve arithmétique
     // d'adresse flt_FBBF3C/flt_FF67CC, §4 du doc). `this+24` == MONSTER_INFO* est prouvé par
     // Pkt_SpawnMonster 0x467B00 (ItemDefTbl_GetRecord stocké à l'offset dword 24 de l'entité).
     //
-    // Indexation table : la mission demande explicitement `g_World.db.monster.record(monsterDefId)`
-    // -- SANS -1 -- ce qui est cohérent avec Game/EntityManager.cpp::ResolveMobDef (même table,
-    // même appel `t.record(id)` sans conversion, id = RdU32(body,0) reçu du réseau). On reproduit
-    // cette même convention ici pour rester cohérent avec le reste de ClientSource (les deux
-    // fonctions doivent accepter le même `monsterDefId` brut pour un même monstre).
-    const game::DataTable& table = game::g_World.db.monster;
-    const uint8_t* rec = table.record(monsterDefId);
-    if (!rec) return nullptr; // table non chargee OU monsterDefId hors bornes [0, count).
+    // CORRECTION off-by-one : le getter MONSTER 0x4C6570 est STRICTEMENT 1-based
+    // (base+944*(id-1)). Pkt_SpawnMonster 0x467B00 passe l'id reseau BRUT (1-based) -> on resout
+    // via game::GetMonsterInfo (qui applique le -1), au lieu de l'ancien table.record(id) SANS -1.
+    const game::MonsterInfo* mi = game::GetMonsterInfo(monsterDefId);
+    if (!mi) return nullptr; // table non chargee, id hors bornes, ou slot vide (id==0).
 
-    uint32_t field244 = 0;
-    std::memcpy(&field244, rec + 244, sizeof(field244)); // dword @+244, LE (hote == fichier).
+    const uint32_t k1 = mi->kindIndexP1; // +244, prouve par Char_Draw 0x5805C0 (*(def+244)-1)
 
-    // Bornes prouvées §2 du doc : field244 (1-based, tel que stocké dans le fichier .IMG) doit
+    // Bornes prouvées §2 du doc : kindIndexP1 (1-based, tel que stocké dans le fichier .IMG) doit
     // être dans [1, 333] pour désigner un modèle réel ; au-delà, Model_GetNpcMotionSlot retombe
     // silencieusement sur le fallback générique côté binaire d'origine -- ici on renvoie nullptr
     // (mis en cache comme un échec normal par GetForMonsterKind -> Get()).
-    if (field244 < 1 || field244 > 333) {
+    if (k1 < 1 || k1 > 333) {
         static bool warnedOutOfRange = false;
         if (!warnedOutOfRange) {
             warnedOutOfRange = true;
-            TS2_WARN("ModelCache::GetForMonster: field244=%u hors bornes [1,333] (monsterDefId=%u) "
+            TS2_WARN("ModelCache::GetForMonster: kindIndexP1=%u hors bornes [1,333] (monsterDefId=%u) "
                      "-- fallback nullptr (comportement d'origine, cf. Model_GetNpcMotionSlot 0x4E5960)",
-                     field244, monsterDefId);
+                     k1, monsterDefId);
         }
         return nullptr;
     }
 
-    return GetForMonsterKind(static_cast<int>(field244) - 1, 0, 0);
+    return GetForMonsterKind(static_cast<int>(k1) - 1, 0, 0);
+}
+
+const SkinnedModel* ModelCache::GetForMonsterDamaged(uint32_t monsterDefId, int hpCurrent) {
+    // Variante d'etat de degat (Char_Draw 0x5805C0) : famille "M{k+1}002{sub+1}" (variant=1,
+    // 4 sous-modeles). Gate d'origine : def[+232]==2 & g_Opt_GfxDetailShadows==1 (option graphique
+    // decidee par la couche de rendu W3 ; on porte ici la garde field232==2, universelle).
+    // sub = 3 - ftol(hpCurrent*100.0/def[+368]) / 30. hpCurrent = record monstre offset 92
+    // (body+76) = *((int*)this+23) dans Char_Draw. def[+368] = hpMax de definition.
+    const game::MonsterInfo* mi = game::GetMonsterInfo(monsterDefId); // 1-based (ItemDefTbl_GetRecord 0x4C6570)
+    if (!mi) return nullptr;
+    if (mi->field232 != 2) return nullptr; // Char_Draw : field232!=2 => pas d'etats de degat
+    const uint32_t k1 = mi->kindIndexP1;
+    if (k1 < 1 || k1 > 333) return nullptr;
+    if (mi->hpMax < 1) return nullptr;     // diviseur def[+368] (le validateur garantit >=1, garde defensive)
+
+    const int q = static_cast<int>(static_cast<double>(hpCurrent) * 100.0 / static_cast<double>(mi->hpMax)); // Crt_ftol
+    int sub = 3 - q / 30;
+    if (sub < 0) sub = 0; else if (sub > 3) sub = 3; // borne defensive (BuildMonsterStem variant1 => sub in [0,4))
+    return GetForMonsterKind(static_cast<int>(k1) - 1, 1, sub);
 }
 
 const SkinnedModel* ModelCache::GetForNpc(const game::NpcDefRecord& npc) {

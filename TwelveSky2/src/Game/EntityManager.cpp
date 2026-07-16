@@ -37,6 +37,7 @@
 //            dans le payload réseau copié tel quel dans NpcEntity::body ; aucune
 //            rotation confirmée pour ce record (pas ajoutée, pour ne pas inventer).
 #include "Game/EntityManager.h"
+#include "Game/GameDatabase.h"        // GetMonsterInfo / MonsterInfo (resolution 1-based)
 #include "Game/StaticNpcLoader.h"
 #include "Game/EntityLifecycleTick.h" // ResetMonsterTickExt/ResetNpcTickExt (cf. TODO ci-dessous)
 
@@ -106,8 +107,10 @@ constexpr size_t kNPosY        = 20;
 constexpr size_t kNPosZ        = 24;
 
 // ---- offsets dans un record de definition MONSTER_INFO (pour le rayon de collision).
-constexpr size_t kDefDimA = 248;
-constexpr size_t kDefDimB = 256;
+// Desormais portes par MonsterInfo::collDim[0]/[2] (Game/GameDatabase.h) ; conserves ici
+// comme ancre documentaire (Pkt_SpawnMonster 0x467B00 : def[+248]=collDim[0], def[+256]=collDim[2]).
+[[maybe_unused]] constexpr size_t kDefDimA = 248;
+[[maybe_unused]] constexpr size_t kDefDimB = 256;
 
 // Recherche SEULE (sans allocation) — les handlers d'etat n'agissent que si l'entite
 // existe deja (contrairement aux handlers de spawn qui allouent via FindOrAdd*).
@@ -135,7 +138,12 @@ NpcEntity* FindNpc(EntityId id) {
 const uint8_t* ResolveMobDef(uint32_t id, bool& tableLoaded) {
     const DataTable& t = g_World.db.monster;
     tableLoaded = (t.count != 0);
-    return tableLoaded ? t.record(id) : nullptr;
+    if (!tableLoaded) return nullptr;
+    // CORRECTION off-by-one : le getter MONSTER 0x4C6570 est STRICTEMENT 1-based
+    // (base+944*(id-1), rejet id<1||id>count, garde 1er dword!=0). Pkt_SpawnMonster 0x467B00
+    // passe l'id reseau BRUT (1-based, body[0]) -> GetMonsterInfo applique le -1. Table chargee
+    // + id invalide => nullptr => OnSpawnMonster rejette le spawn (fidele a `Record==0` de 0x467B00).
+    return reinterpret_cast<const uint8_t*>(GetMonsterInfo(id));
 }
 
 // Resolution d'une definition de PNJ RESEAU (dword_17AB534) -- transcription EXACTE de
@@ -353,11 +361,13 @@ MonsterEntity* EntityManager::OnSpawnMonster(const net::SpawnMonster& p) {
     // EntityManager::OnSpawnMonster/OnSpawnNpc").
     ResetMonsterTickExt(static_cast<int>(m - g_World.monsters.data()));
 
-    // Rayon de collision = sqrt(dimA^2 + dimB^2) * 0.5 (def+248, def+256).
+    // Rayon de collision : Pkt_SpawnMonster 0x467B00 calcule
+    // sqrt(def[+256]^2 + def[+248]^2)*0.5 (= collDim[2], collDim[0]). `def` est desormais
+    // garanti = MonsterInfo* (resolu par GetMonsterInfo) -> acces type.
     if (def) {
-        const int32_t a = RdI32(def, kDefDimA);
-        const int32_t bDim = RdI32(def, kDefDimB);
-        const double s = static_cast<double>(a) * a + static_cast<double>(bDim) * bDim;
+        const auto* mi = reinterpret_cast<const MonsterInfo*>(def);
+        const double s = static_cast<double>(mi->collDim[0]) * mi->collDim[0]
+                       + static_cast<double>(mi->collDim[2]) * mi->collDim[2];
         m->radius = static_cast<float>(std::sqrt(s) * 0.5);
     }
     ReadMonsterPos(*m);

@@ -135,6 +135,9 @@
     <ClCompile Include="src\App\App.cpp">
       <Filter>Source Files\App</Filter>
     </ClCompile>
+    <ClCompile Include="src\App\PlayerInputController.cpp">
+      <Filter>Source Files\App</Filter>
+    </ClCompile>
     <ClCompile Include="src\Asset\AssetSelfTest.cpp">
       <Filter>Source Files\Asset</Filter>
     </ClCompile>
@@ -534,6 +537,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h">
+      <Filter>Header Files\App</Filter>
+    </ClInclude>
+    <ClInclude Include="src\App\PlayerInputController.h">
       <Filter>Header Files\App</Filter>
     </ClInclude>
     <ClInclude Include="src\App\GameConfig.h">

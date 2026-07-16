@@ -9,29 +9,71 @@ namespace ts2::gfx {
 Renderer::~Renderer() { Shutdown(); }
 
 bool Renderer::Init(HWND hwnd, int width, int height, bool windowed) {
+    // Gfx_InitDevice 0x69B9B0 — createur du device physique (Object A = g_GfxRenderer 0x7FFE18).
+    // L'original NE consulte JAMAIS GetAdapterDisplayMode : le back-buffer est fige a X8R8G8B8
+    // et le mode video plein-ecran est impose par ChangeDisplaySettingsA (device reste Windowed).
+
+    // Plein-ecran : ChangeDisplaySettingsA(CDS_FULLSCREEN) AVANT CreateDevice.
+    // L'original teste `if (plein-ecran demande)` ; ici `windowed` = inverse de ce flag (a2, this+27).
+    if (!windowed) {                             // a2 = flag plein-ecran
+        DEVMODEA dm;                             // Gfx_InitDevice 0x69bb20
+        ZeroMemory(&dm, sizeof(dm));
+        dm.dmSize        = 156;                  // sizeof(DEVMODEA) fige a 156
+        dm.dmBitsPerPel  = 32;
+        dm.dmPelsWidth   = (DWORD)width;         // a5
+        dm.dmPelsHeight  = (DWORD)height;        // a6
+        dm.dmFields      = 0x1C0000;             // DM_BITSPERPEL|DM_PELSWIDTH|DM_PELSHEIGHT
+        // Gfx_InitDevice 0x69bb20 : ChangeDisplaySettingsA(&dm, CDS_FULLSCREEN=4).
+        if (ChangeDisplaySettingsA(&dm, CDS_FULLSCREEN) != DISP_CHANGE_SUCCESSFUL) {
+            TS2_ERR("ChangeDisplaySettingsA a echoue (code fidelite 3)"); // *a11=3 @0x69bb2e
+            return false;
+        }
+    }
+
+    // Direct3DCreate9(0x20) — Gfx_InitDevice 0x69bb3b (echec => code 4).
     d3d_ = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!d3d_) { TS2_ERR("Direct3DCreate9 a echoue"); return false; }
+    if (!d3d_) { TS2_ERR("Direct3DCreate9 a echoue (code fidelite 4)"); return false; }
 
-    D3DDISPLAYMODE dm = {};
-    d3d_->GetAdapterDisplayMode(D3DADAPTER_DEFAULT, &dm);
+    // GetDeviceCaps(0, D3DDEVTYPE_HAL, &caps) — Gfx_InitDevice 0x69bb6f (echec => code 5).
+    // Reproduit l'ordonnancement d'origine (caps interrogees avant CheckDeviceFormat).
+    D3DCAPS9 caps{};                             // Gfx_InitDevice 0x69bb6f
+    if (FAILED(d3d_->GetDeviceCaps(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, &caps))) {
+        TS2_ERR("GetDeviceCaps HAL a echoue (code fidelite 5)");         // *a11=5 @0x69bb75
+        Shutdown(); return false;
+    }
 
-    // ex-VeryOldClient: mGraphicPresentParameters (v1 present_params, PLAUSIBLE — Docs/TS2_GXD_ROSETTA.md P-1).
-    // Confirmés IDA (Gfx_InitDevice 0x69B9B0) : DISCARD, D24S8, IMMEDIATE, count 1, HW=68/SW=36.
-    // NUANCE non transposable : v1 pose pp_.Flags = D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL — à vérifier
-    // sur 0x69B9B0 avant de l'ajouter ici (VeryOldClient seul ne suffit pas, cf. P-1).
-    ZeroMemory(&pp_, sizeof(pp_));
-    pp_.Windowed               = windowed ? TRUE : FALSE;
-    pp_.SwapEffect             = D3DSWAPEFFECT_DISCARD;
-    pp_.BackBufferWidth        = width;
-    pp_.BackBufferHeight       = height;
-    pp_.BackBufferFormat       = windowed ? dm.Format : D3DFMT_X8R8G8B8;
-    pp_.BackBufferCount        = 1;
-    pp_.EnableAutoDepthStencil = TRUE;
-    pp_.AutoDepthStencilFormat = D3DFMT_D24S8;   // fidèle : depth-stencil 24/8
-    pp_.hDeviceWindow          = hwnd;
-    pp_.PresentationInterval   = D3DPRESENT_INTERVAL_IMMEDIATE;
+    // CheckDeviceFormat(0, HAL, X8R8G8B8, 0, D3DRTYPE_TEXTURE, DXTn) x3 AVANT CreateDevice.
+    // FourCC prouves : 0x31545844="DXT1" (0x69bb88), 0x33545844="DXT3" (0x69bba8),
+    // 0x35545844="DXT5" (0x69bbc8). Un echec branche loc_69C966 => code 6.
+    if (FAILED(d3d_->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+                  D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, D3DFMT_DXT1)) ||   // 0x69bb95
+        FAILED(d3d_->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+                  D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, D3DFMT_DXT3)) ||   // 0x69bbb5
+        FAILED(d3d_->CheckDeviceFormat(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+                  D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, D3DFMT_DXT5))) {   // 0x69bbd5
+        TS2_ERR("CheckDeviceFormat DXTn non supporte (code fidelite 6)"); // *a11=6 @0x69c96a
+        Shutdown(); return false;
+    }
 
-    // BehaviorFlags 68 = HARDWARE_VERTEXPROCESSING(0x40) | MULTITHREADED(0x4).
+    // Present params — Gfx_InitDevice memset(this+137,0,0x38) 0x69bbef puis champs figes.
+    ZeroMemory(&pp_, sizeof(pp_));                          // 0x69bbef
+    pp_.BackBufferWidth        = width;                     // 0x69bc28 (*(this+137))
+    pp_.BackBufferHeight       = height;                    // 0x69bc31 (*(this+138))
+    pp_.BackBufferFormat       = D3DFMT_X8R8G8B8;           // 0x69bc37 (=22, INCONDITIONNEL)
+    pp_.BackBufferCount        = 1;                         // 0x69bc03 (esi=1)
+    pp_.MultiSampleType        = D3DMULTISAMPLE_NONE;       // 0x69bc41 (ebx=0)
+    pp_.MultiSampleQuality     = 0;                         // 0x69bc47 (ebx=0)
+    pp_.SwapEffect             = D3DSWAPEFFECT_DISCARD;     // 0x69bc09 (esi=1)
+    pp_.hDeviceWindow          = hwnd;                      // 0x69bc4d (edi=hwnd)
+    pp_.Windowed               = TRUE;                      // 0x69bc0f (esi=1, INCONDITIONNEL)
+    pp_.EnableAutoDepthStencil = TRUE;                      // 0x69bc15 (esi=1)
+    pp_.AutoDepthStencilFormat = D3DFMT_D24S8;              // 0x69bc53 (=0x4B=75)
+    pp_.Flags                  = D3DPRESENTFLAG_DISCARD_DEPTHSTENCIL; // 0x69bc5d (=2)
+    pp_.FullScreen_RefreshRateInHz = 0;                     // 0x69bc67 (ebx=0)
+    pp_.PresentationInterval   = D3DPRESENT_INTERVAL_IMMEDIATE;       // 0x69bc6d (=0x80000000)
+
+    // CreateDevice — Gfx_InitDevice 0x69bc9d. BehaviorFlags HW=68 = HARDWARE_VERTEXPROCESSING(0x40)
+    // | MULTITHREADED(0x4). L'original passe hwnd en hFocusWindow ET en pp_.hDeviceWindow.
     DWORD hwFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED;
     HRESULT hr = d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, hwFlags, &pp_, &device_);
     if (FAILED(hr)) {
@@ -40,51 +82,51 @@ bool Renderer::Init(HWND hwnd, int width, int height, bool windowed) {
         DWORD swFlags = D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED;
         hr = d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, swFlags, &pp_, &device_);
     }
-    if (FAILED(hr)) { TS2_ERR("CreateDevice a echoue (0x%08lX)", hr); Shutdown(); return false; }
+    if (FAILED(hr)) { TS2_ERR("CreateDevice a echoue (0x%08lX, code fidelite 7)", hr); Shutdown(); return false; }
 
-    // GXD_ConfigSamplerStates 0x403B50 (branche par défaut, cf. Gfx/GxdRenderer.cpp) :
-    // sans cet appel le device reste sur les états D3D9 par défaut (MIN/MAGFILTER=POINT,
-    // MIPFILTER=NONE) -> textures aliasées "en blocs" et mips jamais échantillonnés même
-    // quand ils sont uploadés (GpuTexture::UploadDxtBlocks). Corrige l'écart de qualité
-    // visuelle vs le binaire d'origine (constaté : filtre POINT au lieu d'ANISOTROPIC/LINEAR).
-    ConfigureSamplerStates();
+    // Etats sampler/render initiaux EXACTS d'Object A (Gfx_InitDevice 0x69c470..0x69c543).
+    ApplyInitialDeviceStates();
 
     TS2_LOG("Device D3D9 cree : %dx%d (%s)", width, height, windowed ? "fenetre" : "plein-ecran");
     return true;
 }
 
-// GXD_ConfigSamplerStates 0x403B50 — branche « this[2] == 0 » (défaut d'origine, dword_18C4F00
-// jamais mis à 1 par un chemin câblé côté ClientSource) : filtrage ANISOTROPIC sur les étages
-// ex-VeryOldClient: TW2AddIn::GXD::SetDefaultTextureSamplerState (méthode d'Object B recopiée dans
-//   Object A ; le repli ANISO->LINEAR est une déviation ClientSource assumée — PLAUSIBLE, P-2).
-// 0..2 avec MAXANISOTROPY = caps.MaxAnisotropy, adressage WRAP (U,V). Repli LINEAR si le device
-// ne supporte pas l'anisotrope (D3DPRASTERCAPS_ANISOTROPY absent ou MaxAnisotropy <= 1) : le
-// binaire d'origine ne fait pas ce repli explicitement (il dépend du pilote pour clamper), mais
-// un device logiciel/REF peut renvoyer MaxAnisotropy=1 -> ANISOTROPIC dégénère alors en POINT
-// silencieusement ; on force LINEAR dans ce cas précis pour ne jamais retomber sur POINT.
-void Renderer::ConfigureSamplerStates() {
+// Gfx_InitDevice 0x69c470..0x69c543 : etats sampler (stages 0/1 SEULEMENT) + render states
+// initiaux d'Object A. Filtres LINEAR FIXES — PAS d'anisotropie, PAS de dependance aux caps.
+// (L'ancien code anisotrope base sur GXD_ConfigSamplerStates 0x403B50 appartenait a Object B /
+//  GxdRenderer : ancre erronee pour Object A, remplacee ici.)
+// SetSamplerState = vtbl+0x114 (276), SetRenderState = vtbl+0xE4 (228). ebx=0, edi=1 confirmes
+// au desassemblage. Sampler ET render states ne survivent PAS a Reset() : rappelee apres chaque
+// Reset() reussi (HandleDeviceLost).
+void Renderer::ApplyInitialDeviceStates() {
     if (!device_) return;
+    IDirect3DDevice9* d = device_;
 
-    D3DCAPS9 caps{};
-    const bool haveCaps = SUCCEEDED(device_->GetDeviceCaps(&caps));
-    const bool anisoOk  = haveCaps
-        && (caps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY)
-        && caps.MaxAnisotropy > 1;
+    // --- Stage 0 : MAG/MIN=LINEAR, MIP=POINT, ADDRESS U/V=WRAP ---
+    d->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);   // 0x69c470 (type5, val 2)
+    d->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);   // 0x69c480 (type6, val 2)
+    d->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_POINT);    // 0x69c48f (type7, val edi=1)
+    d->SetSamplerState(0, D3DSAMP_ADDRESSU,  D3DTADDRESS_WRAP); // 0x69c49d (type edi=1, val 1)
+    d->SetSamplerState(0, D3DSAMP_ADDRESSV,  D3DTADDRESS_WRAP); // 0x69c4ac (type2, val edi=1)
+    // --- Stage 1 : MAG/MIN=LINEAR, MIP=NONE, ADDRESS U/V=CLAMP ---
+    d->SetSamplerState(1, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);   // 0x69c4bc (type5, val 2)
+    d->SetSamplerState(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);   // 0x69c4cc (type6, val 2)
+    d->SetSamplerState(1, D3DSAMP_MIPFILTER, D3DTEXF_NONE);     // 0x69c4db (type7, val ebx=0)
+    d->SetSamplerState(1, D3DSAMP_ADDRESSU,  D3DTADDRESS_CLAMP);// 0x69c4ea (type edi=1, val 3)
+    d->SetSamplerState(1, D3DSAMP_ADDRESSV,  D3DTADDRESS_CLAMP);// 0x69c4fa (type2, val 3)
 
-    for (DWORD s = 0; s <= 2; ++s) {
-        if (anisoOk) {
-            device_->SetSamplerState(s, D3DSAMP_MINFILTER,     D3DTEXF_ANISOTROPIC);
-            device_->SetSamplerState(s, D3DSAMP_MAGFILTER,     D3DTEXF_ANISOTROPIC);
-            device_->SetSamplerState(s, D3DSAMP_MIPFILTER,     D3DTEXF_ANISOTROPIC);
-            device_->SetSamplerState(s, D3DSAMP_MAXANISOTROPY, caps.MaxAnisotropy);
-        } else {
-            device_->SetSamplerState(s, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-            device_->SetSamplerState(s, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-            device_->SetSamplerState(s, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
-        }
-        device_->SetSamplerState(s, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
-        device_->SetSamplerState(s, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-    }
+    // --- Render states initiaux (Gfx_InitDevice 0x69c508..0x69c543) ---
+    d->SetRenderState(D3DRS_ALPHAREF,     0);                    // 0x69c508 (state 24, val 0)
+    d->SetRenderState(D3DRS_ALPHAFUNC,    D3DCMP_GREATER);       // 0x69c517 (state 25, val 5=GREATER, PAS GREATEREQUAL)
+    d->SetRenderState(D3DRS_SRCBLEND,     D3DBLEND_SRCALPHA);    // 0x69c526 (state 19, val 5)
+    d->SetRenderState(D3DRS_DESTBLEND,    D3DBLEND_INVSRCALPHA); // 0x69c535 (state 20, val 6)
+    d->SetRenderState(D3DRS_DITHERENABLE, TRUE);                 // 0x69c543 (state 26, val edi=1)
+
+    // Ne PAS toucher au stage 2 ni a MAXANISOTROPY : Object A ne les configure pas.
+    // Les 3 ecritures *(this+331..333)={2,0,1} @0x69c457/61/67 sont des champs cache internes
+    // du renderer (pas des appels device) ; non modelises ici (pas de consommateur).
+    // Le bloc fog @0x69c3e4 (FOGENABLE/FOGCOLOR/FOGTABLEMODE=3/FOGSTART/FOGEND/RANGEFOGENABLE) est
+    // conditionne par a9 (this+35, param fog absent de la signature Init) — hors perimetre ici.
 }
 
 void Renderer::Shutdown() {
@@ -112,10 +154,12 @@ bool Renderer::HandleDeviceLost() {
         hr = device_->Reset(&pp_);
         if (FAILED(hr)) return false;
         deviceLost_ = false;
-        // Les états d'échantillonnage (SetSamplerState) ne survivent PAS à Reset() en D3D9 :
-        // sans ceci le device retomberait sur POINT/NONE après toute perte de device
-        // (Alt-Tab, changement de résolution) même si Init() les avait bien posés.
-        ConfigureSamplerStates();
+        // Sampler ET render states (SetSamplerState/SetRenderState) ne survivent PAS à Reset()
+        // en D3D9 : sans ceci le device retomberait sur ses états par défaut après toute perte
+        // de device (Alt-Tab, changement de résolution) même si Init() les avait bien posés.
+        // États repris de Gfx_InitDevice 0x69c470/0x69c508 (l'original les restaure via
+        // GXD_RestoreAfterReset 0x404570 côté moteur ; ici on les repose localement).
+        ApplyInitialDeviceStates();
         // GXD_RestoreAfterReset 0x404570 (relu intégralement) : recompile les 12 shaders
         // (Shader_LoadVS01..VS15/PS02..PS14), recrée la déclaration de vertex skinné 76 o
         // (g_GxdSkinnedVertexDecl76 0x814A58, vtbl+344 = CreateVertexDeclaration) et, si une

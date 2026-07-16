@@ -82,17 +82,15 @@
 //     kindIndex 333 valeurs (plusieurs définitions = même modèle visuel, ex. variantes de rang).
 //     `GetForMonster()` ci-dessous est câblé sur cette formule (cf. Gfx/ModelCache.cpp).
 //
-//     ⚠️ PNJ NON RÉSOLU (piste forte mais non fermée à 100 %, cf. Docs/TS2_MONSTER_NPC_MODEL.md
-//     §6) : contrairement au monstre, `Pkt_SpawnNpc 0x467EC0` ne référence PAS `NpcDefRecord`/
-//     `mNPC` (table 11736 o, texte de dialogue uniquement, aucun champ modèle) mais un enregistrement
-//     `ITEM_INFO` via `MobDb_GetEntry 0x4C3C00` (stride 436) — le stem serait alors stocké
-//     LITTÉRALEMENT dans `ItemInfo.model[0]`, sans formule kindIndex/printf. Mais `Char_Draw`
-//     n'a que 2 sites d'appel dans tout le binaire (les 2 dans `Scene_InGameRender`), tous deux
-//     sur le tableau MONSTRE (`dword_1766F74`) — AUCUN sur le tableau PNJ (`dword_17AB534`). Les
-//     3 boucles PNJ de `Scene_InGameRender` n'appellent que `Char_DrawAura`/`Char_DrawNameTag`,
-//     jamais une primitive de mesh. La fonction qui dessine réellement le corps PNJ en jeu reste
-//     donc non localisée — `GetForNpc()` ci-dessous NE DEVINE PAS ce chaînon manquant (règle du
-//     projet) et renvoie nullptr avec le TODO documenté en detail dans le doc §6/§7.
+//     ✅ PNJ RÉSOLU (mission "rendu mesh PNJ", 2026-07-14, cf. Docs/TS2_NPC_MESH_DRAW.md §2-3 +
+//     Docs/TS2_NPC_ZONE_LOADER_TRIGGER.md — ce bandeau REMPLACE l'ancienne note "PNJ NON RÉSOLU",
+//     désormais caduque) : le corps PNJ EST dessiné en jeu par `Npc_DrawMesh 0x57FF00` (sur un
+//     tableau de RENDU séparé `g_NpcRenderArray` 0x1764D14, pas `dword_17AB534` — d'où l'absence
+//     d'appel `Char_Draw` sur les PNJ). `Npc_DrawMesh` lit le kindIndex+1 du modèle visuel à
+//     l'offset `+1324` de l'enregistrement `mNPC` résolu (`SkillDefTbl_GetRecord`) = champ
+//     `NpcDefRecord::fieldE` (Game/ExtraDatabases.h). Borne dure [1,66] par `Model_GetNpcMeshSlot
+//     0x4E5910` (`a2 <= 0x41`). `GetForNpc()` ci-dessous appelle `GetForNpcKind(fieldE - 1, 0)`
+//     dans cette borne, nullptr sinon (fallback d'origine hors catalogue).
 //
 //   - EntityRenderInfo::modelCategoryId (Game/EntityDrawLogic.h) est un ENTIER (id
 //     costume/modèle), PAS un nom de fichier : sa résolution vers un stem passe par une
@@ -224,19 +222,29 @@ public:
     PlayerBodyModel GetForPlayerBody(int race, int gender, int costumeSlot0, int costumeSlot1);
 
     // RÉSOLU (mission "résolution modèle monstre/PNJ dans ModelCache", 2026-07-14, cf. bandeau
-    // de tête + Docs/TS2_MONSTER_NPC_MODEL.md §2/§4/§7) : lit `g_World.db.monster.record(monsterDefId)`
-    // (même convention d'indexation que Game/EntityManager.cpp::ResolveMobDef, id brut sans -1),
-    // extrait le dword à l'offset +244 (`kindIndexP1`, 1-based tel que stocké dans le fichier) et
-    // appelle `GetForMonsterKind(field244 - 1, 0, 0)` si `1 <= field244 <= 333`. nullptr si la
-    // table monstre n'est pas chargée, si `monsterDefId` est hors bornes de la table, ou si
-    // field244 est hors du catalogue de 333 modèles connus (comportement fallback d'origine,
+    // de tête + Docs/TS2_MONSTER_NPC_MODEL.md §2/§4/§7) : résout via `game::GetMonsterInfo(monsterDefId)`
+    // (accesseur 1-based, cf. ItemDefTbl_GetRecord 0x4C6570 base+944*(id-1)), lit le champ typé
+    // `MonsterInfo::kindIndexP1` (+244, 1-based tel que stocké dans le fichier) et appelle
+    // `GetForMonsterKind(kindIndexP1 - 1, 0, 0)` si `1 <= kindIndexP1 <= 333`. nullptr si la
+    // table monstre n'est pas chargée, si `monsterDefId` est hors bornes / slot vide, ou si
+    // kindIndexP1 est hors du catalogue de 333 modèles connus (fallback d'origine,
     // cf. Model_GetNpcMotionSlot 0x4E5960).
-    // NB signature : `const MonsterInfo&` suggéré par la mission n'existe PAS dans
-    // Game/GameDatabase.h (aucune struct typée pour MONSTER_INFO à ce jour, seule la table brute
-    // g_World.db.monster existe) -> uint32_t monsterDefId est utilisé à la place, cohérent avec
-    // le seul champ MONSTER_INFO déjà exploité ailleurs dans ClientSource (cf.
-    // Game/EntityManager.cpp::ResolveMobDef, qui prend aussi un id brut).
+    // CORRECTION off-by-one (ce jalon) : l'ancien code indexait `g_World.db.monster.record(id)`
+    // SANS -1 -- FAUX, car Pkt_SpawnMonster 0x467B00 passe l'id réseau BRUT (1-based) au getter
+    // 1-based 0x4C6570. `monsterDefId` reste l'id 1-based (même convention que ResolveMobDef,
+    // désormais elle-même corrigée). La struct typée `game::MonsterInfo` EXISTE désormais
+    // (Game/GameDatabase.h) ; l'ancienne note "const MonsterInfo& n'existe PAS" est caduque, mais
+    // la signature reste `uint32_t monsterDefId` par cohérence avec ResolveMobDef.
     const SkinnedModel* GetForMonster(uint32_t monsterDefId);
+
+    // Variante d'état de dégât (Char_Draw 0x5805C0). `hpCurrent` = hp runtime de l'entité
+    // (record monstre offset 92 = body+76 = `*((int*)this+23)` dans Char_Draw). Renvoie nullptr
+    // si `mi->field232 != 2` (le monstre n'a pas d'états de dégât), si l'id/kindIndexP1 est hors
+    // catalogue, ou si la table n'est pas chargée. Famille "M{k+1}002{sub+1}" (variant 1, 4
+    // sous-modèles) : sub = 3 - ftol(hpCurrent*100/hpMax)/30 (borné [0,3]). Gate graphique
+    // d'origine (g_Opt_GfxDetailShadows 0x84DEF8 == 1) laissée à l'appelant de rendu (W3), qui
+    // choisit d'appeler cette variante vs GetForMonster (pose de base) selon l'option.
+    const SkinnedModel* GetForMonsterDamaged(uint32_t monsterDefId, int hpCurrent);
 
     // RÉSOLU (mission "rendu mesh PNJ", 2026-07-14, cf. Docs/TS2_NPC_MESH_DRAW.md §2-3 +
     // Docs/TS2_NPC_ZONE_LOADER_TRIGGER.md) : `npc.fieldE` (+1324) EST le kindIndex+1 du modèle

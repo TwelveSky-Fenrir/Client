@@ -116,6 +116,7 @@
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\App\App.cpp" />
+    <ClCompile Include="src\App\PlayerInputController.cpp" />
     <ClCompile Include="src\Asset\AssetSelfTest.cpp" />
     <ClCompile Include="src\Asset\AtmosphereFile.cpp" />
     <ClCompile Include="src\Asset\ImgFile.cpp" />
@@ -251,6 +252,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h" />
+    <ClInclude Include="src\App\PlayerInputController.h" />
     <ClInclude Include="src\App\GameConfig.h" />
     <ClInclude Include="src\Asset\AssetSelfTest.h" />
     <ClInclude Include="src\Asset\AtmosphereFile.h" />

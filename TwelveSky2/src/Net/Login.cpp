@@ -5,12 +5,23 @@
 //   Net_ConnectGameServer 0x462A70, Net_CloseSocket 0x463000, Rng_Next 0x7603FD.
 #include "Net/Login.h"
 #include "Core/Types.h"   // ts2::kWM_Socket (WM_USER+1 = 0x401)
+#include "Game/GameState.h" // game::g_World.self.element = dword_1673194 (source unique de l'élément local)
 
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
 
 namespace ts2::net {
+
+// Définition de la référence-alias déclarée `extern` dans NetClient.h. Lie
+// net::g_LocalElement à game::g_World.self.element (int, même adresse que
+// dword_1673194 dans le binaire). reinterpret_cast<uint32_t&> d'un int : aliasing
+// signé/non-signé autorisé (mêmes représentation et taille), pas d'UB. L'init ne
+// fait qu'un calcul d'adresse sur g_World (objet à durée statique) -> pas de
+// fiasco d'ordre d'init statique, l'adresse est valide même avant son constructeur
+// dynamique. Élimine le dédoublement qui laissait l'élément à 0 au handshake
+// (cf. Net_ConnectGameServer 0x462A70, &g_LocalElement EA 0x462d5d).
+uint32_t& g_LocalElement = reinterpret_cast<uint32_t&>(game::g_World.self.element);
 
 namespace {
 
@@ -253,8 +264,12 @@ int ConnectGameServer(NetClient& nc, const char* host, uint16_t port, HWND notif
     uint8_t key  = static_cast<uint8_t>(nc.recvBuf[1]);
     uint8_t sess = static_cast<uint8_t>(key + 127);
 
-    // Paquet d'auth de 141 octets : [nonce1:4][nonce2_lo:3][sess:1@7][op:1@8]
-    //                               [jeton_compte:128@9][element_local:4@137].
+    // Paquet d'auth de 141 octets (Net_ConnectGameServer 0x462A70) :
+    //   [nonce1:4][nonce2_lo:3][sess:1@7][op=0x0B:1@8][jeton_compte:128@9]
+    //   [element_local:4@137].
+    //   +9   = byte_1669194 / g_AccountName (Crt_Memcpy EA 0x462d47) ;
+    //   +137 = dword_1673194 / g_LocalElement (Crt_Memcpy &g_LocalElement EA 0x462d5d,
+    //          v27 = buf+137, buf = ebp-3F0h -> 0x3F0-0x367 = 0x89 = 137).
     uint8_t pkt[141] = {};
     uint32_t nonce1, nonce2;
     MakeNonces(nonce1, nonce2);
@@ -263,7 +278,17 @@ int ConnectGameServer(NetClient& nc, const char* host, uint16_t port, HWND notif
     std::memcpy(pkt + 4, &nonce2, 4);          // [4..7]  nonce2 (octet 7 écrasé)
     pkt[7] = sess;                             // [7]     session
     pkt[8] = 11;                               // [8]     opcode 0x0B
-    std::memcpy(pkt + 9,   g_AccountName, 128);// [9..136]   byte_1669194
+    std::memcpy(pkt + 9,   g_AccountName, 128);// [9..136]   byte_1669194 (EA 0x462d47)
+    // [137..140] élément local (Net_ConnectGameServer 0x462A70, Crt_Memcpy
+    // &g_LocalElement EA 0x462d5d ; v27 = buf+137). g_LocalElement = dword_1673194 =
+    // SOURCE UNIQUE aliasée sur game::g_World.self.element (lue ICI telle quelle, sans
+    // transformation). Dans le binaire, cette valeur est posée juste avant le handshake
+    // par Scene_CharSelectUpdate 0x51BD90 (Crt_Memcpy g_SelfCharInvBlock 0x1673170 <-
+    // fiche du slot sélectionné, EA 0x51c707) : g_LocalElement = g_SelfCharInvBlock+0x24
+    // = charRecord[+36] du perso (champ nommé "job"@36 dans CharSelectFlow.h). La
+    // POPULATION depuis la fiche du slot incombe au flux CharSelect (LoginScene, hors
+    // périmètre de ce front) : sans elle, l'alias reste à 0 même si le dédoublement est
+    // éliminé — cf. NOTE ci-dessous.
     std::memcpy(pkt + 137, &g_LocalElement, 4);// [137..140] dword_1673194
 
     for (int j = 0; j < 141; ++j)              // XOR intégral avec la clé locale

@@ -1,5 +1,6 @@
 // App/App.cpp — implémentation de l'application et de la boucle principale.
 #include "App/App.h"
+#include "App/PlayerInputController.h"  // W1-F2 : Camera_UpdateFromInput 0x50B7D0 (g_CameraCtrl 0x1668F60)
 #include "Core/Types.h"
 #include "Core/Log.h"
 #include "Asset/AssetSelfTest.h"
@@ -28,6 +29,13 @@
 #pragma comment(lib, "imm32.lib") // imm32 non listée dans le .vcxproj (non modifiable ici)
 
 namespace ts2 {
+
+// W1-F2 : contrôleur clavier in-game (Camera_UpdateFromInput 0x50B7D0). Dans l'original,
+// son état vit dans l'objet global g_CameraCtrl 0x1668F60 (distinct des singletons
+// renderer), initialisé par mINPUT Camera_Init 0x50ABC0. App.h n'étant pas éditable par
+// ce front (fichier non possédé), l'instance vit ici en portée fichier — le client n'a
+// qu'une seule App, donc une seule instance, fidèle au singleton d'origine.
+namespace { PlayerInputController g_playerInput; }
 
 // ---- GameConfig::Parse ------------------------------------------------------
 // Fidèle à WinMain 0x4609C0 (zone 0x460A13-0x460F4B, re-vérifiée par décompilation
@@ -493,6 +501,22 @@ bool App::Init() {
     TS2_LOG("[mINPUT] Camera initialisee (bornes zoom %.0f..%.0f).",
             camera_.MinDistance(), camera_.MaxDistance());
 
+    // W1-F2 : câblage du contrôleur clavier in-game (Camera_UpdateFromInput 0x50B7D0).
+    // g_CameraCtrl 0x1668F60 est initialisé par ce même manager mINPUT (Camera_Init 0x50ABC0) :
+    // ses défauts (mouseLook/mode/speed[]) sont déjà posés par la construction de
+    // CameraCtrlState. On y branche les hooks vers les états/fonctions inter-front non possédés.
+    g_playerInput.SetScreenshotHook([]{
+        // Screenshot_SaveNext 0x5481A0 = Gfx_SaveScreenshot 0x69EA50 ("G04_GSHOT\\Sxxxxx.JPG") —
+        // fonction Gfx/file non possédée par ce front.
+        // TODO [ancre 0x5481A0] : câbler renderer_.SaveScreenshot quand la fonction sera exposée.
+    });
+    g_playerInput.SetSceneKeyDownHook([this](int dik){
+        scene_.OnKeyDown(dik);   // cSceneMgr_OnKeyDown 0x517F80 (LABEL_240 0x50DDE4)
+    });
+    // Prédicats laissés par défaut (renvoient false) tant que g_UIEditBoxMgr 0x1668FC0 /
+    // g_SelfCharInvBlock 0x1673170 / g_MorphInProgress 0x1675A88 ne sont pas modélisés
+    // côté UI/Game. TODO [ancre 0x1668FC0/0x1673170/0x1675A88] : brancher ces prédicats.
+
     // mEDITBOX (0x4623b0) : UI_CreateEditBoxes 0x50E460 — crée 21 EDIT Win32 natifs
     // sous-classés. DÉVIATION ASSUMÉE (documentée dès Docs/TS2_CLIENT_SHELL.md) :
     // ce client utilise des ts2::ui::EditBox autonomes (UI/Widgets.h) à la place,
@@ -581,34 +605,52 @@ void App::LoadDatabases() {
 }
 
 void App::FrameTick() {
-    // Pas fixe 30 FPS à accumulateur (App_FrameTick 0x4625D0).
-    gameClockSec_ = NowSeconds();
+    // Pas fixe 30 FPS à accumulateur (App_FrameTick 0x4625D0). Structure EXACTE de l'original
+    // (re-décompilée 2026-07-16) : Terrain_PushRenderState est appelé À CHAQUE frame (0x4625DE),
+    // mais poll clavier + Camera_UpdateFromInput + boucle Update + Render + purge sont TOUS
+    // À L'INTÉRIEUR de la garde d'accumulateur `if (1/30 <= now - accum)` (0x4625FD) — le rendu
+    // est donc couplé au pas fixe 30 FPS (une seule passe par tranche écoulée).
+    gameClockSec_ = NowSeconds();   // Terrain_PushRenderState(g_GfxRenderer) 0x4625DE (chaque frame)
     // Horloge de jeu partagée (flt_815180) : lue par les blits sprite (TTL textures)
     // et le clignotement du caret des champs de saisie.
     gfx::g_GameTimeSec = static_cast<float>(gameClockSec_);
     game::g_World.gameTimeSec = static_cast<float>(gameClockSec_);
 
-    // Poll clavier matériel (Input_AcquireKeyboard(g_WindowActive) 0x6A2130).
-    input_.Poll(windowActive_);
-    while (gameClockSec_ - frameAccumSec_ >= kFixedTimestep) {
-        // camera_ passée en MUTABLE (cf. Scene/SceneManager.h) : même instance que celle
-        // lue en const par scene_.Render() ci-dessous, requis par le câblage caméra 3e
-        // personne (case Scene::InGame, Gfx/CameraThirdPersonBridge.h).
-        scene_.Update(kFixedTimestep, camera_);
-        frameAccumSec_ += kFixedTimestep;
-    }
-    // Rendu 1×/frame si la fenêtre est active (GXD_BeginScene ... Present).
-    if (windowActive_ && renderer_.Ready()) {
-        if (renderer_.BeginFrame()) {
-            scene_.Render(renderer_.Device(), camera_);
-            renderer_.EndFrame();
-        }
-    }
+    // GARDE unique (0x4625FD) : rien ci-dessous ne tourne tant qu'un pas fixe complet ne s'est
+    // pas écoulé.
+    if (gameClockSec_ - frameAccumSec_ >= kFixedTimestep) {
+        // Poll clavier matériel DANS la garde (Input_AcquireKeyboard(g_WindowActive) 0x46260F).
+        input_.Poll(windowActive_);
+        // Camera_UpdateFromInput(&g_CameraCtrl) 0x462619 : 1×/frame gardée, AVANT la boucle
+        // Update. Émet le déplacement WASD (Net_SendCmd_251), gère caméra/quickslots/F12 et
+        // route le reliquat clavier vers scene_.OnKeyDown.
+        g_playerInput.Update(input_, camera_, net_.Client(), scene_.Current());
 
-    // Purge des assets expirés toutes les 60 s (TTL 300 s).
-    if (gameClockSec_ - lastPurgeSec_ >= kAssetPurgeIntervalSec) {
-        lastPurgeSec_ = gameClockSec_;
-        // TODO (jalon Assets) : AssetMgr::PurgeExpired(kAssetTtlSec);
+        // Boucle de rattrapage (do/while : on est déjà dans la garde) — 0x46263B..0x462677.
+        do {
+            // camera_ passée en MUTABLE (cf. Scene/SceneManager.h) : même instance que celle
+            // lue en const par scene_.Render() ci-dessous, requis par le câblage caméra 3e
+            // personne (case Scene::InGame, Gfx/CameraThirdPersonBridge.h).
+            scene_.Update(kFixedTimestep, camera_);
+            frameAccumSec_ += kFixedTimestep;
+        } while (gameClockSec_ - frameAccumSec_ >= kFixedTimestep);
+
+        // Rendu DANS la garde si la fenêtre est active (0x462684 : GXD_BeginScene ... Present).
+        if (windowActive_ && renderer_.Ready()) {
+            if (renderer_.BeginFrame()) {
+                scene_.Render(renderer_.Device(), camera_);
+                renderer_.EndFrame();
+            }
+        }
+
+        // Purge des assets expirés toutes les 60 s (0x4626AE).
+        if (gameClockSec_ - lastPurgeSec_ >= kAssetPurgeIntervalSec) {
+            lastPurgeSec_ = gameClockSec_;
+            // AssetMgr_UpdateUnloadExpired(g_ModelMotionArray 0x8E8B30, now, 300.0) 0x4626D7 :
+            // balaye le pool géant Sprite2D/ModelObj/Motion/SObject/Snd3D (_UnloadIfStale(slot,
+            // now, ttl=300)). Le pool n'est PAS possédé par ce front (front Asset).
+            // TODO [ancre 0x4E2050] : AssetMgr::PurgeExpired(kAssetTtlSec) quand le pool sera modélisé.
+        }
     }
 }
 

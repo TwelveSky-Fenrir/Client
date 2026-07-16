@@ -145,4 +145,13 @@ const SkillInfo* GetSkillInfo(uint32_t skillId) {
     return (sk && sk->skillId != 0) ? sk : nullptr;
 }
 
+const MonsterInfo* GetMonsterInfo(uint32_t monsterId) {
+    if (monsterId < 1) return nullptr;                          // ItemDefTbl_GetRecord 0x4C6570 : a2<1 => 0
+    const uint8_t* r = g_World.db.monster.record(monsterId - 1); // base+944*(id-1) ; record() gere id>count
+    const MonsterInfo* mi = reinterpret_cast<const MonsterInfo*>(r);
+    // Slot vide (id==0) => introuvable, comme la garde 1er dword de 0x4C6570
+    // (`if (*(base+944*(id-1))) return ... ; return 0;`).
+    return (mi && mi->id != 0) ? mi : nullptr;
+}
+
 } // namespace ts2::game

@@ -150,6 +150,75 @@ struct SkillInfo {
 };
 static_assert(sizeof(SkillInfo) == 776, "SkillInfo doit faire 776 o");
 
+// Entree de table de drop (8 o) — {u32<=1000000 ; u32<100000} par le validateur
+// ItemDefTbl_ValidateRecord 0x4C5F60 (paires @+448 dropA[5] et @+544 dropB[50], pas 8 o).
+struct DropEntry { uint32_t itemId; uint32_t chance; };
+static_assert(sizeof(DropEntry) == 8, "DropEntry doit faire 8 o");
+
+// MONSTER_INFO — 944 o. Table MONSTER (005_00004.IMG), chargee brute dans kTables[3]
+// (g_World.db.monster). MISNOMER IDB : les symboles "ItemDefTbl_*" chargent/valident/lisent
+// EN REALITE le fichier MONSTER_INFO (nom embarque "MONSTER_INFO", rec[0]="Goblin"), PAS
+// ITEM_INFO. Layout PROUVE en octet par ItemDefTbl_ValidateRecord 0x4C5F60 (lit chaque offset
+// en dur) ; accesseur STRICTEMENT 1-based ItemDefTbl_GetRecord 0x4C6570 (base+944*(id-1),
+// rejet id<1||id>count, garde 1er dword!=0). Deux champs sont prouves par CONSOMMATEUR de
+// rendu Char_Draw 0x5805C0 : kindIndexP1 (+244, `*(def+244)-1` = indice de modele visuel) et
+// hpMax (+368, diviseur de l'etat de degat). Cf. Docs/TS2_MONSTER_NPC_MODEL.md.
+struct MonsterInfo {
+    uint32_t id;                 // +0    1-based, ==index+1 (validateur : <1||>10000 ; ==a2+1)
+    char     name[25];           // +4    nom (scan 25 o, echoue si pas de NUL) — rec0 "Goblin"
+    // +29 : 2 chaines optionnelles 101 o (validateur : for j<2, k<101 @ 101*j+k+29). TOUJOURS
+    // VIDES sur les mobs reels — CE N'EST PAS un champ "nom de modele" (cf. Gfx/ModelCache.h :
+    // le modele est resolu par printf depuis kindIndexP1, pas stocke ici). Role non elucide.
+    char     textBlock[2][101];  // +29   (2x101 = 202 o -> ferme a +231)
+    uint8_t  _pad231[1];         // +231  align (29+202=231 ; field232 a +232)
+    int32_t  field232;           // +232  [1,15] type/classe ; ==2 => a des etats de degat (Char_Draw)
+    int32_t  field236;           // +236  [1,51]
+    int32_t  field240;           // +240  [1,2]
+    int32_t  kindIndexP1;        // +244  [1,10000] INDICE DE MODELE 1-based (Char_Draw : *(def+244)-1) — CRITIQUE
+    int32_t  collDim[3];         // +248  3x [1,1000] : rayon collision sqrt(collDim[2]^2+collDim[0]^2)*0.5 (Pkt_SpawnMonster 0x467B00)
+    uint32_t field260;           // +260  <=1000
+    int32_t  field264;           // +264  [1,4]
+    int32_t  field268;           // +268  [1,2]
+    int32_t  field272[6];        // +272  6x [1,10000] (272..292 -> ferme a +296)
+    uint32_t field296;           // +296  <4
+    uint32_t field300[3];        // +300  3x <=10000 (300..308 -> ferme a +312)
+    uint32_t field312;           // +312  <4
+    uint32_t field316[3];        // +316  3x <=10000 (316..324 -> ferme a +328)
+    int32_t  field328;           // +328  [1,10000]
+    int32_t  field332;           // +332  [1,10000]
+    int32_t  rewardMin;          // +336  [1,1000000], +336<=+340 (paire min/max, role non prouve)
+    int32_t  rewardMax;          // +340  [1,1000000]
+    int32_t  level;              // +344  [1,145] niveau
+    uint32_t field348;           // +348  <=12
+    int32_t  field352;           // +352  [1,1000]
+    uint32_t field356;           // +356  <=1000
+    uint32_t field360;           // +360  <=100000000
+    uint32_t field364;           // +364  <=100000000
+    int32_t  hpMax;              // +368  [1,2000000000] MAX HP — diviseur damage-state (Char_Draw def[+368]) — CRITIQUE
+    int32_t  field372;           // +372  [1,6]
+    uint32_t field376;           // +376  <=10000, +376<=+380
+    uint32_t field380;           // +380  <=10000
+    uint32_t field384;           // +384  <=1000
+    uint32_t field388;           // +388  <=1000
+    uint32_t field392;           // +392  <=1000
+    uint32_t field396;           // +396  <=300000
+    uint32_t field400;           // +400  <=200000
+    uint32_t field404[4];        // +404  4x <=100000 (404..416 -> ferme a +420)
+    uint32_t field420;           // +420  <=100
+    uint32_t field424;           // +424  <=100, +424<=+428
+    uint32_t field428;           // +428  <=100
+    int32_t  field432;           // +432  /100 in {0,2,3,4,5}, /100<=15
+    uint32_t field436;           // +436  <=1000000
+    uint32_t goldMin;            // +440  <=100000000, +440<=+444 GOLD paire min/max
+    uint32_t goldMax;            // +444  <=100000000
+    DropEntry dropA[5];          // +448  5x {u32<=1000000 ; u32<100000}, pas 8 o (448..487 -> ferme a +488)
+    uint32_t field488[12];       // +488  12x <=1000000 (488..535 -> ferme a +536)
+    uint32_t field536;           // +536  <=1000000
+    uint32_t field540;           // +540  <100000
+    DropEntry dropB[50];         // +544  50x {u32<=1000000 ; u32<100000}, pas 8 o (544..943 -> ferme a +944)
+};
+static_assert(sizeof(MonsterInfo) == 944, "MonsterInfo doit faire 944 o");
+
 #pragma pack(pop)
 
 // ---------------------------------------------------------------------------
@@ -177,5 +246,12 @@ const ItemInfo* GetItemInfo(uint32_t itemId);
 // ex-VeryOldClient: SKILL::ReturnDataAddr (CONFIRMED, logique identique). Renvoie nullptr
 // hors bornes OU si le slot est vide (champ skillId == 0).
 const SkillInfo* GetSkillInfo(uint32_t skillId);
+
+// Accesseur type MONSTER_INFO. `monsterId` 1-based ; index = monsterId-1 (cf.
+// ItemDefTbl_GetRecord 0x4C6570, base+944*(id-1), rejet id<1||id>count, garde 1er dword!=0).
+// Pkt_SpawnMonster 0x467B00 passe l'id reseau BRUT (1-based) a ce getter -> l'appelant C++
+// manipule un id 1-based, cet accesseur fait le -1. Renvoie nullptr hors bornes OU si le slot
+// est vide (champ id == 0). Table = g_World.db.monster.
+const MonsterInfo* GetMonsterInfo(uint32_t monsterId);
 
 } // namespace ts2::game

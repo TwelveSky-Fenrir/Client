@@ -22,6 +22,24 @@ void Net_SendPacket_Op20(NetClient& nc, int8_t arg1, int8_t arg2) {
     NetSend(nc, w.Data(), (int)w.Size());
 }
 
+// --- Alias metier warp/teleportation -------------------------------------
+void Net_SendWarpRequest(NetClient& nc, int32_t warpModeCode, int32_t targetZoneId) {
+    // Net_SendPacket_Op20 0x4B5000 — variante fidele i32 (zoneId zero-etendu).
+    // Reproduit a l'octet pres l'appel Op20(&g_AutoPlayMgr, dword_1675A8C, v3[a1])
+    // ou v3[a1] (138/139/165/166) est pousse sur 32 bits ZERO-etendu (EA 0x5f5dd6).
+    PacketWriter w;
+    w.WriteI32(warpModeCode);  // this+9  : Crt_Memcpy(this+9,&a2,4)  EA 0x4b509f (a2=int)
+    w.WriteI32(targetZoneId);  // this+13 : Crt_Memcpy(this+13,&a3,4) EA 0x4b50b4 (v3[a1] pousse 32b)
+    w.Finalize(0x14, DefaultRng(), nc.xorKey, nc.seq); // *(this+15000)=17 EA 0x4b50bf
+    NetSend(nc, w.Data(), (int)w.Size());
+}
+
+void Net_SendAutoHuntSync(NetClient& nc, int8_t stateFlag,
+                          const void* appearance68, const void* autoHunt44) {
+    // Net_SendOp99 0x4BD140 (opcode 0x63) — alias semantique (apparence 68 o + auto-hunt 44 o).
+    Net_SendOp99(nc, stateFlag, appearance68, autoHunt44);
+}
+
 void Net_SendPacket_Op28(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4) {
     // opcode 28 (0x1C) : 4 champs octet (chacun emis sur 4 octets LE)
     PacketWriter w;

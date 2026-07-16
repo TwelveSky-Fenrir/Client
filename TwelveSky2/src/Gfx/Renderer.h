@@ -33,11 +33,12 @@ public:
 private:
     bool HandleDeviceLost(); // GXD_OnDeviceLost/GXD_RestoreAfterReset (partiel)
 
-    // Réplique GXD_ConfigSamplerStates 0x403B50 (branche par défaut this[2]==0 =>
-    // anisotrope, cf. Gfx/GxdRenderer.cpp) directement sur le device du Renderer.
-    // Les états d'échantillonnage NE SURVIVENT PAS à un Reset() D3D9 : appelée après
-    // CreateDevice ET après chaque Reset() réussi (HandleDeviceLost).
-    void ConfigureSamplerStates();
+    // Pose les sampler states (stages 0/1) + render states initiaux EXACTS d'Object A,
+    // tirés directement de Gfx_InitDevice 0x69c470..0x69c543 (LINEAR fixe, PAS anisotrope ;
+    // l'ancienne ancre GXD_ConfigSamplerStates 0x403B50 appartenait à Object B / GxdRenderer).
+    // Sampler/render states ne survivent pas à Reset() : rappelée après CreateDevice ET après
+    // chaque Reset() réussi (HandleDeviceLost).
+    void ApplyInitialDeviceStates();
 
     IDirect3D9*           d3d_        = nullptr; // pD3D9 @+240 (0x7FFF08)   ex-VeryOldClient: mDirect3D
     IDirect3DDevice9*     device_     = nullptr; // pDevice @+604 (0x800074) ex-VeryOldClient: mGraphicDevice

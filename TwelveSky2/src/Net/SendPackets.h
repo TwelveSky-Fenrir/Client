@@ -243,4 +243,19 @@ void Net_SendGuarded_2(NetClient& nc, int32_t ctxId);
 void Net_SendGuarded_10(NetClient& nc, const void* data13, const void* data5);
 void Net_SendMenu_3(NetClient& nc, const void* data13);
 
+// --- Alias metier warp/teleportation -------------------------------------
+// Paquet de warp/teleportation de carte. Net_SendPacket_Op20 0x4B5000, opcode 0x14.
+// Emet [warpModeCode:i32 LE @+9][targetZoneId:i32 LE @+13], longueur 17. Les DEUX
+// champs sont des ENTIERS : dans le binaire a2=int et a3=v3[a1]/dword_1675A8C sont
+// pousses sur 32 bits et ZERO-etendus (EA 0x5f5dd6 : Op20(&g_AutoPlayMgr, 6, v3[a1])
+// avec v3={138,139,165,166}). D'ou i32, PAS int8_t : Net_SendPacket_Op20(int8_t)
+// sign-etendrait tout id >= 128 (0x8A -> 0x8AFFFFFF au lieu de 0x0000008A). Les 5
+// destinations warp (140/138/139/165/166) sont TOUTES >= 128 -> alias i32 obligatoire.
+void Net_SendWarpRequest(NetClient& nc, int32_t warpModeCode, int32_t targetZoneId);
+
+// Synchro apparence + config auto-hunt. Net_SendOp99 0x4BD140, opcode 0x63, longueur 125.
+// Alias semantique de Net_SendOp99 (a2=drapeau, orig. g_InvDirtyEnable ; 0 cote warp).
+void Net_SendAutoHuntSync(NetClient& nc, int8_t stateFlag,
+                          const void* appearance68, const void* autoHunt44);
+
 } // namespace ts2::net

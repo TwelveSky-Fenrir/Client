@@ -62,6 +62,7 @@
 #include "Net/WorldEntityDispatch.h"
 #include "Game/ClientRuntime.h"
 #include "Game/GameState.h"
+#include "Game/GameDatabase.h"   // GetMonsterInfo / MonsterInfo (resolution 1-based, Apply792to794)
 #include "Game/SkillCombat.h"
 #include "Game/MapWarp.h"
 #include "Game/MotionPoolsCoordResolver.h"
@@ -1475,8 +1476,11 @@ void Apply792to794(uint32_t subOpcode, const uint8_t* payload, uint32_t len) {
     uint32_t monsterId = 0;
     std::memcpy(&comboMotionId, payload + 4, 4);
     std::memcpy(&monsterId, payload + 8, 4);
-    const uint8_t* record = g_World.db.monster.record(monsterId);
-    if (!record) return;
+    // CORRECTION off-by-one : le getter MONSTER 0x4C6570 est STRICTEMENT 1-based
+    // (base+944*(id-1)) ; l'ancien `record(monsterId)` SANS -1 etait FAUX. GetMonsterInfo
+    // applique le -1 et la garde 1er dword!=0.
+    const MonsterInfo* info = GetMonsterInfo(monsterId);
+    if (!info) return;
 
     std::string format;
     switch (subOpcode) {
@@ -1486,7 +1490,7 @@ void Apply792to794(uint32_t subOpcode, const uint8_t* payload, uint32_t len) {
     default: return;
     }
 
-    const std::string suffix = FormatString(format, record + 4);
+    const std::string suffix = FormatString(format, info->name); // info->name = record + 4 (char[25])
     const std::string text = SkillName(comboMotionId) + " " + suffix;
     g_Client.msg.System(text);
 }
