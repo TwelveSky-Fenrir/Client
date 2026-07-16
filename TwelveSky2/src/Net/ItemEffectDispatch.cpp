@@ -382,15 +382,19 @@ void ApplyItemEffectDispatch(const ItemInfo* item, uint32_t flag,
         // TODO [loc_47FA60 0x47FA60] : singleton tpl 800 (non porte).
         const uint32_t idx = id - 0x1FA;             // 46B13F : sub 0x1FA
         if (idx > 0xCF) return;                      // 46B14B : ja def
+        // Le `case` est l'INDEX DANS jpt_46B168 (0x487D68), pas un ordinal de handler :
+        // 46B161 movzx eax, byte_487E90[edx] ; 46B168 jmp jpt_46B168[eax*4].
         switch (kByte_487E90[idx]) {                 // 46B161 : movzx ; jmp jpt_46B168
-        case 0x00: H_MeridianRatingMin(flag, row, col); return;  // loc_46B658 (tpl 506)
-        case 0x01: H_MeridianRatingMax(flag, row, col); return;  // loc_46B779 (tpl 507)
-        case 0x02: H_MeridianExtAtk(flag, row, col);    return;  // loc_46B89B (tpl 509)
-        case 0x03: H_MeridianDefense(flag, row, col);   return;  // loc_46B9AC (tpl 508)
-        case 0x04: H_SoundMsgOnly(flag, kMsg_Generic386); return; // loc_46BD82 (tpl 591)
-        case 0x05: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return; // loc_46C81F (tpl 539)
-        // 0x06..0x48 : handlers non portes (loc_470ED2, loc_4768E5, ... 0x487d68).
-        // TODO [jpt_46B168 0x487D68] : cases 0x06..0x48 (voir refs de jmp jpt_46B168[eax*4]).
+        case 0x00: H_MeridianRatingMin(flag, row, col); return;  // jpt[0x00]=0x46B658 ; octet 0x00 @0x487E90 (tpl 506)
+        case 0x01: H_MeridianRatingMax(flag, row, col); return;  // jpt[0x01]=0x46B779 ; octet 0x01 @0x487E91 (tpl 507)
+        case 0x02: H_MeridianDefense(flag, row, col);   return;  // jpt[0x02]=0x46B9AC ; octet 0x02 @0x487E92 (tpl 508)
+        case 0x03: H_MeridianExtAtk(flag, row, col);    return;  // jpt[0x03]=0x46B89B ; octet 0x03 @0x487E93 (tpl 509)
+        case 0x09: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return;   // jpt[0x09]=0x46C81F ; octet 0x09 @0x487EB1 (tpl 539)
+        case 0x23: H_SoundMsgOnly(flag, kMsg_Generic386); return;         // jpt[0x23]=0x46BD82 ; octet 0x23 @0x487EE5 (tpl 591)
+        // NB : jpt_46B168[0x23] != jpt_46B1BA[0x23] (0x46BD82 vs 0x46C56C) : deux switches
+        // distincts sur deux sous-tables distinctes — ne PAS factoriser avec P1.
+        // TODO [jpt_46B168 0x487D68] : cases 0x04..0x08, 0x0A..0x22, 0x24..0x48 non portes
+        //   (loc_470ED2, loc_4768E5, loc_477E64, loc_4821B0, ...).
         default: return;                             // 0x49 = def_46B168 (no-op)
         }
     }
@@ -401,16 +405,19 @@ void ApplyItemEffectDispatch(const ItemInfo* item, uint32_t flag,
         // TODO [loc_46D141 0x46D141] : singleton tpl 1066 (non porte).
         const uint32_t idx = id - 0x321;             // 46B191 : sub 0x321
         if (idx > 0xF8) return;                      // 46B19D : ja def
+        // Index dans jpt_46B1BA (0x487F60) : 46B1B3 movzx eax, byte_488014[edx] ;
+        // 46B1BA jmp jpt_46B1BA[eax*4]. ATTENTION : `case 0x23` designe ici une cible
+        // DIFFERENTE de P0 (0x46C56C vs 0x46BD82) — switches disjoints, ne pas fusionner.
         switch (kByte_488014[idx]) {                 // 46B1B3 ; jmp jpt_46B1BA
-        case 0x00: H_MeridianRatingMin(flag, row, col); return;  // loc_46B658 (tpl 1017)
-        case 0x01: H_MeridianRatingMax(flag, row, col); return;  // loc_46B779 (tpl 1018)
-        case 0x02: H_DecrementStack(flag, row, col, kMsg_DecrStack); return; // loc_46BABE (tpl 1026)
-        case 0x04: H_FullStatRespec(flag, row, col);    return;  // loc_46C3FC (tpl 1028)
-        case 0x05: H_Transform1035(flag, row, col, dstD); return; // loc_46C56C (tpl 1035)
-        case 0x06: H_SysMsgOrTransform1036(flag, row, col, dstD); return; // loc_46C653 (tpl 1036)
-        case 0x08: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return; // loc_46C81F (tpl 1041)
-        // 0x03 loc_46BDC6 ; 0x07 loc_46C739 ; 0x09..0x2B : handlers non portes.
-        // TODO [jpt_46B1BA 0x487F60] : cases 0x03,0x07,0x09..0x2B (loc_46BDC6/46C739/...).
+        case 0x1E: H_MeridianRatingMin(flag, row, col); return;  // jpt[0x1E]=0x46B658 ; octet 0x1E @0x4880EC (subidx 0xD8, tpl 1017)
+        case 0x1F: H_MeridianRatingMax(flag, row, col); return;  // jpt[0x1F]=0x46B779 ; octet 0x1F @0x4880ED (subidx 0xD9, tpl 1018)
+        case 0x20: H_DecrementStack(flag, row, col, kMsg_DecrStack); return; // jpt[0x20]=0x46BABE ; octet 0x20 @0x4880F5 (subidx 0xE1, tpl 1026)
+        case 0x22: H_FullStatRespec(flag, row, col);    return;  // jpt[0x22]=0x46C3FC ; octet 0x22 @0x4880F7 (subidx 0xE3, tpl 1028)
+        case 0x23: H_Transform1035(flag, row, col, dstD); return; // jpt[0x23]=0x46C56C ; octet 0x23 @0x4880FE (subidx 0xEA, tpl 1035)
+        case 0x24: H_SysMsgOrTransform1036(flag, row, col, dstD); return; // jpt[0x24]=0x46C653 ; octet 0x24 @0x4880FF (subidx 0xEB, tpl 1036)
+        case 0x26: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return;   // jpt[0x26]=0x46C81F ; octet 0x26 @0x488104 (subidx 0xF0, tpl 1041)
+        // TODO [jpt_46B1BA 0x487F60] : cases 0x00..0x1D, 0x21 (loc_46BDC6), 0x25 (loc_46C739),
+        //   0x27..0x2B non portes.
         default: return;                             // 0x2C = def_46B168
         }
     }
@@ -421,12 +428,15 @@ void ApplyItemEffectDispatch(const ItemInfo* item, uint32_t flag,
         // TODO [loc_4728F1 0x4728F1] : singleton tpl 1355 (non porte).
         const uint32_t idx = id - 0x42D;             // 46B1E3 : sub 0x42D
         if (idx > 0x106) return;                     // 46B1EF : ja def
+        // Index dans jpt_46B20C (0x488110) : 46B205 movzx eax, byte_4882F8[edx] ;
+        // 46B20C jmp jpt_46B20C[eax*4]. (Les tpl 1069/1070/1071 routent en fait vers
+        // jpt[0x00]=0x481CD7, non porte — d'ou les anciens commentaires errones.)
         switch (kByte_4882F8[idx]) {                 // 46B205 ; jmp jpt_46B20C
-        case 0x00: H_MeridianExtAtk(flag, row, col);  return;    // loc_46B89B (tpl 1069)
-        case 0x01: H_MeridianDefense(flag, row, col); return;    // loc_46B9AC (tpl 1070)
-        case 0x02: H_DecrementStack(flag, row, col, kMsg_Generic386); return; // loc_46BC20 (tpl 1109)
-        // 0x03..0x78 : handlers non portes (loc_46CBE2, loc_46CCF5, ...).
-        // TODO [jpt_46B20C 0x488110] : cases 0x03..0x78.
+        case 0x05: H_MeridianExtAtk(flag, row, col);  return;    // jpt[0x05]=0x46B89B ; octet 0x05 @0x48830F (subidx 0x17, tpl 1092)
+        case 0x06: H_MeridianDefense(flag, row, col); return;    // jpt[0x06]=0x46B9AC ; octet 0x06 @0x488310 (subidx 0x18, tpl 1093)
+        case 0x10: H_DecrementStack(flag, row, col, kMsg_Generic386); return; // jpt[0x10]=0x46BC20 ; octet 0x10 @0x488320 (subidx 0x28, tpl 1109)
+        // TODO [jpt_46B20C 0x488110] : cases 0x00..0x04, 0x07..0x0F, 0x11..0x78 non portes
+        //   (loc_481CD7, loc_46F2EF, loc_46F414, loc_46CBE2, ...).
         default: return;                             // 0x79 = def_46B168
         }
     }
@@ -437,10 +447,12 @@ void ApplyItemEffectDispatch(const ItemInfo* item, uint32_t flag,
         // TODO [loc_486D1E 0x486D1E] : singletons tpl 1833/1834 (non portes).
         const uint32_t idx = id - 0x54C;             // 46B235 : sub 0x54C
         if (idx > 0x8F) return;                      // 46B241 : ja def
+        // Index dans jpt_46B25E (0x488400) : 46B257 movzx eax, byte_4884B4[edx] ;
+        // 46B25E jmp jpt_46B25E[eax*4]. (Le tpl 1356 route vers jpt[0x00]=0x4729B7, non porte.)
         switch (kByte_4884B4[idx]) {                 // 46B257 ; jmp jpt_46B25E
-        case 0x00: H_BuffTimer(flag, row, col, kMsg_BuffTimer2); return; // loc_46C935 (tpl 1421)
-        // 0x01..0x2B : handlers non portes (loc_46D4C5, loc_46EA1C, ...).
-        // TODO [jpt_46B25E 0x488400] : cases 0x01..0x2B.
+        case 0x13: H_BuffTimer(flag, row, col, kMsg_BuffTimer2); return; // jpt[0x13]=0x46C935 ; octet 0x13 @0x4884F5 (subidx 0x41, tpl 1421)
+        // TODO [jpt_46B25E 0x488400] : cases 0x00..0x12, 0x14..0x2B non portes
+        //   (loc_4729B7, loc_46D4C5, loc_46EA1C, ...).
         default: return;                             // 0x2C = def_46B168
         }
     }

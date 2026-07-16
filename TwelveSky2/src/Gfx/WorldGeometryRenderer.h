@@ -224,7 +224,12 @@
 //  un garde-fou de fidélité, pas un correctif visuel.
 //  ⚠ « Terrain_PushRenderState 0x69cb80 » est un nom IDA TROMPEUR : ce n'est PAS un push d'états
 //    de rendu mais un TIMER QueryPerformanceCounter (renvoie des secondes écoulées ; appelé aussi
-//    par App_Init/App_FrameTick) — il valide au passage `wavePhase_ * 10.0f` (v92*10.0 @0x6991ca).
+//    par App_Init @0x46242e / App_FrameTick @0x4625d9). Il ne valide RIEN de `wavePhase_ * 10.0f`
+//    (Passe 4/W5b) : son retour tombe dans un slot MORT (@0x6986b2 `fstp [esp+58h+var_48]`, +0x3a0,
+//    1 écriture / 0 lecture), tandis que le `fmul flt_7A8D74` @0x6991ca lit var_3C (+0x3ac, slot
+//    distinct) — lequel a 3 lectures / 0 écriture sur toute Terrain_Render 0x698670, donc lu NON
+//    INITIALISÉ. Seul le facteur 10.0f (flt_7A8D74 = 0x41200000) est prouvé ; `wavePhase_` ≡
+//    « secondes écoulées » est un choix build-safe NON PROUVÉ. Détail complet dans le .cpp.
 //
 //  RESTES (TODO ancres) : cull quadtree/frustum par frame ; sélection GPU de la frame de sway
 //  (MeshPart_Render 0x6aed60, uploadPart n'uploade que la frame 0) ; sim complet de particules

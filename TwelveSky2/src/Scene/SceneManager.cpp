@@ -169,6 +169,26 @@ void SceneManager::Change(Scene s) {
     if (s == Scene::EnterWorld)
         enterWorldState_ = game::EnterWorldFlowState{};
 
+    // W5b — reset SYMÉTRIQUE pour la scène InGame, même raison que le bloc EnterWorld ci-dessus.
+    // Pkt_EnterWorld 0x464160 est le SEUL writer de g_SceneMgr 0x1676180 = 6 — prouvé par balayage
+    // d'octets sur l'image entière : find_bytes "C7 05 80 61 67 01 06 00 00 00" -> 1 SEULE occurrence
+    // (@0x464304), et aucun store par registre (A3/89 05/89 0D/… sur 0x1676180 = 0 match). Or ce même
+    // writer repose AUSSI, dans la foulée, g_SceneSubState 0x1676184 = 0 @0x46430E et
+    // dword_1676188 = 0 @0x464318 : l'automate de Scene_InGameUpdate 0x52C600 repart donc de
+    // case 0 (Setup) à CHAQUE entrée en scène 6, jamais d'un état hérité.
+    // Le `this` de Scene_InGameUpdate EST bien cSceneMgr 0x1676180 : xrefs_to 0x52C600 -> 1 seul
+    // appelant (cSceneMgr_Update 0x517BF0 @0x517c79), lui-même appelé avec
+    // `mov ecx, offset g_SceneMgr` @0x462636 -> *(this+4) = g_SceneSubState (le switch @0x52C61F)
+    // et *(this+8) = dword_1676188 (le compteur). game::InGameTickFlowState{} = {Setup=0,
+    // frameCounter=0} en est le miroir 1:1.
+    // Sans ce reset, un warp InGame->EnterWorld->InGame (op 0x18 -> op 0x0c) laisse inGameTickState_
+    // à MainTick : le `g_SceneSubState = 0` posé ligne 160 est écrasé dès la frame suivante par
+    // `g_SceneSubState = (int)inGameTickState_.state` = 4 (ligne ~945), Setup ne rejoue pas, et
+    // surtout InitCamera (Cam_SetLookAt @0x52C759 / Camera_SetEyeTarget @0x52C7CF) ne recadre
+    // JAMAIS la caméra sur la nouvelle zone. // 0x464304 / 0x46430E / 0x464318 / 0x52C600
+    if (s == Scene::InGame)
+        inGameTickState_ = game::InGameTickFlowState{};
+
     // Entrée en jeu : initialise le HUD et les fenêtres de jeu une seule fois (device stable).
     if (s == Scene::InGame && hud_ && !hudReady_ && renderer_) {
         hudReady_ = hud_->Init(*renderer_, screenW_, screenH_);
@@ -572,9 +592,59 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         game::InGameTickFlowHost host;
 
         // --- Setup (case 0), one-shot ---------------------------------------------------
-        host.ResetUiAndScratch = [] {
-            TS2_LOG("InGame/Setup: reset tooltip/scratch/focus non branche "
-                     "(TODO EA sub_53F630+sub_4C1110(0)+UI_FocusEditBox 0x50F4A0).");
+        // Scene_InGameUpdate 0x52C600 case 0 (jumptable @0x52C61F -> loc_52C626) : quadruplet
+        // prouvé instruction par instruction, dans cet ordre exact.
+        // ÉCART PROUVÉ vs Scene_EnterWorldUpdate 0x52BFF0 case 0 : la case 0 InGame ne contient
+        // NI UI_ResetAllDialogs (@0x52C038, propre à EnterWorld) NI Snd_ReleaseBuffers(this+153)
+        // (@0x52C089, idem). Ne PAS les ajouter ici : l'entrée en jeu ne coupe pas le BGM et ne
+        // rabat pas les dialogues.
+        host.ResetUiAndScratch = [this] {
+            // (1) Gfx_ApplyOverlayBlendMode_SetState() @0x52C62B — NON BRANCHÉ.
+            // L'original (0x53F630) fait exactement deux choses :
+            //   Gfx_SetTextureBlendMode(g_GfxRenderer, 3, dword_7FFF78, 2) @0x53F646
+            //   dword_8002C8 = 3 @0x53F64B  (état global de mode de blend d'overlay)
+            // et 0x69DCA0 écrit les champs renderer +331/+332/+333 (+332 clampé sur +88) puis
+            // enchaîne 4x SetTextureStageState (vtbl+276, stage 0, états 5/6/10/7).
+            // NOTE (relevée cette mission) : le `mov ecx, offset unk_1685740` @0x52C626 qui
+            // précède l'appel est DEAD — 0x53F630 est sans paramètre et n'utilise pas ecx (il
+            // travaille sur g_GfxRenderer 0x7FFE18). Le commentaire Game/InGameTickFlow.h:128
+            // (« sub_53F630(&unk_1685740) ») prête donc à cette fonction un argument qui
+            // n'existe pas — fichier hors de ce front, signalé seulement.
+            // Rien à appeler ici : aucun équivalent réifié dans ClientSource (ni dword_8002C8,
+            // ni les champs renderer +331..+333), et Gfx/Renderer.h n'est pas possédé par ce
+            // front. Ne pas confondre avec MeshRenderer::applyBlendMode (0x69DCA0 est un
+            // chemin d'état d'overlay distinct, pas le blend par mesh).
+            // TODO [ancre 0x52C62B / 0x53F630 / 0x69DCA0] : réifier l'état de blend d'overlay
+            // (dword_8002C8 + renderer +331..+333) puis l'appeler ICI.
+
+            // (2) Util_SetClampedU8Field(&dword_8E714C, 0) @0x52C637 — NON BRANCHÉ.
+            // Strictement le même appel qu'@0x52C044 (case 0 d'EnterWorld) : voir la chaîne de
+            // preuve complète plus haut dans ce fichier (dword_8E714C EST mPOINTER, le jeu de
+            // curseurs ; 0x4C1110 = `if (a2 <= 8) *this = a2;` soit 9 slots) -> « remettre la
+            // forme du curseur souris au slot 0 ». L'équivalent fidèle existe
+            // (game::CursorSet::SetActiveSlot(0), Game/MiscManagers.cpp:88) mais l'instance est
+            // App::cursors_, membre PRIVÉ de App (App/App.h:43), fichier non possédé -> même
+            // arbitrage qu'@0x52C044.
+            // TODO [ancre 0x52C637 / 0x4C1110] : exposer App::cursors_ (décision orchestrateur)
+            // puis appeler CursorSet::SetActiveSlot(0) ICI.
+
+            // (3) UI_FocusEditBox(&g_UIEditBoxMgr, 0) @0x52C643 — CÂBLÉ.
+            // Appel STRICTEMENT identique à @0x52C050 (case 0 d'EnterWorld) : même fonction,
+            // même a2 = 0 (`push 0` @0x52C63E). Re-vérifié cette mission sur 0x50F4A0 : sous
+            // `if (a2 < 0x16)`, `*this = 0` @0x50F4BB puis, la branche `if (*this)` étant
+            // fausse, `SetFocus(hWndParent)` @0x50F4CB. On réutilise donc le motif déjà prouvé
+            // et câblé plus haut (index de focus -> Chat().Unfocus() ; SetFocus(hWndParent) ->
+            // notifyHwnd_, qui EST hWndParent 0x815184).
+            if (hud_) hud_->Chat().Unfocus();                              // 0x52C643 / 0x50F4BB
+            if (notifyHwnd_) ::SetFocus(static_cast<HWND>(notifyHwnd_));   // 0x50F4CB
+
+            // (4) scratch 150 dw @0x52C648 — NON MODÉLISÉ, donc RIEN à remettre à zéro.
+            // `for (i=0; i<150; ++i) *(this+i+3) = 0;` (`cmp [ebp+var_8], 96h` @0x52C65A ;
+            // `mov dword ptr [edx+ecx*4+0Ch], 0` @0x52C669), soit +0xC..+0x260 de cSceneMgr —
+            // exactement le même tampon qu'@0x52C055 côté EnterWorld. SceneManager.h:56 le
+            // documente mais aucun membre ne le réifie, et ces 150 dwords restent non
+            // identifiés dans le binaire. Ne pas inventer de champ fantôme.
+            // TODO [ancre 0x52C648] : identifier le tampon 150 dw de cSceneMgr +12.
         };
 
         // --- WaitFirstSpawn (case 1), timeout 5000 frames --------------------------------

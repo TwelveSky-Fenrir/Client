@@ -190,7 +190,16 @@
 //     L'analyse précédente s'était arrêtée UN NIVEAU TROP TÔT et concluait « aucune ombre
 //     portée n'est réellement dessinée par le client d'origine ». C'est FAUX, et c'est
 //     corrigé ici. IDA (re-vérifié de bout en bout cette session) prouve DEUX chaînes
-//     jumelles, l'une morte, l'autre vivante :
+//     jumelles DU VOLUME 0x40DC70, l'une morte, l'autre vivante :
+//
+//     PRÉCISION (Passe 4 / W5b, front shadow-fidelity) : « deux chaînes » ne compte QUE les
+//     jumelles du volume 0x40DC70 ci-dessous. Le binaire contient AU MOINS deux AUTRES
+//     implémentations d'ombre, elles aussi MORTES et non comptées ici :
+//         cSObject_RenderWithShadow     0x43D530  (0xA21 o, 0 xref)
+//         cSObject_RenderWithShadow_Alt 0x43DF60  (0xA21 o, 0 xref)
+//     — toutes deux lectrices du cache de direction flt_18C53C0/C4/C8 (@0x43D9E0/@0x43DC83 et
+//     @0x43E410/@0x43E6B3). Jumelles entre elles (tailles identiques), sans aucun appelant :
+//     vestiges d'une 3e/4e variante abandonnée. Ne rien câbler depuis elles non plus.
 //
 //     [A] VOLUME D'OMBRE STENCIL — MORT, INATTEIGNABLE DANS LE BINAIRE.
 //         Char_DrawShadow 0x580CE0 / Npc_DrawMeshShadow 0x5800E0 /
@@ -233,7 +242,36 @@
 //           (Char_DrawWeaponTrailEffect @0x52DB7C, Npc_DrawMesh @0x52DBDF, ...)
 //     Donc : ombres planaires pour JOUEURS **et** PNJ **et** MONSTRES — pas seulement les
 //     monstres comme le supposait la rédaction précédente.
-//     États réels posés par GXD_SetupStencilShadowState 0x404F20 (décompilé, vérifié) :
+//
+//     CŒUR DE GXD_SetupStencilShadowState 0x404F20 — DÉRIVATION DE LA DIRECTION D'OMBRE.
+//     (Passe 4 / W5b, front shadow-fidelity : le bandeau annonçait « décompilé, vérifié » mais
+//      n'en transcrivait que les SetRenderState, escamotant ses 6 PREMIÈRES lignes, qui sont
+//      justement l'essentiel — elles CALCULENT flt_18C53C0/C4/C8 à chaque frame.)
+//     this = ecx = g_GxdRenderer 0x18C4EF8 (posé par `mov ecx, offset g_GxdRenderer` @0x52D9D7,
+//     appelant unique @0x52D9DC) -> esi+4C8h = 0x18C53C0 / +4CCh = 0x18C53C4 / +4D0h = 0x18C53C8.
+//       0x404F26  fld  [esi+4A0h]  -> 0x404F2D  fstp [esi+4C8h]   ; x := light.Direction.x
+//       0x404F39  fldz             -> 0x404F3C  fstp [esi+4CCh]   ; y := 0.0
+//       0x404F43  fld  [esi+4A8h]  -> 0x404F49  fstp [esi+4D0h]   ; z := light.Direction.z
+//       0x404F4F  call Vec3_Normalize (0x6BB60C = jmp [0x7A64C8] = D3DXVec3Normalize, in=out=edi)
+//       0x404F54  fld  ds:flt_7EDA10 (= 0xBF800000 = -1.0, octets relus : 00 00 80 bf)
+//                                  -> 0x404F5B  fstp [esi+4CCh]   ; y := -1.0
+//       0x404F62  call Vec3_Normalize
+//     Soit :  shadowLightDir = normalize( normalize(L.x, 0, L.z) puis .y := -1 )
+//     La 1re normalisation rendant l'horizontale unitaire, la norme avant la 2nde vaut TOUJOURS
+//     sqrt(2) -> y ≡ -1/sqrt(2) ≈ -0.7071 : ombre à 45° vers le bas quelle que soit l'heure.
+//     SOURCE (esi+4A0h) : le light du renderer est un D3DLIGHT9 à esi+460h (= +1120, cf.
+//     Gfx/MeshRenderer.h) ; layout D3DLIGHT9 -> Direction@+64, donc 0x18C5358+64 = 0x18C5398
+//     = esi+4A0h (Direction.x) et esi+4A8h = 0x18C53A0 (Direction.z). Seul le PLAN HORIZONTAL
+//     de la lumière est repris (y est écrasé) : l'azimut du soleil oriente l'ombre, pas son
+//     élévation. Writer de ce light : Env_UpdateSunLight 0x412210 (@0x412339/@0x412343 :
+//     light.Direction = -normalize(sunDir), depuis cAtmosphere_GetSunDirectionA 0x7904D0),
+//     lui aussi recalculé chaque frame.
+//     POURQUOI xrefs_to(0x18C53C0) NE MONTRE AUCUN WRITER (piège à ne pas retomber dedans) :
+//     ses 7 xrefs sont TOUTES des lectures (0x40F585, 0x40F9A4, 0x40FB00, 0x43D9E0, 0x43DC83,
+//     0x43E410, 0x43E6B3) parce que l'écriture est relative au registre esi -> INVISIBLE en
+//     xref absolue. flt_18C53C0/C4/C8 est donc un CACHE recalculé, pas une constante figée.
+//
+//     États réels posés ENSUITE par GXD_SetupStencilShadowState 0x404F20 (décompilé, vérifié) :
 //       LIGHTING(137)=0, SHADEMODE(9)=FLAT, ZWRITEENABLE(14)=0, STENCILENABLE(52)=1,
 //       STENCILFUNC(56)=EQUAL(3), STENCILPASS(55)=INCR(7) (masque anti-double-blend),
 //       ALPHABLENDENABLE(27)=1, SRCBLEND(19)=SRCALPHA(5), DESTBLEND(20)=INVSRCALPHA(6),

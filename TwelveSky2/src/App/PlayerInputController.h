@@ -2,8 +2,14 @@
 //
 // Miroir FIDELE de Camera_UpdateFromInput 0x50B7D0 (objet g_CameraCtrl 0x1668F60,
 // initialise par mINPUT Camera_Init 0x50ABC0). Verite = desassemblage TwelveSky2.exe.
-// Appele 1x/frame DANS la garde du pas fixe (App_FrameTick 0x462619), juste apres le
-// poll clavier (Input_AcquireKeyboard 0x46260F) et AVANT la boucle cSceneMgr_Update.
+// Appele 1x/frame (App_FrameTick 0x462619), juste apres le poll clavier
+// (Input_AcquireKeyboard 0x46260F) et AVANT la boucle du pas fixe cSceneMgr_Update.
+// PRECISION (desassemblage 0x4625D0, rectifie W5b) : l'appel est bien garde par la garde
+// d'ACCUMULATEUR amont @0x4625FD (`delta < flt_815188` = 0.0333 -> jmp loc_4626DC, on saute
+// tout), mais il est HORS de la boucle de PAS FIXE, dont la tete est loc_462623 @0x462623
+// (`mov ecx,1` / `test ecx,ecx` / `jz loc_46267D`) et qui contient cSceneMgr_Update
+// @0x46263B en rebouclant via @0x46267B. Consequence : 1x par FRAME gardee, jamais 1x par
+// pas fixe -- contrairement a cSceneMgr_Update qui, lui, peut tourner plusieurs fois.
 //
 // Role : lire l'etat clavier immediat (InputSystem::KeyState) + les evenements
 // tamponnes (FirstKeyDownDik), en deriver le deplacement WASD du joueur (envoye au

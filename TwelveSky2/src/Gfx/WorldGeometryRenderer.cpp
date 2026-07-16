@@ -246,6 +246,11 @@ void WorldGeometryRenderer::releaseObjects() {
     modelRanges_.clear();
     instances_.clear();
     instancePhase_.clear();
+    // Hygiène (Passe 4/W5b) : instancePhase_ et instanceFrameCount_ sont posés EN PARALLÈLE sur
+    // instances_.size() au chargement (cf. assign() jumeaux, ancre MapColl_UpdateObjectAnim 0x694a00
+    // -> frameCount = part.A) ; ils doivent donc être libérés ensemble. Sans conséquence aujourd'hui
+    // (TickWorldAnim se garde par `i < instanceFrameCount_.size()`), mais l'asymétrie était réelle.
+    instanceFrameCount_.clear();
     releaseTerrain(); // libère aussi les couches/textures du sol .WG + eau + lightmap
     releaseFx();      // libère les billboards FX de zone .WP + leurs textures
 }
@@ -839,9 +844,28 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
             // « Terrain_PushRenderState 0x69cb80 » -- c'est FAUX. Malgré son nom, 0x69cb80 ne pousse
             // AUCUN état de rendu : c'est un TIMER (QueryPerformanceCounter -> this+208, renvoie
             // (now - this+224) / this+216 = secondes écoulées), appelé aussi par App_Init @0x46242e
-            // et App_FrameTick @0x4625d9. Sa valeur de retour alimente v92, d'où `v92 * 10.0`
-            // @0x6991ca -> ceci VALIDE le `wavePhase_ * 10.0f` de bindWaterStates (même grandeur :
-            // des secondes écoulées). Le nom IDA est trompeur, ne pas s'y fier.
+            // et App_FrameTick @0x4625d9. Le nom IDA est trompeur, ne pas s'y fier.
+            //
+            // CORRECTION (Passe 4/W5b) : la version précédente de ce bloc prolongeait la rectification
+            // ci-dessus par une chaîne causale INVENTÉE (« le retour du timer alimente v92, d'où
+            // `v92 * 10.0` @0x6991ca -> ceci VALIDE le `wavePhase_ * 10.0f` »). IDA la contredit,
+            // sur la fonction Terrain_Render 0x698670 ENTIÈRE (balayage 0x698670-0x699800) :
+            //   - le retour du timer part dans un SLOT MORT : @0x6986b2 `fstp [esp+58h+var_48]`
+            //     (var_48 = frame +0x3a0) est l'UNIQUE référence à var_48 -> 1 écriture / 0 lecture ;
+            //     d'où le pseudocode Hex-Rays `Terrain_PushRenderState(g_GfxRenderer);` sans affectation ;
+            //   - le `fmul ds:flt_7A8D74` @0x6991ca porte sur var_3C (frame +0x3ac), slot DISTINCT
+            //     (12 octets d'écart), chargé @0x6991c1 `fld [esp+50h+var_3C]` ;
+            //   - var_3C = 3 LECTURES (@0x698900 / @0x6991c1 / @0x6994e4, toutes « v92 * 10.0 ») et
+            //     ZÉRO ÉCRITURE (lvar_usage : read=3 / write=0 / addr=0) ; aucune prise d'adresse de
+            //     pile n'échappe (les seuls `lea …esp` sont des NOP `lea esp,[esp+0]` d'alignement),
+            //     donc aucun appel ne peut l'écrire indirectement -> var_3C est lu NON INITIALISÉ.
+            // Ce qui est RÉELLEMENT prouvé ici se limite à la CONSTANTE : flt_7A8D74 @0x7A8D74 =
+            // octets `00 00 20 41` LE = 0x41200000 = 10.0f. L'OPÉRANDE, lui, n'a aucun écrivain :
+            // identifier `wavePhase_` à des « secondes écoulées » est donc un choix build-safe
+            // NON PROUVÉ (côté binaire c'est une lecture non initialisée, probable bug d'origine).
+            // Le CODE reste inchangé (cf. `wavePhase_ * 10.0f` dans bindWaterStates) : seul ce
+            // commentaire mentait. TODO [ancre 0x6991ca] : si un jour un dump runtime donne la vraie
+            // valeur de var_3C, trancher la grandeur réelle plutôt que de la supposer temporelle.
             dev_->SetTexture(1, shadowTex_);
             dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE); // = 4
             dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);

@@ -158,12 +158,28 @@ public:
     // de menu — ce sont des CONSTANTES GELÉES. GXD_InitGlobalState 0x401320 est leur seul writer
     // (vérifié par xrefs) et pose g_ShadowsEnabled=1 (0x4013B2) / g_ShadowMethod=1 (0x4013B8) ;
     // rien d'autre ne les écrit jamais. De plus l'unique LECTEUR de g_ShadowsEnabled (0x40EEEC)
-    // vit dans Model_RenderWithShadow 0x40EEE0, fonction morte -> le global est inerte. Corollaire :
-    // `method==0` (z-fail Carmack, 0x40F671) est INATTEIGNABLE PAR VALEUR. Cette fonction n'est de
-    // fait jamais appelée (shadowsEnabled_ reste false) : elle documente le binaire, ne le pilote pas.
+    // vit dans Model_RenderWithShadow 0x40EEE0 — fonction INATTEIGNABLE -> le global est inerte.
+    //   PRÉCISION (Passe 4 / W5b) : « fonction morte » était imprécis — 0x40EEE0 a bien 3 CALL
+    //   SITES (tous dans SObject_DrawAnimated 0x4D9050). Elle est morte par INATTEIGNABILITÉ :
+    //   la closure d'appelants se ferme à la profondeur 2 sur 3 racines orphelines
+    //   (Char_DrawWeaponEffectVariantA 0x568FE0 / Npc_DrawMeshShadow 0x5800E0 /
+    //   Char_DrawShadow 0x580CE0, 0 xref chacune) et `reaches(WinMain 0x4609C0 -> 0x40EEE0)` = false.
+    // Corollaire : `method==0` (z-fail Carmack, 0x40F671) est INATTEIGNABLE PAR VALEUR (le seul
+    // writer pose 1). Cette fonction documente le binaire, elle ne le pilote pas : DrawModelShadow()
+    // reste volontairement sans appelant côté C++.
     // Ne PAS la câbler à l'option UI g_Opt_GfxDetailShadows 0x84DEF8 : cette option existe bien
-    // (UI_OptionsWnd_OnClick 0x66D140) mais son lecteur 0x5811EA sélectionne une VARIANTE DE MODÈLE
-    // selon les PV (`3 - hp%/30`) — ce n'est pas une bascule d'ombre malgré son nom.
+    // (UI_OptionsWnd_OnClick 0x66D140) mais elle ne bascule aucune ombre malgré son nom.
+    //   PRÉCISION (Passe 4 / W5b) — le global a 16 xrefs, pas un lecteur unique :
+    //     * 4 WRITERS, tous dans UI_OptionsWnd_OnClick 0x66D140 : @0x66DF5B (`sub ecx,1` -> store),
+    //       @0x66DF63 (clamp = 0), @0x66DFDB (`add ecx,1` -> store), @0x66DFEA (clamp = 1)
+    //       -> option clampée à [0,1] (bascule 2 états), persistée par Options_SaveBin 0x4C2280.
+    //     * 12 LECTEURS : 0x51B54F, 0x51B8C3, 0x51B8CD, 0x55B351, 0x580840, 0x580E3A, 0x5811EA,
+    //       0x581990, 0x66DF52, 0x66DFD2, 0x66DFE1, 0x66F43E.
+    //   0x5811EA est L'UN de ces 12 lecteurs, et il vit À L'INTÉRIEUR du chemin d'ombre VIVANT
+    //   (Char_DrawReflection 0x581090, appelée par Scene_InGameRender @0x52DB09, dans le bracket
+    //   d'ombre 0x52D9DC..0x52DB15) : il y garde le choix de branche, mais ce qu'il sélectionne
+    //   est une VARIANTE DE MODÈLE selon les PV (`unk_FC7A8C + 144*type + 36*(3 - hp%/30)`)
+    //   — ce n'est pas une bascule d'ombre.
     void SetShadowParams(bool enabled, int method, float fogNear, float fogFar,
                          const D3DXVECTOR3& lightDir);
 
@@ -211,6 +227,11 @@ public:
     //   Le `if (!shaderSet_) return` ci-dessous n'est donc PAS le verrou qui empêche l'ombre :
     //   attacher un ShaderSet ne « débloque » rien, il n'y a aucun appelant à débloquer.
     //   `boundRadius` = a2 (diamètre englobant).
+    //   Passe 4 / W5b (front shadow-fidelity) : la longueur d'extrusion a9 en est DÉRIVÉE, et
+    //   n'est pas un paramètre libre — a9 = a2 × 2.5, prouvé aux 3 (et seuls) call sites de
+    //   0x40EEE0 dans SObject_DrawAnimated 0x4D9050 (@0x4D90C6/@0x4D9129/@0x4D9178 : `a5 * 2.5`).
+    //   DrawModelShadow applique donc `boundRadius * 2.5f` en interne : NE PAS le pré-multiplier
+    //   côté appelant si cette fonction venait un jour à être câblée.
     void DrawModelShadow(const SkinnedModel& model,
                          const D3DXVECTOR3&  position,
                          const D3DXVECTOR3&  rotationDeg,
@@ -294,11 +315,29 @@ private:
     UINT boneArraySize_ = kMaxBones;
 
     // ----- État d'ombre runtime (Model_RenderWithShadow 0x40EEE0) — additif -------------
-    bool        shadowsEnabled_ = false;                        // g_ShadowsEnabled 0x18C4F14
-    int         shadowMethod_   = 0;                            // g_ShadowMethod   0x18C4F18
-    float       fogNear_        = 0.0f;                         // flt_18C4F08 (seuil volume/planaire)
-    float       fogFar_         = 1.0f;                         // flt_18C4F0C (fin du fondu)
-    D3DXVECTOR3 shadowLightDir_ = D3DXVECTOR3(0.0f, -1.0f, 0.0f); // flt_18C53C0/C4/C8
+    // CORRECTION DE FIDÉLITÉ (Passe 4 / W5b, front shadow-fidelity) : ces défauts
+    // CONTREDISAIENT les ancres qu'ils citaient. Ils portent désormais les valeurs du binaire,
+    // posées par GXD_InitGlobalState 0x401320 (seul writer, vérifié par xrefs).
+    // NB : le `1` de enabled/method n'est PAS un immédiat — il transite par ebx
+    //      (`mov ebx, 1` @0x401365, puis `mov ds:g_XXX, ebx`).
+    bool        shadowsEnabled_ = true;      // g_ShadowsEnabled 0x18C4F14 = 1 (ebx @0x401365 ; store @0x4013B2)
+    int         shadowMethod_   = 1;         // g_ShadowMethod   0x18C4F18 = 1 (ebx @0x401365 ; store @0x4013B8)
+                                             //   -> cohérent avec « method==0 INATTEIGNABLE PAR VALEUR » ci-dessus.
+    float       fogNear_        = 999999.0f;  // flt_18C4F08 <- flt_7EDBD8 (0x497423F0) @0x401378/0x40137E
+    float       fogFar_         = 1000000.0f; // flt_18C4F0C <- flt_7EDB80 (0x49742400) @0x40138A/0x401396
+    // ATTENTION — valeur DÉRIVÉE, PAS une constante lue du binaire (le commentaire précédent
+    // « flt_18C53C0/C4/C8 » laissait croire l'inverse, et donnait (0,-1,0) que cette ancre ne
+    // produit PAS). flt_18C53C0/C4/C8 est un CACHE recalculé à chaque frame par
+    // GXD_SetupStencilShadowState 0x404F20 @0x404F26..0x404F62 depuis la lumière monde ;
+    // aucun writer n'apparaît en xref absolue car l'écriture est esi-relative (esi = this =
+    // g_GxdRenderer 0x18C4EF8 -> esi+4C8h = 0x18C53C0). Dérivation (cf. Scene/WorldRenderer.h) :
+    //     shadowLightDir = normalize( normalize(L.x, 0, L.z) puis .y := -1 )
+    // Appliquée à lightDirWorld_ = (-1,-1,1) (cf. ci-dessus) -> (-0.5, -1/sqrt(2), 0.5).
+    // Propriété structurelle : la 1re normalisation rendant l'horizontale unitaire, la norme
+    // avant la 2nde vaut TOUJOURS sqrt(2) -> y ≡ -1/sqrt(2) : direction à 45° vers le bas,
+    // quelle que soit la position du soleil. (0,-1,0) n'en serait le résultat que si
+    // L.x == L.z == 0 (D3DXVec3Normalize du vecteur nul) — cas NON prouvé.
+    D3DXVECTOR3 shadowLightDir_ = D3DXVECTOR3(-0.5f, -0.70710678f, 0.5f);
 
     // Tampons scratch du volume d'ombre (globaux d'origine -> membres, mêmes plafonds) :
     //   worldPos_        = positions skinnées monde, stride 3 (flt_18C69D4)

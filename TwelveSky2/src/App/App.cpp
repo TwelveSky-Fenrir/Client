@@ -15,9 +15,11 @@
 #include "Config/GameOptions.h"   // mGAMEOPTION : g_Options (23 champs, 001.BIN)
 #include "Audio/AudioSystem.h"    // DirectSound8 (init device, volume maître)
 #include "Gfx/GxdRenderer.h"      // g_GxdRenderer : partage le device D3D9 de g_GfxRenderer
+#include "Net/Rng.h"              // net::DefaultRng() — semé ici, cf. App_Init 0x461C20 EA 0x461C3E
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <ctime>                  // std::time — srand(time(NULL)) d'App_Init (EA 0x461C35)
 #include <string>
 // Intro AVI (App::Run, fidèle WinMain 0x4609C0 -> PlayShow_PlayVideoFile 0x6D70A0) :
 // WIN32_LEAN_AND_MEAN (défini au projet) exclut ole2.h/objbase.h de <windows.h> -> requis
@@ -332,6 +334,18 @@ int App::Run(HINSTANCE hInstance, const char* cmdLine) {
 // managers sont désormais tous câblés (ordre revérifié par désassemblage frais, Vague 1
 // 2026-07-15) — mEDITBOX/mUI = déviations UI assumées, mPAT = stub fidèle par construction.
 bool App::Init() {
+    // srand(time(NULL)) — TOUTE PREMIÈRE opération d'App_Init 0x461C20, avant même la
+    // lecture de hInstance (EA 0x461C46) et le 1er manager mFONTDATA (EA 0x461C5C) ;
+    // seul le prologue /GS la précède. Désassemblage :
+    //   461c33  push 0
+    //   461c35  call Crt_Time            ; time(NULL)
+    //   461c3d  push eax
+    //   461c3e  call Crt_Srand           ; srand(...) -> _tiddata->_holdrand
+    // Sans cette graine, net::DefaultRng() démarrait à state_=1 (défaut CRT pré-srand),
+    // soit la MÊME séquence à chaque lancement. Rng_Next 0x7603FD est le LCG MSVC exact
+    // (imul 343FDh / add 269EC3h, cf. Net/Rng.h) : semer ici rend le flux fidèle.
+    net::DefaultRng().Seed(static_cast<uint32_t>(std::time(nullptr)));
+
     // Résolution du répertoire GameData + changement du répertoire de travail du
     // process. L'ORIGINAL suppose CWD == racine d'installation (contenant
     // G01_GFONT/G02_GINFO/G03_GDATA/... directement) — tous les chemins relatifs

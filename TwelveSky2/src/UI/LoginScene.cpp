@@ -265,11 +265,23 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     // LoginScene.h::bgAtlasSlot_ pour la simplification par rapport à l'original). Reporté
     // dans serverState_.backgroundImageId pour que ServerSelectRender lise le MÊME tirage
     // (mémoire de scène partagée ServerSelect<->Login, cf. GetAtlasSprite/DrawFullscreenBg).
-    bgAtlasSlot_ = (std::rand() % 2) ? 2381 : 2380;
+    // FLUX RNG UNIQUE (W5b) : le binaire n'a qu'UN état _holdrand (Rng_Next 0x7603FD,
+    // 678 xrefs code : builders Net_Send*, FX Snow_/Rain_, HUD, et ces tirages de fond).
+    // On tape donc sur net::DefaultRng() et NON sur std::rand(), qui constituait ici un
+    // SECOND flux indépendant sans contrepartie binaire.
+    // Ancre : Scene_ServerSelectUpdate 0x518B30, `call Rng_Next` EA 0x518C19 puis
+    // `and eax, 80000001h` (idiome %2 signé) ; `mov [eax+2A0h], 94Ch` EA 0x518C31 (=2380,
+    // cas 0) / `mov [ecx+2A0h], 94Dh` EA 0x518C40 (=2381, cas != 0).
+    bgAtlasSlot_ = (net::DefaultRng().NextMod(2)) ? 2381 : 2380;
     serverState_.backgroundImageId = bgAtlasSlot_;
     // Fond CharSelect (this[15713]) : slot atlas aléatoire 2383/2384/2385 (Scene_CharSelectUpdate
     // 0x51BD90, init — cf. Docs/TS2_CHARSELECT_RE.md §4). Tiré une fois ici.
-    charBgSlot_ = 2383 + (std::rand() % 3);
+    // Ancre : `call Rng_Next` EA 0x51C23A puis `cdq ; mov ecx, 3 ; idiv ecx` ;
+    // `mov [edx+0F584h], 94Fh` EA 0x51C261 (=2383) / `950h` EA 0x51C270 (=2384) /
+    // `951h` EA 0x51C27F (=2385). `2383 + Rng_Next()%3` est exactement équivalent :
+    // Rng_Next() ∈ 0..0x7FFF (positif) => reste toujours 0..2, la branche `default`
+    // (jmp 0x51C289, aucune écriture) est morte.
+    charBgSlot_ = 2383 + net::DefaultRng().NextMod(3);
 
     // Câblage des sprites RÉELS de l'écran ServerSelect (panneau/barre de charge/bouton
     // d'action, cf. UI/ServerSelectRender.h) : nécessite le device D3D9, indisponible
@@ -293,6 +305,12 @@ void LoginScene::Shutdown() {
     // serverMutex_) — écart de fidélité assumé (join borné par le timeout de
     // QueryServerStatusLive) pour éviter tout accès après libération de LoginScene.
     if (statusThread_.joinable()) statusThread_.join();
+    // W5b — lifetime : g_LoginNoticeHook est une GLOBALE (Net/Login.cpp:30) qui capture
+    // `this`. LoginScene est détenue par un unique_ptr membre de SceneManager
+    // (SceneManager.h) : la scène meurt AVANT le global, contrairement à charHost_.ShowNotice
+    // (membre, qui meurt avec la scène). On dépose donc le hook ici pour ne jamais laisser
+    // un `this` pendouillant — même discipline que le join ci-dessus.
+    net::g_LoginNoticeHook = nullptr;
     if (gfx::ActiveSprite() == &sprites_) gfx::SetActiveSprite(nullptr);
     if (whiteTex_) { whiteTex_->Release(); whiteTex_ = nullptr; }
     atlasCache_.clear(); // libère les GpuTexture avant que le device ne soit détruit
@@ -843,7 +861,12 @@ void LoginScene::LoginUpdate() {
     }
 }
 
-// Sous-état 3 : lit ID/PW, ConnectLoginServer puis LoginRequest (op 0x0B, ver 106).
+// Sous-état 3 : lit ID/PW, ConnectLoginServer puis LoginRequest (op 0x0B, extra =
+// net::kLoginExtra = 90218 = 0x1606A). CORRECTION (W5b) : ce commentaire annonçait
+// « ver 106 » — FAUX, 106 = 0x6A n'est que l'octet BAS de la vraie valeur. Preuve :
+// `push 1606Ah` EA 0x51ab0e devant `call Net_LoginRequest` EA 0x51ab20 dans
+// Scene_LoginUpdate 0x51A8D0 (appelant UNIQUE de Net_LoginRequest 0x51B8E0).
+// Ne pas « re-corriger » vers 106 : cf. Net/Login.h:39-41 qui documente la faute d'origine.
 //
 // Les 4 notices ci-dessous ont TOUTES kind=2 dans le binaire (EA 0x51AA3D, 0x51AA92,
 // 0x51AF09 et tout le reste du switch, `push 2` confirmé par désassemblage devant CHAQUE
@@ -1586,6 +1609,17 @@ void LoginScene::BuildCharSelectHost() {
         // reel est deja disponible ici (plus de repli "#id" — cf. game::Str()).
         OpenNotice(game::Str(strId).c_str());
     };
+    // W5b — CÂBLAGE de la notice « deltas post-login » (Net/Login.h::g_LoginNoticeHook).
+    // Sans cette pose, le hook restait nul dans TOUT le dépôt : la branche notice de
+    // net::LoginRequest (Net/Login.cpp:277) était du CODE MORT et la notice ne pouvait
+    // jamais s'afficher. Dans le binaire elle est INCONDITIONNELLE une fois la garde
+    // delta>0 franchie — Net_LoginRequest 0x51B8E0 :
+    //   StrTable005_Get(g_LangId, 1785) EA 0x51bd68
+    //   -> UI_NoticeDlg_Open(byte_18225C8, 1, <texte>, "") EA 0x51bd75.
+    // Même motif que charHost_.ShowNotice ci-dessus (game::Str = StrTable005_Get fidèle).
+    net::g_LoginNoticeHook = [this](int32_t id) {
+        OpenNotice(game::Str(id).c_str());
+    };
     charHost_.ShowDeleteConfirm = [this] { deleteConfirmOpen_ = true; };
     // Str_ValidateNameChars 0x53FD70, reproduction FIDELE : ValidateNameCharset()
     // (Game/CharSelectFlow.cpp) — encodage + longueur (12 caracteres utiles max, via
@@ -1602,7 +1636,12 @@ void LoginScene::BuildCharSelectHost() {
         return game::g_Strings.bannedWords.IsBanned(n);
     };
     charHost_.GetEditedName = [this] { return createNameBox_.Text(); };
-    charHost_.RandomInitialJob = [] { return std::rand() % 3; };
+    // Job initial aléatoire — ancre PRÉCISE : Scene_CharSelectOnMouseUp 0x522E50,
+    // `call Rng_Next` EA 0x52536F puis `cdq ; mov ecx, 3 ; idiv ecx` puis
+    // `mov ds:dword_16709DC, edx` EA 0x52537C (job = Rng_Next() % 3), au mouse-up de
+    // validation du bouton « Créer ». Flux RNG unique (cf. bgAtlasSlot_ ci-dessus) :
+    // net::DefaultRng() et non std::rand().
+    charHost_.RandomInitialJob = [] { return net::DefaultRng().NextMod(3); };
 
     charHost_.CreateCharacter = [this](int32_t slot, const game::CharCreateForm& form,
                                        int32_t presetId) -> int32_t {

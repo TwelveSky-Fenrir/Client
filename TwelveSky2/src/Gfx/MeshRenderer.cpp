@@ -714,12 +714,23 @@ void MeshRenderer::DrawModelShadow(const SkinnedModel& model,
 
     // Boucle des meshes (0x40f5e5..0x40f703). Régime proche : le fondu v30 sature à 1.0 (0x40f367)
     // -> LOD 0 (0x40dca3). Chaque mesh non-billboard skinne + silhouette + extrude sa géométrie.
-    // NB : a9 (longueur d'extrusion, fournie par l'appelant de Model_RenderWithShadow, hors périmètre)
-    //   est approximée par le diamètre englobant boundRadius — extrusion >= taille du modèle.
+    //
+    // CORRECTION DE FIDÉLITÉ (Passe 4 / W5b, front shadow-fidelity) : a9 (longueur d'extrusion)
+    // n'est PAS « hors périmètre » — elle est PROUVÉE, et vaut exactement a2 × 2.5.
+    //   SObject_DrawAnimated 0x4D9050 est l'appelant UNIQUE de Model_RenderWithShadow 0x40EEE0
+    //   (xrefs_to(0x40EEE0) = 3, et les 3 sont dans cette seule fonction) -> la relation est
+    //   universelle, pas propre à une branche. Aux 3 sites, a9 est calculée puis passée :
+    //     calcul  v11/v10/v9 = a5 * 2.5   @0x4D90C6 / @0x4D9129 / @0x4D9178
+    //     appel   Model_RenderWithShadow(..., a2=a5, ..., a9=a5*2.5)
+    //                                    @0x4D90F9 / @0x4D915C / @0x4D91B4
+    //   Le param a2 de Model_RenderWithShadow reçoit a5 de DrawAnimated -> a9 = a2 × 2.5.
+    //   Consommée par Model_BuildShadowVolume(v20, a6, a7, v30, &v31, a9) @0x40F61C.
+    //   Ici a2 == boundRadius (diamètre englobant, cf. .h) -> extrusion = boundRadius * 2.5f.
     for (const SkinnedMesh& mesh : model.meshes) {
         if (mesh.empty || mesh.lods.empty()) continue;
         const SkinnedLod& L = mesh.lods[0];
-        if (!buildShadowVolume(L, palette, lightObj, boundRadius)) continue;
+        // a9 = a2 * 2.5 — SObject_DrawAnimated 0x4D9050 @0x4D90C6/@0x4D9129/@0x4D9178.
+        if (!buildShadowVolume(L, palette, lightObj, boundRadius * 2.5f)) continue;
 
         const UINT triCount = shadowVolVertCount_ / 3;
         if (triCount == 0) continue;
