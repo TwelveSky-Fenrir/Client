@@ -35,7 +35,11 @@
 #include "Game/ClientRuntime.h"  // g_Client, game::Str(id)
 
 #include <cstdio>   // snprintf
+#include <cstdint>
+#include <cstring>  // std::memcpy — miroir de Crt_Memcpy(..., a4, 0x4Cu)
+#include <array>
 #include <string>
+#include <unordered_map>
 
 namespace ts2::game {
 namespace {
@@ -100,13 +104,36 @@ bool SelfEst(const EntityId& id) {
                                     && g_World.players[0].id.lo == id.lo;
 }
 
-// self.mode (cGameData +7136) : gate les renvois réseau Net_QueueAction9/10 pour les
-// modes {1,5,6,7}. Non modélisé dans g_World -> considéré faux. TODO(net) ci-dessous.
+// self.mode (cGameData+7136) : gate les renvois réseau Net_QueueAction9/10 pour les
+// modes {1,5,6,7}. Lu depuis g_World.self.mode (GameState.h ligne 334, lecture seule ;
+// champ ajouté par MAIN, miroir de cGameData+7136). Gate identique aux 4 sites du binaire :
+//   0x55AA5D (cas 1/2 touche) / 0x55A4D0 (cas 1/2 raté) /
+//   0x55BC38 (cas 4 touche)  / 0x55BAA3 (cas 4 raté).
 bool SelfModeDeclenche() {
-    // TODO(net) EA 0x55AA5D/0x55A4D0/0x55BC38/0x55BAA3 : lire cGameData+7136
-    //   (mode joueur : 1/5/6/7) et appeler Net_QueueAction9 (0x512400) / Net_QueueAction10
-    //   (0x512540) sur g_PlayerCmdController (dword_1669170). Hors périmètre gameplay.
-    return false;
+    const int m = g_World.self.mode;             // cGameData+7136 (g_World.self.mode)
+    return m == 1 || m == 5 || m == 6 || m == 7; // {1,5,6,7}
+}
+
+// Cache du dernier bloc de combat 76 o par entité — miroir de Crt_Memcpy(..., a4, 0x4Cu)
+// vers player[i]+7536 (0x55AC92, 0x55BE85) et monstre[i]+923816 (0x55B51F). GameState.h
+// (PlayerEntity/MonsterEntity) est en lecture seule pour ce front -> l'état est modélisé
+// ici (règle #6). Clef = identité réseau (hi<<32 | lo). Consommateur futur : anim/FX.
+struct BlocCombat { std::array<uint8_t, 76> data{}; bool valid = false; };
+
+std::unordered_map<uint64_t, BlocCombat>& CacheJoueur() {
+    static std::unordered_map<uint64_t, BlocCombat> m; return m;
+}
+std::unordered_map<uint64_t, BlocCombat>& CacheMonstre() {
+    static std::unordered_map<uint64_t, BlocCombat> m; return m;
+}
+uint64_t CleId(const EntityId& id) {
+    return (static_cast<uint64_t>(id.hi) << 32) | id.lo;
+}
+void StockerBlocCombat(std::unordered_map<uint64_t, BlocCombat>& cache,
+                       const EntityId& id, const uint8_t* block) {
+    BlocCombat& b = cache[CleId(id)];
+    std::memcpy(b.data.data(), block, 76);   // Crt_Memcpy(..., a4, 0x4Cu)
+    b.valid = true;
 }
 
 } // namespace
@@ -210,8 +237,9 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
                     p.hp -= a[18];          // dégâts internes  (@0x55AC32)
                     if (p.hp < 0) p.hp = 0;
                     if (i == 0) g_World.self.hp = p.hp;     // miroir HUD self
-                    // TODO(anim) @0x55AC92 : Crt_Memcpy(player[i]+7536, block, 76) —
-                    //   cache du dernier bloc de combat sur l'entité (non modélisé).
+                    // Crt_Memcpy(player[i]+7536, block, 76) @0x55AC92 — cache du bloc
+                    //   de combat sur l'entité (modélisé hors-struct, cf. règle #6).
+                    StockerBlocCombat(CacheJoueur(), tgt, block);
                     // TODO(fx) @0x55AD2C : si slot fx libre -> Fx_AttachMuzzleFlash(
                     //   &player[i], 1).
                 }
@@ -281,7 +309,9 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
                 //     v43 = 3 - ftol((hp-a[16])*100 / def+368)/30 ; si v39<v43 ->
                 //     Fx_AttachDeflect(&monstre[i]). (def+368 = PV max MONSTER_INFO)
                 m.hp -= a[16];              // dégâts externes (@0x55B4F8)
-                // TODO(anim) @0x55B51F : Crt_Memcpy(monstre[i]+923816, block, 76).
+                // Crt_Memcpy(monstre[i]+923816, block, 76) @0x55B51F — cache du bloc
+                //   de combat sur l'entité (modélisé hors-struct, cf. règle #6).
+                StockerBlocCombat(CacheMonstre(), tgt, block);
                 // TODO(fx) @0x55B573.. : si hp>0 et monstre.def+240==2 et slot fx libre,
                 //   variante de muzzle selon a[8]/a[9] :
                 //     a[8]==1 -> switch a[9] {1->var1, 2->var2, 3->var3}
@@ -336,7 +366,9 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
                     p.hp -= a[16];          // dégâts externes (@0x55BE5E)
                     if (i == 0) g_World.self.hp = p.hp;     // miroir HUD self
                     // NB : pas de clamp >=0 dans le cas 4 (fidèle au binaire).
-                    // TODO(anim) @0x55BE85 : Crt_Memcpy(player[i]+7536, block, 76).
+                    // Crt_Memcpy(player[i]+7536, block, 76) @0x55BE85 — cache du bloc
+                    //   de combat sur l'entité (modélisé hors-struct, cf. règle #6).
+                    StockerBlocCombat(CacheJoueur(), tgt, block);
                     // TODO(fx) @0x55BF1F : si slot fx libre -> Fx_AttachMuzzleFlash(
                     //   &player[i], 1).
                 }

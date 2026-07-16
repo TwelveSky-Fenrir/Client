@@ -21,6 +21,9 @@
 #include "Game/GameState.h"
 #include "Game/ClientRuntime.h"
 #include "Game/GameDatabase.h"
+#include "Game/StatEngine.h"                 // StatEngine::CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0)
+#include "Game/MapWarp.h"                    // ts2::game::BeginWarpToFactionTown (0x55C510/0x55C9A0)
+#include "Game/MotionPoolsCoordResolver.h"  // g_CoordResolver (résolveur de coords ville, 0x5025E0/0x4FD4C0)
 
 #include <cstdint>
 #include <cstdio>
@@ -64,12 +67,22 @@ std::string fmt(const char* f, ...) {
     return std::string(buf);
 }
 
-// TODO(stat) Char_CalcAttackRatingMin (0x4CD970) — dépend du moteur de stats
-// (Char_Calc*) non encore écrit. On renvoie la valeur dérivée courante de self
-// pour rester cohérent ; la formule exacte reste à porter.
-int Char_CalcAttackRatingMin() { return g_World.self.atkRatingMin; }
-// TODO(stat) Char_CalcAttackRatingMax (0x4CE3F0) — idem.
-int Char_CalcAttackRatingMax() { return g_World.self.atkRatingMax; }
+// FmtFromStrTable(strId, ...) : Crt_Vsnprintf(buf, StrTable005_Get(strId), args...) — le
+// format EST l'entrée de table localisée (distinct de fmt() qui prend un format littéral).
+// Utilisé quand le binaire passe StrTable005_Get(id) comme 1er arg de Crt_Vsnprintf (0x75CD5F).
+std::string FmtFromStrTable(int strId, ...) {
+    char buf[1024];
+    va_list ap; va_start(ap, strId);
+    std::vsnprintf(buf, sizeof(buf), Str(strId).c_str(), ap);   // format = entrée de table
+    va_end(ap);
+    return std::string(buf);
+}
+
+// Char_CalcAttackRatingMin 0x4CD970 — agrégat complet via StatEngine (le this d'origine =
+// g_EquipSnapshotScratch 0x8E719C, snapshot d'équipement du self ; équiv. C++ = g_World.self/db).
+int Char_CalcAttackRatingMin() { return StatEngine::CalcAttackRatingMin(g_World.self, g_World.db); }
+// Char_CalcAttackRatingMax 0x4CE3F0 — idem.
+int Char_CalcAttackRatingMax() { return StatEngine::CalcAttackRatingMax(g_World.self, g_World.db); }
 
 // Motif « recalc min + clamp » (cases 47, 77, 91) :
 //   base=CalcMin(); if (curMin > base) curMin = base;
@@ -98,10 +111,16 @@ void ratingRecalcSet() {
 // --- Stubs de sous-systèmes non écrits (signatures fidèles) -----------------
 // TODO(audio) Snd3D_PlayScaledVolume 0x4DA380 (jouer un son d'événement).
 void Snd3D_PlayScaledVolume(int /*id*/, int /*vol*/, int /*flag*/) {}
-// TODO(map) Map_BeginWarpToFactionTown 0x55C510 (retour ville de faction).
-void Map_BeginWarpToFactionTown(int /*mode*/) {}
-// TODO(map) Map_BeginWarpToFactionTownEx 0x55C9A0.
-void Map_BeginWarpToFactionTownEx(int /*mode*/) {}
+// Map_BeginWarpToFactionTown 0x55C510 — __thiscall(this=g_LocalPlayerSheet, mode) ; élément =
+// g_LocalElement 0x1673194 = g_World.self.element. Résolution + armement des globals de warp
+// (pas d'émission réseau : nc reste au défaut nullptr, convention MapWarp.h).
+void Map_BeginWarpToFactionTown(int mode) {
+    BeginWarpToFactionTown(g_World.self.element, /*ex=*/false, mode, &g_CoordResolver);
+}
+// Map_BeginWarpToFactionTownEx 0x55C9A0.
+void Map_BeginWarpToFactionTownEx(int mode) {
+    BeginWarpToFactionTown(g_World.self.element, /*ex=*/true, mode, &g_CoordResolver);
+}
 // TODO(net) Net_ShopAction_4 0x5C95C0 (fermeture/action boutique).
 void Net_ShopAction_4(int /*a*/) {}
 // TODO(player) Player_CheckStateDigit 0x511740 (&g_PlayerCmdController).
@@ -533,12 +552,11 @@ void ApplySetGameVar(const uint8_t* payload, uint32_t len) {
         if (value <= 0) Map_BeginWarpToFactionTown(0); // /*0x469561*/
         break;
 
-    case 114: // g_Currency += value ; Msg Str(1845) (couleur littérale 1)
-        g_World.self.currency += value; // /*0x469574*/
+    case 114: // g_Currency += value ; Crt_Vsnprintf(buf, StrTable005_Get(1845), value) ; couleur 1
+        g_World.self.currency += value; // g_Currency 0x1673180 /*0x469574*/
         g_Client.inv.currency += value;
-        // Crt_Vsnprintf(v64, StrTable005_Get(1845), value) — format issu de la table
-        // (placeholder ici) ; on préserve la valeur affichée.
-        g_Client.msg.System(Str(1845) + " (" + std::to_string(value) + ")", 1); // /*0x4695ab*/
+        // Format = entrée de table 1845 (contient le %d) ; arg = value ; couleur littérale 1.
+        g_Client.msg.System(FmtFromStrTable(1845, value), 1); // /*0x469588..0x4695ab*/
         break;
 
     case 115: // dword_1675890 + son + Msg 2528

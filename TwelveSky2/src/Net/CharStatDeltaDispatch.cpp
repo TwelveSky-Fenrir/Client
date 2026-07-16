@@ -37,16 +37,21 @@
 // Les appels a d'autres sous-systemes sont reproduits pour leurs EFFETS DE DONNEES,
 // mais l'appel externe lui-meme est laisse en TODO :
 //   Snd3D_PlayPositional 0x4da450 / Snd3D_PlayScaledVolume 0x4da380  (audio)
-//   Char_CalcAttackRatingMin 0x4cd970 / Char_CalcAttackRatingMax 0x4ce3f0 (StatEngine :
-//     agregation complete equip+niveau+buffs ; ici on relit les stats derivees deja
-//     calculees dans g_World.self.atkRatingMin/atkRatingMax)
 //   cDrawWin_Init 0x628e40 (UI)  | QuestTbl_FindByGroupAndStage 0x4c8a60 (table quete)
-//   Map_BeginWarpToFactionTown 0x55c510 (teleport)  | Net_SendPacket_Op17 0x4b4b70 (envoi)
+//   Net_SendPacket_Op17 0x4b4b70 (envoi)
+// -- CABLES (W2-F3) -------------------------------------------------------------
+//   Char_CalcAttackRatingMin 0x4cd970 / Char_CalcAttackRatingMax 0x4ce3f0 -> facade
+//     StatEngine::CalcAttackRatingMin/Max(g_World.self, g_World.db) (agregation complete
+//     equip+niveau+buffs, valeur LIVE ; cf. CalcAtkRatingMin/Max ci-dessous).
+//   Map_BeginWarpToFactionTown 0x55c510 -> ts2::game::BeginWarpToFactionTown (cas 11).
 #include "Net/CharStatDeltaDispatch.h"
 
 #include "Game/GameState.h"
 #include "Game/GameDatabase.h"
 #include "Game/ClientRuntime.h"
+#include "Game/StatEngine.h"                 // StatEngine::CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0)
+#include "Game/MapWarp.h"                    // ts2::game::BeginWarpToFactionTown (0x55C510)
+#include "Game/MotionPoolsCoordResolver.h"  // g_CoordResolver
 
 #include <cstring>
 #include <vector>
@@ -134,12 +139,11 @@ int32_t LevelMetaGain(int lvl) {
     return li ? static_cast<int32_t>(li->meta) : 0;
 }
 
-// Char_CalcAttackRatingMin 0x4cd970 : agregat StatEngine (equip + niveau + buffs +
-// gemmes + set + skill...). TODO 0x4cd970 : reproduire l'agregation complete ; ici on
-// relit la stat derivee deja calculee par le StatEngine dans g_World.self.
-inline int32_t CalcAtkRatingMin() { return g_World.self.atkRatingMin; }
-// Char_CalcAttackRatingMax 0x4ce3f0 : idem (borne max). TODO 0x4ce3f0.
-inline int32_t CalcAtkRatingMax() { return g_World.self.atkRatingMax; }
+// Char_CalcAttackRatingMin 0x4cd970 / Max 0x4ce3f0 : agregat StatEngine complet (equip +
+// niveau + buffs + gemmes + set + meridien + talisman). Le this d'origine =
+// g_EquipSnapshotScratch 0x8E719C (snapshot du self) => g_World.self/db.
+inline int32_t CalcAtkRatingMin() { return StatEngine::CalcAttackRatingMin(g_World.self, g_World.db); }
+inline int32_t CalcAtkRatingMax() { return StatEngine::CalcAttackRatingMax(g_World.self, g_World.db); }
 
 // QuestTbl_FindByGroupAndStage 0x4c8a60 : recherche d'une entree de quete par groupe
 // (element secondaire) et palier (niveau). TODO 0x4c8a60 : brancher la table de quetes.
@@ -356,12 +360,13 @@ void ApplyCharStatDelta(const uint8_t* payload, uint32_t len) {
             FlagI(FL_568, 0) = 1; FlagF(FL_56C, 0) = 0.0f;
             // TODO 0x4da380 : Snd3D_PlayScaledVolume(0,100,1).
             const int32_t morph = SV(0x1675A98); // g_SelfMorphNpcId
+            // element = g_LocalElement 0x1673194 = g_World.self.element ; this = g_LocalPlayerSheet ;
+            // mode = 0 (Map_BeginWarpToFactionTown(0) d'origine). nc défaut nullptr (résolution seule).
             if (morph == 85) {
-                if (g_World.self.levelBonus > 11) {
-                    // TODO 0x55c510 : Map_BeginWarpToFactionTown(0).
-                }
+                if (g_World.self.levelBonus > 11)
+                    BeginWarpToFactionTown(g_World.self.element, false, 0, &g_CoordResolver); // 0x55c510
             } else if (morph == 196 && g_World.self.levelBonus > 0) {
-                // TODO 0x55c510 : Map_BeginWarpToFactionTown(0).
+                BeginWarpToFactionTown(g_World.self.element, false, 0, &g_CoordResolver);     // 0x55c510
             }
         }
         break;

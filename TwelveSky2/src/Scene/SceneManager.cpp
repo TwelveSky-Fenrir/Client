@@ -176,6 +176,10 @@ void SceneManager::Change(Scene s) {
                      "chargement .WO impossible.");
         } else {
             const int zoneId = game::g_World.zoneId;
+            // Pose la cle de zone courante AVANT tout chargement de couche : SetCurrentZoneId
+            // n'etait appele nulle part ailleurs (grep) -> World_LoadCurrentZoneModel 0x4DD6E0
+            // (qui lit g_SelfMorphNpcId 0x1675A98) travaillait sur zone 0. // 0x4DD6E0
+            if (worldMap_) worldMap_->SetCurrentZoneId(zoneId); // g_SelfMorphNpcId 0x1675A98
             // Redondant avec le chargement idx=3 (ResourceKind::ObjectsWO) déjà effectué
             // pendant Scene::EnterWorld (LoadZoneResources, cf. host.LoadZoneResource dans
             // Update()) - WorldMap::LoadZoneResource est idempotent (recharge le même
@@ -256,6 +260,39 @@ void SceneManager::ReleaseBgm() {
     if (bgm_) bgm_->Release();
 }
 
+// Rechargement RE-ENTRANT de zone (warp) — cf. declaration SceneManager.h. Rejoue la case 1
+// de Scene_EnterWorldUpdate 0x52BFF0 (World_LoadZoneResource 0x4DCB60 idx 1..12) + rebuild
+// GPU .WO + BGM, en LEVANT les gardes one-shot que Change() ne rejoue jamais en re-entree.
+void SceneManager::ReloadZone(int zoneId) {
+    // 1. Cle de zone courante : g_SelfMorphNpcId = g_TargetZoneId (Scene_EnterWorldUpdate
+    //    0x52C173). Lue par World_LoadCurrentZoneModel 0x4DD6E0 (SetCurrentZoneId) ET
+    //    cGameData_LoadZoneNpcInfo 0x5578E0 (via g_World.zoneId -> LoadZoneNpcs, spawn self).
+    game::g_World.zoneId = zoneId;                        // g_SelfMorphNpcId 0x1675A98
+    if (worldMap_) worldMap_->SetCurrentZoneId(zoneId);   // World_LoadCurrentZoneModel 0x4DD6E0
+
+    // 2. Re-execute World_LoadZoneResource(zoneId, kind) pour kinds 1..12, fidele a la
+    //    boucle case 1 (0x52C0F8 : idx 0..19, seuls 1..12 chargent, le reste no-op).
+    //    Idempotent (WorldMap::LoadZoneResource recharge le meme fichier). // 0x4DCB60
+    if (worldMap_) {
+        for (int idx = 1; idx <= 12; ++idx)
+            worldMap_->LoadZoneResource(zoneId, static_cast<world::ResourceKind>(idx)); // 0x4DCB60 case idx
+    }
+
+    // 3. Reconstruit la geometrie .WO GPU pour la nouvelle zone : LEVE la garde one-shot
+    //    worldGeomReady_ (dans Change() le bloc rebuild est gate !worldGeomReady_ -> jamais
+    //    rejoue en re-entree). ObjectsWO (kind 3) vient d'etre recharge dans la boucle ci-dessus
+    //    -> worldAssets_ a jour. // 0x4DCB60 case 3 (ObjectsWO) + worldGeom_->Build
+    if (worldGeomReady_ && worldGeom_ && worldAssets_) {
+        worldGeom_->Build(*worldAssets_);
+        TS2_LOG("SceneManager: rechargement zone %d -> geometrie .WO reconstruite "
+                "(%zu parts GPU).", zoneId, worldGeom_->UploadedPartCount());
+    }
+
+    // 4. Recharge l'ambiance BGM de la nouvelle zone (LEVE la garde one-shot ; meme cycle
+    //    release->load->play que World_LoadZoneResource 0x4DCB60 case 12). // 0x4DCB60 case 12
+    LoadZoneBgm(zoneId);
+}
+
 void SceneManager::ConsumePending() {
     if (!login_) return;
     const Scene p = login_->PendingScene();
@@ -279,6 +316,25 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         if (login_) { login_->Update(scene_); ConsumePending(); }
         break;
     case Scene::EnterWorld: {
+        // (W2-F1) RECHARGEMENT RE-ENTRANT (warp / op 0x18 Pkt_GameServerConnectResult 0x469CF0,
+        // seul writer de g_SceneMgr=5 @0x469d95 ; il a deja fait Change(Scene::EnterWorld) et
+        // arme ces 2 champs). Teste EN PREMIER. g_TargetZoneId 0x1675A9C = pendingWarpZoneId.
+        if (game::g_World.sceneReloadPending) {
+            game::g_World.sceneReloadPending = false;
+            const int warpZone = (game::g_World.pendingWarpZoneId >= 0)
+                                     ? game::g_World.pendingWarpZoneId
+                                     : game::g_World.zoneId;
+            game::g_World.pendingWarpZoneId = -1;
+            // Re-arme la machine d'etat visuelle (case 0..3) pour la NOUVELLE zone : sans ce
+            // reset, enterWorldState_ resterait bloque sur WaitServerAck/Failed du cycle
+            // precedent. Scene_EnterWorldUpdate repart de subState 0 (0x52C00F). // 0x52BFF0
+            enterWorldState_ = game::EnterWorldFlowState{};
+            subState_ = 0; frameCount_ = 0;
+            // Ecrit g_World.zoneId + SetCurrentZoneId (equivalent g_SelfMorphNpcId=g_TargetZoneId
+            // @0x52C173) et rejoue LoadZoneResource(1..12) + rebuild geo/BGM. // 0x52BFF0 / 0x4DCB60
+            ReloadZone(warpZone);
+            break; // laisse le flux visuel se derouler des la frame suivante
+        }
         // Bascule PRIORITAIRE et RÉELLE InGame : armée par EntityManager::OnEnterWorld
         // (Game/EntityManager.cpp, réception op 0x0c) via game::g_World.
         // sceneEnterWorldPending, fidèle à dword_1676180=6 écrit DIRECTEMENT par
@@ -348,17 +404,17 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             return true;
         };
         host.ShowErrorNotice = [](int strId) {
-            TS2_WARN("EnterWorld: echec (%s).", game::Str(strId).c_str());
+            // UI_NoticeDlg_Open(byte_18225C8, 2, StrTable005_Get(g_LangId, strId), &String) :
+            // strId 67 = echec emission Op12 (0x52C1A2), 68 = timeout ACK serveur (0x52C213).
+            // Meme modele que host.ShowSpawnTimeoutNotice (InGame). // 0x5C0280
+            game::g_Client.prompt.Open(2, game::Str(strId));
         };
         const int zoneId = game::g_World.zoneId;
         if (!game::EnterWorldFlow_Update(enterWorldState_, host, zoneId)) {
-            // État Failed atteint (timeout ACK ou échec d'émission) : repli sur
-            // InGame quand même plutôt que de bloquer indéfiniment l'écran (le
-            // paquet EnterWorld réseau, s'il arrive malgré tout, continuera de
-            // peupler g_World normalement, et le test sceneEnterWorldPending en tête
-            // de ce case reste de toute façon la voie normale de sortie).
-            TS2_WARN("EnterWorld: flux en echec -> bascule InGame de secours.");
-            Change(Scene::InGame);
+            // Etat Failed (timeout ACK 5000f @0x52C203 ou echec emission @0x52C194) : la notice
+            // Str 67/68 a deja ete emise par host.ShowErrorNotice. NE PAS forcer InGame : le
+            // binaire reste en scene 5 / etat 4 (default 0x52C232 = no-op). Le seul chemin
+            // legitime vers InGame reste sceneEnterWorldPending (op 0x0c) teste en tete de ce case.
         }
         break;
     }

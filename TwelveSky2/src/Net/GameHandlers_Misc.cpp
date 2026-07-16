@@ -25,7 +25,9 @@
 //
 // RÈGLE : ce module N'ÉDITE PAS l'état partagé (ClientRuntime.h) — il l'utilise.
 #include "Net/GameHandlers.h"
-#include "Net/ClientState.h"   // ts2::net::g_GmCmdCooldownLatch
+#include "Net/ClientState.h"   // ts2::net::g_GmCmdCooldownLatch, g_MorphInProgress (0x1675A88)
+#include "Net/Login.h"         // net::ConnectGameServer 0x462A70, net::kLoginHostCom, codes kNet*
+#include "Net/SendPackets.h"   // net::Net_SendPacket_Op21 0x4B5190
 #include "Game/ClientRuntime.h"
 #include "Game/MapWarp.h"      // game::BeginWarpToMap37/BeginWarpToFactionTown (0x62/0x8f)
 #include "Game/MotionPoolsCoordResolver.h" // game::g_CoordResolver (résolution coords warp)
@@ -48,7 +50,9 @@ namespace {
 // AutoPlaySystem (dword_1675664[slot] pour slot<10 dans Game/StatFormulas.cpp:276).
 constexpr uint32_t kTalismanSlot     = 0x1674760u;  // g_TalismanSlot (index talisman, -1 = aucun)
 constexpr uint32_t kPendingStopReq   = 0xE0000072u; // g_PendingStopRequest (invite réanimation)
-constexpr uint32_t kMorphInProgress  = 0xE0000018u; // g_MorphInProgress
+// (ex-kMorphInProgress 0xE0000018 supprimé : clé synthétique morte — le VRAI global
+//  morph est net::g_MorphInProgress = g_MorphInProgress 0x1675A88, ClientState.h:18,
+//  celui que lisent les builders Net_Send* ; désormais écrit directement, cf. 0x18.)
 // Base synthétique pour le fond du switch SetGameVar (une clé par varId).
 constexpr uint32_t kGameVarBase      = 0xE0160000u; // dword sélectionné par varId
 
@@ -75,6 +79,19 @@ void RecalcTalismanAttackRating() {
     if (game::g_Client.VarGet(0x1687378) > mx) game::g_Client.Var(0x1687378) = mx; // cur max (clamp)
 }
 } // namespace
+
+// hWndParent 0x815184 — fenêtre destinataire du WSAAsyncSelect(WM_USER+1) que pose
+// Net_ConnectGameServer 0x462A70. Dans le binaire, App_WinMain 0x4609C0 renseigne ce
+// global ; le layer réseau réécrit le reçoit en PARAMÈTRE (net::ConnectGameServer
+// notifyWnd, Net/Login.h:59). Le seul appelant C++ existant (LoginScene, flux
+// char-select) passe son propre notifyWnd_ ; le handler 0x18 (reconnexion en cours de
+// jeu) n'a pas ce handle. On l'expose ici, à charge pour App de l'assigner.
+// TODO [ancre 0x815184] : App (front NON possédé par ce module) doit poser
+//   ts2::net::g_GameSocketNotifyWnd = hwnd_ à l'init (App::Init/HandleMessage), via une
+//   déclaration extern dans un header App. Tant qu'il reste nullptr, le handler 0x18
+//   dégrade honnêtement (traite la connexion comme un échec WSAAsyncSelect -> Str107)
+//   au lieu d'appeler ConnectGameServer avec une fenêtre nulle (qui annulerait le recv).
+HWND g_GameSocketNotifyWnd = nullptr;
 
 void RegisterMiscHandlers(NetSystem& sys) {
     using namespace game;   // g_Client, g_World, Str()
@@ -118,27 +135,72 @@ void RegisterMiscHandlers(NetSystem& sys) {
         // runtime pour 0x16 — cf. Net/GameHandlers_Core.cpp lignes 1-18.
     });
 
-    // 0x18 GameServerConnectResult — résultat de sélection/connexion au game server.
-    OnPacket<GameServerConnectResult>(sys, 0x18, [](const GameServerConnectResult& p) {
-        if (p.resultCode == 0) {
-            (void)p.serverId; (void)p.port;
-            // TODO(send): Net_SelectServerDomain (EA 0x53FE90, résout serverId -> hôte) puis
-            //   Net_ConnectGameServer (EA 0x462A70, handshake bas niveau sur le socket résolu).
-            //   NE PAS FORCER : contrairement aux builders Net_SendOpNN de Net/SendPackets.*, ces deux
-            //   fonctions ne sont PAS portées comme appels directs dans ce module — elles n'existent en
-            //   C++ réécrit QUE comme point d'intégration `CharSelectHost::ConnectToGameServer`
-            //   (Game/CharSelectFlow.h), câblé pour le flux de sélection de personnage (opcode 0x16/
-            //   Net_ReqEnterCharInfo), un chemin DISTINCT de ce handler 0x18 (GameServerConnectResult,
-            //   reconnexion/relais en cours de jeu). Le câblage réel nécessite soit un point
-            //   d'intégration équivalent pour ce module réseau (host callback), soit l'implémentation
-            //   bas niveau (résolution DNS/socket) de Net_SelectServerDomain/Net_ConnectGameServer,
-            //   aucune des deux n'étant du ressort d'un simple branchement de builder existant.
-            // TODO(state): selon le sous-code de connexion : 0 -> scène jeu (g_SceneMgr=5) ;
-            //   1/2/6/7 -> boîte de notice ; 3/4/5 -> message + renvoi Net_SendPacket_Op21.
-        } else {
-            // Codes 1..12 : ligne système d'erreur (StrTable005) + fin du morph.
-            g_Client.Var(kMorphInProgress) = 0;  // g_MorphInProgress=0
-            // TODO(state): Msg_AppendSystemLine(StrTable005_Get(<id selon resultCode>)).
+    // 0x18 GameServerConnectResult — Pkt_GameServerConnectResult 0x469CF0. Résultat de
+    // sélection/connexion (reconnexion/relais serveur EN COURS DE JEU) au serveur de jeu.
+    // Décompilé (IDA) : v38=resultCode (memcpy@0x8156C1), v39=serverId (0x8156C5),
+    // v36=port (0x8156C9). Capture [&sys] pour atteindre sys.Client() (NetClient& global,
+    // persistant via InstallGameHandlers — pas de dangling).
+    OnPacket<GameServerConnectResult>(sys, 0x18, [&sys](const GameServerConnectResult& p) {
+        switch (p.resultCode) {                                    // switch(v38) — Pkt_GameServerConnectResult 0x469CF0
+        case 0: {
+            // Net_SelectServerDomain 0x53FE90 = stub VIDE dans l'image déballée (table
+            // d'hôtes geniusorc.com non reconstructible) -> réutilise net::kLoginHostCom,
+            // comme LoginScene (host callback CharSelect). serverId consommé nominalement.
+            const char* host = net::kLoginHostCom;                 // (void)p.serverId
+            // Net_ConnectGameServer 0x462A70 : nouvelle socket + bannière 5o + clé XOR@+4 /
+            // seq@+5 + auth 141o + WSAAsyncSelect(WM_USER+1). Requiert hWndParent 0x815184.
+            const HWND wnd = ts2::net::g_GameSocketNotifyWnd;      // == hWndParent 0x815184
+            const int v40 = wnd
+                ? net::ConnectGameServer(sys.Client(), host,
+                                         static_cast<uint16_t>(p.port), wnd)
+                : net::kNetErrAsyncSelect;  // pas de fenêtre -> code 6 -> Str107 (dégradé honnête, cf. §hWndParent)
+            switch (v40) {                                         // switch(v40) — sous-résultat Net_ConnectGameServer
+            case 0:
+                // Original : g_SceneMgr=5 (0x1676180) / g_SceneSubState=0 (0x1676184) /
+                // dword_1676188=0 -> bascule scène EnterWorld pour RECHARGER la zone.
+                // SceneManager NON édité (possédé par W2-F1) : on arme le flag partagé
+                // consommé par SceneManager (game::g_World.sceneReloadPending, GameState.h:544).
+                // 0x469CF0 n'écrit PAS pendingWarpZoneId (aucun zoneId dans ce paquet) ->
+                // laissé à sa valeur amont (-1 = recharge zone courante ; le nouveau serveur
+                // renverra Pkt_EnterWorld 0x0c avec la vraie zone).
+                game::g_World.sceneReloadPending = true;
+                break;
+            case 1: g_Client.prompt.Open(2, Str(102)); break;      // UI_NoticeDlg_Open(_,2,Str102,"")
+            case 2: g_Client.prompt.Open(2, Str(103)); break;      // UI_NoticeDlg_Open(_,2,Str103,"")
+            case 3:
+            case 4:
+            case 5: {
+                const int sid = (v40 == 3) ? 104 : (v40 == 4) ? 105 : 106;
+                g_Client.msg.System(Str(sid));                     // Msg_AppendSystemLine(g_ChatManager, Str104/105/106, g_SysMsgColor)
+                net::Net_SendPacket_Op21(sys.Client());            // Net_SendPacket_Op21(&g_AutoPlayMgr) 0x4B5190
+                // ÉCART FIDÉLITÉ [ancre 0x469CF0, LABEL_12] : l'original branche sur le retour
+                // d'envoi (0=échec -> UI_NoticeDlg_Open(_,2,Str20,"") ; sinon g_MorphInProgress=0).
+                // net::Net_SendPacket_Op21 retourne void (SendPackets.h:42, NON possédé par ce
+                // front) -> on prend la branche succès (cas socket saine), pas de notice Str20.
+                g_MorphInProgress = 0;                             // ts2::net::g_MorphInProgress = g_MorphInProgress 0x1675A88
+                break;
+            }
+            case 6: g_Client.prompt.Open(2, Str(107)); break;      // UI_NoticeDlg_Open(_,2,Str107,"")
+            case 7: g_Client.prompt.Open(2, Str(108)); break;      // UI_NoticeDlg_Open(_,2,Str108,"")
+            default: break;                                        // default: return (no-op)
+            }
+            break;
+        }
+        // resultCode 1..12 : ligne système (StrTable005) + fin du morph (g_MorphInProgress=0).
+        // Ids EXACTS décompilés (0x469CF0, cases 1..12).
+        case 1:  g_Client.msg.System(Str(100));  g_MorphInProgress = 0; break;
+        case 2:  g_Client.msg.System(Str(1221)); g_MorphInProgress = 0; break;
+        case 3:  g_Client.msg.System(Str(1347)); g_MorphInProgress = 0; break;
+        case 4:  g_Client.msg.System(Str(1928)); g_MorphInProgress = 0; break;
+        case 5:  g_Client.msg.System(Str(1554)); g_MorphInProgress = 0; break;
+        case 6:  g_Client.msg.System(Str(1951)); g_MorphInProgress = 0; break;
+        case 7:  g_Client.msg.System(Str(2237)); g_MorphInProgress = 0; break;
+        case 8:  g_Client.msg.System(Str(1213)); g_MorphInProgress = 0; break;
+        case 9:  g_Client.msg.System(Str(2308)); g_MorphInProgress = 0; break;
+        case 10: g_Client.msg.System(Str(2689)); g_MorphInProgress = 0; break;
+        case 11: g_Client.msg.System(Str(2330)); g_MorphInProgress = 0; break;
+        case 12: g_Client.msg.System(Str(2821)); g_MorphInProgress = 0; break;
+        default: break;                                            // default: return (no-op)
         }
     });
 

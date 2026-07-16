@@ -98,6 +98,13 @@ private:
     // Snd_ReleaseBuffers 0x6A80D0 (SceneMgr_ReleaseSoundBuffers 0x517B60) sur le slot.
     void  ReleaseBgm();
 
+    // Rechargement RE-ENTRANT de zone (warp / op 0x18 Pkt_GameServerConnectResult 0x469CF0
+    // -> g_SceneMgr=5). Rejoue le cycle Scene_EnterWorldUpdate 0x52BFF0 case 1
+    // (World_LoadZoneResource 0x4DCB60 idx 1..12) + rebuild geometrie .WO + BGM sur une
+    // NOUVELLE zone, SANS re-init du renderer (leve les gardes one-shot worldGeomReady_/
+    // LoadZoneBgm). Consomme sceneReloadPending/pendingWarpZoneId (GameState.h). // 0x52BFF0
+    void  ReloadZone(int zoneId);
+
     Scene scene_      = Scene::None; // +0
     int   subState_   = 0;           // +4
     int   frameCount_ = 0;           // +8

@@ -402,6 +402,9 @@
     <ClCompile Include="src\Net\ItemActionDispatch.cpp">
       <Filter>Source Files\Net</Filter>
     </ClCompile>
+    <ClCompile Include="src\Net\ItemEffectDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
     <ClCompile Include="src\Net\Login.cpp">
       <Filter>Source Files\Net</Filter>
     </ClCompile>
@@ -801,6 +804,9 @@
       <Filter>Header Files\Net</Filter>
     </ClInclude>
     <ClInclude Include="src\Net\ItemActionDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\ItemEffectDispatch.h">
       <Filter>Header Files\Net</Filter>
     </ClInclude>
     <ClInclude Include="src\Net\Login.h">

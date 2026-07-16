@@ -327,6 +327,11 @@ struct SelfState {
     // n'expose jamais plus de 2 pages au total (cf. UI/InventoryWindow.h::kMaxBagPages).
     int element        = 0;   // g_LocalElement 0x1673194
     int elementSecondary = 0; //                0x1673198
+    // Mode de combat/action du self (self.mode, cGameData+7136) : lu par les reflexes
+    // reseau self-mode (Net/CombatResultApply.cpp, Passe 3 W2-F5 ; le vrai jeu declenche
+    // les reactions quand mode in {1,5,6,7}). 0 = mode normal. Champ ajoute par MAIN (etat
+    // partage de la vague W2) pour eviter toute double ecriture inter-front sur GameState.h.
+    int mode = 0;
     uint32_t weaponId  = 0;   // g_LocalPlayerWeaponId 0x16731E8 — ex-VeryOldClient: mEquip[7] (arme ; = equip[7].itemId, alias dword_1673248) [CONFIRMED, Rosetta §6]
 
     // Nom du joueur local (13 o NUL-terminé côté binaire, probablement byte_1673184 —
@@ -529,6 +534,15 @@ struct GameWorld {
     // pour le câblage exact côté SceneManager.cpp (fichier en lecture seule pour cette
     // mission, câblage à appliquer manuellement).
     bool  sceneEnterWorldPending = false;
+
+    // Demande de RETOUR en Scene::EnterWorld pour RECHARGER la zone (warp / op 0x18
+    // Pkt_GameServerConnectResult 0x469CF0) : sens InGame -> EnterWorld, miroir inverse de
+    // sceneEnterWorldPending. Consomme par SceneManager::Update case Scene::EnterWorld
+    // (ReloadZone re-entrant, Passe 3 W2-F1). g_TargetZoneId 0x1675A9C / Scene_EnterWorldUpdate 0x52BFF0.
+    // Champs ajoutes par MAIN (etat partage de la vague W2) — GameState.h reste en lecture
+    // seule pour tous les fronts W2 (aucune double ecriture).
+    bool  sceneReloadPending = false;
+    int   pendingWarpZoneId  = -1;   // zone cible du rechargement (g_TargetZoneId 0x1675A9C), -1 = aucune
 
     // Recherche/allocation d'un slot d'entité par identité réseau (comportement
     // des handlers : scan linéaire, sinon 1er slot libre).

@@ -205,6 +205,7 @@
     <ClCompile Include="src\Net\GameHandlers_VendorTrade.cpp" />
     <ClCompile Include="src\Net\GameVarDispatch.cpp" />
     <ClCompile Include="src\Net\ItemActionDispatch.cpp" />
+    <ClCompile Include="src\Net\ItemEffectDispatch.cpp" />
     <ClCompile Include="src\Net\Login.cpp" />
     <ClCompile Include="src\Net\NetClient.cpp" />
     <ClCompile Include="src\Net\NetSystem.cpp" />
@@ -340,6 +341,7 @@
     <ClInclude Include="src\Net\GameHandlers.h" />
     <ClInclude Include="src\Net\GameVarDispatch.h" />
     <ClInclude Include="src\Net\ItemActionDispatch.h" />
+    <ClInclude Include="src\Net\ItemEffectDispatch.h" />
     <ClInclude Include="src\Net\Login.h" />
     <ClInclude Include="src\Net\NetClient.h" />
     <ClInclude Include="src\Net\NetSystem.h" />

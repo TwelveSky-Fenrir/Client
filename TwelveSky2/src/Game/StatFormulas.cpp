@@ -1018,9 +1018,10 @@ int CalcCritRate(const SelfState& s, const GameDatabases& db) {
 int CalcAttackRatingMin(const SelfState& s, const GameDatabases& db) {
     const int lvl = s.level, lb = s.levelBonus;
     const int gi  = s.growthIndex;
-    int v39 = s.attrDefensive + growth300(gi);       // 0x16731B8 + croissance300 (+ g_CoreAttr=0)
-    // TODO [runtime absent] 0x4CD9D9 : branche morph (Level_ToTierValueA 0x54EFB0).
-    // g_AttrBuffActive [absent]=0.
+    int v39 = s.attrDefensive + growth300(gi) + g_Client.VarGet(0x167477C); // 0x16731B8 + croissance300 + g_CoreAttr (Stat_AddCoreAttr 0x546380 = identité ; 0x4CDA2C/0x4CDA52)
+    // TODO [runtime absent] 0x4CD9D9 : branche morph (g_SpecialFormActive 0x16760D4 jamais écrit=0).
+    if (g_Client.VarGet(0x16758A8) > 0)                       // g_AttrBuffActive (0x4CDA5C)
+        v39 += g_Client.VarGet(0x16758AC) / 100 + g_Client.VarGet(0x16758AC) % 100; // g_AttrBuff300 (0x4CDA7F)
     Snapshot sn = buildSnapshot(s, db);
     int v33 = 0;
 
@@ -1044,12 +1045,32 @@ int CalcAttackRatingMin(const SelfState& s, const GameDatabases& db) {
     }
     // enchant loop {0,2,3,4,5,7} classe1||4 (...,100) [hook]=0 ; plancher v33>=0 (0x4CDC63).
 
-    // bonus stance (0x4CDD43) : état skill [absent] ; dword_16731C8 [runtime absent]=0 ;
-    //   v27<=1 && dword_1675660(0)==1 faux ; combos [absent]=0 -> v33 += 20*0 = 0. TODO.
+    // bonus méridien/stance (0x4CDD43). Skill_IsCurrentStanceSet/Special 0x4FB0F0/0x4FC800
+    // [hook]=false -> prédicat d'entrée (!set && !special || morph∈[319,323]) = true (bloc toujours
+    // exécuté). Char_FindSkillSlotByName 0x55D520 [hook] -> v40 reste -1.
+    {
+        const int v40 = -1;                                    // 0x55D520 [hook]
+        if (v40 <= 1 && g_Client.VarGet(0x1675660) == 1) {     // dword_1675660 (0x4CDD7E)
+            v33 += 4000;                                       // 0x4CDD89
+        } else {
+            const int mEl   = g_Client.VarGet(0x16760CC);      // g_MeridianElement (0x4CDDA5)
+            const int mTier = g_Client.VarGet(0x16760C0);      // g_MeridianTier
+            const int mPts  = g_Client.VarGet(0x16731C8);      // g_MeridianPts_RatingMin
+            if (mEl == s.element || mEl == 4) {                // g_LocalElement 0x1673194
+                if      (mTier == 10 && mPts < 100) v33 += 2000; // 0x4CDDCA
+                else if (mTier == 20 && mPts < 200) v33 += 4000; // 0x4CDDF1
+                else if (mTier == 30)               v33 += 6000; // 0x4CDE08
+                else                                v33 += 20 * mPts; // 0x4CDE18
+            } else {
+                v33 += 20 * mPts;                              // 0x4CDE29
+            }
+        }
+    }
 
     v33 += levelStat(db, lb + lvl, 9);               // baseAtkRatingMin Stat8 (field9) (0x4CDE49)
 
-    // dword_1674A54/1675728 [absent]=0 : pas de *1.2 (0x4CDEA1).
+    if (g_Client.VarGet(0x1674A54) > 0 || g_Client.VarGet(0x1675728) > 0) // dword_1674A54 (case47)/dword_1675728 (case91) ; 0x4CDEA1
+        v33 = ftol((double)v33 * 1.200000047683716);          // 0x4CDEAC
     // g_SpecialItem switch [absent]=0 (0x4CDECA). slotGroup(0)!=30 -> pas de gemme (0x4CDF89).
     // Item_ScaleStatByTypeC 0x4CB0D0 [hook]=0 : garde v33>=0 -> += 0 (jamais *2) (0x4CE02B) —
     //   TODO(verif) : mêmes causes que Item_ScaleStatByTypeA en CalcExternalAttack (caps
@@ -1079,7 +1100,21 @@ int CalcAttackRatingMin(const SelfState& s, const GameDatabases& db) {
     v33 += skillTreeEquipBonus(3, sn, db);
     if (v45 == 1) v33 += 30000;                      // 0x4CE1A3
 
-    // GemStat_AtkRatingMinFlat 0x54CA50 [hook]=0. g_ElementMastery==6 [absent]. talisman [absent].
+    // GemStat_AtkRatingMinFlat 0x54CA50 [hook]=0.
+    if (g_Client.VarGet(0x1675680) == 6) v33 += 1000;          // g_ElementMastery (0x4CE1C8/0x4CE1D2)
+    // talisman (0x4CE1E5) : Stat_UnpackCombined 0x54CE40 (garde a2) + Num_ToDigits8 0x54CF00 (digit 10^5).
+    {
+        const int tslot = g_Client.VarGet(0x1674760);          // g_TalismanSlot
+        if (tslot >= 10 && tslot < 20) {
+            const int combined = g_Client.VarGet(0x1675664 + 4u * static_cast<uint32_t>(tslot)); // dword_1675664[slot]
+            int a2 = 0;                                        // Stat_UnpackCombined .a2 (0x54CE40)
+            if (combined >= 0) { a2 = combined / 1000000; if (a2 > 100) a2 = 0; }
+            if (a2 > 0) {                                      // 0x4CE20A
+                const int digits = g_Client.VarGet(0x167568C + 4u * static_cast<uint32_t>(tslot)); // dword_167568C[slot]
+                v33 += 100 * ((digits / 100000) % 10);         // Num_ToDigits8 -> a4/v41 (10^5) ; 0x4CE24E
+            }
+        }
+    }
     // Equip_ComputeGemSetBonus 0x54E420 [hook]=0. Weapon_BaseMinDamage 0x4C99F0 [hook]=0.
     // Item_SocketBonusInt/Float [hook]=0 — TODO(verif) : paire g_SelectedInvItemId/dword_1673260
     //   (0x4CE29A/0x4CE2B9), cf. CalcMaxHP. Weapon_SpecialDamageA 0x4CA230 [hook]=0.
@@ -1096,9 +1131,10 @@ int CalcAttackRatingMin(const SelfState& s, const GameDatabases& db) {
 int CalcAttackRatingMax(const SelfState& s, const GameDatabases& db) {
     const int lvl = s.level, lb = s.levelBonus;
     const int gi  = s.growthIndex;
-    int v24 = s.attrOffensive + growth304(gi);       // 0x16731C0 + croissance304 (+ g_CoreAttr=0)
-    // TODO [runtime absent] 0x4CE452 : branche morph (maybe_StubReturn1A 0x54F030).
-    // g_AttrBuffActive [absent]=0.
+    int v24 = s.attrOffensive + growth304(gi) + g_Client.VarGet(0x167477C); // 0x16731C0 + croissance304 + g_CoreAttr (0x4CE4A5/0x4CE4CB)
+    // TODO [runtime absent] 0x4CE452 : branche morph (g_SpecialFormActive=0 ; maybe_StubReturn1A 0x54F030).
+    if (g_Client.VarGet(0x16758A8) > 0)                        // g_AttrBuffActive (0x4CE4D5)
+        v24 += g_Client.VarGet(0x16758B0) / 100 + g_Client.VarGet(0x16758B0) % 100; // g_AttrBuff304 (0x4CE4F8)
     Snapshot sn = buildSnapshot(s, db);
     int v23 = 0;
 
@@ -1121,7 +1157,26 @@ int CalcAttackRatingMax(const SelfState& s, const GameDatabases& db) {
             v23 += Item_SumGemStatBonus(2, sn.sock[i]);
         }
     }
-    // bonus stance (0x4CE6E1) : état skill [absent] ; dword_16731CC [absent]=0 -> 0. TODO.
+    // bonus méridien/stance (0x4CE6E1). Skill state [hook]=false -> bloc toujours exécuté ;
+    // v25=-1 (Char_FindSkillSlotByName 0x55D520 [hook]).
+    {
+        const int v25 = -1;
+        if (v25 < 4 && g_Client.VarGet(0x1675664) == 1) {      // dword_1675664[0] (index 0, PAS [slot]) ; 0x4CE728
+            v23 += 5000;                                       // 0x4CE732
+        } else {
+            const int mEl   = g_Client.VarGet(0x16760CC);      // g_MeridianElement (0x4CE74F)
+            const int mTier = g_Client.VarGet(0x16760C0);      // g_MeridianTier
+            const int mPts  = g_Client.VarGet(0x16731CC);      // g_MeridianPts_RatingMax
+            if (mEl == s.element || mEl == 4) {
+                if      (mTier == 10 && mPts < 100) v23 += 2500; // 0x4CE773
+                else if (mTier == 20 && mPts < 200) v23 += 5000; // 0x4CE79B
+                else if (mTier == 30)               v23 += 7500; // 0x4CE7B1
+                else                                v23 += 25 * mPts; // 0x4CE7C2
+            } else {
+                v23 += 25 * mPts;                              // 0x4CE7D3
+            }
+        }
+    }
 
     v23 += levelStat(db, lb + lvl, 10);              // baseAtkRatingMax Stat9 (field10) (0x4CE7F2)
 
@@ -1136,7 +1191,19 @@ int CalcAttackRatingMax(const SelfState& s, const GameDatabases& db) {
 
     // SkillTree_SumBonuses(4,..) (0x4CEAB1) — CÂBLÉE (audit 2026-07-14) : cf. CalcMaxHP.
     v23 += skillTreeEquipBonus(4, sn, db);
-    // talisman [absent].
+    // talisman (0x4CEB20) : Stat_UnpackCombined 0x54CE40 + Num_ToDigits8 0x54CF00 (digit 10^4, ×200).
+    {
+        const int tslot = g_Client.VarGet(0x1674760);          // g_TalismanSlot
+        if (tslot >= 10 && tslot < 20) {
+            const int combined = g_Client.VarGet(0x1675664 + 4u * static_cast<uint32_t>(tslot));
+            int a2 = 0;
+            if (combined >= 0) { a2 = combined / 1000000; if (a2 > 100) a2 = 0; }
+            if (a2 > 0) {                                      // 0x4CEB46
+                const int digits = g_Client.VarGet(0x167568C + 4u * static_cast<uint32_t>(tslot));
+                v23 += 200 * ((digits / 10000) % 10);          // Num_ToDigits8 -> a5/v38 (10^4) ; 0x4CEB8D
+            }
+        }
+    }
     // Weapon_BaseMaxDamage 0x4C9E10 [hook]=0. Item_SocketBonusInt [hook]=0 — TODO(verif) : paire
     //   g_SelectedInvItemId/dword_1673260 (0x4CEBC0), cf. CalcMaxHP.
     // Weapon_SpecialDamageB 0x4CA350 [hook]=0.

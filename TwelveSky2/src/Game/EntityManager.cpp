@@ -198,6 +198,45 @@ void ReadNpcPos(NpcEntity& e) {
     e.z = RdF32(b, kNPosZ);
 }
 
+// Char_SetActionAnimParams 0x570E70 (switch @0x570ED5 sur a1[61] = entity+244 = anim.state) :
+// pose hitCheckActive/hitUsesSkillTable/actionKind/actionSubKind/hitFired (idx156-160).
+// SOUS-ENSEMBLE MODELISE de la fonction d'origine (le reste = Fx_Attach*/muzzle idx183-184/
+// bloc UI if(!a3) 0x571635 non modelises, cf. commentaire au site d'appel). Table transcrite
+// bit-a-bit du binaire (decompilation idaTs2 verifiee). // 0x570E70
+//
+// NOTE FIDELITE idx157 (hitUsesSkillTable, bool) : le binaire ecrit a1[157]=1 (case 5/6/7)
+// ou a1[157]=2 (cas competence) ; le SEUL lecteur (Char_UpdateAnimationFrame 0x571880 ->
+// Game/ActionStateMachine.cpp) le teste en booleen (`if (hitUsesSkillTable)`, 0x571936/57194D),
+// donc 1 et 2 sont tous deux "true" a la lecture. hitUsesSkillTable=true dans TOUTES les
+// branches non-default (perte 1-vs-2 sans consequence observable).
+void Char_ApplyActionAnimParams(CharAnimState& a) {
+    // a1[156]=0 (@0x570E95) — pose inconditionnelle avant le switch.
+    a.hitCheckActive = false;
+    switch (a.state) {
+    case 5: case 6: case 7:                                     // @0x570EDF (157=1)
+    case 0x26: case 0x47: case 0x48: case 0x57: case 0x58:      // @0x571196 (157=2)
+    case 0x27: case 0x2D: case 0x2E: case 0x33: case 0x34:      // @0x571380 (157=2)
+    case 0x2A: case 0x2B: case 0x30: case 0x31:                 // @0x571498 (157=2)
+    case 0x45: case 0x46: case 0x55: case 0x56:
+        // 156=1, 157=1|2, 158=1, 159=1, 160=0
+        a.hitCheckActive = true; a.hitUsesSkillTable = true;
+        a.actionKind = 1; a.actionSubKind = 1; a.hitFired = false; break;
+    case 0x2C: case 0x32: case 0x38: case 0x52:                 // @0x5715B0
+    case 0x51:                                                  // @0x57156A
+    case 0x53:                                                  // @0x5715F3
+        // 156=1, 157=2, 158=1, 159=2, 160=0
+        a.hitCheckActive = true; a.hitUsesSkillTable = true;
+        a.actionKind = 1; a.actionSubKind = 2; a.hitFired = false; break;
+    case 0x36: case 0x37:                                       // @0x5713C6
+    case 0x39: case 0x3A: case 0x49: case 0x4A: case 0x59: case 0x5A: // @0x571452
+        // 156=1, 157=2, 158=2, 159=1, 160=0
+        a.hitCheckActive = true; a.hitUsesSkillTable = true;
+        a.actionKind = 2; a.actionSubKind = 1; a.hitFired = false; break;
+    default:                                                    // @0x570ED5 default : 156=0, reste inchange
+        break;
+    }
+}
+
 } // namespace (anonyme)
 
 // ---------------------------------------------------------------------------
@@ -230,6 +269,12 @@ void EntityManager::OnEnterWorld(const net::EnterWorld& p) {
     // suivi GM en attente dword_1675A8C==5/8/9) releve du systeme morph/teleport et de
     // Pkt_EnterWorld lui-meme au-dela de la bascule de scene : hors perimetre "entites"
     // (documente aussi dans Game/EnterWorldFlow.h, section "Ecart connu / TODO").
+    //
+    // Palier de croissance dword_1675D90 = f(g_GrowthIndex 0x1674774) (@0x464329-0x464394,
+    // decompilation verifiee) : growthIndex <1->0, >=1->1, >=100->2, >=200->3, >=300->4,
+    // >=400->5. Aucun champ dedie ni consommateur dans les fichiers editables (GameState.h
+    // read-only ; SelfState::growthIndex est l'entree, pas le palier derive) -> TODO ancre,
+    // a modeliser par le proprietaire de SelfState si un consommateur apparait. // 0x464160
 }
 
 // ---------------------------------------------------------------------------
@@ -246,13 +291,30 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
         std::memcpy(e->body.data(), p.body, e->body.size());
         ReadPlayerPos(*e);
         ReadPlayerName(*e);
+        // Sequence spawn-anim de Pkt_SpawnCharacter 0x4646C0 (tout nouveau slot) :
+        //   Char_RefreshStatusEffectVisuals 0x570890 (@0x4648bc) puis Char_SetActionAnimParams
+        //   0x570E70 (@0x4648da). Sous-ensemble MODELISE sur CharAnimState (idx156-160/221) ;
+        //   Fx_Attach*/muzzle/UI restent TODO ancre (pool g_FxPool/dword_17D06F4 non attache,
+        //   aucune aura active a ce spawn -> boucles Fx_Attach* = no-op fidele).
+        e->anim.state = RdI32(e->body.data(), kPActionState); // a1[61]=entity+244=body+220 (0x570ED5)
+        e->anim.fxAuraAttachedLatch = false; // a1[221]=0 (Char_RefreshStatusEffectVisuals 0x570936)
+        Char_ApplyActionAnimParams(e->anim); // switch 0x570ED5 (pose 156=0 puis idx156-160)
+        // TODO ancre : Fx_Attach* (0x570890/0x570E70), Char_UpdateWeaponGlowState 0x55D740,
+        //   muzzle idx183/184 (case 0xC @0x570F25), bloc UI if(!a3) (0x571635) — non modelises.
         // Si index 0 (self) : l'original relance le combat local + les effets de map
         // et met g_SceneSubState=3 ; effets de scene hors perimetre entite.
         if (IsSelf(e)) {
+            // Player_ResetCombatState 0x50F6A0 (@0x4648f2, self uniquement) : reset du bloc
+            // combat/action de g_PlayerCmdController. Ce bloc n'est PAS modelise dans les
+            // fichiers editables (GameState.h read-only). Ses effets VISIBLES sont deja couverts
+            // ailleurs (play BGM gate g_BgmEnabled 0x50F76E -> SceneManager::LoadZoneBgm ;
+            // Net_SendOp64 poll 0x50F746 -> host.SendPendingTargetPoll InGameTickFlow). Le reset
+            // interne n'a aucun consommateur ClientSource. TODO ancre : Player_ResetCombatState 0x50F6A0.
             // EQUIVALENT de l'appel cGameData_LoadZoneNpcInfo(g_LocalPlayerSheet) @0x4648fc
             // (garde `if (!i)` de Pkt_SpawnCharacter 0x4646C0) : repeuple les PNJ de decor
-            // statiques de la zone courante. Cf. Game/StaticNpcLoader.h pour le detail et
-            // la limite connue sur le suivi de g_World.zoneId au warp.
+            // statiques de la zone courante. Cf. Game/StaticNpcLoader.h pour le detail ; le
+            // suivi de g_World.zoneId au warp est desormais assure par SceneManager::ReloadZone
+            // (Passe 3 W2-F1), donc LoadZoneNpcs voit la bonne zone au (re)spawn self.
             LoadZoneNpcs(g_World.zoneId);
         }
         return e;

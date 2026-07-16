@@ -48,6 +48,7 @@
 // ===========================================================================
 
 #include "Net/ItemActionDispatch.h"
+#include "Net/ItemEffectDispatch.h"
 #include "Game/ClientRuntime.h"
 #include "Game/GameState.h"
 #include "Game/GameDatabase.h"
@@ -366,22 +367,14 @@ void ApplyItemActionDispatch(const uint8_t* payload, uint32_t len) {
 
     // =======================================================================
     //  DEFAUT def_46B168 (0x46B168) — mega-switch d'effets consommables.
-    //  Switch sur var_480 (identifiant d'effet de l'objet) reparti en plusieurs
-    //  sous-switches par plages (ex. 0x321..0x419 = 249 cas via byte_488014 ;
-    //  0x42D..0x533 = 263 cas via byte_4882F8 ; 0x54C..0x5DB = 144 cas via
-    //  byte_4884B4 ; 0x72C..0x81C = 241 cas via byte_4886xx ; etc.), pour un
-    //  total > 1000 cas : potions (PV/PM), buffs, teleports, transformations,
-    //  reparations, ouvertures de fenetres, consommation de la pile...
+    //  Tous les blocs A..E ci-dessus retombent sur ce defaut (le binaire y `jmp`
+    //  inconditionnellement) : on l'appelle donc en fin, `flag` transmis tel quel
+    //  (chaque handler re-teste var_414, fidele au binaire).
     //
-    //  Hors perimetre de ce module (plusieurs dizaines de Ko chacun). Les blocs
-    //  A/C/D/E ci-dessus ont deja applique leur mutation d'etat observable
-    //  (apprentissage / stockage / vidage de cellule) ; le bloc B a echange
-    //  l'equipement. Le reste (effet consommable proprement dit) reste a couvrir.
-    //
-    //  TODO(@0x46B168) : reproduire le mega-switch d'effets consommables
-    //  (var_480 = ITEM_INFO effet ; tables byte_488014/4882F8/4884B4/... ;
-    //   handlers 0x46B658..0x486D1E). Necessite au prealable d'identifier le champ
-    //   ITEM_INFO qui alimente var_480 (trace amont non couverte ici).
+    //  Cle du switch (def_46A44F 0x46B10F) : var_480 = ITEM_INFO[+0] == item->itemId.
+    //  Aiguillage par plages sur item->itemId (sous-tables byte_487E90/488014/4882F8/
+    //  4884B4/488584/4886F0), handlers 0x46B658.. . Voir Net/ItemEffectDispatch.cpp.
+    ApplyItemEffectDispatch(item, flag, row, col, dstD);
     return;
 }
 
