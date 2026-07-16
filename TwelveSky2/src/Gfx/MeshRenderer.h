@@ -153,6 +153,17 @@ public:
     //   method   = g_ShadowMethod   0x18C4F18 (0 = z-fail Carmack ; 1 = stencil two-sided)
     //   fogNear/fogFar = flt_18C4F08 / flt_18C4F0C (seuil volume↔planaire + fondu du volume)
     //   lightDir = flt_18C53C0/C4/C8 (direction lumière d'ombre, négée au calcul)
+    //
+    // CORRECTION (Passe 4 / W5, front shadow-wiring) : `enabled`/`method` ne sont PAS des options
+    // de menu — ce sont des CONSTANTES GELÉES. GXD_InitGlobalState 0x401320 est leur seul writer
+    // (vérifié par xrefs) et pose g_ShadowsEnabled=1 (0x4013B2) / g_ShadowMethod=1 (0x4013B8) ;
+    // rien d'autre ne les écrit jamais. De plus l'unique LECTEUR de g_ShadowsEnabled (0x40EEEC)
+    // vit dans Model_RenderWithShadow 0x40EEE0, fonction morte -> le global est inerte. Corollaire :
+    // `method==0` (z-fail Carmack, 0x40F671) est INATTEIGNABLE PAR VALEUR. Cette fonction n'est de
+    // fait jamais appelée (shadowsEnabled_ reste false) : elle documente le binaire, ne le pilote pas.
+    // Ne PAS la câbler à l'option UI g_Opt_GfxDetailShadows 0x84DEF8 : cette option existe bien
+    // (UI_OptionsWnd_OnClick 0x66D140) mais son lecteur 0x5811EA sélectionne une VARIANTE DE MODÈLE
+    // selon les PV (`3 - hp%/30`) — ce n'est pas une bascule d'ombre malgré son nom.
     void SetShadowParams(bool enabled, int method, float fogNear, float fogFar,
                          const D3DXVECTOR3& lightDir);
 
@@ -184,8 +195,22 @@ public:
     //   PROCHE (dist caméra <= fogNear) -> VOLUME D'OMBRE STENCIL (passe 8 = VS15 + PS NULL) :
     //     Model_BuildShadowVolume 0x40DC70 (silhouette extrudée, FVF XYZ), z-fail si method==0.
     //   LOIN  (dist > fogNear) -> ombre planaire projetée (Model_RenderPlanarShadow 0x40F720).
-    //   Nécessite un ShaderSet réel attaché (VS15) : sans lui, no-op (le HLSL reconstruit ne
-    //   contient pas le shader de volume d'ombre). `boundRadius` = a2 (diamètre englobant).
+    //   Le sens du test est confirmé par Hex-Rays : `if (flt_18C4F08 >= dist)` (0x40EFC6) -> branche
+    //   VOLUME ; `else` (0x40EFDE) -> branche PLANAIRE appelant 0x40F720 @0x40F1A9.
+    //
+    // FONCTION JAMAIS APPELÉE — ET DOUBLEMENT INERTE (Passe 4 / W5, front shadow-wiring) :
+    //   (a) Toute la chaîne 0x40EEE0/0x40DC70 est du CODE MORT dans le binaire (0 xref sur les
+    //       3 têtes ; 0 occurrence des adresses en LE dans l'image -> pas d'appel indirect).
+    //       Détail complet + preuves dans MeshRenderer.cpp au-dessus de DrawModelShadow().
+    //   (b) La branche « LOIN -> planaire » est en plus MORTE PAR VALEUR : fogNear = flt_18C4F08
+    //       = 999999.0 (figé par GXD_InitGlobalState @0x40137E, seul writer), donc `dist > fogNear`
+    //       n'arrive jamais pour une caméra de jeu -> seule la branche VOLUME serait prise si la
+    //       fonction vivait. Ne PAS confondre ce planaire-là (mort) avec la VRAIE ombre planaire
+    //       vivante du jeu, qui atteint 0x40F720 par l'autre chaîne (SObject_DrawAnimated2 0x4D91C0)
+    //       et utilise la PASSE 5 = VS09 (g_GxdSh09_VS), et non VS15/passe 8.
+    //   Le `if (!shaderSet_) return` ci-dessous n'est donc PAS le verrou qui empêche l'ombre :
+    //   attacher un ShaderSet ne « débloque » rien, il n'y a aucun appelant à débloquer.
+    //   `boundRadius` = a2 (diamètre englobant).
     void DrawModelShadow(const SkinnedModel& model,
                          const D3DXVECTOR3&  position,
                          const D3DXVECTOR3&  rotationDeg,

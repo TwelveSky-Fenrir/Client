@@ -157,15 +157,28 @@ gfx::BonePalette MotionCache::SampleByGameTime(const gfx::MotionPalette& mp, flo
     int frame = static_cast<int>(gameTimeSec * 30.0f) % mp.frameCount;
     if (frame < 0) frame += mp.frameCount;
 
-    // Garde kMaxBones=40 (Model_DrawSkinnedSubset 0x40CA40 uploade count matrices dans mKeyMatrix[40]).
-    UINT n = static_cast<UINT>(mp.bonesPerFrame);
-    if (n > MeshRenderer::kMaxBones) n = MeshRenderer::kMaxBones;
-
+    // AUCUN CLAMP D'OS -- corrige le residuel « clamp 40 os vs FrameSlice sans clamp » (Passe 4/W5).
+    // Verite binaire : Model_DrawSkinnedSubset 0x40CA40 passe Count = *(a4+8) = bonesPerFrame BRUT a
+    // ID3DXConstantTable::SetMatrixArray (methode +88) -- aucun cmp/min, aucune constante 40 sur ce
+    // chemin : Sh03 @0x40d4e8 (g_GxdSh03_hKeyMatrix, Count=*(a4+8)), Sh05 @0x40dac2 et Sh07 @0x40d7c0
+    // (Count=*(a10+8)). Model_Render 0x40EBB0, son unique appelant, ne clampe pas davantage (sa seule
+    // borne porte sur la FRAME, pas sur les os). La SEULE borne reelle est la taille du tableau
+    // mKeyMatrix[] declaree par le shader -- D3DX n'ecrit que min(Count, desc.Elements) -- et elle est
+    // deja appliquee au bon endroit par MeshRenderer::DrawSkinnedSubset (boneArraySize_ =
+    // GetConstantDesc(mKeyMatrix).Elements sur shader npk reel ; clamp kMaxBones reserve au fallback
+    // HLSL, dont le mKeyMatrix[40] est, lui, une vraie contrainte de tableau).
+    // L'ancien clamp cite 0x40CA40 A CONTRESENS : il tronquait ici, en amont et IRREVERSIBLEMENT,
+    // court-circuitant boneArraySize_ (os >= 40 perdus sans recours sur un shader declarant plus),
+    // et divergeait de MotionPalette::FrameSlice (MeshRenderer.cpp:151), non clampe. kMaxBones=40
+    // reste une HYPOTHESE de reecriture NON prouvee IDA (Docs/TS2_GXD_ROSETTA.md, TODO P-8) : ne pas
+    // la faire fuir hors du fallback qui, seul, la justifie. Aucun debordement n'est possible sans ce
+    // clamp : la tranche source contient exactement bonesPerFrame matrices (jamais sur-lue).
+    //
     // Model_Render : tranche = base + ((frame*bonesPerFrame)<<6) octets = base[frame*bonesPerFrame]
     // en pas de matrices 64 o.
     gfx::BonePalette bp;
     bp.matrices = mp.base + static_cast<size_t>(frame) * mp.bonesPerFrame;
-    bp.count    = n;
+    bp.count    = static_cast<UINT>(mp.bonesPerFrame); // BRUT, comme FrameSlice et comme le binaire
     return bp;
 }
 

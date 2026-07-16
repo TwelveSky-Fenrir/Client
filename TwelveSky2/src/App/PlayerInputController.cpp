@@ -16,10 +16,18 @@ namespace ts2 {
 // -----------------------------------------------------------------------------
 void PlayerInputController::Update(const input::InputSystem& in, gfx::Camera& cam,
                                    net::NetClient& nc, Scene scene) {
-    // 0x50B7EC : gate scene (g_SceneMgr 0x1676180 == 6 = InGame ET g_SceneSubState
-    // 0x1676184 == 4). g_SceneSubState n'est pas expose par SceneManager (subState_ prive)
-    // -> gate reduit a scene==InGame. TODO [ancre 0x1676184] : exposer/passer subState==4.
-    if (scene != Scene::InGame)
+    // 0x50B7EC : garde d'entree EXACTE de l'original, verifiee au desassemblage :
+    //     if ( g_SceneMgr != 6 || g_SceneSubState != 4 ) return;
+    // g_SceneMgr 0x1676180 == 6 = InGame ; g_SceneSubState 0x1676184 == 4 = le sous-etat
+    // MainTick de Scene_InGameUpdate 0x52C600 (pose @0x52C7F1, en fin de case 3 InitCamera)
+    // = « le tick monde est pleinement demarre ». Consequence FIDELE : pendant Setup(0),
+    // WaitFirstSpawn(1), Failed(2) et InitCamera(3), ce controleur est INTEGRALEMENT mort --
+    // WASD, camera ET touches discretes, car LABEL_73 0x50C726 se trouve APRES cette garde.
+    // ts2::g_SceneSubState (Scene/SceneManager.h) est le miroir du champ +4 de cSceneMgr,
+    // lu ICI en GLOBAL comme dans le binaire : l'original ne recoit pas le sous-etat en
+    // parametre (le parametre `scene` reste, lui, le miroir de g_SceneMgr deja en place).
+    // La comparaison litterale a 4 reproduit le `cmp ds:g_SceneSubState, 4` d'origine.
+    if (scene != Scene::InGame || g_SceneSubState != 4)
         return;
 
     // 0x50B7FA : si une saisie texte est active (g_UIEditBoxMgr 0x1668FC0), on saute le

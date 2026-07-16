@@ -6,10 +6,11 @@
 #include "Net/Login.h"
 #include "Core/Types.h"   // ts2::kWM_Socket (WM_USER+1 = 0x401)
 #include "Game/GameState.h" // game::g_World.self.element = dword_1673194 (source unique de l'élément local)
+#include "Net/Rng.h"      // DefaultRng() — flux _holdrand UNIQUE (Rng_Next 0x7603FD)
 
 #include <cstdint>
 #include <cstring>
-#include <cstdlib>
+#include <functional>
 
 namespace ts2::net {
 
@@ -23,22 +24,40 @@ namespace ts2::net {
 // (cf. Net_ConnectGameServer 0x462A70, &g_LocalElement EA 0x462d5d).
 uint32_t& g_LocalElement = reinterpret_cast<uint32_t&>(game::g_World.self.element);
 
+// Définition du hook de notice déclaré `extern` dans Login.h (UI_NoticeDlg_Open
+// 0x5C0280, appelé par Net_LoginRequest 0x51B8E0 EA 0x51bd75). Nul par défaut :
+// à poser par la couche UI (UI/LoginScene.cpp) — fichier NON possédé par ce front.
+std::function<void(int32_t strId)> g_LoginNoticeHook;
+
 namespace {
 
-// Rng_Next (0x7603FD) : c'est exactement rand() de la CRT MSVC —
-// s = 214013*s + 2531011 ; renvoie (s >> 16) & 0x7FFF. Même algorithme, même
-// consommation de flux que le binaire (le client fait « rand() % 10000 »).
-inline int Rng() { return std::rand(); }
+// Rng_Next 0x7603FD = rand() de la CRT MSVC, à l'instruction près :
+//   Ptd  = Crt_GetPtd();                  // 0x76D464 (_getptd_noexit)  EA 0x7603fd
+//   v1   = 214013 * Ptd[5] + 2531011;     // Ptd[5] = _holdrand (+20)   EA 0x76040b
+//   Ptd[5] = v1;                          //                            EA 0x760411
+//   return HIWORD(v1) & 0x7FFF;           // RAND_MAX = 32767           EA 0x76041e
+// FLUX UNIQUE PARTAGÉ : le binaire n'a qu'un seul _holdrand (par thread), semé par
+// srand(time(NULL)) en App_Init 0x461C20 (EA 0x461C35 time / 0x461C3E srand). Les
+// nonces réseau, les fonds ServerSelect/CharSelect, la rotation de spawn
+// (Rng_Next() % 360) et le job initial (% 3) puisent TOUS dans la même séquence.
+// On tape donc sur net::DefaultRng() (Net/Rng.h), qui rématérialise ce _holdrand
+// unique — et NON sur std::rand(), qui constituait ici un SECOND flux indépendant
+// (écart d'ordre/valeurs vs le binaire).
+inline int RngNext() { return DefaultRng().Next(); }
 
-// Deux nonces d'en-tête = produit de deux tirages % 10000 (int, max 99 980 001).
-// L'ordre des tirages est explicité : le binaire consomme le RNG dans l'ordre
-// (nonce1.a, nonce1.b, nonce2.a, nonce2.b).
+// Deux nonces d'en-tête = produit de deux tirages % 10000 (int, max 99 980 001 —
+// pas de débordement). ORDRE DE CONSOMMATION du binaire (Net_LoginRequest 0x51B8E0) :
+//   v4  = Rng_Next() % 10000;           // tirage 1   EA 0x51b91f
+//   v8  = Rng_Next() % 10000 * v4;      // tirage 2   EA 0x51b931  -> nonce1
+//   v5  = Rng_Next() % 10000;           // tirage 3   EA 0x51b944
+//   v12 = Rng_Next() % 10000 * v5;      // tirage 4   EA 0x51b956  -> nonce2
+// Même ordre ici (produit commutatif -> valeurs identiques).
 inline void MakeNonces(uint32_t& nonce1, uint32_t& nonce2) {
-    int a = Rng() % 10000;
-    int b = Rng() % 10000;
+    int a = RngNext() % 10000;
+    int b = RngNext() % 10000;
     nonce1 = static_cast<uint32_t>(a * b);
-    int c = Rng() % 10000;
-    int d = Rng() % 10000;
+    int c = RngNext() % 10000;
+    int d = RngNext() % 10000;
     nonce2 = static_cast<uint32_t>(c * d);
 }
 
@@ -222,9 +241,17 @@ int LoginRequest(NetClient& nc, const char* username, const char* password,
         //   dword_166BAF8    += v16  (EA 0x51bd26) — 0x166BAF8-0x166BAE8(record[1]) = 16
         //   dword_166E260    += v17  (EA 0x51bd38) — 0x166E260-0x166E250(record[2]) = 16
         // Sources v15/v16/v17 = recvBuf+30634/30638/30642 (EA 0x51bc9a/0x51bcb0/0x51bcc6,
-        // MEMORY[0x81CE6A/6E/72] - recvBuf base 0x8156C0 = 0x778A/0x778E/0x7792 = 30634/38/42).
+        // MEMORY[0x81CE6A/6E/72] - recvBuf base 0x8156C0 = 0x77AA/0x77AE/0x77B2 = 30634/38/42).
         // Le binaire lit/écrit les globales record[i] directement ; ici les fiches sont
         // copiées dans g_CharRecords -> on applique le delta au même champ +16 (int32).
+        // int32 SIGNÉ, addition simple : ni saturation ni borne (`add` nu, EA 0x51bd0f/
+        // 0x51bd20/0x51bd32). Sémantique de record[i]+16 : compteur affiché en décimal
+        // sur l'écran CharSelect (Scene_CharSelectRender EA 0x51da5d : `imul eax, 2768h`
+        // puis `mov ecx, ds:dword_1669390[eax]`, formaté "%d" -> UI_DrawNumberValue).
+        // Le blob se referme ici : dernier champ à +0x77BF..+0x77C2, total 0x77C3 = 30659
+        // = la borne EXACTE de la boucle de réception (EA 0x51bad0). Les 5 octets de
+        // bourrage NON LUS (+0x16E/+0x28D7/+0x5040/+0x77A9/+0x77B6) expliquent les
+        // offsets « désalignés » — ce ne sont pas des erreurs de relevé.
         int32_t d0, d1, d2;
         std::memcpy(&d0, nc.recvBuf + 30634, 4); // v15 EA 0x51bc9a
         std::memcpy(&d1, nc.recvBuf + 30638, 4); // v16 EA 0x51bcb0
@@ -235,13 +262,43 @@ int LoginRequest(NetClient& nc, const char* username, const char* password,
         addAt16(g_CharRecords[0], d0); // record[0]+16 (dword_1669390)
         addAt16(g_CharRecords[1], d1); // record[1]+16 (dword_166BAF8)
         addAt16(g_CharRecords[2], d2); // record[2]+16 (dword_166E260)
-        // Notice « gain crédité » si un delta > 0 (EA 0x51bd57..0x51bd75 : UI_NoticeDlg_Open
-        // 0x5C0280 + StrTable005_Get(g_LangId, 1785) 0x4C1D10) = sous-système UI/StrTable NON
-        // possédé par ce front -> OMIS (documenté). TODO [ancre 0x51bd68/0x51bd75] : brancher la
-        // notice quand la couche UI LoginScene sera câblée.
-        // OMIS aussi : les 3 int32 de queue dword_167616C/unk_1676170/unk_1676174 <- recvBuf+
-        // 30647/30651/30655 (EA 0x51bcda/0x51bcee/0x51bd02) — globales séparées non modélisées,
-        // hors champ des fiches (aucun += dans le binaire, simple persistance).
+
+        // Notice si AU MOINS UN delta > 0 — garde reproduite à l'instruction près
+        // (Net_LoginRequest 0x51B8E0) :
+        //   cmp [ebp+var_404], 0 ; jg loc_51BD59   EA 0x51bd3e/0x51bd45   (d0)
+        //   cmp [ebp+var_400], 0 ; jg loc_51BD59   EA 0x51bd47/0x51bd4e   (d1)
+        //   cmp [ebp+var_3FC], 0 ; jle loc_51BD7A  EA 0x51bd50/0x51bd57   (d2)
+        // Comparaisons SIGNÉES (jg/jle) : un delta négatif n'ouvre PAS la notice.
+        // ORDRE FIDÈLE : le binaire additionne les 3 deltas (EA 0x51bd0f-0x51bd38) PUIS
+        // teste — d'où le test APRÈS les addAt16 ci-dessus.
+        // Le binaire appelle ici UI_NoticeDlg_Open(byte_18225C8, 1, StrTable005_Get(
+        // g_LangId, 1785), &String/*""*/) (EA 0x51bd68/0x51bd75) ; le port passe par
+        // g_LoginNoticeHook (cf. Login.h), nul tant que UI/LoginScene.cpp ne l'a pas posé.
+        if ((d0 > 0 || d1 > 0 || d2 > 0) && g_LoginNoticeHook)
+            g_LoginNoticeHook(kLoginDeltaNoticeStrId); // push 6F9h = 1785, EA 0x51bd5e
+
+        // NON PORTÉ — les 3 int32 de queue <- recvBuf+30647/30651/30655
+        // (EA 0x51bcda/0x51bcee/0x51bd02), vérifié par xrefs_to sur chaque globale :
+        //  - unk_1676170 (0x1676170) et unk_1676174 (0x1676174) : STOCKAGES MORTS — leur
+        //    SEULE xref est l'écriture ci-dessus, jamais relus nulle part dans le binaire.
+        //    Omission définitivement correcte. (L'ancienne justification « aucun += dans
+        //    le binaire, simple persistance » était FAUSSE en droit : ce n'est pas
+        //    l'absence de += qui les disqualifie, c'est qu'ils sont write-only.)
+        //  - dword_167616C (0x167616C) : VIVANT — 5 xrefs, dont 4 HORS de cette fonction,
+        //    et il est bel et bien +=-é ailleurs. Compteur d'opérations d'entrepôt en
+        //    attente :
+        //      · Pkt_DispatchStorageResponse 0x58A0F0 : `cmp [ebp+var_4C], 90Ah` (2314)
+        //        EA 0x58bc63 -> `add edx, 1` EA 0x58bc72 / store EA 0x58bc75 ;
+        //      · UI_NpcShop_OnRDown_Buy 0x5E5000 : `cmp ds:dword_167616C, 1 ; jl` EA
+        //        0x5e55ba/0x5e55c1 -> si >= 1, ligne système StrTable005_Get(g_LangId,
+        //        0x9F3 /*2547*/) puis `jmp loc_5E5671` EA 0x5e55e3 qui SAUTE toute la
+        //        branche d'achat (loc_5E55E8) -> achat REFUSÉ ;
+        //      · UI_MainInventory_OnLButtonUp 0x5B20B0 (EA 0x5bb3d8).
+        //    La graine envoyée AU LOGIN a donc un effet gameplay réel (peut bloquer
+        //    l'achat en boutique dès l'entrée en jeu).
+        //    TODO [ancre 0x51bcda] : son foyer naturel est Net/NetClient.h (à côté de
+        //    g_GmAuthLevel) et ses 3 consommateurs ne sont pas modélisés — fichiers NON
+        //    possédés par ce front. Résidu remonté à l'orchestrateur.
     }
     return result;
 }

@@ -37,7 +37,7 @@
 //   PNJ     002\N%03d001%03d.MOTION  % (kindIndex+1, animType+1)
 //   Monstre 003\M%03d001%03d.MOTION  % (kindIndex+1, animType+1)
 #pragma once
-#include "Gfx/MeshRenderer.h"      // gfx::MotionPalette / gfx::BonePalette / MeshRenderer::kMaxBones
+#include "Gfx/MeshRenderer.h"      // gfx::MotionPalette / gfx::BonePalette (types de palette d'os)
 #include "Asset/Motion.h"          // ts2::asset::Motion (parseur zlib pur)
 #include "Game/GameDatabase.h"     // game::GetMonsterInfo / MonsterInfo::kindIndexP1
 #include "Game/ExtraDatabases.h"   // game::NpcDefRecord::fieldE
@@ -78,8 +78,12 @@ public:
     // Echantillonne la tranche d'os de la frame courante par g_World.gameTimeSec.
     // Model_Render 0x40ebea : frame = ftol(animTime), borne 0..frameCount-1. Char_RenderModel
     // 0x528d38 : idiome d'horloge du binaire = ftol(g_GameTimeSec*30.0) % count (boucle 30 fps).
-    // Garde kMaxBones=40 sur count (Model_DrawSkinnedSubset uploade count matrices dans
-    // mKeyMatrix[40] -- overflow au-dela). BonePalette invalide (matrices=nullptr) si mp invalide.
+    // count = bonesPerFrame BRUT, AUCUN clamp -- fidele a Model_DrawSkinnedSubset 0x40CA40, qui
+    // passe Count = *(a4+8) tel quel a SetMatrixArray (+88) : @0x40d4e8 (Sh03), @0x40dac2 (Sh05),
+    // @0x40d7c0 (Sh07), sans aucun cmp/min ni constante 40. La borne d'os appartient au SHADER
+    // (D3DX ecrit min(Count, mKeyMatrix.Elements)) et est appliquee par MeshRenderer::
+    // DrawSkinnedSubset (boneArraySize_ ; kMaxBones = fallback HLSL uniquement). Identique a
+    // MotionPalette::FrameSlice. BonePalette invalide (matrices=nullptr) si mp invalide.
     static gfx::BonePalette SampleByGameTime(const gfx::MotionPalette& mp, float gameTimeSec);
 
 private:

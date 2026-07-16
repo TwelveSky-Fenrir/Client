@@ -184,64 +184,97 @@
 //             de cette mission.
 //   - Nameplate : appel réel de game::ComputeNameplateInfo, dessiné via gfx::Font
 //     (police propre à WorldRenderer, même pattern que UI/GameHud.h::font_).
-//   - Ombre/reflet (EntityDrawLogic::ComputeEntityDrawFlags.showShadow/showReflection) :
-//     câblés en connaissance de cause du désassemblage réel (vérifié via `xrefs_to`
-//     dans l'IDB, cf. Docs/TS2_GXD_INTERNALS_2.md §3) plutôt qu'en réimplémentant un
-//     stencil-shadow générique :
-//       * showShadow -> JAMAIS dessiné, intentionnellement. `Char_DrawShadow`
-//         (0x580CE0) a 0 xref (confirmé via `xrefs_to`, tout comme
-//         `GXD_DrawShadowOverlay` 0x404B40) : c'est du CODE MORT dans le build
-//         analysé, aucune ombre portée n'est réellement dessinée par le client
-//         d'origine. En dessiner une ici serait moins fidèle que ne rien dessiner.
-//       * showReflection -> dessiné via drawReflectionOverlay(), MAIS RÉSERVÉ AUX
-//         MONSTRES (DrawableEntity::reflectionEligible). VÉRIFICATION APPROFONDIE
-//         2026-07-14 (mission "EXTENSION OMBRE/REFLET") : `xrefs_to(0x581090)`
-//         confirme un SEUL appelant dans tout le binaire, `Scene_InGameRender`
-//         0x52D0B0 @0x52db09 : `Char_DrawReflection(&dword_1766F74[70*i], i, a4)`.
-//         `dword_1766F74` = tableau MONSTRE (stride 70 dwords = 280 o, identique
-//         au stride `MonsterEntity` confirmé côté mémoire `ts2-entity-model`) —
-//         `this` pointe DIRECTEMENT dans ce tableau, sans tableau intermédiaire.
-//         Char_DrawReflection n'est JAMAIS appelée sur `g_EntityArray` (joueurs,
-//         `dword_1687234`) ni sur le tableau PNJ : le client d'origine ne dessine
-//         DE REFLET QUE POUR LES MONSTRES, jamais pour le joueur local, un joueur
-//         distant ou un PNJ. Étendre drawReflectionOverlay() aux joueurs/PNJ
-//         serait donc une RÉGRESSION DE FIDÉLITÉ (invente un effet visuel que le
-//         binaire d'origine ne produit jamais), malgré l'intitulé initial de la
-//         mission qui le suggérait — d'où la garde `reflectionEligible`, posée à
-//         `true` UNIQUEMENT dans la boucle monstre de `Render()` (cf.
-//         WorldRenderer.cpp). Le décompilé de `Char_DrawReflection` montre par
-//         ailleurs qu'il REDESSINE LE MÊME MODÈLE À LA MÊME TRANSFORMÉE que le
-//         corps normal (this+7=animFrame, this+8=pos, this+14=heading — identiques à
-//         Char_Draw ; CORRIGÉ mission ROTATION/ORIENTATION 2026-07-14 : le libellé
-//         précédent "this+14=scale" était erroné — SObject_DrawEx câble le vecteur
-//         d'échelle en dur à {1,1,1} et injecte this+14 comme rotation Y, cf.
-//         Game/GameState.h::MonsterEntity::heading pour la preuve de décompilation
-//         complète) ; ce n'est PAS un mirroir/silhouette aplatie au sol. Le
-//         "reflet" vient de l'état de blend spécial actif pendant cet appel
-//         (`GXD_SetupStencilShadowState` 0x404F20 : LIGHTING off,
-//         ALPHABLENDENABLE, SRCBLEND/DESTBLEND SRCALPHA/INVSRCCOLOR,
-//         TEXTUREFACTOR teinté). Fidélité pixel-exacte du blend hors périmètre
-//         (règle CLAUDE.md) : on approxime avec un blend translucide standard
-//         (SRCALPHA/INVSRCALPHA) plutôt que la recette brute relevée (qui, avec
-//         une couleur source noire comme dans l'original, s'annule
-//         mathématiquement — cf. commentaire au site d'appel).
-//       * PNJ — `Npc_DrawMeshGlow` (0x5801D0, MISNAME CORRIGÉ dans l'IDB, était
-//         `Fx_MeleeSwingDrawGlow`) EXAMINÉE (même mission) : effet distinct (un
-//         "glow"/surbrillance de maillage, PAS un reflet — même mécanisme que
-//         `Npc_DrawMesh` 0x57FF00 via `SObject_DrawAnimated2`, sans le blend
-//         translucide de Char_DrawReflection). Elle aussi n'a QU'UN SEUL appelant
-//         (`Scene_InGameRender` @0x52daa2, confirmé via `xrefs_to`), `this` pointe
-//         dans `g_NpcRenderArray` (stride 22 dwords = 88 o) — un tableau de rendu
-//         PNJ SÉPARÉ, NON adossé à `game::NpcEntity`/`g_World.npcs` (qui vient de
-//         `dword_17AB534`, stride 152 o, cf. CLAUDE.md et Game/GameState.h). Même
-//         lacune que le corps PNJ déjà documentée plus haut ("PNJ : NON résolu") :
-//         câbler ce glow exigerait une source de données de rendu PNJ qui n'existe
-//         pas encore côté ClientSource (pas d'invention) -> NON câblé,
-//         intentionnellement, cohérent avec la politique PNJ déjà en place. Note :
-//         même si elle avait été câblable, ce serait un glow, pas un "reflet" —
-//         hors du périmètre nominal de cette mission ombre/reflet.
-//       * `Char_DrawShadow` (0x580CE0) reconfirmée 0 xref (code mort, cf. ci-dessus)
-//         — aucun changement, toujours jamais dessinée.
+//   - Ombre/reflet (EntityDrawLogic::ComputeEntityDrawFlags.showShadow/showReflection).
+//
+//     ///// RÉÉCRIT — Passe 4 / vague W5, front shadow-wiring (2026-07-16) /////
+//     L'analyse précédente s'était arrêtée UN NIVEAU TROP TÔT et concluait « aucune ombre
+//     portée n'est réellement dessinée par le client d'origine ». C'est FAUX, et c'est
+//     corrigé ici. IDA (re-vérifié de bout en bout cette session) prouve DEUX chaînes
+//     jumelles, l'une morte, l'autre vivante :
+//
+//     [A] VOLUME D'OMBRE STENCIL — MORT, INATTEIGNABLE DANS LE BINAIRE.
+//         Char_DrawShadow 0x580CE0 / Npc_DrawMeshShadow 0x5800E0 /
+//         Char_DrawWeaponEffectVariantA 0x568FE0 -> SObject_DrawAnimated 0x4D9050 ->
+//         Model_RenderWithShadow 0x40EEE0 -> Model_BuildShadowVolume 0x40DC70.
+//         Les 3 têtes ont 0 xref CHACUNE, et `find_bytes` de leurs adresses en
+//         little-endian rend 0 occurrence dans TOUTE l'image (donc pas d'appel indirect
+//         par vtable/table de pointeurs). Preuves détaillées : Gfx/MeshRenderer.cpp,
+//         bandeau au-dessus de DrawModelShadow(). -> jamais dessiné : CORRECT de ne pas
+//         le câbler (gfx::MeshRenderer::DrawModelShadow reste sans appelant, exprès).
+//
+//     [B] OMBRE PLANAIRE PROJETÉE — VIVANTE, et c'est la vraie ombre du jeu.
+//         Model_RenderPlanarShadow 0x40F720 aplatit le modèle sur le plan du sol via
+//         j_D3DXMatrixShadow @0x40FB28 (le commentaire de l'IDB sur la fonction dit
+//         lui-même « render projected ground shadow via D3DXMatrixShadow »), en PASSE 5
+//         = VS09 (g_GxdSh09_VS) + PS NULL. Plan sol (a,b,c,d) = floats +124/+128/+132/+136
+//         de `a8[40] + 156*hitIdx`, issu de Collision_SegPickA 0x420D60.
+//         `reaches(Scene_InGameRender 0x52D0B0 -> 0x40F720)` = true, profondeur 3.
+//         Les devs ont DUPLIQUÉ la chaîne [A] puis basculé sur le planaire, orphelinant
+//         le volume (fonctions jumelles, tailles identiques deux à deux) :
+//              MORT [A]                                VIVANT [B]                     taille
+//              Char_DrawShadow 0x580CE0                Char_DrawReflection 0x581090   0x3A4
+//              Npc_DrawMeshShadow 0x5800E0             Npc_DrawMeshGlow 0x5801D0      0xE2
+//              Char_DrawWeaponEffectVariantA 0x568FE0  Char_DrawWeaponEffectVariantB 0x56BF90  0x2AFF
+//         SObject_DrawAnimated 0x4D9050 et SObject_DrawAnimated2 0x4D91C0 sont eux-mêmes
+//         jumeaux (0x16F chacun) et ne diffèrent QUE par Model_RenderWithShadow vs
+//         Model_RenderPlanarShadow (décompilation vérifiée : 0x4D91C0 n'appelle QUE 0x40F720).
+//         => CONSÉQUENCE DE NOMMAGE : `Char_DrawReflection` / `Npc_DrawMeshGlow` sont MAL
+//         NOMMÉES dans l'IDB. Ce ne sont ni un reflet ni un glow : ce sont les DESSINS
+//         D'OMBRE (planaire) respectivement du monstre et du PNJ. (Renommage IDB non fait :
+//         IDA est en lecture seule pour ce front.)
+//
+//     BRACKET DE SCÈNE (Scene_InGameRender 0x52D0B0, désassemblage relu ligne à ligne) —
+//     la passe d'ombre est un bracket explicite, AVANT le rendu opaque :
+//         0x52D9DC  GXD_SetupStencilShadowState(g_GxdRenderer)   <-- DÉBUT passe ombre
+//           boucle i<g_EntityCount  : Char_DrawWeaponEffectVariantB(&g_EntityArray[908*i]) @0x52DA41
+//           boucle i<g_NpcCount     : Npc_DrawMeshGlow(&g_NpcRenderArray[88*i])            @0x52DAA2
+//           boucle i<g_MonsterCount : Char_DrawReflection(&dword_1766F74[280*i])           @0x52DB09
+//         0x52DB15  GXD_EndStencilShadowState(g_GxdRenderer)     <-- FIN, puis l'opaque
+//           (Char_DrawWeaponTrailEffect @0x52DB7C, Npc_DrawMesh @0x52DBDF, ...)
+//     Donc : ombres planaires pour JOUEURS **et** PNJ **et** MONSTRES — pas seulement les
+//     monstres comme le supposait la rédaction précédente.
+//     États réels posés par GXD_SetupStencilShadowState 0x404F20 (décompilé, vérifié) :
+//       LIGHTING(137)=0, SHADEMODE(9)=FLAT, ZWRITEENABLE(14)=0, STENCILENABLE(52)=1,
+//       STENCILFUNC(56)=EQUAL(3), STENCILPASS(55)=INCR(7) (masque anti-double-blend),
+//       ALPHABLENDENABLE(27)=1, SRCBLEND(19)=SRCALPHA(5), DESTBLEND(20)=INVSRCALPHA(6),
+//       TEXTUREFACTOR(60)=(moyenne diffuse ×128)<<24, TSS0: COLOROP=SELECTARG1,
+//       COLORARG1=TFACTOR, ALPHAARG1=TFACTOR.
+//     (Rectification au passage : la rédaction précédente donnait « DESTBLEND=INVSRCCOLOR » —
+//      c'est INVSRCALPHA(6). Et le fondu v37 de 0x40F720, avec fogNear=999999/fogFar=1000000,
+//      sature TOUJOURS à 1.0 -> LOD 0 systématique.)
+//
+//     ÉTAT DU CÂBLAGE (assumé, et volontairement NON étendu par ce front) :
+//       * showShadow -> toujours PAS de volume stencil : [A] est mort, cf. ci-dessus.
+//       * showReflection -> drawReflectionOverlay() reste RÉSERVÉ AUX MONSTRES
+//         (`reflectionEligible`, posé true seulement dans la boucle monstre de Render()).
+//         Le nom « reflet » est conservé côté C++ pour ne pas diverger de l'IDB, mais il
+//         désigne en réalité l'ombre planaire du monstre.
+//         ÉCART DE FIDÉLITÉ ASSUMÉ ET EXPLICITE : drawReflectionOverlay() redessine le
+//         modèle À LA MÊME TRANSFORMÉE, sans l'aplatissement D3DXMatrixShadow et sans le
+//         bracket d'états — ce n'est donc PAS encore l'ombre planaire du binaire, c'est
+//         une approximation. Reproduire [B] fidèlement exige le PLAN DU SOL issu de
+//         Collision_SegPickA 0x420D60 (géométrie de collision du monde), qui n'existe pas
+//         encore côté ClientSource et est HORS des fichiers possédés par ce front.
+//         -> TODO [ancres 0x40F720 + 0x420D60 + bracket 0x52D9DC/0x52DB15] : implémenter
+//            l'ombre planaire réelle (aplatissement + bracket + VS09) quand la source du
+//            plan sol existera ; étendre alors aux joueurs et PNJ, pas seulement aux
+//            monstres. Ne PAS « allumer » un aplatissement avec un plan sol inventé
+//            (y=constante) : ce serait une invention, pas de la fidélité.
+//         [DÉCISION ORCHESTRATEUR] Retirer purement drawReflectionOverlay() en attendant
+//            (au motif qu'il ne correspond à rien d'exact) est un CHANGEMENT VISUEL :
+//            laissé en place tel quel, non tranché unilatéralement par ce front.
+//       * PNJ — `Npc_DrawMeshGlow` 0x5801D0 : toujours NON câblé, mais pour la raison
+//         déjà en place (pas de source de données de rendu PNJ côté ClientSource :
+//         `g_NpcRenderArray` stride 88 est un tableau SÉPARÉ de `dword_17AB534` stride 152
+//         qui alimente game::NpcEntity), PAS parce que ce serait « un glow hors périmètre » :
+//         c'est en fait l'ombre planaire du PNJ (cf. [B]).
+//       * [NON VÉRIFIÉ] Sémantique exacte du champ +0xDC qui garde le méga-switch de
+//         Char_DrawWeaponEffectVariantB 0x56BF90 (fonction de 11 Ko, non décompilée ici) :
+//         il détermine QUELS SObjects attachés du joueur projettent une ombre. Ne pas
+//         supposer que la boucle joueur du bracket ombre le corps entier sans condition.
+//       * [NON VÉRIFIÉ] Valeur du STENCILREF pendant le bracket : jamais posée par 0x404F20
+//         -> héritée (probablement 0 par défaut D3D9). À dumper en dynamique le jour où [B]
+//         sera implémentée.
 //
 // TODO(fidélité) : PlayerEntity/MonsterEntity (Game/GameState.h) ne portent pas
 // encore le nom/niveau/échelle/angle réels (payload réseau pas entièrement décodé

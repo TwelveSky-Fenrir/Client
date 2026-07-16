@@ -39,6 +39,20 @@ enum class Scene {
     InGame       = 6,  // en jeu ; appelle aussi AutoPlay_Update
 };
 
+// Miroir du champ +4 de l'objet cSceneMgr 0x1676180, soit g_SceneSubState 0x1676184 =
+// sous-état de la scène courante. Exposé en GLOBAL — et non en membre privé — parce que
+// c'est ainsi que le binaire le consomme : Camera_UpdateFromInput 0x50B7D0 lit
+// DIRECTEMENT les deux globals dans sa garde d'entrée @0x50B7EC
+//   if ( g_SceneMgr != 6 || g_SceneSubState != 4 ) return;
+// sans jamais recevoir le sous-état en paramètre (cf. App/PlayerInputController.cpp).
+//
+// ATTENTION (piège vérifié) : SceneManager::subState_ (privé, plus bas) NE porte PAS cette
+// valeur en scène InGame — il n'est jamais écrit qu'à 0. Le sous-état InGame réel vit dans
+// inGameTickState_ (game::InGameTickState, Game/InGameTickFlow.h) ; celui d'EnterWorld dans
+// enterWorldState_. C'est CE global que SceneManager::Update tient à jour depuis ces deux
+// automates (points de synchro commentés dans le .cpp). // 0x1676184
+extern int g_SceneSubState;
+
 // En-tête de l'objet cSceneMgr : [+0 id][+4 sous-état][+8 compteur de frames][+12 tampon 150 dw][+612 slot BGM].
 class SceneManager {
 public:

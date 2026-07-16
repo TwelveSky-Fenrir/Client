@@ -611,17 +611,42 @@ void MeshRenderer::resetBlendMode(uint32_t blendMode) {
 //  Ombres — Model_RenderWithShadow 0x40EEE0 / Model_BuildShadowVolume 0x40DC70
 // ===========================================================================
 
-// FRONT FX-F4 (tache ombre) : DEFERRED -- cette fonction reste NON cablee dans le chemin de dessin
-// des entites, intentionnellement (regle #3 : ne pas laisser du code reverse silencieusement mort,
-// mais ne pas non plus dessiner un effet que le binaire d'origine ne produit jamais). Chaine de
-// xrefs verifiee : Model_RenderWithShadow 0x40EEE0 n'est atteint que par SObject_DrawAnimated
-// 0x4d9050, dont les 3 seuls appelants -- Char_DrawShadow 0x580ce0, Npc_DrawMeshShadow 0x5800e0,
-// Char_DrawWeaponEffectVariantA 0x568fe0 -- ont 0 xref chacun (code mort). Le corps d'entite en jeu
-// passe par SObject_DrawEx 0x4d9330 (Char_Draw/Char_RenderModel 0x527020), qui n'appelle JAMAIS
-// l'ombre-volume. Cabler DrawModelShadow dans WorldRenderer::renderOne dessinerait donc une ombre
-// que l'original ne dessine jamais (coherent avec le bandeau WorldRenderer.h : Char_DrawShadow
-// 0 xref = ombres portees jamais dessinees ; g_ShadowsEnabled 0x18C4F14 + SetShadowParams jamais
-// appeles cote entites). La fonction reste en place, prete si une preuve de chemin vivant apparait.
+// FRONT FX-F4 (tache ombre) : DEFERRED -- cette fonction reste NON cablee, intentionnellement.
+// PREUVE DURCIE (Passe 4 / vague W5, front shadow-wiring, 2026-07-16) : le volume d'ombre stencil
+// est du CODE MORT INATTEIGNABLE **dans le binaire lui-meme**. Ce n'est PAS un blocage de ShaderSet :
+// attacher VS15 ne "debloque" rien, il n'y a aucun appelant a debloquer.
+//
+//   1) Chaine d'appelants ENUMEREE EXHAUSTIVEMENT (xrefs_to, pas un `reaches` borne) :
+//        Model_BuildShadowVolume 0x40DC70  <- 1 seul appelant : Model_RenderWithShadow 0x40EEE0
+//        Model_RenderWithShadow  0x40EEE0  <- 1 seul appelant : SObject_DrawAnimated 0x4D9050 (3 sites)
+//        SObject_DrawAnimated    0x4D9050  <- 3 appelants : Char_DrawShadow 0x580CE0,
+//                                             Npc_DrawMeshShadow 0x5800E0,
+//                                             Char_DrawWeaponEffectVariantA 0x568FE0
+//        ces 3 tetes de chaine                <- 0 xref CHACUNE  => MORTES.
+//   2) L'objection "appel indirect / vtable" est ELIMINEE : `find_bytes` des 6 adresses en
+//      little-endian (E0 0C 58 00 / E0 8F 56 00 / E0 00 58 00 / 50 90 4D 00 / E0 EE 40 00 /
+//      70 DC 40 00) rend **0 occurrence dans TOUTE l'image**. Aucune vtable, table de pointeurs
+//      ni jump-table ne peut les atteindre. `reaches(Scene_InGameRender 0x52D0B0 -> 0x40DC70)` = false.
+//   3) Constantes GELEES -- GXD_InitGlobalState 0x401320 est le SEUL writer (verifie par xrefs) :
+//        g_ShadowsEnabled 0x18C4F14 = 1 (0x4013B2) : son UNIQUE lecteur est 0x40EEEC, dans la
+//          fonction morte -> global inerte, ne pilote plus rien.
+//        g_ShadowMethod   0x18C4F18 = 1 (0x4013B8) : la branche z-fail Carmack `if (!method)`
+//          (0x40F671) serait donc MORTE PAR VALEUR meme si la fonction vivait.
+//
+// NE PAS "corriger" ce non-cablage : dessiner ce volume serait dessiner un effet que le binaire
+// d'origine ne produit JAMAIS. La fonction reste en place comme trace de RE fidele.
+//
+// ATTENTION -- ne pas en deduire "aucune ombre n'est dessinee" (erreur de l'ancienne redaction) :
+// le client dessine bel et bien des ombres, mais PLANAIRES, par une chaine JUMELLE VIVANTE que la
+// Passe 3 avait manquee : Model_RenderPlanarShadow 0x40F720 (aplatissement j_D3DXMatrixShadow
+// @0x40FB28, passe 5 = VS09 g_GxdSh09_VS + PS NULL), atteinte depuis Scene_InGameRender 0x52D0B0
+// via SObject_DrawAnimated2 0x4D91C0 (`reaches` = true, profondeur 3). Les devs ont DUPLIQUE la
+// chaine puis bascule sur le planaire, orphelinant le volume (tailles identiques deux a deux) :
+//        MORT (-> volume)                        VIVANT (-> planaire)                taille
+//        Char_DrawShadow 0x580CE0                Char_DrawReflection 0x581090        0x3A4
+//        Npc_DrawMeshShadow 0x5800E0             Npc_DrawMeshGlow 0x5801D0           0xE2
+//        Char_DrawWeaponEffectVariantA 0x568FE0  Char_DrawWeaponEffectVariantB 0x56BF90  0x2AFF
+// Cf. le bandeau Scene/WorldRenderer.h §Ombre pour le bracket de scene et l'etat de ce chantier.
 void MeshRenderer::DrawModelShadow(const SkinnedModel& model,
                                    const D3DXVECTOR3&  position,
                                    const D3DXVECTOR3&  rotationDeg,

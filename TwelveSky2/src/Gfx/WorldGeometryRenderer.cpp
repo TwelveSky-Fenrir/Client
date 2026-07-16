@@ -30,18 +30,71 @@ static_assert(kFvfTerrain == 0x212, "FVF terrain doit valoir 530 (0x212)");
 constexpr DWORD kFvfBillboard = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1; // 0x142
 static_assert(kFvfBillboard == 0x142, "FVF billboard doit valoir 322 (0x142)");
 
+// ---------------------------------------------------------------------------------------------
+//  RANGS DE DESSIN DU TERRAIN — liste EXACTE des couches que Terrain_Render 0x698670 dessine.
+//  (Passe 4 / W5, front terrain-motion : corrige la « géométrie fantôme » + la passe a5=2.)
+//
+//  Le binaire n'a QUE 2 passes : garde d'entrée @0x698676-0x6986a2 = `*(a1+4) && *(a1+8)==1 &&
+//  a5>=1 && a5<=2` ; sites d'appel Scene_InGameRender @0x52d9be (a5=1) et @0x52ead8 (a5=2).
+//  Chaque boucle balaye les matériaux (a1+16, stride 52 : +40 catégorie, +44 subOrder, +48
+//  texture) et ne dessine que ceux dont le test ci-dessous passe (+ faces visibles > 0) :
+//
+//   rang 0  cat==2            @0x698f97  (a5=1) AUCUN test de sub — lightmap ON, sampler CLAMP
+//   rang 1  cat==4            @0x69902d  (a5=1) AUCUN test de sub — lightmap ON, sampler WRAP
+//   rang 2  cat==1 && sub==0  @0x6990fa  (a5=1) lightmap OFF (coupée @0x6990ba), WRAP
+//   rang 3  cat==3            @0x6992c4  (a5=1) eau, CLAMP — gate @0x69914d : ∃ cat3/sub0
+//   rang 4  cat==1 && sub==1  @0x69941b  (a5=1) ALPHATEST @0x6993d4 + ALPHAREF=128 @0x6993e9
+//   rang 5  cat==3            @0x6995e7  (a5=1) eau, CLAMP — gate @0x699473 : ∃ cat3/sub1
+//                                        (alpha-test TOUJOURS actif : coupé seulement @0x699704)
+//   rang 6  cat==1 && sub==2  @0x698811  (a5=2) ZWRITE OFF @0x6987f3 + ALPHABLEND ON @0x698804
+//   rang 7  cat==3            @0x698a0a  (a5=2) eau blendée — gate @0x698890 : ∃ cat3/sub2
+//   -----------------------------------------------------------------------------------------
+//   TOUT LE RESTE = JAMAIS dessiné par AUCUNE boucle du binaire => rang -1, écarté dès le Build
+//   (c'était la « géométrie fantôme » : l'ancien `return 6` fourre-tout uploadait ET dessinait
+//   en opaque des couches que le moteur d'origine ignore totalement).
+//
+//  ⚠ PIÈGE (vérifié, contre-intuitif) : les 3 boucles EAU testent `cat==3` SEUL — elles n'ont
+//  AUCUN test de subOrder (seule la GATE qui les précède teste un sub précis). Une couche cat3
+//  de subOrder quelconque est donc dessinée dès qu'une gate passe : cat==3 ne doit JAMAIS être
+//  filtré, quel que soit son sub (le sub ne sert qu'à choisir le rang/la passe). Idem cat2/cat4 :
+//  tout subOrder est dessiné (d'où le rang par catégorie seule, sans test de sub).
+//
+//  Domaine réel mesuré sur les 97 .WG de D07_GWORLD (inventaire des trailers + faces portées) :
+//  (1,0) (1,1) (1,2) (2,0) (2,1) (2,2) (3,0) (3,2) (4,0) (4,1) (4,2) — soit cat ∈ {1,2,3,4} et
+//  sub ∈ {0,1,2}. Le filtre -1 n'écarte donc AUCUNE face réelle (0 matériau, 0 face) : c'est un
+//  garde-fou de fidélité, pas un correctif visuel. Le vrai gain visuel est ailleurs — (1,2) et
+//  (3,2) (59 + 49 matériaux, ~73 000 faces) passent de « opaque, z-write ON » à la passe a5=2
+//  réelle (blend + z-write OFF), et (2,1)/(4,1) cessent de subir un alpha-test parasite.
+// ---------------------------------------------------------------------------------------------
+enum : int {
+    kRank_Cat2     = 0, kRank_Cat4   = 1, kRank_Cat1Sub0 = 2, kRank_Water0 = 3,
+    kRank_Cat1Sub1 = 4, kRank_Water1 = 5, kRank_Cat1Sub2 = 6, kRank_Water2 = 7,
+    kRank_NotDrawn = -1,
+    kRank_FirstPass2 = kRank_Cat1Sub2 // rangs >= : sous-passe a5=2 (blend + z-write off)
+};
+
 // Catégorie de matériau EAU (trailer[0]==3). Ancre IDA : MapColl_LoadMapFile @0x698033
-// (cherche mat+40==3 -> déclenche wave/falloff). Rang de dessin pour reproduire l'ordre exact de
-// Terrain_Render(a5=1) : cat2 -> cat4 -> cat1/sub0 -> eau cat3/sub0 -> cat1/sub1(alphatest) ->
-// eau cat3/sub1 -> (autres opaques). Ancres : boucles @0x698f7b..@0x69914d..@0x6990d8.
+// (cherche mat+40==3 -> déclenche wave/falloff).
+constexpr uint32_t kTerrainCatWater = 3;
+
+// Renvoie le rang de dessin d'une couche, ou kRank_NotDrawn si le binaire ne la dessine jamais.
 int TerrainLayerRank(uint32_t category, uint32_t subOrder) {
-    if (category == 2) return 0;
-    if (category == 4) return 1;
-    if (category == 1 && subOrder == 0) return 2;
-    if (category == 3 && subOrder == 0) return 3; // eau
-    if (category == 1 && subOrder == 1) return 4; // alpha-test
-    if (category == 3 && subOrder == 1) return 5; // eau alpha-test
-    return 6;                                     // reste : opaque, dessiné en dernier
+    if (category == 2) return kRank_Cat2;                    // @0x698f97, tout sub
+    if (category == 4) return kRank_Cat4;                    // @0x69902d, tout sub
+    if (category == 1) {                                     // cat1 : le sub choisit la passe
+        if (subOrder == 0) return kRank_Cat1Sub0;            // @0x6990fa
+        if (subOrder == 1) return kRank_Cat1Sub1;            // @0x69941b (alpha-test)
+        if (subOrder == 2) return kRank_Cat1Sub2;            // @0x698811 (a5=2, blend)
+        return kRank_NotDrawn;                               // cat1/sub>=3 : aucune boucle
+    }
+    if (category == kTerrainCatWater) {                      // boucles eau SANS test de sub
+        if (subOrder == 2) return kRank_Water2;              // @0x698a0a (a5=2), gate @0x698890
+        if (subOrder == 1) return kRank_Water1;              // @0x6995e7, gate @0x699473
+        return kRank_Water0;                                 // @0x6992c4, gate @0x69914d — et
+        // tout sub non prouvé retombe ici : les boucles eau n'ont AUCUN test de sub, donc une
+        // couche cat3 n'est jamais écartée (cas absent des 97 .WG réels, cf. bandeau ci-dessus).
+    }
+    return kRank_NotDrawn;                                   // cat 0, 5, 6... : jamais dessiné
 }
 
 // Empaquette un float dans le DWORD attendu par SetTextureStageState/SetRenderState (bit-copie).
@@ -505,7 +558,11 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
 
     // 3) Une TerrainLayer par matériau (catégorie/subOrder = trailer[0]/trailer[1] de la texture),
     //    découpée en FfLod <=65535 sommets (INDEX16, index séquentiels comme DrawPrimitiveUP).
+    //    FILTRE (Passe 4/W5) : les couches que Terrain_Render 0x698670 ne dessine par AUCUNE de ses
+    //    boucles (rang < 0, cf. table TerrainLayerRank) sont écartées ICI, avant toute création de
+    //    VB/IB -> supprime la géométrie fantôme ET la mémoire GPU correspondante.
     size_t totalFaces = 0, failed = 0;
+    size_t ghostLayers = 0, ghostFaces = 0;
     bool hasWater = false;
     for (uint32_t m = 0; m < numMat; ++m) {
         const std::vector<FfTerrainVertex>& verts = perMat[m];
@@ -516,7 +573,17 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
         // trailer[0]=catégorie, trailer[1]=subOrder (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0).
         layer.category = (m < wg->textures.size()) ? wg->textures[m].trailer[0] : 0;
         layer.subOrder = (m < wg->textures.size()) ? wg->textures[m].trailer[1] : 0;
-        if (layer.category == 3) hasWater = true;
+        layer.rank     = TerrainLayerRank(layer.category, layer.subOrder);
+        if (layer.rank == kRank_NotDrawn) {
+            // Le binaire n'a aucune boucle pour ce (cat,sub) -> ne rien uploader ni dessiner.
+            // Compté et loggé : si ce compteur est != 0 sur des données réelles, c'est le signal
+            // qu'il faut re-vérifier la table des rangs AVANT de conclure (inventaire des 97 .WG
+            // réels = 0 couche écartée, cf. bandeau de TerrainLayerRank).
+            ++ghostLayers;
+            ghostFaces += verts.size() / 3;
+            continue;
+        }
+        if (layer.category == kTerrainCatWater) hasWater = true;
 
         for (size_t base = 0; base < verts.size(); base += kTerrainMaxVertsPerBatch) {
             const UINT vcount = static_cast<UINT>(
@@ -552,12 +619,11 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
     }
     terrainFaceCount_ = totalFaces;
 
-    // 4) Tri des couches par rang (catégorie, subOrder) — reproduit l'ordre de Terrain_Render(a5=1).
+    // 4) Tri des couches par rang — reproduit l'ordre EXACT de Terrain_Render : passe a5=1
+    //    (rangs 0..5) puis passe a5=2 (rangs 6..7). renderTerrain() s'appuie sur cet ordre
+    //    croissant pour n'ouvrir la sous-passe blendée qu'une fois (bascule à sens unique).
     std::stable_sort(terrainLayers_.begin(), terrainLayers_.end(),
-                     [](const TerrainLayer& a, const TerrainLayer& b) {
-                         return TerrainLayerRank(a.category, a.subOrder) <
-                                TerrainLayerRank(b.category, b.subOrder);
-                     });
+                     [](const TerrainLayer& a, const TerrainLayer& b) { return a.rank < b.rank; });
 
     // 5) Eau : wave + falloff procédurales créées UNE FOIS si une couche cat==3 existe (fidèle
     //    @0x698043). Ancres : cWorldMesh_MakeWaterWaveTexture 0x451220 / MapColl_CreateFalloffTexture
@@ -573,9 +639,13 @@ bool WorldGeometryRenderer::buildTerrain(const world::WorldAssets& assets) {
 
     TS2_LOG("WorldGeometryRenderer::buildTerrain (W3-F3) : %zu faces sur %u materiaux -> %zu couches "
             "FF (%zu hors bornes, %zu lots echec) ; eau=%d (wave=%p falloff=%p) lightmap=%p ; sol .WG "
-            "pret (FVF 530, world=identite). Cull quadtree/frustum = TODO perf.",
+            "pret (FVF 530, world=identite). Cull quadtree/frustum = TODO perf. "
+            "Filtre categories (Terrain_Render 0x698670) : %zu couches / %zu faces ecartees car "
+            "jamais dessinees par le binaire (attendu 0 sur donnees reelles -- si != 0, re-verifier "
+            "la table TerrainLayerRank AVANT de conclure).",
             totalFaces, numMat, terrainLayers_.size(), outOfRange, failed,
-            hasWater ? 1 : 0, (void*)waveTex_, (void*)falloffTex_, (void*)shadowTex_);
+            hasWater ? 1 : 0, (void*)waveTex_, (void*)falloffTex_, (void*)shadowTex_,
+            ghostLayers, ghostFaces);
     return true;
 }
 
@@ -659,13 +729,29 @@ void WorldGeometryRenderer::RenderSky(int screenW, int screenH) {
 //  Séquence reproduite : SetFVF(530) @0x698e6d ; matrice texture stage0 = identité @0x698f25 ;
 //  CULLMODE=NONE @0x698f37 (backface CPU dans l'original, neutralisé ici) ; lightmap stage 1
 //  MODULATE (=4, PAS MODULATE2X) @0x698f54 + SetTexture(1) @0x698f68 (uv1 — le vertex FF a 2 jeux
-//  d'UV, le TODO G8 disparaît) ; couches triées par (catégorie, subOrder) ; eau cat==3 en bump-env
-//  (bindWaterStates) ; alpha-test sur subOrder==1 (ALPHAREF=128 @0x6993d4). États sauvés/restaurés
+//  d'UV, le TODO G8 disparaît) ; couches triées par RANG (cf. table TerrainLayerRank en tête de
+//  fichier) ; eau cat==3 en bump-env (bindWaterStates) ; alpha-test sur les rangs 4/5 uniquement
+//  (ALPHAREF=128 @0x6993e9) ; adressage sampler CLAMP/WRAP par couche. États sauvés/restaurés
 //  pour ne pas polluer meshRenderer_ (qui rebinde ses shaders ensuite).
+//
+//  MISE À JOUR Passe 4 / W5 (front terrain-motion) — cette fonction couvre désormais les DEUX
+//  passes du binaire, dans l'ordre : a5=1 (rangs 0..5, opaque + eau + alpha-test) puis a5=2
+//  (rangs 6..7, z-write OFF + alpha-blend ON @0x6987f3/@0x698804). Les couches de rang < 0 (que
+//  le binaire ne dessine par aucune boucle) n'existent plus : buildTerrain les écarte avant tout
+//  upload GPU.
 //
 //  TODO perf (non implémenté) : cull quadtree + frustum par frame — MapColl_CollectLeafFaces
 //  0x694b50 + backface @0x698dd4 + Cam_FrustumTestSphere2x 0x69f0e0. Ici on dessine TOUTES les
 //  couches (correct, non optimisé).
+//
+//  ÉCART CONNU, ASSUMÉ (eau dessinée une seule fois par couche) : les 3 boucles eau du binaire
+//  testent `cat==3` SEUL, chacune gatée par l'existence d'un cat3/sub{0,1,2}. Si une zone possède
+//  À LA FOIS du cat3/sub0 et du cat3/sub2, les DEUX gates passent et le binaire dessine CHAQUE
+//  couche cat3 DEUX FOIS (opaque en a5=1, puis blendée en a5=2). Ici, chaque couche n'est dessinée
+//  qu'une fois, au rang de son propre subOrder. Mesuré sur les 97 .WG réels : 57 zones ont de
+//  l'eau — 14 en sub0 seul (-> rang 3, exact), 38 en sub2 seul (-> rang 7, exact), et seulement
+//  5 zones mixtes (Z118/Z175/Z201/Z267/Z279) où le binaire double le dessin. Écart de 2e ordre,
+//  limité à ces 5 zones ; le corriger exigerait de dissocier « gate » et « boucle » (hors mission).
 // ===========================================================================
 void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj) {
     if (!ready_ || terrainLayers_.empty()) return;
@@ -678,6 +764,15 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
     dev_->GetRenderState(D3DRS_ALPHATESTENABLE, &prevAlphaTest);
     dev_->GetRenderState(D3DRS_ALPHAREF, &prevAlphaRef);
     dev_->GetRenderState(D3DRS_ALPHAFUNC, &prevAlphaFunc);
+    // Sous-passe a5=2 (rangs 6-7) + adressage sampler par couche : états supplémentaires à rendre.
+    DWORD prevBlend = FALSE, prevZWrite = TRUE, prevSrc = D3DBLEND_ONE, prevDst = D3DBLEND_ZERO,
+          prevAddrU = D3DTADDRESS_WRAP, prevAddrV = D3DTADDRESS_WRAP;
+    dev_->GetRenderState(D3DRS_ALPHABLENDENABLE, &prevBlend);
+    dev_->GetRenderState(D3DRS_ZWRITEENABLE, &prevZWrite);
+    dev_->GetRenderState(D3DRS_SRCBLEND, &prevSrc);
+    dev_->GetRenderState(D3DRS_DESTBLEND, &prevDst);
+    dev_->GetSamplerState(0, D3DSAMP_ADDRESSU, &prevAddrU);
+    dev_->GetSamplerState(0, D3DSAMP_ADDRESSV, &prevAddrV);
 
     // Fixed-function : pas de VS/PS, FVF terrain, transforms world=identité + view/proj caméra.
     dev_->SetVertexShader(nullptr);
@@ -707,9 +802,27 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
     // premier). Stage 1 desactive au depart.
     dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     bool lightmapBound = false;
+    // Sous-passe a5=2 : bascule à SENS UNIQUE (les couches sont triées par rang croissant, donc les
+    // rangs 6-7 sont forcément contigus en fin de liste). Ancres : ZWRITE off @0x6987f3 +
+    // ALPHABLEND on @0x698804 à l'ouverture, restaurés @0x698b21 / @0x698b32 à la fermeture.
+    bool blendPassOpen = false;
 
-    // Dessin des couches, déjà triées par rang (catégorie, subOrder).
+    // Dessin des couches, déjà triées par rang (passe a5=1 rangs 0..5, puis passe a5=2 rangs 6..7).
     for (const TerrainLayer& layer : terrainLayers_) {
+        // OUVERTURE de la sous-passe transparente a5=2 (cat1/sub2 @0x698811, eau/sub2 @0x698a0a).
+        // Le binaire y dessine ces couches avec z-write OFF et alpha-blend ON — l'ancien code les
+        // envoyait en OPAQUE (rang fourre-tout 6), d'où un sol/eau transparents rendus solides.
+        if (layer.rank >= kRank_FirstPass2 && !blendPassOpen) {
+            dev_->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);       // (14,0) @0x6987f3
+            dev_->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);    // (27,1) @0x698804
+            // Terrain_Render ne pose PAS SRCBLEND/DESTBLEND : il hérite de l'état permanent du
+            // device, posé une fois par Gfx_InitDevice 0x69b9b0 -> (19=SRCBLEND, 5=SRCALPHA)
+            // @0x69c526 et (20=DESTBLEND, 6=INVSRCALPHA) @0x69c535. On les repose explicitement
+            // (valeurs PROUVÉES, pas un choix) car renderTerrain restaure les états en sortie.
+            dev_->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+            dev_->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            blendPassOpen = true;
+        }
         // FRONT FX-F4 (M5) : lightmap stage 1 UNIQUEMENT pour cat==2 et cat==4 (Terrain_Render
         // 0x698670 : enable @0x698f54 avant la boucle cat2 @0x698f97, disable @0x6990ba avant
         // cat1 @0x6990d4). Comme les couches sont triees par rang (cat2=0, cat4=1, puis cat1/eau/
@@ -719,8 +832,16 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
                                   (layer.category == 2 || layer.category == 4);
         if (wantLightmap && !lightmapBound) {
             // ENABLE -- calque @0x698f54 (COLOROP=MODULATE) + @0x698f68 (SetTexture stage 1 =
-            // *(a1+72) lightmap). COLORARG1/2 + TEXCOORDINDEX=1 explicites (l'original herite ces
-            // valeurs de Terrain_PushRenderState 0x69cb80 ; TEXCOORDINDEX=1 requis pour uv1).
+            // *(a1+72) lightmap). COLORARG1/2 + TEXCOORDINDEX=1 explicites : NON prouvés ici,
+            // l'original les hérite de l'état permanent du device (ils ne sont posés ni par
+            // Terrain_Render ni par Gfx_InitDevice 0x69b9b0) ; TEXCOORDINDEX=1 est requis pour uv1.
+            // CORRECTION (Passe 4/W5) : l'ancien commentaire attribuait cet héritage à
+            // « Terrain_PushRenderState 0x69cb80 » -- c'est FAUX. Malgré son nom, 0x69cb80 ne pousse
+            // AUCUN état de rendu : c'est un TIMER (QueryPerformanceCounter -> this+208, renvoie
+            // (now - this+224) / this+216 = secondes écoulées), appelé aussi par App_Init @0x46242e
+            // et App_FrameTick @0x4625d9. Sa valeur de retour alimente v92, d'où `v92 * 10.0`
+            // @0x6991ca -> ceci VALIDE le `wavePhase_ * 10.0f` de bindWaterStates (même grandeur :
+            // des secondes écoulées). Le nom IDA est trompeur, ne pas s'y fier.
             dev_->SetTexture(1, shadowTex_);
             dev_->SetTextureStageState(1, D3DTSS_COLOROP,  D3DTOP_MODULATE); // = 4
             dev_->SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE);
@@ -734,13 +855,33 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
             lightmapBound = false;
         }
 
-        const bool alphaTest = (layer.subOrder == 1);
+        // ALPHA-TEST : piloté par le RANG, pas par subOrder. Terrain_Render n'active ALPHATESTENABLE
+        // (@0x6993d4) + ALPHAREF=128 (@0x6993e9) qu'APRÈS les boucles cat2/cat4/cat1sub0/eau-sub0,
+        // et ne le coupe qu'@0x699704 : seuls les rangs 4 (cat1/sub1 @0x69941b) et 5 (eau gate sub1
+        // @0x6995e7) sont donc alpha-testés. L'ancien test `subOrder == 1` alpha-testait aussi
+        // cat2/sub1 et cat4/sub1 (122 matériaux / ~39 800 faces réelles), dessinés en réalité par
+        // les boucles cat2/cat4 AVANT toute activation de l'alpha-test. La passe a5=2 (rangs 6-7)
+        // hérite d'un alpha-test coupé (@0x699704 en fin de passe a5=1) -> FALSE, correct ici aussi.
+        const bool alphaTest = (layer.rank == kRank_Cat1Sub1 || layer.rank == kRank_Water1);
         dev_->SetRenderState(D3DRS_ALPHATESTENABLE, alphaTest ? TRUE : FALSE);
         if (alphaTest) {
-            dev_->SetRenderState(D3DRS_ALPHAREF, 128);                    // @0x6993d4
+            dev_->SetRenderState(D3DRS_ALPHAREF, 128);                    // (24,128) @0x6993e9
+            // ALPHAFUNC n'est pas posé par Terrain_Render : état permanent du device =
+            // (25=ALPHAFUNC, 5=D3DCMP_GREATEREQUAL) posé par Gfx_InitDevice @0x69c517.
             dev_->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
         }
-        const bool water = (layer.category == 3);
+
+        // ADRESSAGE UV du sampler 0 : CLAMP pour cat2 (@0x698f7b/@0x698f8e) et pour les passes eau
+        // (@0x699195/@0x6991a8, @0x6994b8/@0x6994cb, @0x6988cf/@0x6988e3) ; WRAP partout ailleurs
+        // (@0x699011/@0x699024 avant cat4, restauré @0x6993af/@0x6993c2 et @0x6996cf/@0x6996e2
+        // après chaque passe eau ; WRAP est aussi le défaut du device, Gfx_InitDevice @0x69c49d/
+        // @0x69c4ac). Absent jusqu'ici -> tuilage erroné des textures de sol.
+        const bool water   = (layer.category == kTerrainCatWater);
+        const bool clampUv = (layer.category == 2) || water;
+        const DWORD addr   = clampUv ? D3DTADDRESS_CLAMP : D3DTADDRESS_WRAP; // 3 : 1
+        dev_->SetSamplerState(0, D3DSAMP_ADDRESSU, addr);
+        dev_->SetSamplerState(0, D3DSAMP_ADDRESSV, addr);
+
         if (water) bindWaterStates(layer.diffuse);
         else       dev_->SetTexture(0, layer.diffuse);
 
@@ -753,14 +894,27 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
         if (water) unbindWaterStates();
     }
 
+    // FERMETURE de la sous-passe a5=2 — calque @0x698b21 (27,0 = ALPHABLEND off) puis @0x698b32
+    // (14,1 = ZWRITE on). Les états réels sont ensuite rendus à l'appelant ci-dessous.
+    if (blendPassOpen) {
+        dev_->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev_->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    }
+
     // Restauration : ne pas polluer meshRenderer_.
     dev_->SetTexture(1, nullptr);
     dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     dev_->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);       // valeur FF par défaut
     dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev_->SetSamplerState(0, D3DSAMP_ADDRESSU, prevAddrU);
+    dev_->SetSamplerState(0, D3DSAMP_ADDRESSV, prevAddrV);
     dev_->SetRenderState(D3DRS_ALPHATESTENABLE, prevAlphaTest);
     dev_->SetRenderState(D3DRS_ALPHAREF, prevAlphaRef);
     dev_->SetRenderState(D3DRS_ALPHAFUNC, prevAlphaFunc);
+    dev_->SetRenderState(D3DRS_ALPHABLENDENABLE, prevBlend);
+    dev_->SetRenderState(D3DRS_ZWRITEENABLE, prevZWrite);
+    dev_->SetRenderState(D3DRS_SRCBLEND, prevSrc);
+    dev_->SetRenderState(D3DRS_DESTBLEND, prevDst);
     dev_->SetRenderState(D3DRS_LIGHTING, prevLighting);
     dev_->SetRenderState(D3DRS_CULLMODE, prevCull);
     meshRenderer_.InvalidateShaderBindingCache();          // le prochain DrawSkinnedSubset rebinde VS/PS
@@ -772,8 +926,16 @@ void WorldGeometryRenderer::renderTerrain(const D3DXMATRIX& view, const D3DXMATR
 // MAT10=sin(t)*s, MAT11=cos(t)*s (t = wavePhase_*10), BUMPENVLSCALE=1.0.
 void WorldGeometryRenderer::bindWaterStates(IDirect3DTexture9* waterDiffuse) {
     if (!waveTex_) { dev_->SetTexture(0, waterDiffuse); return; } // repli : eau texture simple
-    // s = échelle : l'original utilise a10 (farDist runtime) — non disponible statiquement ->
-    // kWaterBumpScale (petit, build-safe). TODO ancre 0x699206 pour l'échelle exacte.
+    // ÉCHELLE DU BUMP — TODO ancre 0x699206 RÉSOLU (2026-07-16), volontairement NON appliqué :
+    // le binaire utilise `a10` BRUT comme échelle de la matrice bump-env (vérifié @0x6991e5
+    // `v94 = cos(v62) * a10` / @0x6991f2 `sin(v109) * a10`, idem @0x699508 et @0x698925), où
+    // a10 = Game_GetTierRange 0x5402f0 = la DISTANCE DE TIRAGE (1000/2000/3000 selon
+    // g_Opt_DisplayRangeTier 0x84DEC4). Passer une distance de tirage dans une matrice bump-env
+    // est très probablement un BUG D'ORIGINE (mauvaise variable passée) : à 1000+, la
+    // perturbation sature et l'eau devient du bruit. RÈGLE DE FIDÉLITÉ vs jouabilité : la
+    // valeur exacte est ici DOCUMENTÉE mais pas reproduite -- renderTerrain ne reçoit pas la
+    // distance de tirage et g_Opt_DisplayRangeTier n'est pas câblé. kWaterBumpScale reste un
+    // choix de rendu build-safe. Arbitrage à l'orchestrateur si la reproduction du bug est voulue.
     constexpr float kWaterBumpScale = 0.05f;
     const float t = wavePhase_ * 10.0f;
     const float c = std::cos(t) * kWaterBumpScale;

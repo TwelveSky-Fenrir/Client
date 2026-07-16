@@ -189,12 +189,12 @@
 //
 //  MISE À JOUR 2026-07-16 (FRONT W3-F3 — chemin terrain FIXED-FUNCTION dédié) : le rendu du terrain
 //  passe désormais par un chemin FF NATIF (plus meshRenderer_/shaders), fidèle à Terrain_Render
-//  0x698670 (passe a5=1). buildTerrain()/renderTerrain() (cf. .cpp) :
+//  0x698670. buildTerrain()/renderTerrain() (cf. .cpp) :
 //    - VB FVF 530 (0x212 = XYZ|NORMAL|TEX2, stride 40) uploadé par memcpy depuis asset::TerrainVertex
 //      (aucune conversion) — SetFVF(530) @0x698e6d ;
-//    - couches groupées par matériau et TRIÉES par (catégorie=trailer[0], subOrder=trailer[1]) =
-//      textures[m].trailer[*] (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0), reproduisant l'ordre
-//      cat2 -> cat4 -> cat1 -> eau cat3 -> alpha-test sub1 ;
+//    - couches groupées par matériau et TRIÉES par un RANG dérivé de (catégorie=trailer[0],
+//      subOrder=trailer[1]) = textures[m].trailer[*] (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0
+//      ; ex-VeryOldClient TEXTURE_FOR_GXD : trailer = processMode/alphaMode) ;
 //    - LIGHTMAP .SHADOW au stage 1 sur uv1 : MODULATE (=4, PAS MODULATE2X — commentaire corrigé)
 //      @0x698f54 + SetTexture(1) @0x698f68 (le vertex FF possède bien uv1 -> le TODO « 1 seul
 //      TEXCOORD » a DISPARU ; texture créée depuis WorldAssets::ShadowBytes()) ;
@@ -204,10 +204,35 @@
 //  FX de zone .WP : RenderFxBillboards() (passe a5=2 @0x698c6d : Gfx_BeginUnlitPass 0x69e470 ->
 //  Particle_RenderBillboards 0x6a70b0) dessine 1 billboard placé par instance (sous-ensemble
 //  build-safe). Sway .WO : TickWorldAnim() avance la phase de flipbook par instance (état possédé,
-//  MapColl_UpdateObjectAnim 0x694A00). RESTES (TODO ancres) : cull quadtree/frustum par frame ;
-//  échelle exacte du bump eau (a10 runtime) ; sélection GPU de la frame de sway (MeshPart_Render
-//  0x6aed60, uploadPart n'uploade que la frame 0) ; sim complet de particules (Particle_UpdateEmit
-//  0x6a7530). Skybox/atmosphère = FRONT W3-F4 (SkyRenderer), hors périmètre ici.
+//  MapColl_UpdateObjectAnim 0x694A00).
+//
+//  MISE À JOUR Passe 4 / W5 (front terrain-motion) — LISTE EXACTE DES CATÉGORIES DESSINÉES.
+//  Terrain_Render n'a que 2 passes (garde @0x698676-0x6986a2 : a5 ∈ [1,2] ; sites d'appel
+//  Scene_InGameRender @0x52d9be a5=1 et @0x52ead8 a5=2). Table complète des rangs + ancres de
+//  chaque boucle : cf. TerrainLayerRank() en tête de WorldGeometryRenderer.cpp. En résumé :
+//      a5=1 : cat2 (tout sub) -> cat4 (tout sub) -> cat1/sub0 -> eau cat3 (gate sub0)
+//             -> cat1/sub1 (alpha-test) -> eau cat3 (gate sub1)
+//      a5=2 : cat1/sub2 -> eau cat3 (gate sub2)          [z-write OFF + alpha-blend ON]
+//      TOUT LE RESTE (cat ∉ {1,2,3,4} ; cat1/sub>=3) n'est dessiné par AUCUNE boucle -> écarté
+//      dès buildTerrain (rang -1), avant tout upload GPU : c'était la « géométrie fantôme ».
+//  ⚠ Les boucles EAU testent `cat==3` SEUL (aucun test de sub ; seule la gate teste un sub) :
+//    une couche cat3 n'est JAMAIS filtrée, quel que soit son subOrder.
+//  Corrections de fidélité apportées par ce front : (1,2) et (3,2) passent d'« opaque z-write ON »
+//  à la vraie passe a5=2 blendée ; l'alpha-test cesse de frapper (2,1)/(4,1) (il est piloté par le
+//  rang, pas par subOrder) ; l'adressage sampler CLAMP/WRAP par couche est posé. Le filtre lui-même
+//  n'écarte 0 face sur les 97 .WG réels (domaine mesuré : cat ∈ {1,2,3,4}, sub ∈ {0,1,2}) — c'est
+//  un garde-fou de fidélité, pas un correctif visuel.
+//  ⚠ « Terrain_PushRenderState 0x69cb80 » est un nom IDA TROMPEUR : ce n'est PAS un push d'états
+//    de rendu mais un TIMER QueryPerformanceCounter (renvoie des secondes écoulées ; appelé aussi
+//    par App_Init/App_FrameTick) — il valide au passage `wavePhase_ * 10.0f` (v92*10.0 @0x6991ca).
+//
+//  RESTES (TODO ancres) : cull quadtree/frustum par frame ; sélection GPU de la frame de sway
+//  (MeshPart_Render 0x6aed60, uploadPart n'uploade que la frame 0) ; sim complet de particules
+//  (Particle_UpdateEmit 0x6a7530) ; eau des 5 zones « mixtes » dessinée une fois au lieu de deux
+//  (cf. bandeau de renderTerrain dans le .cpp). Échelle du bump eau : ancre 0x699206 RÉSOLUE
+//  (= a10 = distance de tirage Game_GetTierRange 0x5402f0, très probablement un bug d'origine)
+//  mais volontairement NON reproduite — cf. bindWaterStates(). Skybox/atmosphère = FRONT W3-F4
+//  (SkyRenderer), hors périmètre ici.
 #pragma once
 #include "Gfx/Renderer.h"
 #include "Gfx/MeshRenderer.h"
@@ -327,12 +352,15 @@ private:
 
     // Couche terrain = faces d'UN matériau, étiquetée par (catégorie, subOrder) =
     // textures[m].trailer[0]/trailer[1] (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0 : mat+40=cat,
-    // mat+44=subOrder). L'ordre de dessin de Terrain_Render (a5=1) est reproduit en triant les
-    // couches par un rang dérivé de (catégorie, subOrder). Catégorie 3 = EAU (pass bump-env).
+    // mat+44=subOrder). L'ordre de dessin de Terrain_Render (passes a5=1 PUIS a5=2) est reproduit en
+    // triant les couches par `rank` (cf. TerrainLayerRank dans le .cpp, table complète + ancres).
+    // Catégorie 3 = EAU (passe bump-env). Seules les couches de rang >= 0 existent ici : celles que
+    // le binaire ne dessine jamais sont écartées dès buildTerrain (pas de VB/IB créé).
     struct TerrainLayer {
         IDirect3DTexture9* diffuse  = nullptr; // réf dans terrainTextures_ (NON possédée)
         uint32_t           category = 0;       // trailer[0]
         uint32_t           subOrder = 0;       // trailer[1]
+        int                rank     = 0;       // TerrainLayerRank(category, subOrder), toujours >= 0
         std::vector<FfLod> lods;               // VB/IB possédés par la couche
     };
 

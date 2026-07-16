@@ -9,8 +9,8 @@
 // diffère du binaire (qui n'a aucune fonction commune à cet endroit faute d'inlining
 // du compilateur d'origine).
 #include "Net/CharSelectPackets.h"
+#include "Net/Rng.h"      // DefaultRng() — flux _holdrand UNIQUE (Rng_Next 0x7603FD)
 #include <cstring>
-#include <cstdlib>
 #include <vector>
 #include <algorithm>
 
@@ -53,13 +53,20 @@ int32_t ReadResultCode(NetClient& nc) {
 // consommation que Net/Login.cpp::MakeNonces (dupliqué ici, fonction locale non
 // exportée là-bas), confirmé identique dans les 5 fonctions CharSelect par
 // décompilation fraîche.
-inline int Rng() { return std::rand(); }
+//
+// Rng_Next 0x7603FD = rand() de la CRT MSVC : _holdrand = Crt_GetPtd()[5] (0x76D464) ;
+// s = 214013*s + 2531011 (EA 0x76040b) ; retour (s >> 16) & 0x7FFF (EA 0x76041e).
+// FLUX UNIQUE PARTAGÉ avec tous les autres tirages du client (le binaire n'a qu'un
+// seul _holdrand, semé par srand(time(NULL)) en App_Init 0x461C20 EA 0x461C3E) :
+// on tape sur net::DefaultRng() (Net/Rng.h) et NON sur std::rand(), qui constituait
+// ici un SECOND flux indépendant (écart d'ordre/valeurs vs le binaire).
+inline int RngNext() { return DefaultRng().Next(); }
 inline void MakeNonces(uint32_t& nonce1, uint32_t& nonce2) {
-    int a = Rng() % 10000;
-    int b = Rng() % 10000;
+    int a = RngNext() % 10000;
+    int b = RngNext() % 10000;
     nonce1 = static_cast<uint32_t>(a * b);
-    int c = Rng() % 10000;
-    int d = Rng() % 10000;
+    int c = RngNext() % 10000;
+    int d = RngNext() % 10000;
     nonce2 = static_cast<uint32_t>(c * d);
 }
 

@@ -287,12 +287,24 @@ void WorldRenderer::drawReflectionOverlay(const gfx::SkinnedModel* bodyModel, co
     (void)view;
     (void)proj;
 
-    // Char_DrawReflection redessine le MÊME modèle que le corps, à la même
-    // transformée ; on réutilise donc la géométrie réelle déjà résolue par
-    // ModelCache, plutôt qu'un cube placeholder.
-    // Écart de fidélité assumé : la vraie recette de blend d'origine dépend
-    // d'un setup stencil shadow dédié, non reproduit ici. On laisse le mesh
-    // réel apparaître avec sa pipeline skinnée standard, sans cube de repli.
+    // CORRIGÉ (Passe 4 / W5, front shadow-wiring) : `Char_DrawReflection` 0x581090 n'est PAS
+    // un « reflet »/2e passe translucide au même endroit — c'est le dessin de l'OMBRE PLANAIRE
+    // du monstre. La chaîne réelle est Char_DrawReflection 0x581090 -> SObject_DrawAnimated2
+    // 0x4D91C0 -> Model_RenderPlanarShadow 0x40F720, qui APLATIT le modèle sur le plan du sol
+    // via j_D3DXMatrixShadow @0x40FB28 (passe 5 = VS09, PS NULL). L'aplatissement vit dans
+    // 0x40F720, pas dans 0x581090 : l'analyse précédente s'était arrêtée un niveau trop tôt et
+    // en avait conclu, à tort, qu'il n'y avait « pas de silhouette aplatie au sol ».
+    //
+    // CE QUE FAIT CE CODE : une APPROXIMATION, pas l'ombre réelle. On redessine le modèle à la
+    // même transformée avec la pipeline skinnée standard — sans D3DXMatrixShadow, sans le
+    // bracket d'états GXD_SetupStencilShadowState 0x404F20 / GXD_EndStencilShadowState 0x4050D0
+    // (0x52D9DC..0x52DB15), sans VS09.
+    // TODO [ancres 0x40F720 + 0x420D60] : l'ombre planaire fidèle exige le plan du sol
+    // (a,b,c,d = floats +124/+128/+132/+136 de `a8[40] + 156*hitIdx`) rendu par
+    // Collision_SegPickA 0x420D60 — géométrie de collision du monde, absente de ClientSource et
+    // hors des fichiers possédés par ce front. Poser un plan y=constante inventé serait une
+    // INVENTION (règle « IDA = unique vérité ») : on s'abstient. Cf. bandeau WorldRenderer.h
+    // §Ombre/reflet [B] pour la preuve complète et la décision orchestrateur en attente.
     gfx::BonePalette palette;
     const float sz = (scale > 0.05f) ? scale : 1.0f;
     meshRenderer_.DrawModel(*bodyModel, pos, D3DXVECTOR3(0.0f, rotYDeg, 0.0f),
@@ -420,19 +432,22 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
     // l'identité. L'ancienne surimpression d'arme séparée (offset pos.y+0.6, aucun bone reversé)
     // est SUPPRIMÉE au profit de l'attache main par skinning (paperdoll).
 
-    // Reflet (Char_DrawReflection 0x581090, RÉSERVÉ AUX MONSTRES -- vérification
-    // approfondie 2026-07-14, mission "EXTENSION OMBRE/REFLET", cf. bandeau
-    // WorldRenderer.h § Ombre/reflet). `xrefs_to(0x581090)` = un seul appelant dans
-    // tout le binaire, dans la boucle monstre de Scene_InGameRender 0x52D0B0
-    // (`&dword_1766F74[70*i]`) -- jamais sur g_EntityArray (joueurs) ni le tableau
-    // PNJ : `ent.reflectionEligible` matérialise cette garde de type d'entité, en
-    // plus des gardes distance/near-cull déjà dans `flags.showReflection`
-    // (Char_DrawReflection les applique TOUTES les deux, dans cet ordre, avant de
-    // dessiner). Le décompilé redessine le MÊME modèle à la MÊME position/échelle
-    // que le corps (this+7/+8/+14, identiques à ComputeBodyMeshPlacement) -> pas de
-    // mirroir aplati au sol ici, juste une 2e passe translucide/teintée au même
-    // endroit (cf. bandeau WorldRenderer.h pour la recette de blend d'origine et
-    // l'écart assumé de fidélité pixel).
+    // « Reflet » = en réalité l'OMBRE PLANAIRE du monstre (Char_DrawReflection 0x581090 ->
+    // SObject_DrawAnimated2 0x4D91C0 -> Model_RenderPlanarShadow 0x40F720, aplatissement
+    // j_D3DXMatrixShadow @0x40FB28). Nom « reflet » conservé pour rester aligné sur l'IDB.
+    // CORRIGÉ Passe 4 / W5 (front shadow-wiring) : l'affirmation précédente « pas de mirroir
+    // aplati au sol, juste une 2e passe translucide au même endroit » est FAUSSE — cf. bandeau
+    // WorldRenderer.h §Ombre/reflet [B].
+    // `xrefs_to(0x581090)` = un seul appelant dans tout le binaire, la boucle monstre de
+    // Scene_InGameRender 0x52D0B0 @0x52DB09 (`&dword_1766F74[280*i]`) -- jamais sur
+    // g_EntityArray (joueurs) ni le tableau PNJ : `ent.reflectionEligible` matérialise cette
+    // garde de type d'entité, en plus des gardes distance/near-cull de `flags.showReflection`.
+    // NUANCE IMPORTANTE : le binaire ombre BIEN les joueurs et les PNJ aussi, mais par d'AUTRES
+    // fonctions du même bracket 0x52D9DC..0x52DB15 (Char_DrawWeaponEffectVariantB @0x52DA41,
+    // Npc_DrawMeshGlow @0x52DAA2) -- pas par 0x581090. La garde monstre reste donc exacte POUR
+    // CET APPEL-CI ; ce n'est pas « seuls les monstres ont une ombre ».
+    // Ce qui est dessiné ici reste une APPROXIMATION (ni aplatissement ni bracket d'états) :
+    // détail + TODO dans drawReflectionOverlay().
     if (ent.reflectionEligible && flags.showReflection) {
         // Diagnostic one-shot (mission "EXTENSION OMBRE/REFLET", 2026-07-14) : confirme
         // au runtime que la passe reflet se déclenche bel et bien pour au moins une
@@ -556,13 +571,18 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         ent.bodyGender       = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyGenderOffset));
         ent.bodyCostumeSlot0 = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyCostumeSlot0Offset));
         ent.bodyCostumeSlot1 = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyCostumeSlot1Offset));
-        // reflectionEligible reste false (défaut) : Char_DrawReflection 0x581090
-        // n'est JAMAIS appelée sur g_EntityArray dans le binaire d'origine (un seul
-        // appelant au total, dans la boucle monstre -- cf. bandeau WorldRenderer.h
-        // "VÉRIFICATION APPROFONDIE 2026-07-14"). Le joueur local et les joueurs
-        // distants n'ont donc jamais de reflet dans le client d'origine ; ne pas
-        // câbler drawReflectionOverlay() ici serait la version FIDÈLE, pas une
-        // lacune.
+        // reflectionEligible reste false (défaut) : Char_DrawReflection 0x581090 n'est JAMAIS
+        // appelée sur g_EntityArray dans le binaire d'origine (appelant unique @0x52DB09, dans
+        // la boucle monstre) -> câbler drawReflectionOverlay() ICI serait une invention.
+        // MAIS ATTENTION (corrigé Passe 4 / W5, front shadow-wiring) : cela ne veut PAS dire que
+        // les joueurs n'ont pas d'ombre dans le client d'origine. Ils en ont une, dessinée dans
+        // le même bracket de passe ombre (0x52D9DC GXD_SetupStencilShadowState ..
+        // 0x52DB15 GXD_EndStencilShadowState) par Char_DrawWeaponEffectVariantB 0x56BF90
+        // @0x52DA41 (`&g_EntityArray[908*i]`), qui rejoint Model_RenderPlanarShadow 0x40F720 via
+        // SObject_DrawAnimated2 0x4D91C0. Cette ombre joueur n'est PAS câblée ici : elle exige le
+        // plan sol de Collision_SegPickA 0x420D60 (absent de ClientSource) et son étendue dépend
+        // du gate this+0xDC [NON VÉRIFIÉ, méga-switch de 11 Ko non décompilé].
+        // TODO [ancres 0x56BF90 + 0x40F720 + 0x420D60] : cf. bandeau WorldRenderer.h §Ombre [B].
         renderOne(ent, cull, view, proj, viewProj);
     }
 
@@ -589,11 +609,12 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         uint32_t defId = 0;
         std::memcpy(&defId, m.body.data(), sizeof(defId));
         ent.monsterDefId = defId;
-        // Reflet (Char_DrawReflection 0x581090) : MONSTRES SEULEMENT, cf. bandeau
-        // WorldRenderer.h "VÉRIFICATION APPROFONDIE 2026-07-14" -- appelant unique
-        // dans tout le binaire, à l'intérieur de CETTE boucle (`&dword_1766F74[70*i]`
-        // dans Scene_InGameRender). C'est donc bien ici, et uniquement ici, que
-        // reflectionEligible doit être posé à true.
+        // Char_DrawReflection 0x581090 (= ombre planaire du MONSTRE, cf. bandeau WorldRenderer.h
+        // §Ombre/reflet [B] -- le nom « reflet » de l'IDB est trompeur) : appelant unique dans
+        // tout le binaire, à l'intérieur de CETTE boucle (`&dword_1766F74[280*i]` @0x52DB09 dans
+        // Scene_InGameRender). C'est donc bien ici, et uniquement ici, que reflectionEligible
+        // doit être posé à true -- les ombres joueur/PNJ passent par d'autres fonctions du même
+        // bracket (@0x52DA41 / @0x52DAA2), non câblées.
         ent.reflectionEligible = true;
         renderOne(ent, cull, view, proj, viewProj);
     }
@@ -698,9 +719,14 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         // renderOne (cf. bandeau de tête WorldRenderer.h §"PNJ") ; repli cube si fieldE
         // hors bornes [1,66] ou fichier introuvable sur disque (jamais d'exception).
         ent.npcDef = n.def;
-        // reflectionEligible reste false (défaut) : Char_DrawReflection 0x581090 n'est
-        // jamais appelée sur un tableau PNJ (cf. bandeau "VÉRIFICATION APPROFONDIE
-        // 2026-07-14" ci-dessus, § Ombre/reflet) -- même règle que la boucle PNJ gameplay.
+        // reflectionEligible reste false (défaut) : Char_DrawReflection 0x581090 n'est jamais
+        // appelée sur un tableau PNJ -- même règle que la boucle PNJ gameplay.
+        // Nuance (Passe 4 / W5, front shadow-wiring) : le PNJ a bien une ombre planaire dans
+        // l'original, via Npc_DrawMeshGlow 0x5801D0 @0x52DAA2 dans le bracket ombre
+        // (0x52D9DC..0x52DB15) -> SObject_DrawAnimated2 0x4D91C0 -> Model_RenderPlanarShadow
+        // 0x40F720. Non câblée ici : elle lit `g_NpcRenderArray` (stride 88), tableau de rendu
+        // PNJ SÉPARÉ de `dword_17AB534` (stride 152) qui alimente game::NpcEntity -- source
+        // absente de ClientSource. Cf. bandeau WorldRenderer.h §Ombre/reflet [B].
         renderOne(ent, cull, view, proj, viewProj);
     }
 

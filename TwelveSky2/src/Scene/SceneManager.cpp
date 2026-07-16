@@ -47,6 +47,12 @@
 
 namespace ts2 {
 
+// Définition du miroir de g_SceneSubState 0x1676184 (champ +4 de cSceneMgr 0x1676180),
+// déclaré dans SceneManager.h. Tenu à jour aux 4 points de synchro marqués « 0x1676184 »
+// ci-dessous ; consommé par App/PlayerInputController.cpp (garde Camera_UpdateFromInput
+// @0x50B7EC). Valeur initiale 0 = sous-état d'entrée de toute scène. // 0x1676184
+int g_SceneSubState = 0;
+
 SceneManager::SceneManager() = default;
 SceneManager::~SceneManager() { Shutdown(); }
 
@@ -74,6 +80,7 @@ void SceneManager::Init(gfx::Renderer& renderer, net::NetSystem& net, void* noti
     scene_    = Scene::None;
     subState_ = 0;
     frameCount_ = 0;
+    g_SceneSubState = 0;   // miroir du champ +4 de cSceneMgr (état neuf) // 0x1676184
 
     // Scènes shell de connexion (ServerSelect/Login/CharSelect).
     login_ = std::make_unique<ui::LoginScene>();
@@ -144,6 +151,13 @@ void SceneManager::Change(Scene s) {
     scene_ = s;
     subState_ = 0;
     frameCount_ = 0;
+    // Tout changement de scène repart du sous-état 0 dans le binaire : le champ +4 de
+    // cSceneMgr est remis à 0 par les writers de g_SceneMgr (ex. op 0x18
+    // Pkt_GameServerConnectResult 0x469CF0 : g_SceneMgr=5 @0x469d95 PUIS g_SceneSubState=0
+    // @0x469d9f), et Scene_EnterWorldUpdate le repose lui-même à 1 après son case 0
+    // (@0x52C0B0). Sans ce reset, la garde @0x50B7EC verrait un sous-état périmé de la
+    // scène précédente. // 0x1676184
+    g_SceneSubState = 0;
 
     // M6 — chaque ENTREE en scene EnterWorld repart de subState 0 dans le binaire : op 0x18
     // Pkt_GameServerConnectResult 0x469CF0 (@0x469d9f, g_SceneSubState=0) et le flux normal
@@ -352,6 +366,7 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             // precedent. Scene_EnterWorldUpdate repart de subState 0 (0x52C00F). // 0x52BFF0
             enterWorldState_ = game::EnterWorldFlowState{};
             subState_ = 0; frameCount_ = 0;
+            g_SceneSubState = 0;   // miroir du champ +4 : rechargement = sous-état 0 // 0x1676184
             // Ecrit g_World.zoneId + SetCurrentZoneId (equivalent g_SelfMorphNpcId=g_TargetZoneId
             // @0x52C173) et rejoue LoadZoneResource(1..12) + rebuild geo/BGM. // 0x52BFF0 / 0x4DCB60
             ReloadZone(warpZone);
@@ -376,17 +391,92 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         // que de PROGRESSION VISUELLE (chargement des ressources de zone) + timeout
         // de secours si le serveur ne répond jamais.
         game::EnterWorldFlowHost host;
-        host.ResetUiAndAudio = [] {
-            // UI_ResetAllDialogs 0x5AC3F0 — réel, câblé sur le même UIManager que le
-            // reste du shell. Sûr même si windows_ n'est pas encore construit (InGame
-            // pas encore atteint) : la liste de dialogues enregistrés est alors vide
-            // (UIManager::ResetAll() itère dialogs_, vector par défaut vide).
-            // Volet audio : le SLOT BGM de scène (cSceneMgr +612) est désormais géré par
-            //   bgm_ (release sur sortie d'InGame et à Shutdown, SceneMgr_ReleaseSoundBuffers
-            //   0x517B60 ; reload à l'entrée via LoadZoneBgm). Reste TODO ICI : le release de
-            //   la BANQUE de sons de MONDE (WSndMgr_Free 0x4db060, slot distinct g_GameWorld+…)
-            //   au reset d'enter-world — hors périmètre de ce câblage BGM.
-            ui::UIManager::Instance().ResetAll();
+        host.ResetUiAndAudio = [this] {
+            // Scene_EnterWorldUpdate 0x52BFF0, case 0 (WaitBeforeUnload), bloc gardé par
+            // `if ((unsigned)*(this+2) >= 0x1E)` @0x52C02C (30 frames) : purge de l'UI et de
+            // l'audio résiduels de CharSelect. L'ORDRE CI-DESSOUS EST CELUI DU BINAIRE
+            // (dialogs -> curseur -> focus -> scratch -> son), vérifié au désassemblage
+            // (0x52C033..0x52C089).
+
+            // (1) UI_ResetAllDialogs(&dword_1821D4C) @0x52C038 — réel, câblé sur le même
+            // UIManager que le reste du shell. Sûr même si windows_ n'est pas encore
+            // construit (InGame pas encore atteint) : la liste de dialogues enregistrés est
+            // alors vide (UIManager::ResetAll() itère dialogs_, vector par défaut vide).
+            ui::UIManager::Instance().ResetAll();                          // 0x52C038
+
+            // (2) Util_SetClampedU8Field(&dword_8E714C, 0) @0x52C044 — NON BRANCHÉ.
+            // RECTIFICATION D'ÉTIQUETTE (prouvée dans l'IDB cette mission) : ce n'est PAS un
+            // « reset tooltip », contrairement à ce qu'annoncent Game/EnterWorldFlow.h:91 et
+            // Game/InGameTickFlow.h:128 (fichiers hors de ce front — à corriger ailleurs).
+            // dword_8E714C EST mPOINTER, le jeu de curseurs souris. Chaîne de preuve :
+            //   - App_Init @0x461F8B : `mov ecx, offset dword_8E714C` puis
+            //     `call CursorSet_LoadResources 0x4C0FA0` @0x461F90 ; sur échec, le MessageBox
+            //     empile la chaîne "[Error::mPOINTER.Init()]" (aErrorMpointerI @0x7A6BC0,
+            //     push @0x461FA3) -> ce manager EST mPOINTER ;
+            //   - CursorSet_LoadResources 0x4C0FA0 : `*this = 0` @0x4C0FAC (+0 = index actif),
+            //     puis +1..+9 = 9 HCURSOR (LoadCursorA, ids 0x66..0x6C puis 0x75 et 0x77) ;
+            //   - Cursor_AnimateTick 0x4C1140 : `SetCursor(*(this + *this + 1))` @0x4C115A
+            //     -> *this EST bien l'index du curseur actif ;
+            //   - Util_SetClampedU8Field 0x4C1110 : `if (a2 <= 8) *this = a2;` (borne ≤ 8 =
+            //     exactement 9 slots). Le nom IDA est générique (157 appelants) ; appliqué à
+            //     0x8E714C il n'a qu'un sens : l'index de curseur.
+            // Donc @0x52C044 = « remettre la forme du curseur souris au slot 0 ».
+            // L'équivalent fidèle EXISTE déjà : game::CursorSet::SetActiveSlot(0)
+            // (Game/MiscManagers.cpp:88, miroir exact de 0x4C1110). Il n'est PAS appelable
+            // ici : l'instance est App::cursors_, membre PRIVÉ de App (App/App.h:43), et
+            // App.h/App.cpp ne sont pas possédés par ce front. L'appel serait de toute façon
+            // un no-op prouvé aujourd'hui (seuls LoadResources/DestroyAll écrivent
+            // CursorSet::state, tous deux à 0 ; SetActiveSlot n'a aucun appelant) — même
+            // arbitrage que UI/LoginScene.cpp:809-813 pour ce même appel (EA 0x51A8FD).
+            // TODO [ancre 0x52C044 / 0x4C1110] : exposer App::cursors_ (décision
+            // orchestrateur, fichier non possédé) puis appeler CursorSet::SetActiveSlot(0) ICI.
+
+            // (3) UI_FocusEditBox(&g_UIEditBoxMgr, 0) @0x52C050. Avec a2 = 0, l'original
+            // (0x50F4A0) fait, sous `if (a2 < 0x16)` (22 slots) : `*this = 0` (index de
+            // focus ; 0 = jeu, 1..21 = saisie active — cf. commentaire IDA sur
+            // g_UIEditBoxMgr 0x1668FC0) PUIS, la branche `if (*this)` étant fausse,
+            // `SetFocus(hWndParent)` @0x50F4CB : retirer le focus clavier de tout EDIT natif
+            // et le rendre à la fenêtre de jeu.
+            // ClientSource n'a aujourd'hui AUCUN EDIT natif vivant (ui::Win32EditBox existe
+            // mais aucun fichier ne l'inclut) : la saisie texte in-game est le widget
+            // custom-dessiné ChatWindow (flag focused_). Les deux volets sont donc rendus par :
+            //   - index de focus = 0   -> Chat().Unfocus() (UI/ChatWindow.h:189) ;
+            //   - SetFocus(hWndParent) -> notifyHwnd_ EST hWndParent 0x815184, PROUVÉ cette
+            //     mission : App_Init @0x461C51 fait `mov ds:hWndParent, ecx` avec ecx = arg_4
+            //     = le HWND créé par WinMain 0x4609C0 ; côté C++, App::Init passe ce même
+            //     hwnd_ à SceneManager::Init (App/App.cpp:489) -> notifyHwnd_.
+            //     Sans effet observable tant qu'aucun EDIT natif ne prend le focus, mais
+            //     fidèle et immédiatement correct dès que Win32EditBox sera câblé.
+            if (hud_) hud_->Chat().Unfocus();                              // 0x52C050 / 0x50F4BB
+            if (notifyHwnd_) ::SetFocus(static_cast<HWND>(notifyHwnd_));   // 0x50F4CB
+
+            // (4) scratch 150 dw @0x52C055 (`for (i=0;i<150;++i) *(this+i+3)=0;`, soit
+            // +0xC..+0x260) — NON MODÉLISÉ, donc RIEN à remettre à zéro. SceneManager.h:42
+            // documente bien « +12 tampon 150 dw » mais aucun membre ne le réifie, et ces
+            // 150 dwords restent non identifiés dans le binaire (UI/LoginScene.cpp:811-814
+            // n'en nomme que 3 — a1[3..5] = ses boutons ok/exit/opt — qui appartiennent à
+            // LoginScene, PAS à la scène EnterWorld). Ne pas inventer de champ fantôme.
+            // TODO [ancre 0x52C055] : identifier le tampon 150 dw de cSceneMgr +12.
+
+            // (5) Snd_ReleaseBuffers(this + 153) @0x52C089 : `add ecx, 264h` -> slot
+            // +0x264 = +612 = LE SLOT BGM DE SCÈNE, exactement celui de
+            // SceneMgr_ReleaseSoundBuffers 0x517B60 (`return Snd_ReleaseBuffers(this + 153);`),
+            // déjà réifié ici par bgm_ / ReleaseBgm(). Le binaire coupe le son AVANT de
+            // spouler la zone (case 1).
+            // RECTIFICATION du commentaire qui occupait ce bloc : il annonçait comme « reste
+            // TODO » le release de la BANQUE DE SONS DE MONDE (WSndMgr_Free 0x4DB060) ; c'est
+            // une confusion de slots — 0x52C089 vise +612 (bgm_), et WSndMgr_Free porte sur un
+            // slot DISTINCT tenu par g_GameWorld, qui n'est pas appelé à cette EA.
+            ReleaseBgm();                                                  // 0x52C089 / 0x6A80D0
+
+            // ÉCART CONNU (hors mission, non introduit ici) : dans le binaire, la case 1
+            // rechargera le BGM via World_LoadZoneResource 0x4DCB60 case 12 (~120 frames plus
+            // tard). Côté C++, host.LoadZoneResource(idx=12) ne charge qu'un SoundBuffer
+            // throwaway côté WorldAssets ; le vrai rechargement n'a lieu qu'à l'entrée InGame
+            // (Change() -> LoadZoneBgm). Le silence dure donc un peu plus longtemps que dans
+            // l'original, sans autre conséquence.
+            // TODO [ancre 0x4DCB60 case 12] : faire appeler LoadZoneBgm(zoneId) par
+            // host.LoadZoneResource quand idx==12 pour aligner exactement la fenêtre de silence.
         };
         host.LoadZoneResource = [this](int zoneId, int idx) {
             // World_LoadZoneResource 0x4DCB60 : idx EST directement world::ResourceKind
@@ -438,6 +528,12 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             // binaire reste en scene 5 / etat 4 (default 0x52C232 = no-op). Le seul chemin
             // legitime vers InGame reste sceneEnterWorldPending (op 0x0c) teste en tete de ce case.
         }
+        // Miroir du champ +4 de cSceneMgr pendant la scène EnterWorld : dans le binaire,
+        // g_SceneSubState est LE MÊME champ (*(this+1)) pour Scene_EnterWorldUpdate 0x52BFF0
+        // et Scene_InGameUpdate 0x52C600 — il porte donc ici l'état EnterWorld (0..4).
+        // Non requis par la garde @0x50B7EC (elle court-circuite sur g_SceneMgr != 6), mais
+        // maintenu pour que le miroir reste exact quelle que soit la scène. // 0x1676184
+        g_SceneSubState = static_cast<int>(enterWorldState_.state);
         break;
     }
     case Scene::InGame: {
@@ -832,6 +928,21 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         const bool justEnteredInGame = (inGameTickState_.state == game::InGameTickState::InitCamera);
 
         game::InGameTickFlow_Update(inGameTickState_, host, static_cast<float>(dt));
+
+        // Miroir du champ +4 de cSceneMgr (g_SceneSubState 0x1676184) pour la scène InGame :
+        // dans le binaire, Scene_InGameUpdate 0x52C600 écrit ce champ LUI-MÊME au fil de ses
+        // transitions (ex. sub=4 posé @0x52C7F1 en fin de case 3 InitCamera, sub=3 posé
+        // directement par Pkt_SpawnCharacter @0x464901). inGameTickState_.state EN EST le
+        // modèle 1:1 (game::InGameTickState, valeurs alignées sur les cases d'origine :
+        // Setup=0/WaitFirstSpawn=1/Failed=2/InitCamera=3/MainTick=4) -> on le recopie juste
+        // APRÈS l'appel, à l'instant où le binaire a fini d'écrire le champ pour cette frame.
+        // Consommé par la garde de Camera_UpdateFromInput @0x50B7EC (App/PlayerInputController).
+        // Ordonnancement : App::FrameTick appelle g_playerInput.Update (App.cpp:643) AVANT la
+        // boucle scene_.Update (App.cpp:656) — exactement comme le binaire appelle
+        // Camera_UpdateFromInput @0x462619 avant cSceneMgr_Update @0x46263B. Le contrôleur lit
+        // donc le sous-état produit par la frame PRÉCÉDENTE : même décalage d'une frame que
+        // l'original. // 0x1676184
+        g_SceneSubState = static_cast<int>(inGameTickState_.state);
 
         // M2 — MapColl_UpdateObjectAnim 0x694A00, appelee 1x/frame depuis Scene_InGameUpdate
         // 0x52C600 @0x52c94b (xref UNIQUE confirmee IDA). Cote ClientSource, WorldGeometryRenderer::

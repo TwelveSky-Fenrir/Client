@@ -61,7 +61,12 @@ public:
     //  - in    : etat clavier (state[] immediat + tampon d'evenements).
     //  - cam   : camera (gfx::Camera) -- orbite/regard (Cam_OrbitYaw 0x69CEE0, etc.).
     //  - nc    : socket (net::NetClient) -- emission du deplacement (Net_SendCmd_251 0x592870).
-    //  - scene : scene courante (gate g_SceneMgr==6 / 0x50B7EC).
+    //  - scene : scene courante = miroir de g_SceneMgr 0x1676180. La garde d'entree
+    //    @0x50B7EC teste DEUX globals : `g_SceneMgr != 6 || g_SceneSubState != 4` -> le
+    //    sous-etat (ts2::g_SceneSubState 0x1676184, Scene/SceneManager.h ; 4 = MainTick,
+    //    pose @0x52C7F1) est lu directement en global par Update(), comme dans le binaire,
+    //    et n'est donc PAS un parametre ici. Rien ne s'execute avant que le tick monde ne
+    //    soit pleinement demarre.
     void Update(const input::InputSystem& in, gfx::Camera& cam,
                 net::NetClient& nc, Scene scene);
 
