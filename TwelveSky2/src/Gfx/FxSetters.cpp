@@ -103,6 +103,38 @@ void Fx_AttachMuzzleVariant(FxSlot* slot, const FxEntitySource& e, int variant) 
     FxBillboard_PoolInit(reinterpret_cast<FxParticlePool*>(slot->ptclPool), defIndex); // 0x5844c9
 }
 
+// Fx_AttachDashTrail 0x585D50 — traînée de dash de MONSTRE (type 5, flag 2). Jumeau EXACT de
+// Fx_AttachMuzzleVariant : même en-tête de slot puis FxBillboard_PoolInit (= SObject_UpdateK) sur
+// le def 18 (side 1) / 19 (side 2). Producteur = Char_SetupAuraFlags 0x5814F0 (unique appelant
+// Pkt_SpawnMonster 0x467B00 @0x467DA6). ⚠ Différence avec le muzzle : PAS de gate en tête — le
+// binaire efface le slot, écrit le header, et ne le RE-efface (état 0) que si `side` n'est ni 1 ni 2
+// (branche inatteignable en pratique : Char_SetupAuraFlags ne passe QUE 1 ou 2).
+void Fx_AttachDashTrail(FxSlot* slot, const FxEntitySource& e, int side) {
+    Fx_AttachSlotClear(slot);                                 // 0x585d5c
+    uint32_t* d = reinterpret_cast<uint32_t*>(slot);
+    d[0] = 1;                                                 // état actif        0x585d64
+    d[1] = 5;                                                 // type 5 (particule) 0x585d6d
+    d[2] = 2;                                                 // flag 2            0x585d77
+    d[3] = e.idHi;                                            // a3[1]             0x585d87
+    d[4] = e.idLo;                                            // a3[2]             0x585d93
+    // *(this+30) = &flt_FF67CC[36·(*(a3[24]+244)) - 36] (0x585db4) : ancre modèle (déréf du def
+    // monstre a3[24]+244 = kindIndexP1). Table flt_FF67CC 0xFF67CC, sous-système modèle NON porté,
+    // NON lue par le chemin particule (comme le muzzle) → 0 ici. TODO(ancre).
+    d[30] = 0;
+    if (side == 1) {                                          // 0x585dc1
+        d[31] = 1;                                            // sous-type         0x585dce
+        d[32] = 18;                                           // index def side 1  0x585dd8
+    } else if (side == 2) {                                   // 0x585dc7
+        d[31] = 1;                                            // sous-type         0x585de7
+        d[32] = 19;                                           // index def side 2  0x585df1
+    } else {
+        Fx_AttachSlotClear(slot);                             // side invalide : ré-efface (état 0) 0x585e00
+        return;                                               // 0x585e05
+    }
+    // SObject_UpdateK(&byte_1151CBC[336·*(this+32)], this+33) 0x585e25 = ensure-load + Particle_Init.
+    FxBillboard_PoolInit(reinterpret_cast<FxParticlePool*>(slot->ptclPool), static_cast<int>(d[32]));
+}
+
 // Fx_AttachHitSpark 0x5844F0 — étincelle d'impact (type 6). def par modelClass (a2[23]).
 void Fx_AttachHitSpark(FxSlot* slot, const FxEntitySource& e) {
     if (!(s_optionsReady && e.modelReady)) return;           // gate @0x58450a (g_Options && a2[6])

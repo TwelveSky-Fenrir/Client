@@ -43,6 +43,7 @@
 #include "Game/PlayerCmdController.h" // g_PlayerCmd : Player_ResetCombatState 0x50F6A0 (@0x4648f2)
 #include "Game/ClientRuntime.h"       // g_Client : miroirs self (dword_1675884/1675B00) + longue traine Var/VarF
 #include "Net/SendPackets.h"          // Net_SendVaultReq_207/Op23 + GlobalNetClient (Pkt_EnterWorld @0x4643d1..)
+#include "Gfx/FxSetters.h"            // FxPool_* (pool dword_17D06F4) + Fx_AttachDashTrail (Char_SetupAuraFlags 0x5814F0)
 
 #include <cstring>
 #include <cmath>
@@ -279,6 +280,60 @@ inline void ResetComboSlots(uint8_t* b, bool self, int skipA, int skipB) {
         if (self) ZeroSelfSlot(b, j);
         else      ZeroStateSlot(b, j);
     }
+}
+
+// ---- Traînée de dash de MONSTRE — Char_SetupAuraFlags 0x5814F0 (sous-chemin dash-trail SEUL).
+// Unique appelant : Pkt_SpawnMonster 0x467B00 @0x467DA6, sur le NOUVEAU slot uniquement (apres
+// resolution de la def + rayon). Le binaire teste la CLASSE de modele (def+244 =
+// MonsterInfo::kindIndexP1) via un switch, puis, si l'etat de vitesse (def+236 =
+// MonsterInfo::field236) est dans [2,6], attache une trainee PARTICULAIRE (type 5) au 1er slot
+// libre du pool dword_17D06F4 (< g_FxAuraCount). Deux groupes de classes :
+//   {42,44,46,59,61,64,65,67,74,75,76,85,89} -> side 1 (def 18)   @0x5815e1
+//   {48,53,62,66,72,81}                       -> side 2 (def 19)   @0x581652
+// PRODUCTEUR SEUL : le tick + le rendu des slots type 5 existent deja (SceneManager / FxRenderer,
+// Vague D) ; on ne touche donc ni l'un ni l'autre. Cf. Gfx/FxSetters.cpp::Fx_AttachDashTrail et
+// Docs/TS2_SWEEP_ENTITY_FX.md §4.
+//
+// NB fidelite : Char_SetupAuraFlags remet aussi a 0 des champs d'aura du record monstre
+// (this+27/53/64/66/68 = record+108/212/256/264/272), TOUS au-dela du body de 80 o modelise
+// (def@+96, rayon@+100) et sans consommateur dans ClientSource -> NON reproduits (regle
+// « non prouve / non lu = absent »).
+
+// FxEntitySource depuis un monstre : seuls idHi/idLo sont lus par le chemin particule
+// (a3[1]/a3[2]) ; l'ancre modele (a3[24]+244) n'est PAS lue (cf. Fx_AttachDashTrail, d[30]=0).
+// Equivalent local du SourceFromMonster de Net/CombatResultApply.cpp (namespace anonyme non partage).
+gfx::FxEntitySource FxSourceFromMonster(const MonsterEntity& m) {
+    gfx::FxEntitySource s;
+    s.idHi = m.id.hi;   // a3[1]  record+4
+    s.idLo = m.id.lo;   // a3[2]  record+8
+    return s;
+}
+
+// Cote de trainee (1/2) pour une classe de modele, ou 0 si aucune (switch @0x581570 sur def+244).
+int MonsterDashTrailSide(int32_t modelClass) {
+    switch (modelClass) {
+        case 42: case 44: case 46: case 59: case 61: case 64: case 65:
+        case 67: case 74: case 75: case 76: case 85: case 89:
+            return 1;                                          // def 18 (@0x5815e1)
+        case 48: case 53: case 62: case 66: case 72: case 81:
+            return 2;                                          // def 19 (@0x581652)
+        default:
+            return 0;                                          // default : aucune trainee (@0x581657)
+    }
+}
+
+// Char_SetupAuraFlags 0x5814F0 (sous-chemin dash-trail) : attache la trainee au monstre `m`
+// fraichement spawne, si sa classe le prevoit ET si l'etat de vitesse est dans [2,6].
+void AttachMonsterDashTrail(const MonsterEntity& m) {
+    if (!m.def) return;                                        // gate `*(this+24)` (def resolu)
+    const auto* mi = reinterpret_cast<const MonsterInfo*>(m.def);
+    const int side = MonsterDashTrailSide(mi->kindIndexP1);    // *(def+244) — switch de classe @0x58154a
+    if (side == 0) return;
+    const int32_t speed = mi->field236;                        // *(def+236) — etat de vitesse
+    if (speed < 2 || speed > 6) return;                        // gate @0x581590 (grp1) / @0x581601 (grp2)
+    const int j = gfx::FxPool_FindFreeSlot();                  // for i<g_FxAuraCount && dword_17D06F4[64*i]
+    if (j < 0) return;                                         // pool plein (i==g_FxAuraCount) -> aucun attach
+    gfx::Fx_AttachDashTrail(&gfx::FxPool_Slots()[j], FxSourceFromMonster(m), side); // @0x5815e1 / @0x581652
 }
 
 } // namespace (anonyme)
@@ -557,6 +612,14 @@ MonsterEntity* EntityManager::OnSpawnMonster(const net::SpawnMonster& p) {
                        + static_cast<double>(mi->collDim[2]) * mi->collDim[2];
         m->radius = static_cast<float>(std::sqrt(s) * 0.5);
     }
+
+    // Char_SetupAuraFlags 0x5814F0 (@0x467da6, apres le rayon de collision) : trainee de dash
+    // particulaire selon la classe de modele (def+244) + l'etat de vitesse (def+236 in [2,6]).
+    // PRODUCTEUR SEUL — le tick/rendu des slots type 5 sont deja cables (SceneManager/FxRenderer).
+    // (Char_UpdateMotionState 0x5816a0, appele juste apres @0x467dc4, releve du move-state : non
+    // porte ici — non touche par ce front.)
+    AttachMonsterDashTrail(*m);
+
     ReadMonsterPos(*m);
     return m;
 }

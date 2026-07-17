@@ -83,6 +83,11 @@ void Fx_SetOptionsReady(bool ready);
 void Fx_AttachMuzzleFlash(FxSlot* slot, const FxEntitySource& e, int side);
 // Fx_AttachMuzzleVariant 0x584360 : variante directionnelle (type 5, flag 2). `variant` ∈ {1..7}.
 void Fx_AttachMuzzleVariant(FxSlot* slot, const FxEntitySource& e, int variant);
+// Fx_AttachDashTrail 0x585D50 : traînée de dash de MONSTRE (type 5, flag 2). Jumeau EXACT de
+// Fx_AttachMuzzleVariant (même écriture de header + FxBillboard_PoolInit). `side` ∈ {1,2}
+// (1→def 18, 2→def 19). Producteur = Char_SetupAuraFlags 0x5814F0 (unique appelant Pkt_SpawnMonster
+// 0x467B00 @0x467DA6) : effet de SPAWN, pas de combat — seuls idHi/idLo (a3[1]/a3[2]) sont lus.
+void Fx_AttachDashTrail(FxSlot* slot, const FxEntitySource& e, int side);
 // Fx_AttachHitSpark 0x5844F0 : étincelle d'impact (type 6). def par modelClass {0→3,1→4,2→5}.
 void Fx_AttachHitSpark(FxSlot* slot, const FxEntitySource& e);
 // Fx_AttachHitBurst 0x5845D0 : gerbe d'impact (type 7). def par modelClass {0→6,1→7,2→8}.
