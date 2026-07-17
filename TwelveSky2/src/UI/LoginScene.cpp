@@ -15,6 +15,7 @@
 // on lit la géométrie des widgets via X()/Y()/W()/H() et leur état via
 // Focused()/Hovered()/Pressed().
 #include "UI/LoginScene.h"
+#include "UI/UiProjection.h"       // ui::ProjectDesignAnchor (UI_ProjectSpriteToScreen 0x50F5D0)
 #include "Config/GameOptions.h"    // ts2::config::Cfg_SaveLastServer (G02_GINFO\010.BIN, écriture seule)
 #include "Net/Login.h"             // ConnectLoginServer / LoginRequest / ConnectGameServer
 #include "Net/CharSelectPackets.h" // AccountKeepAlive/CreateCharacter/CharSlotAction/ReqEnterCharInfo/ReqCancelEnter
@@ -23,6 +24,7 @@
 #include "Game/GameState.h"        // game::g_World.zoneId (consommé par EnterWorldFlow)
 #include "Game/StringTables.h"     // game::g_Strings.bannedWords (001.DAT, 1432 mots — filtre de creation)
 #include "Game/ClientRuntime.h"    // game::Str(id) — texte reel StrTable005 pour les notices CharSelect
+#include "Game/GameDatabase.h"     // game::GetItemInfo / WeaponClassFromTypeCode (motion d'entree 0x4CC870)
 #include "Asset/ImgFile.h"         // asset::ImgFile (chargeur .IMG, fond réel ServerSelect/Login)
 #include "Gfx/Camera.h"            // gfx::Camera — projection applicative (Gfx_InitDevice 0x69BFC6)
 #include "Core/Log.h"
@@ -2058,6 +2060,22 @@ void LoginScene::CreateFormRender() {
     if (sprites_.Ready()) {
         sprites_.Begin();
         for (Button* b : formBtns) b->DrawSkin(sprites_);
+        // Boutons de ROTATION de l'aperçu (EA 0x51EC2F slot 44/45 ; EA 0x51EC88 slot 46/47),
+        // positionnés par UI_ProjectSpriteToScreen 0x50F5D0 aux mondes (390,628)/(557,628).
+        // État PRESSÉ (slot idle+1) si le latch est armé (this[15]/this[16]), sinon idle ;
+        // AUCUN survol (le binaire ne teste que le latch : garde `cmp [reg+3Ch],0 ; jz`
+        // @0x51EC3A / @0x51EC93). La projection utilise TOUJOURS les dims du sprite IDLE.
+        auto drawRot = [&](int idleSlot, int worldX, int worldY, bool latched) {
+            gfx::GpuTexture* base = GetAtlasSprite(idleSlot);
+            if (!base) return; // sprite non chargeable -> rien (comme AtlasHitTest)
+            const POINT a = ui::ProjectDesignAnchor(static_cast<int>(base->Width()),
+                                                    static_cast<int>(base->Height()),
+                                                    worldX, worldY, screenW_, screenH_);
+            gfx::GpuTexture* t = latched ? GetAtlasSprite(idleSlot + 1) : base; // +1 = pressé
+            if (t) sprites_.DrawSprite(t->Handle(), nullptr, a.x, a.y, gfx::kSpriteWhite);
+        };
+        drawRot(44, 390, 628, rotLeftLatched_);  // this[15] @0x51EC2F
+        drawRot(46, 557, 628, rotRightLatched_); // this[16] @0x51EC88
         sprites_.End();
     }
 }
@@ -2191,6 +2209,19 @@ void LoginScene::CharSelectOnMouseDown(int x, int y) {
         hairMinusBtn_.OnMouseDown(x, y);     hairPlusBtn_.OnMouseDown(x, y);
         variantMinusBtn_.OnMouseDown(x, y);  variantPlusBtn_.OnMouseDown(x, y);
         createConfirmBtn_.OnMouseDown(x, y); createCancelBtn_.OnMouseDown(x, y);
+        // Boutons de ROTATION (latches COLLANTS this[15]/this[16], ARMÉS seulement — jamais
+        // désarmés hors Init) : hit-test sur le sprite IDLE projeté (UI_ProjectSpriteToScreen
+        // 0x50F5D0), EA 0x522DB1 (slot 44, monde (390,628) -> this[15]=1 @0x522DE7) et EA
+        // 0x522E09 (slot 46, monde (557,628) -> this[16]=1 @0x522E3F).
+        auto rotHit = [&](int idleSlot, int worldX, int worldY) -> bool {
+            gfx::GpuTexture* t = GetAtlasSprite(idleSlot);
+            if (!t || t->Width() <= 0 || t->Height() <= 0) return false;
+            const int w = static_cast<int>(t->Width()), h = static_cast<int>(t->Height());
+            const POINT a = ui::ProjectDesignAnchor(w, h, worldX, worldY, screenW_, screenH_);
+            return x >= a.x && x < a.x + w && y >= a.y && y < a.y + h;
+        };
+        if (rotHit(44, 390, 628)) rotLeftLatched_  = true; // @0x522DE7
+        if (rotHit(46, 557, 628)) rotRightLatched_ = true; // @0x522E3F
         return;
     }
 
@@ -2465,19 +2496,20 @@ void LoginScene::BuildCharSelectHost() {
                           &createConfirmBtn_, &createCancelBtn_,
                           &deleteYesBtn_, &deleteNoBtn_ };
         for (Button* b : all) b->Reset(); // armed_ = false ; hover_active_ = false (Widgets.h:223)
+        // Latches COLLANTS de rotation (this[15]/this[16]) — effacés ICI seulement (boucle
+        // 150-latch de l'Init @0x51BE83 couvre +0x3C/+0x40), jamais pendant l'état Actif.
+        rotLeftLatched_ = rotRightLatched_ = false;
     };
 
     // [A8] Bascules de rotation de l'aperçu de CRÉATION : this[15] (`cmp [reg+3Ch],0`
     // @0x51CDD0) et this[16] (@0x51CDF1). Le flux applique `yaw += 3.0` @0x51CDE8 /
-    // `yaw -= 3.0` @0x51CE09 sur this[15724], UNIQUEMENT en écran Création.
-    // 🔴 NON CÂBLÉ : les deux boutons de rotation (slots 44/45 et 46/47, positions de design
-    // (390,628) et (557,628) projetées par UI_ProjectSpriteToScreen 0x50F5D0) n'ont pas de
-    // widget — et surtout UI_ProjectSpriteToScreen n'est PAS décompilée, donc leur position
-    // écran réelle est INCONNUE (spec §13.11). Poser un rect ici serait une invention.
-    // TODO [ancre 0x50F5D0] : décompiler la projection, puis créer les 2 widgets et rendre
-    // ici leur latch. En attendant, nullptr => false => aperçu de création NON rotatif.
-    charHost_.IsRotateLeftLatched  = nullptr;
-    charHost_.IsRotateRightLatched = nullptr;
+    // `yaw -= 3.0` @0x51CE09 sur this[15724], UNIQUEMENT en écran Création (game-side déjà
+    // fait, CharSelectFlow.cpp:476-477). CÂBLÉ : UI_ProjectSpriteToScreen 0x50F5D0 est
+    // désormais portée (UI/UiProjection.h), les 2 boutons (slots 44/45, 46/47 aux mondes
+    // (390,628)/(557,628)) sont rendus (CreateFormRender) et hit-testés (CharSelectOnMouseDown),
+    // armant ces latches COLLANTS lus ici.
+    charHost_.IsRotateLeftLatched  = [this] { return rotLeftLatched_; };
+    charHost_.IsRotateRightLatched = [this] { return rotRightLatched_; };
 
     // PcModel_ResolveSlotAndApply 0x4E5A00 -> NOMBRE DE FRAMES de l'animation. Le flux
     // l'appelle avec des arguments différents selon l'écran (LISTE : rec+40/rec+44 @0x51c555 ;
@@ -2505,6 +2537,21 @@ void LoginScene::BuildCharSelectHost() {
         if (!charMotions_) return 0; // = cas « motion non chargeable » du binaire (EA 0x4D7854)
         const gfx::MotionPalette* mp = charMotions_->GetForPlayer(race, gender, motion, animState);
         return (mp && mp->valid) ? mp->frameCount : 0;
+    };
+
+    // Weapon_ClassFromField112 0x4CC870 (EA d'appel 0x525156) : classe d'arme 1..3 de l'arme
+    // de DÉPART du slot, d'où l'index de motion de l'animation d'entrée = 2*classe (`shl eax,1`
+    // @0x52515B, this[15717]=2*classe @0x525163 — le ×2 reste game-side, CharSelectFlow.cpp:1016).
+    // Source = ID d'objet à fiche+216 (= bloc équip +104 +112, a2+112 @0x4CC88D), résolu dans la
+    // DB items mITEM (game::GetItemInfo = MobDb_GetEntry 0x4C3C00) puis switch typeCode+188.
+    // Ce hook était nullptr -> previewMotionIndex restait 0 (motion 0 au lieu de 2/4/6).
+    // Dégradation fidèle : DB non chargée ou item introuvable -> nullptr -> 0 (comme @0x4CC893).
+    charHost_.GetEnterPreviewWeaponClass = [this](int32_t slot) -> int32_t {
+        if (slot < 0 || slot >= net::kCharRecordCount) return 0;
+        const uint32_t weaponId = static_cast<uint32_t>(CharRecI32(slot, 216)); // fiche+216
+        const game::ItemInfo* rec = game::GetItemInfo(weaponId);                // 0x4C3C00
+        if (!rec) return 0;                                                     // @0x4CC893
+        return game::WeaponClassFromTypeCode(rec->typeCode);                    // 0x4CC8BE
     };
 
     // 🔴 PublishSelfFromSlot — miroir du memcpy UNIQUE @0x51C707 :

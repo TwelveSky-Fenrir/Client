@@ -433,6 +433,7 @@
     <ClInclude Include="src\UI\SkillTreeWindow.h" />
     <ClInclude Include="src\UI\SocialWindow.h" />
     <ClInclude Include="src\UI\UIManager.h" />
+    <ClInclude Include="src\UI\UiProjection.h" />
     <ClInclude Include="src\UI\VendorShopWindow.h" />
     <ClInclude Include="src\UI\WarehouseWindow.h" />
     <ClInclude Include="src\UI\Widgets.h" />

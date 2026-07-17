@@ -291,6 +291,20 @@ int32_t GetRebirthExpSpan(int tier);
 // Renvoie nullptr hors bornes OU si le slot est vide (champ itemId == 0).
 const ItemInfo* GetItemInfo(uint32_t itemId);
 
+// Classe d'arme 1..3 (0 = aucune) depuis le `typeCode` (+188) d'un record ITEM_INFO.
+// Switch EXACT de Weapon_ClassFromField112 0x4CC870 (@0x4cc8be) : {0xD,0x10,0x13}->1,
+// {0xE,0x11,0x14}->2, {0xF,0x12,0x15}->3, sinon 0 (@0x4cc904). Partagé par
+// PlayerCmdController::WeaponClass (arme équipée self) et le motion d'entrée CharSelect
+// (LoginScene::GetEnterPreviewWeaponClass). Le CALL au getter reste chez l'appelant.
+inline int32_t WeaponClassFromTypeCode(uint32_t typeCode) {
+    switch (typeCode) {                       // 0x4cc8be — record+188
+    case 0xD: case 0x10: case 0x13: return 1;
+    case 0xE: case 0x11: case 0x14: return 2;
+    case 0xF: case 0x12: case 0x15: return 3;
+    default:                        return 0; // 0x4cc904
+    }
+}
+
 // Accesseur type SKILL_INFO. `skillId` 1-based (1..300) ; index = skillId-1 (cf.
 // SkillGrowthTbl_GetRecord 0x4C4E90, `base+776*(id-1)`, garde id!=0 & record[0]!=0).
 // ex-VeryOldClient: SKILL::ReturnDataAddr (CONFIRMED, logique identique). Renvoie nullptr

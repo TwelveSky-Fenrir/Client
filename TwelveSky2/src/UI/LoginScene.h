@@ -397,6 +397,16 @@ private:
     Button  createConfirmBtn_, createCancelBtn_;
     EditBox createNameBox_;
 
+    // Boutons de ROTATION de l'aperçu 3D de création (slots 44/45 et 46/47, projetés par
+    // UI_ProjectSpriteToScreen 0x50F5D0 aux mondes (390,628)/(557,628)). Latches this[15]
+    // (+0x3C) / this[16] (+0x40) : COLLANTS — jamais remis à 0 pendant l'état Actif (aucun
+    // clear dans Update/OnMouseDown/OnMouseUp), UNIQUEMENT par l'Init de scène (boucle
+    // 150-latch @0x51BE83) = charHost_.ClearAllButtonLatches. Un clic gauche -> rotation
+    // continue +3°/frame (@0x51CDE8) jusqu'à re-entrée en scène ; un clic droit ajoute -3°
+    // (@0x51CE09) -> +3-3=0 = arrêt net. NE PAS modéliser via Button (armed_ s'auto-efface).
+    bool rotLeftLatched_  = false; // this[15]
+    bool rotRightLatched_ = false; // this[16]
+
     // Confirmation de suppression (Oui/Non), ouverte par host.ShowDeleteConfirm().
     bool   deleteConfirmOpen_ = false;
     Button deleteYesBtn_, deleteNoBtn_;

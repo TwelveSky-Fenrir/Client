@@ -108,12 +108,7 @@ bool IsAttackAction(int32_t actionState) {
 int32_t WeaponClass() {
     const ItemInfo* rec = GetItemInfo(g_World.self.equip[7].itemId);
     if (!rec) return 0;                                 /*0x4cc893*/
-    switch (rec->typeCode) {                            /*0x4cc8be — record+188*/
-    case 0xD: case 0x10: case 0x13: return 1;
-    case 0xE: case 0x11: case 0x14: return 2;
-    case 0xF: case 0x12: case 0x15: return 3;
-    default:                        return 0;           /*0x4cc904*/
-    }
+    return WeaponClassFromTypeCode(rec->typeCode);      /*0x4cc8be — record+188 (helper partagé)*/
 }
 
 // Lecture du bloc self (Crt_Memcpy(local, g_SelfMoveStateBlock, 0x48u)).
