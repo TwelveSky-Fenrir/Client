@@ -4,6 +4,7 @@
 // Voir FxRenderer.h pour la carte du slot et les frontières (pool POBJECT 48 o).
 #include "FxRenderer.h"
 #include "FxBillboard.h"   // FxBillboard_PoolRender, FxParticlePool (LEAF Object A) — pour Fx_WireLeafHooks
+#include "ModelObjectRenderer.h" // FRONT F_MOBJ : ModelObjectRenderer_MeshDrawShim (= ModelObj_Draw 0x4D71B0)
 #include <cstring>   // std::memcpy
 
 namespace ts2::gfx {
@@ -42,10 +43,14 @@ static void LeafParticleRender(int ptclDefIndex, void* pool48) {
 }
 
 void Fx_WireLeafHooks() {
-    // s_meshDraw reste nul : ModelObj_Draw 0x4D71B0 (sous-système modèle) non porté → les FX mesh
-    // (types 1-4/8-D : Deflect/BlockGuard/Parry) sont invisibles à ce jalon. TODO(ancre) : câbler
-    // le renderer de modèles. Le chemin particule (types 5-7/0xB/0xE) est complet via le LEAF.
-    SetFxRenderHooks(nullptr, &LeafParticleRender);
+    // FRONT F_MOBJ (2026-07-17) : s_meshDraw est désormais CÂBLÉ sur le renderer de model-objects
+    // (ModelObjectRenderer_MeshDrawShim = ModelObj_Draw 0x4D71B0, banque MiscC E*.MOBJECT). Les FX
+    // mesh types 8/9/0xA (Deflect/BlockGuard/Parry) deviennent VISIBLES en passes 1/2 dès que MAIN
+    // a fait ModelObjectRenderer::Init (le shim est no-op tant qu'aucun renderer actif n'est
+    // enregistré, donc l'ordre de câblage est indifférent). Types 1-4 (banques Avatar/NpcB) : TODO
+    // ancre côté renderer (V1 = MiscC seule). Le chemin particule (types 5-7/0xB/0xE) reste complet
+    // via le LEAF Object A (s_particleRender inchangé).
+    SetFxRenderHooks(&ModelObjectRenderer_MeshDrawShim, &LeafParticleRender);
 }
 
 // ---------------------------------------------------------------------------

@@ -190,6 +190,7 @@
     <ClCompile Include="src\Gfx\FxSetters.cpp" />
     <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp" />
     <ClCompile Include="src\Gfx\ModelCache.cpp" />
+    <ClCompile Include="src\Gfx\ModelObjectRenderer.cpp" />
     <ClCompile Include="src\Gfx\Renderer.cpp" />
     <ClCompile Include="src\Gfx\ShaderSet.cpp" />
     <ClCompile Include="src\Gfx\SilverLiningSky.cpp" />
@@ -345,6 +346,7 @@
     <ClInclude Include="src\Gfx\MotionCache.h" />
     <ClInclude Include="src\Gfx\PlayerPaperdoll.h" />
     <ClInclude Include="src\Gfx\ModelCache.h" />
+    <ClInclude Include="src\Gfx\ModelObjectRenderer.h" />
     <ClInclude Include="src\Gfx\FxRenderer.h" />
     <ClInclude Include="src\Gfx\ParticleSystem.h" />
     <ClInclude Include="src\Gfx\ZoneFxEmitter.h" />

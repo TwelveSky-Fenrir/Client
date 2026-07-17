@@ -21,7 +21,7 @@ namespace ts2 {
 // alourdir les incluants de ce header léger.
 class WorldRenderer;
 
-namespace gfx { class Renderer; class Camera; class WorldGeometryRenderer; }
+namespace gfx { class Renderer; class Camera; class WorldGeometryRenderer; class ModelObjectRenderer; }
 namespace net { class NetSystem; }
 namespace ui  { class LoginScene; class GameHud; class GameWindows; }
 namespace world { class WorldAssets; class WorldMap; }
@@ -188,6 +188,9 @@ private:
     std::unique_ptr<ui::GameHud>      hud_;          // HUD scène 6
     std::unique_ptr<ui::GameWindows>  windows_;      // fenêtres de jeu scène 6 (Entrepôt/Guilde/...)
     std::unique_ptr<WorldRenderer>    world_;        // rendu 3D des entités scène 6 (Scene/WorldRenderer.h)
+    // Renderer mesh model-object (Vague F, Gfx/ModelObjectRenderer.h) : dessine les meshes d'effet
+    // FX de combat (block/parry/deflect, banque MiscC) via le hook s_meshDraw. ModelObj_Draw 0x4D71B0.
+    std::unique_ptr<gfx::ModelObjectRenderer> modelObjRenderer_;
     // Géométrie de monde statique (chunk .WO, cf. Gfx/WorldGeometryRenderer.h) — DISTINCT de
     // `world_` (WorldRenderer = entités players/monsters). worldAssets_/worldMap_ chargent
     // Z%03d.WO SEUL (pas WM/WJ/WG/atmosphère/son, hors périmètre de ce câblage) via les

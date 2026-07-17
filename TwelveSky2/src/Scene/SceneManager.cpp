@@ -13,6 +13,7 @@
 #include "Game/PlayerAnimCursorTick.h" // Player_AdvanceAnimCursor (avance curseur anim joueur, switch 0x5727BF)
 #include "Gfx/FxSetters.h"             // FxPool_* + FxSlot (pool FX combat dword_17D06F4, Vague D)
 #include "Gfx/FxBillboard.h"           // FxBillboard_PoolTick/SetDevice (leaf Object A .PARTICLE, Vague D)
+#include "Gfx/ModelObjectRenderer.h"   // renderer mesh model-object (ModelObj_Draw 0x4D71B0, FX combat mesh, Vague F)
 #include <cstring>                     // std::memcpy (lecture race/genre depuis PlayerEntity::body)
 #include "World/WorldIntegration.h"    // world::WorldAssets (charge réellement Z%03d.WO)
 #include "World/WorldMap.h"            // world::WorldMap::LoadZoneResource / ZoneIdToFileId
@@ -406,6 +407,7 @@ void SceneManager::Shutdown() {
     if (hud_)     { hud_->Shutdown();     hud_.reset(); }
     if (world_)   { world_->Shutdown();   world_.reset(); }
     if (worldGeom_) { worldGeom_->Shutdown(); worldGeom_.reset(); }
+    if (modelObjRenderer_) { modelObjRenderer_->Shutdown(); modelObjRenderer_.reset(); } // (Vague F)
     // SceneMgr_ReleaseSoundBuffers 0x517B60 -> Snd_ReleaseBuffers(cSceneMgr+153) 0x6A80D0 :
     //   libère le slot BGM au destructeur de cSceneMgr (App_Shutdown 0x462480).
     if (bgm_) { bgm_->Release(); bgm_.reset(); }
@@ -502,6 +504,13 @@ void SceneManager::Change(Scene s) {
         gfx::FxBillboard_SetDevice(renderer_->Device());
         gfx::FxBillboard_SetDataRoot(gameDataDir_.c_str());
         gfx::Fx_WireLeafHooks();
+        // (Vague F) Renderer mesh model-object : enregistre l'instance qui reçoit le hook s_meshDraw
+        // (câblé par Fx_WireLeafHooks ci-dessus ; le shim est no-op tant que Init() n'a pas enregistré
+        // l'instance). Banque MiscC (unk_B60AB8) pour les FX de combat mesh (block/parry/deflect).
+        // ModelObj_Draw 0x4D71B0 ; réutilise le parseur asset::MObject + l'upload GPU du monde.
+        if (!modelObjRenderer_) modelObjRenderer_ = std::make_unique<gfx::ModelObjectRenderer>();
+        if (!modelObjRenderer_->Init(*renderer_, gameDataDir_))
+            TS2_WARN("ModelObjectRenderer::Init a echoue (FX combat mesh indisponibles).");
     }
     // Géométrie de monde statique (.WO) : chargement UNE SEULE FOIS à l'entrée en InGame,
     // pour le zoneId courant (game::g_World.zoneId). Pas de rechargement au changement de
@@ -1610,7 +1619,8 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
         // du singleton GxdRenderer est attaché à App_Init (App.cpp:374, GXD_DeviceReinit 0x4023F0).
         // (Vague D — FX combat) Rendu des slots FX : ancre de frame (droite/haut caméra depuis la
         // matrice vue) puis 3 passes Fx_EmitterDraw (miroir Scene_InGameRender 0x52D0B0 : passes 1/2 =
-        // meshes no-op faute de s_meshDraw, passe 3 = particules -> leaf Object A Particle_RenderBillboards
+        // meshes block/parry/deflect via ModelObjectRenderer (Vague F, s_meshDraw câblé), passe 3 =
+        // particules -> leaf Object A Particle_RenderBillboards
         // 0x6A70B0). AVANT le bloom pour que muzzle/étincelles participent au post-blur, comme dans le
         // binaire (sites 0x52DD14/0x52ECEB/0x52FAD8 précèdent GXD_RenderPostBlur @0x52FB53).
         if (worldReady_ && world_) {
@@ -1645,6 +1655,26 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
             fxDev->SetTransform(D3DTS_VIEW, &fxView);
             fxDev->SetTransform(D3DTS_PROJECTION, &fxProj);
             gfx::Fx_SetParticleFrame(fxDev, fxRight, fxUp, 0 /*maxQuads: pas de plafond*/, nullptr);
+            // (Vague F) Renderer mesh : plans de frustum (cull par-part) + position des slots MESH
+            // (types 8/9/10 = block/parry/deflect). Le placement exact sur l'os d'arme
+            // (Model_GetAttachTransform 0x40FDC0) n'est PAS porté -> slot.position (+0x44) = centre de
+            // l'entité source, résolu par idHi/idLo (MÊME pattern que le tick particule), dégradation
+            // honnête documentée ; slot.orient (+0x50) laissé à 0. Sans ça Fx_EmitterDraw passe pos={0,0,0}.
+            if (modelObjRenderer_) modelObjRenderer_->SetFrame(fxView, fxProj);
+            for (int i = 0; i < gfx::FxPool_Count(); ++i) {
+                gfx::FxSlot& mfx = gfx::FxPool_Slots()[i];
+                if (!mfx.state || (mfx.type != 8 && mfx.type != 9 && mfx.type != 10)) continue;
+                const uint32_t* mid = reinterpret_cast<const uint32_t*>(&mfx);
+                const uint32_t idHi = mid[3], idLo = mid[4]; // slot[3]=+0xC, slot[4]=+0x10
+                for (size_t k = 0; k < game::g_World.players.size(); ++k) {
+                    const game::PlayerEntity& p = game::g_World.players[k];
+                    if (p.active && p.id.hi==idHi && p.id.lo==idLo) { mfx.position[0]=p.x; mfx.position[1]=p.y; mfx.position[2]=p.z; break; }
+                }
+                for (size_t k = 0; k < game::g_World.monsters.size(); ++k) {
+                    const game::MonsterEntity& m = game::g_World.monsters[k];
+                    if (m.active && m.id.hi==idHi && m.id.lo==idLo) { mfx.position[0]=m.x; mfx.position[1]=m.y; mfx.position[2]=m.z; break; }
+                }
+            }
             for (int pass = 1; pass <= 3; ++pass)
                 for (int i = 0; i < gfx::FxPool_Count(); ++i)
                     gfx::Fx_EmitterDraw(&gfx::FxPool_Slots()[i], pass);
@@ -1789,6 +1819,7 @@ void SceneManager::OnDeviceLost() {
     if (windows_)  windows_->OnDeviceLost();
     if (world_)    world_->OnDeviceLost();
     if (worldGeom_) worldGeom_->OnDeviceLost();
+    if (modelObjRenderer_) modelObjRenderer_->OnDeviceLost(); // (Vague F) purge cache D3DPOOL_MANAGED
 }
 
 void SceneManager::OnDeviceReset() {
@@ -1797,6 +1828,7 @@ void SceneManager::OnDeviceReset() {
     if (windows_)  windows_->OnDeviceReset();
     if (world_)    world_->OnDeviceReset();
     if (worldGeom_) worldGeom_->OnDeviceReset();
+    if (modelObjRenderer_) modelObjRenderer_->OnDeviceReset(); // (Vague F)
 }
 
 } // namespace ts2
