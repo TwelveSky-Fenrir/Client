@@ -194,15 +194,16 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
         //   race2 · 49 Weapon+ ->classe d'arme suivante · 53 capture race2+arme2.
         ++frameNo;
         if (frameNo == 38) { scene.OnLButtonDown(930, 518); scene.OnLButtonUp(930, 518); } // Creer
-        if (frameNo == 43) { scene.OnLButtonDown(893, 159); scene.OnLButtonUp(893, 159); } // Clan + (race)
-        if (frameNo == 49) { scene.OnLButtonDown(893, 255); scene.OnLButtonUp(893, 255); } // Weapon + (variant)
+        // Bouton ROTATION GAUCHE (slot 44, monde (390,628) -> rotLeftLatched_ @0x522DE7). Latch
+        // COLLANT : un seul clic -> l'apercu tourne en continu (yaw previewRot[1] +/- 3 deg/frame).
+        if (frameNo == 42) { scene.OnLButtonDown(398, 636); scene.OnLButtonUp(398, 636); }   // rotate gauche
         scene.Update(1.0 / 30.0, camera);
         if (renderer.Ready() && renderer.BeginFrame()) {
             scene.Render(renderer.Device(), camera);
             if (frameNo == 35) capturePng("preview_capture.png");
-            if (frameNo == 41) capturePng("preview_create.png");           // race 1 (defaut)
-            if (frameNo == 47) capturePng("preview_create_clan2.png");     // autre clan/race
-            if (frameNo == 53) capturePng("preview_create_weapon2.png");   // + classe d'arme suivante
+            if (frameNo == 41) capturePng("preview_create.png");        // face (avant rotation)
+            if (frameNo == 50) capturePng("preview_create_rotA.png");   // ~24 deg (8 frames)
+            if (frameNo == 58) capturePng("preview_create_rotB.png");   // ~48 deg (16 frames)
             renderer.EndFrame();
         }
         Sleep(16);
