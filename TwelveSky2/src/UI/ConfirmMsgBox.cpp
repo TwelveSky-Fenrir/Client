@@ -83,18 +83,27 @@ bool ConfirmMsgBox::OnMouseDown(const SpriteProvider& sprite, int x, int y, int 
 bool ConfirmMsgBox::OnMouseUp(const SpriteProvider& sprite, int x, int y, int screenW, int screenH) {
     if (!open_) return false;
     Recenter(sprite, screenW, screenH);
-    const bool okHit     = HitSprite(sprite(8),  panelX_ + kOkX,     panelY_ + kBtnY, x, y);
-    const bool cancelHit = HitSprite(sprite(11), panelX_ + kCancelX, panelY_ + kBtnY, x, y);
-    if (okHit) {
-        OkFn cb = onOk_;   // capturer AVANT Close() (qui vide onOk_)
-        Close();           // UI_ConfirmPrompt_Close 0x5C0960 (ferme d'abord)
-        if (cb) cb();      // puis switch(type) = action OK (UI_MsgBox_OnLButtonUp 0x5C0A90)
-    } else if (cancelHit) {
-        Close();           // Annuler = fermeture sèche (aucun case)
-    } else {
-        btnPressed_[0] = btnPressed_[1] = false; // relâché hors bouton : dé-presse (reste ouvert)
+    // GARDE LATCH (fidélité, UI_MsgBox_OnLButtonUp 0x5C0A90) : l'action n'est exécutée QUE si le
+    // latch armé au mouse-down est posé. Le binaire teste `cmp [this+0Ch],0 ; jz` @0x5C0B56 (OK =
+    // btnPressed_[0]) et `cmp [this+10h],0 ; jz` @0x5C2D2D (Annuler = btnPressed_[1]), et efface le
+    // latch AVANT le hit-test (@0x5C0B66 / @0x5C2D3D). Sans cette garde, un up-sur-OK SANS
+    // down-sur-OK (down hors bouton, ou glissé depuis Annuler) déclencherait la suppression/le quit
+    // — confirmation accidentelle. La branche OK RETOURNE avant de tester Annuler (modale reste
+    // ouverte si le latch OK était posé mais relâché hors bouton).
+    if (btnPressed_[0]) {                          // garde OK @0x5C0B56 (this+0xC)
+        btnPressed_[0] = false;                    //          @0x5C0B66 (efface AVANT hit-test)
+        if (HitSprite(sprite(8), panelX_ + kOkX, panelY_ + kBtnY, x, y)) {
+            OkFn cb = onOk_; Close(); if (cb) cb(); // OK hit -> Close (0x5C0960) puis action (case 1/2)
+        }
+        return true;                               // OK latché, relâché hors bouton -> reste ouvert
     }
-    return true; // modal : consomme tout clic
+    if (btnPressed_[1]) {                          // garde Annuler @0x5C2D2D (this+0x10)
+        btnPressed_[1] = false;                    //              @0x5C2D3D
+        if (HitSprite(sprite(11), panelX_ + kCancelX, panelY_ + kBtnY, x, y))
+            Close();                               // Annuler = fermeture sèche (défaut du switch)
+        return true;
+    }
+    return true; // ni OK ni Annuler latché (loc_5C2E93) : modale reste ouverte, clic consommé
 }
 
 } // namespace ts2::ui

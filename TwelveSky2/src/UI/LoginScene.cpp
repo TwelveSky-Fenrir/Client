@@ -961,8 +961,10 @@ void LoginScene::LoginUpdate() {
     case LoginSub::Init:                    // case 0 — ordre littéral EA 0x51A8FD-0x51A976
         // EA 0x51A8FD : Util_SetClampedU8Field(&dword_8E714C, 0) — remet la forme du curseur
         // au slot 0 (flèche) à l'entrée Login. CÂBLÉ (C-cursor) : game::Cursors() est le singleton
-        // UNIQUE (mPOINTER) désormais tické par App -> SetActiveSlot(0) prend effet (même triplet
-        // ResetAllDialogs->curseur->focus que les autres entrées de scène, cf. SceneManager @0x52C044).
+        // UNIQUE (mPOINTER) désormais tické par App -> SetActiveSlot(0) prend effet. INVARIANT des
+        // 5 sites d'entrée de scène : le reset est posé juste AVANT UI_FocusEditBox/SetFocus(0)
+        // (ici EA 0x51A909). Le triplet COMPLET ResetAllDialogs->curseur->focus n'est littéral qu'au
+        // site EnterWorld @0x52C044 (Login n'a pas de ResetAllDialogs avant ce reset).
         game::Cursors().SetActiveSlot(game::kCursorDefault); // 0x51A8FD / 0x4C1110
         SetFocus(0);                        // EA 0x51A909 — défocus générique avant la RAZ
         okBtn_.Reset(); exitBtn_.Reset(); optBtn_.Reset(); // EA 0x51A90E-0x51A92F (a1[3..5],

@@ -796,8 +796,10 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             //   réapplique SetCursor(slot) chaque frame. game::Cursors() est le singleton UNIQUE
             //   désormais tické par App (App.cpp, ownership unifié — cf. C-cursor) : ce reset
             //   prend donc effet. « Remettre la forme du curseur au slot 0 (flèche) » à l'entrée
-            //   du Loading. Ordre fidèle : ENTRE ResetAllDialogs (0x52C038) et UI_FocusEditBox
-            //   (0x52C050), même triplet que les 4 autres entrées de scène (0x518031/0x51BE72/…).
+            //   du Loading. Ordre fidèle ICI : triplet complet ResetAllDialogs (0x52C038) ->
+            //   curseur (0x52C044) -> UI_FocusEditBox (0x52C050). INVARIANT partagé par les 5 sites
+            //   d'entrée de scène : le reset curseur est toujours juste AVANT UI_FocusEditBox ; en
+            //   revanche le ResetAllDialogs préalable n'existe qu'ici et à ServerSelect (pas InGame/Login).
             game::Cursors().SetActiveSlot(game::kCursorDefault); // 0x52C044 / 0x4C1110
 
             // (3) UI_FocusEditBox(&g_UIEditBoxMgr, 0) @0x52C050. Avec a2 = 0, l'original
