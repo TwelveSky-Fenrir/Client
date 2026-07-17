@@ -165,7 +165,7 @@ private:
     float m_pitch = 0.0f;                    // élévation
     float m_fovY  = kFovDegDefault * kDegToRad; // FOV vertical (radians) — ex-VeryOldClient: mFovY (g_GxdRenderer+56)
     float m_nearZ = 1.0f;                    // plan proche (renderer, g_GxdRenderer+60) — ex-VeryOldClient: mNearPlane
-    float m_farZ  = 15000.0f;                // plan lointain (renderer, g_GxdRenderer+64) — ex-VeryOldClient: mFarPlane
+    float m_farZ  = 1000000.0f;              // plan lointain — App_Init @0x461d5e/0x461dd2 passe far=1e6 (flt_7EDB80=0x49742400) a Gfx_InitDevice/GXD_DeviceReinit ; ex-VeryOldClient: mFarPlane
     float m_minDist = kMinDistDefault;       // borne zoom min (Camera_Init+84)
     float m_maxDist = kMaxDistDefault;       // borne zoom max (Camera_Init+88)
     float m_yawVel   = 0.0f;                  // rad/s (orbite continue optionnelle)

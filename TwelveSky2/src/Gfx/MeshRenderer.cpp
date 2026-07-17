@@ -90,7 +90,12 @@ constexpr float kDeg2Rad = 0.017453292519943295f; // 0.017453292 (×π/180)
 // ---------------------------------------------------------------------------
 static const char kSkinnedVS[] = R"HLSL(
 float4x4 mWorldViewProjMatrix;
-float4x4 mKeyMatrix[40];        // palette d'os (== MeshRenderer::kMaxBones)
+// palette d'os (== MeshRenderer::kMaxBones). Le squelette JOUEUR a 76 os (mesure disque des
+// .MOTION : count_B=76 ; torse/jambes referencent les os 40..70). float4x4[76]=304 registres
+// > 256 (vs_2_0) -> impossible. On PACKE en float4x3 (3 registres/os, comme le vrai Shader03) :
+// 80*3=240 + WVP(4) + 3 lumieres(3) = 247 <= 256. La colonne w (0,0,0,1 d'une matrice affine)
+// est droppee -> resultat identique au .xyz de l'ancien float4x4.
+float4x3 mKeyMatrix[80];
 float3   mLightDirection;       // direction lumière en espace objet
 float3   mLightAmbient;
 float3   mLightDiffuse;
@@ -117,11 +122,11 @@ VS_OUT Main(VS_IN In)
     int4  idx = D3DCOLORtoUBYTE4(In.Indices);
     float4 p  = float4(In.Pos, 1.0f);
 
-    // Position skinnée : somme pondérée des 4 os.
-    float3 sp = mul(p, mKeyMatrix[idx.x]).xyz * In.Weights.x;
-    sp += mul(p, mKeyMatrix[idx.y]).xyz * In.Weights.y;
-    sp += mul(p, mKeyMatrix[idx.z]).xyz * In.Weights.z;
-    sp += mul(p, mKeyMatrix[idx.w]).xyz * In.Weights.w;
+    // Position skinnée : somme pondérée des 4 os. mul(float4, float4x3) -> float3 (pas de .xyz).
+    float3 sp = mul(p, mKeyMatrix[idx.x]) * In.Weights.x;
+    sp += mul(p, mKeyMatrix[idx.y]) * In.Weights.y;
+    sp += mul(p, mKeyMatrix[idx.z]) * In.Weights.z;
+    sp += mul(p, mKeyMatrix[idx.w]) * In.Weights.w;
 
     // Normale skinnée (partie rotation 3x3 des matrices d'os).
     float3 nrm = mul(In.Normal, (float3x3)mKeyMatrix[idx.x]) * In.Weights.x;
@@ -773,6 +778,10 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
 
     // 8) Flux + indices + dessin (SetStreamSource +400 stride 76, SetIndices +416,
     //    DrawIndexedPrimitive +328 : TRIANGLELIST, nbVtx, nbTri).
+    //    NB : le chemin skinne NE pose PAS ZENABLE/CULLMODE (fidele a Model_DrawSkinnedSubset
+    //    0x40CA40, qui ne les pose pas non plus) : il herite du bracket 2D (Gfx_Begin2D/End2D,
+    //    qui remet ZENABLE=TRUE) et du CULLMODE ambiant. Le depth propre est garanti par le
+    //    correctif GX2D-01 (le fond 2D ne s'ecrit plus dans le Z), cf. LoginScene::CharSelectRenderBg.
     dev_->SetStreamSource(0, L.vb, 0, static_cast<UINT>(sizeof(GpuSkinVertex)));
     dev_->SetIndices(L.ib);
     dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, L.vertexCount, 0, L.faceCount);

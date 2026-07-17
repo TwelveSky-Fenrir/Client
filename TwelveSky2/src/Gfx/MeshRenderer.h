@@ -164,10 +164,12 @@ public:
 // ---------------------------------------------------------------------------
 class MeshRenderer {
 public:
-    // Nombre max d'os supportés par la palette VS (vs_2_0 : 256 registres float4 ;
-    // 40 matrices = 160 registres + WVP + lumière). Doit égaler la taille du
-    // tableau mKeyMatrix[] dans le HLSL.
-    static constexpr UINT kMaxBones = 40;
+    // Nombre max d'os supportés par la palette VS. Le squelette JOUEUR a 76 os (mesure disque
+    // des .MOTION ; torse/jambes -> os 40..70). Palette PACKÉE en float4x3 dans le HLSL :
+    // 80*3=240 registres + WVP(4) + 3 lumières(3) = 247 <= 256 (vs_2_0). 40 tronquait le corps
+    // (os >=40 hors tableau -> matrice nulle -> effondrement à l'origine = artefact triangulaire).
+    // Doit égaler la taille du tableau mKeyMatrix[] dans le HLSL.
+    static constexpr UINT kMaxBones = 80;
 
     // ----- PASSE DE DESSIN (Model_Render 0x40EBB0 a6 / Model_DrawSkinnedSubset 0x40CA40 a3) ------
     // NE PAS CONFONDRE avec la « passe shader » (g_CurrentShaderPass 0x194591C ∈ {1,2,3,4,8}) :

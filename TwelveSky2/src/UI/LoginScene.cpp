@@ -1439,9 +1439,15 @@ void LoginScene::CharSelectRender() {
 // Le slot est LU dans l'état (this[15713]), re-tiré à chaque Init par le flux : cf. [A4].
 void LoginScene::CharSelectRenderBg() {
     if (!sprites_.Ready()) return;
+    // CORRECTIF (apercu 3D invisible) : Gfx_Begin2D 0x69E620 @0x69E630 pose ZENABLE=FALSE AVANT
+    // le sprite -> le fond plein ecran N'ECRIT PAS le Z. Sans ca, le fond ecrit Z=proche partout
+    // et OCCULTE le perso 3D dessine juste apres (depth-test). ClientSource ne portait pas ce
+    // bracket 2D (gap GX2D-01). Gfx_End2D 0x69E650 @0x69E672 remet ZENABLE=TRUE pour la 3D.
+    if (device_) device_->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE); // 0x69E630
     sprites_.Begin();
     DrawFullscreenBg(charState_.backgroundSlot); // 2383/2384/2385 (EA 0x51C261/70/7F)
     sprites_.End();
+    if (device_) device_->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);  // 0x69E672 (profondeur ON pour la 3D)
 }
 
 // [A16/E1/G1/G2] PASSE 3D — les 4 Char_RenderModel 0x527020, ENTRE Gfx_End2D (0x51D2B5) et
@@ -1528,6 +1534,9 @@ void LoginScene::CharSelectRenderPreview3D() {
     // périmé (cf. bandeau Gfx/MeshRenderer.h). Fidèle au binaire, où tout passe par le même
     // g_CurrentShaderPass 0x194591C (venir d'une passe 2D force donc le rebind). On invalide.
     charMesh_.InvalidateShaderBindingCache();
+
+    // (Le Z-buffer est propre : CharSelectRenderBg vient de dessiner le fond avec ZENABLE=FALSE,
+    // donc le fond n'a PAS ecrit le Z -> le perso passe le depth-test, cf. correctif GX2D-01.)
 
     // DEUX rendus COMPLETS du paperdoll : passe 1 puis passe 2 (les 4 sites d'appel du
     // binaire sont deux paires adjacentes, jamais entrelacées par pièce).
