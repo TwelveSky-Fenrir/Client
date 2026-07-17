@@ -28,6 +28,7 @@ constexpr int kRecOffFace   = 48;  // a4[12] — index d'entree du catalogue a5=
 constexpr int kRecOffHair   = 52;  // a4[13] — index d'entree du catalogue a5=1
 constexpr int kRecOffItemEquipA = 136; // a4[34] — v29 = MobDb_GetEntry(mITEM, …) @0x52747A
 constexpr int kRecOffItemEquipB  = 184; // a4[46] — v30 = MobDb_GetEntry(mITEM, …) @0x527491
+constexpr int kRecOffItemWeapon  = 216; // a4[54] — v31 = MobDb_GetEntry(mITEM, …) = l'ARME (@0x528263)
 
 // Valeur de la sentinelle +36 (`cmp dword ptr [ecx+24h], 3` @0x52754A). Selectionne le
 // CORPS categorie 7 et autorise les catalogues ALTERNATIFS (kind+7) a5=14/15.
@@ -365,7 +366,31 @@ CharPreviewResult CharPreview3D::BuildFromRecord(ModelCache& models, MotionCache
         PushCatalogPiece(models, r.pieces, CharCatalogSlot::EquipB, race, gender, 0);
     }
 
-    // 6. SLOTS D'EQUIPEMENT RESTANTS — NON PORTES.
+    // 6. ARME (item fiche +216, v31) — @0x528263. GARDE `if (v31)` @0x528263, puis switch sur
+    //    typeCode(+188), borne `(unsigned)(typeCode-13) <= 8` (table byte_528F6C=[0,1,2,0,1,2,0,1,2]) :
+    //      {13,16,19} -> WeaponA (cat5, unk_F86CBC) @0x5282A8
+    //      {14,17,20} -> WeaponB (cat6, unk_F92D1C) @0x52830E
+    //      {15,18,21} -> WeaponC (cat7, unk_F9ED7C) @0x528374
+    //    Entree = field196(+196) - 1 (@0x5282f9) ; indexation catalogue identique aux autres pieces
+    //    (race*0x4020 + gender*0x2010 + entry*0x90). Ce switch EST WeaponClassFromTypeCode (1/2/3 =
+    //    A/B/C, 0 sinon @0x4cc904). ⚠ NON PORTES (documentes plus bas) : la TRAINE animee d'arme
+    //    (@0x5283d5..0x528B1D : SObject_Draw/ModelObj_Draw sans equivalent) et les accessoires v33-v36.
+    if (const game::ItemInfo* itemWeapon =
+            game::GetItemInfo(static_cast<uint32_t>(ReadI32(rec, kRecOffItemWeapon)))) {
+        const int weaponClass = game::WeaponClassFromTypeCode(itemWeapon->typeCode); // 1/2/3, 0 = aucune
+        const int entry = static_cast<int>(itemWeapon->field196) - 1;                // field196 - 1
+        CharCatalogSlot wslot = CharCatalogSlot::WeaponA;
+        bool draw = (entry >= 0);
+        switch (weaponClass) {
+            case 1: wslot = CharCatalogSlot::WeaponA; break; // {13,16,19}
+            case 2: wslot = CharCatalogSlot::WeaponB; break; // {14,17,20}
+            case 3: wslot = CharCatalogSlot::WeaponC; break; // {15,18,21}
+            default: draw = false; break;                    // typeCode hors [13,21] -> aucune arme (def_5282A1)
+        }
+        if (draw) PushCatalogPiece(models, r.pieces, wslot, race, gender, entry);
+    }
+
+    // 7. SLOTS D'EQUIPEMENT RESTANTS — NON PORTES (l'ARME v31 ci-dessus EST desormais portee).
     // TODO [0x527B8E] : le binaire poursuit avec, dans l'ordre —
     //     v33 (item +248) : flt_100EA3C / flt_102901C   @0x527BFE / @0x527C61
     //     v34 (item +264) : flt_101398C / unk_1012DBC / flt_102D39C
@@ -373,9 +398,8 @@ CharPreviewResult CharPreview3D::BuildFromRecord(ModelCache& models, MotionCache
     //                                                    @0x527C6A..0x5280A2
     //     v35 (item +280) : flt_1020FDC / flt_103B5BC   @0x52811B / @0x52817E
     //     v36 (item +296) : flt_1024FFC / flt_103F5DC   @0x5281F7 / @0x52825A
-    //     v31 (item +216, l'ARME) : switch sur typeCode(+188) -> unk_F86CBC/F92D1C/F9ED7C
-    //                       [entree = field196(+196) - 1] + traine animee unk_10435FC
-    //                                                    @0x528263..0x528B1D
+    //     v31 (item +216, l'ARME) : la PIECE d'arme est PORTEE ci-dessus (etape 6). Reste NON
+    //                       PORTEE la seule TRAINE animee unk_10435FC @0x5283d5..0x528B1D.
     //     Entry (item +120) : flt_FABEBC (a5=9) si typeCode==8 ; flt_FB7BBC (a5=20) si ==29
     //                                                    @0x528B94 / @0x528C03
     //     si a4[1] == 1 : flt_FB0C5C (a5=10)             @0x528C59
@@ -387,8 +411,8 @@ CharPreviewResult CharPreview3D::BuildFromRecord(ModelCache& models, MotionCache
     // (5/6/7/10/11) dont les boucles ecrivains d'AssetMgr_InitAllSlots 0x4DEB50 n'ont PAS
     // ete descendues. Les 4 deja resolus (a5=8/9/10/20) sont exposes par CharCatalogSlot
     // mais leurs GARDES dependent des slots non portes -> non cables.
-    // Consequence assumee : la liste affiche corps + visage + cheveux + torse + jambes,
-    // sans arme ni accessoires. Aucune coordonnee ni aucun chemin inventes.
+    // Consequence assumee : la liste affiche corps + visage + cheveux + torse + jambes + ARME,
+    // sans les accessoires v33-v36 ni la traine d'arme. Aucune coordonnee ni aucun chemin inventes.
 
     r.valid = !r.pieces.empty();
     return r;

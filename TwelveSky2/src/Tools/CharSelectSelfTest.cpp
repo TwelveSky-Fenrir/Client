@@ -75,7 +75,8 @@ LRESULT CALLBACK WndProcTest(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
 //   (race 0..2, gender 0..1, face 0..6, hair 0..2).
 void InjectDefaultChar(int slot, const char* name, int32_t race, int32_t gender,
                        int32_t face, int32_t hair, int32_t job, int32_t level,
-                       int32_t equipAItemId = 0, int32_t equipBItemId = 0) {
+                       int32_t equipAItemId = 0, int32_t equipBItemId = 0,
+                       int32_t weaponItemId = 0) {
     if (slot < 0 || slot >= net::kCharRecordCount) return;
     uint8_t* rec = net::g_CharRecords[slot];
     std::memset(rec, 0, net::kCharRecordSize);
@@ -93,6 +94,7 @@ void InjectDefaultChar(int slot, const char* name, int32_t race, int32_t gender,
     // kRecOffItemEquipB=184) -> GetItemInfo(id)->field196 = index de mesh de l'armure.
     put(136, equipAItemId); // armure "torse" (EquipA)
     put(184, equipBItemId); // armure "jambes" (EquipB)
+    put(216, weaponItemId); // ARME (v31 ; kRecOffItemWeapon) -> BuildFromRecord etape 6
 }
 
 // Cherche dans mITEM le 1er item dont field196 == targetEntry (index de mesh EquipA/B). Sert a
@@ -102,6 +104,22 @@ int32_t FindEquipItemWithEntry(uint32_t targetEntry) {
     for (int32_t id = 1; id <= 99999; ++id) {
         const game::ItemInfo* it = game::GetItemInfo(static_cast<uint32_t>(id));
         if (it && it->field196 == targetEntry) return id;
+    }
+    return 0;
+}
+
+// Cherche un item-ARME (typeCode 13..21 -> WeaponClassFromTypeCode != 0). BuildFromRecord etape 6
+// dessine l'entree field196-1. On vise field196==34 (entree 33 = l'arme "creation",
+// kCreateWeaponEntryIndex, mesh connu) ; a defaut, le 1er item-arme a field196 dans [1,57].
+int32_t FindWeaponItem() {
+    for (int32_t id = 1; id <= 99999; ++id) {
+        const game::ItemInfo* it = game::GetItemInfo(static_cast<uint32_t>(id));
+        if (it && game::WeaponClassFromTypeCode(it->typeCode) != 0 && it->field196 == 34u) return id;
+    }
+    for (int32_t id = 1; id <= 99999; ++id) {
+        const game::ItemInfo* it = game::GetItemInfo(static_cast<uint32_t>(id));
+        if (it && game::WeaponClassFromTypeCode(it->typeCode) != 0 &&
+            it->field196 >= 1u && it->field196 <= 57u) return id;
     }
     return 0;
 }
@@ -166,10 +184,11 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
     // Injecte 2 fiches perso par defaut AVANT de pomper : l'init de scene CharSelect
     // (RunInitBlock, ~30 frames) appelle host.LoadCharacterSlots -> LoadCharacterSlotsFromRecords
     // qui lit net::g_CharRecords. Elles apparaissent dans la liste avec leur apercu 3D.
-    const int32_t armorItem = FindEquipItemWithEntry(35); // 35 = armure "creation" (kCreateBodyEntryIndex)
-    TS2_LOG("CharSelectSelfTest : item armure (field196==35) = id %d (0 = aucun -> corps de base).", armorItem);
+    const int32_t armorItem  = FindEquipItemWithEntry(35); // 35 = armure "creation" (kCreateBodyEntryIndex)
+    const int32_t weaponItem = FindWeaponItem();           // arme (typeCode 13..21)
+    TS2_LOG("CharSelectSelfTest : armure id=%d, arme id=%d (0 = aucun).", armorItem, weaponItem);
     InjectDefaultChar(0, "Guerrier", /*race*/0, /*gender*/0, /*face*/0, /*hair*/0, /*job*/0, /*level*/50,
-                      /*equipA*/armorItem, /*equipB*/armorItem);
+                      /*equipA*/armorItem, /*equipB*/armorItem, /*weapon*/weaponItem);
     InjectDefaultChar(1, "Sorciere", /*race*/1, /*gender*/1, /*face*/2, /*hair*/1, /*job*/1, /*level*/30);
     TS2_LOG("CharSelectSelfTest : 2 persos injectes. Clic gauche = interaction (CRÉER, fleches, "
             "selection). Ferme la fenetre pour quitter.");
