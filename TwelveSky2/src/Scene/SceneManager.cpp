@@ -23,6 +23,7 @@
 #include "Gfx/SpriteBatch.h"    // gfx::g_GameTimeSec
 #include "Game/GameState.h"     // game::g_World (zoneId)
 #include "Game/ClientRuntime.h" // game::Str (messages d'erreur EnterWorld)
+#include "Game/MiscManagers.h"  // game::Cursors() / kCursorDefault (mPOINTER 0x8E714C, reset curseur)
 #include "Game/MapWarp.h"       // game::kSelfActionStateOffset (porte de gating InGame étape 12)
 #include "Net/SendPackets.h"    // Net_SendPacket_Op13 (keepalive) / Net_SendOp64 (poll requête clan/faction)
 #include "Net/CharSelectPackets.h" // net::BuildEnterWorldTail72 (bloc tail72 confirmé)
@@ -788,32 +789,16 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             // alors vide (UIManager::ResetAll() itère dialogs_, vector par défaut vide).
             ui::UIManager::Instance().ResetAll();                          // 0x52C038
 
-            // (2) Util_SetClampedU8Field(&dword_8E714C, 0) @0x52C044 — NON BRANCHÉ.
-            // RECTIFICATION D'ÉTIQUETTE (prouvée dans l'IDB cette mission) : ce n'est PAS un
-            // « reset tooltip », contrairement à ce qu'annoncent Game/EnterWorldFlow.h:91 et
-            // Game/InGameTickFlow.h:128 (fichiers hors de ce front — à corriger ailleurs).
-            // dword_8E714C EST mPOINTER, le jeu de curseurs souris. Chaîne de preuve :
-            //   - App_Init @0x461F8B : `mov ecx, offset dword_8E714C` puis
-            //     `call CursorSet_LoadResources 0x4C0FA0` @0x461F90 ; sur échec, le MessageBox
-            //     empile la chaîne "[Error::mPOINTER.Init()]" (aErrorMpointerI @0x7A6BC0,
-            //     push @0x461FA3) -> ce manager EST mPOINTER ;
-            //   - CursorSet_LoadResources 0x4C0FA0 : `*this = 0` @0x4C0FAC (+0 = index actif),
-            //     puis +1..+9 = 9 HCURSOR (LoadCursorA, ids 0x66..0x6C puis 0x75 et 0x77) ;
-            //   - Cursor_AnimateTick 0x4C1140 : `SetCursor(*(this + *this + 1))` @0x4C115A
-            //     -> *this EST bien l'index du curseur actif ;
-            //   - Util_SetClampedU8Field 0x4C1110 : `if (a2 <= 8) *this = a2;` (borne ≤ 8 =
-            //     exactement 9 slots). Le nom IDA est générique (157 appelants) ; appliqué à
-            //     0x8E714C il n'a qu'un sens : l'index de curseur.
-            // Donc @0x52C044 = « remettre la forme du curseur souris au slot 0 ».
-            // L'équivalent fidèle EXISTE déjà : game::CursorSet::SetActiveSlot(0)
-            // (Game/MiscManagers.cpp:88, miroir exact de 0x4C1110). Il n'est PAS appelable
-            // ici : l'instance est App::cursors_, membre PRIVÉ de App (App/App.h:43), et
-            // App.h/App.cpp ne sont pas possédés par ce front. L'appel serait de toute façon
-            // un no-op prouvé aujourd'hui (seuls LoadResources/DestroyAll écrivent
-            // CursorSet::state, tous deux à 0 ; SetActiveSlot n'a aucun appelant) — même
-            // arbitrage que UI/LoginScene.cpp:809-813 pour ce même appel (EA 0x51A8FD).
-            // TODO [ancre 0x52C044 / 0x4C1110] : exposer App::cursors_ (décision
-            // orchestrateur, fichier non possédé) puis appeler CursorSet::SetActiveSlot(0) ICI.
+            // (2) Util_SetClampedU8Field(&dword_8E714C, 0) @0x52C044 — CÂBLÉ (C-cursor).
+            // dword_8E714C EST mPOINTER, le jeu de 9 curseurs souris (index actif au +0) :
+            //   Util_SetClampedU8Field 0x4C1110 = `if (a2 <= 8) *this = a2;` = game::CursorSet::
+            //   SetActiveSlot(0) (Game/MiscManagers.cpp:88) ; Cursor_AnimateTick 0x4C1140
+            //   réapplique SetCursor(slot) chaque frame. game::Cursors() est le singleton UNIQUE
+            //   désormais tické par App (App.cpp, ownership unifié — cf. C-cursor) : ce reset
+            //   prend donc effet. « Remettre la forme du curseur au slot 0 (flèche) » à l'entrée
+            //   du Loading. Ordre fidèle : ENTRE ResetAllDialogs (0x52C038) et UI_FocusEditBox
+            //   (0x52C050), même triplet que les 4 autres entrées de scène (0x518031/0x51BE72/…).
+            game::Cursors().SetActiveSlot(game::kCursorDefault); // 0x52C044 / 0x4C1110
 
             // (3) UI_FocusEditBox(&g_UIEditBoxMgr, 0) @0x52C050. Avec a2 = 0, l'original
             // (0x50F4A0) fait, sous `if (a2 < 0x16)` (22 slots) : `*this = 0` (index de
@@ -979,16 +964,11 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             // TODO [ancre 0x52C62B / 0x53F630 / 0x69DCA0] : réifier l'état de blend d'overlay
             // (dword_8002C8 + renderer +331..+333) puis l'appeler ICI.
 
-            // (2) Util_SetClampedU8Field(&dword_8E714C, 0) @0x52C637 — NON BRANCHÉ.
-            // Strictement le même appel qu'@0x52C044 (case 0 d'EnterWorld) : voir la chaîne de
-            // preuve complète plus haut dans ce fichier (dword_8E714C EST mPOINTER, le jeu de
-            // curseurs ; 0x4C1110 = `if (a2 <= 8) *this = a2;` soit 9 slots) -> « remettre la
-            // forme du curseur souris au slot 0 ». L'équivalent fidèle existe
-            // (game::CursorSet::SetActiveSlot(0), Game/MiscManagers.cpp:88) mais l'instance est
-            // App::cursors_, membre PRIVÉ de App (App/App.h:43), fichier non possédé -> même
-            // arbitrage qu'@0x52C044.
-            // TODO [ancre 0x52C637 / 0x4C1110] : exposer App::cursors_ (décision orchestrateur)
-            // puis appeler CursorSet::SetActiveSlot(0) ICI.
+            // (2) Util_SetClampedU8Field(&dword_8E714C, 0) @0x52C637 — CÂBLÉ (C-cursor).
+            // Strictement le même appel qu'@0x52C044 (case 0 d'EnterWorld) : reset de la forme du
+            // curseur au slot 0 (flèche) à l'entrée InGame, sur le singleton UNIQUE game::Cursors()
+            // désormais tické par App (ownership unifié). Cf. le bloc @0x52C044 ci-dessus.
+            game::Cursors().SetActiveSlot(game::kCursorDefault); // 0x52C637 / 0x4C1110
 
             // (3) UI_FocusEditBox(&g_UIEditBoxMgr, 0) @0x52C643 — CÂBLÉ.
             // Appel STRICTEMENT identique à @0x52C050 (case 0 d'EnterWorld) : même fonction,

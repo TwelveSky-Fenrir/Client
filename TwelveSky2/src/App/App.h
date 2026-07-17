@@ -47,7 +47,10 @@ private:
     net::NetSystem      net_;
     input::InputSystem  input_;       // DirectInput8 clavier (queue Gfx_InitDevice)
     SceneManager        scene_;
-    game::CursorSet     cursors_;     // mPOINTER : 9 curseurs Win32 (RT_GROUP_CURSOR)
+    // mPOINTER (dword_8E714C) : le jeu de 9 curseurs est le singleton UNIQUE game::Cursors()
+    // (miroir du global du binaire), PAS un membre — sinon deux CursorSet divergeraient (les
+    // scènes/UI poseraient l'index dans le singleton pendant qu'App tickerait le membre). App
+    // en détient le cycle de vie (LoadResources/AnimateTick/DestroyAll sur game::Cursors()).
     std::string         gameDataDir_; // dossier GameData retenu par ResolveGameDataDir()
 
     bool   windowActive_  = true;    // dword_81558C (WM_ACTIVATEAPP)

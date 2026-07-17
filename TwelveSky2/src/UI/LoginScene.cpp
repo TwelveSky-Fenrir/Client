@@ -25,6 +25,7 @@
 #include "Game/StringTables.h"     // game::g_Strings.bannedWords (001.DAT, 1432 mots — filtre de creation)
 #include "Game/ClientRuntime.h"    // game::Str(id) — texte reel StrTable005 pour les notices CharSelect
 #include "Game/GameDatabase.h"     // game::GetItemInfo / WeaponClassFromTypeCode (motion d'entree 0x4CC870)
+#include "Game/MiscManagers.h"     // game::Cursors() / kCursorDefault (reset curseur d'entree de scene, 0x4C1110)
 #include "Asset/ImgFile.h"         // asset::ImgFile (chargeur .IMG, fond réel ServerSelect/Login)
 #include "Gfx/Camera.h"            // gfx::Camera — projection applicative (Gfx_InitDevice 0x69BFC6)
 #include "Core/Log.h"
@@ -958,13 +959,11 @@ void LoginScene::LayoutLogin(int px, int py) {
 void LoginScene::LoginUpdate() {
     switch (loginSub_) {
     case LoginSub::Init:                    // case 0 — ordre littéral EA 0x51A8FD-0x51A976
-        // EA 0x51A8FD : sub_4C1110(&unk_8E714C, 0) — remet à 0 CursorSet::state (index de
-        // curseur actif, cf. Game/MiscManagers.h ; identifié par recoupement avec
-        // Game/IntroFlow.h qui documente le même appel). Manager détenu par App::cursors_,
-        // hors état LoginScene ; actuellement un no-op sans effet observable dans ce
-        // squelette (rien n'écrit encore CursorSet::state ailleurs que sa valeur initiale
-        // 0 posée à App_Init) — TODO concret si un jour un vrai changement de curseur est
-        // câblé : brancher un callback équivalent à IntroHost::OnLogoSequenceBegin.
+        // EA 0x51A8FD : Util_SetClampedU8Field(&dword_8E714C, 0) — remet la forme du curseur
+        // au slot 0 (flèche) à l'entrée Login. CÂBLÉ (C-cursor) : game::Cursors() est le singleton
+        // UNIQUE (mPOINTER) désormais tické par App -> SetActiveSlot(0) prend effet (même triplet
+        // ResetAllDialogs->curseur->focus que les autres entrées de scène, cf. SceneManager @0x52C044).
+        game::Cursors().SetActiveSlot(game::kCursorDefault); // 0x51A8FD / 0x4C1110
         SetFocus(0);                        // EA 0x51A909 — défocus générique avant la RAZ
         okBtn_.Reset(); exitBtn_.Reset(); optBtn_.Reset(); // EA 0x51A90E-0x51A92F (a1[3..5],
         // sous-ensemble identifié des 150 dwords RAZ ; le reste (147 dw) appartient à des

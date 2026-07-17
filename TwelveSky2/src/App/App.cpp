@@ -320,7 +320,7 @@ int App::Run(HINSTANCE hInstance, const char* cmdLine) {
         // sans les ressources RT_GROUP_CURSOR (.rc absent) les slots sont nuls, et un
         // SetCursor(NULL) par frame masquerait le curseur — déviation dev documentée.
         if (cursorsReady_)
-            cursors_.AnimateTick();
+            game::Cursors().AnimateTick(); // singleton UNIQUE (mPOINTER 0x8E714C), cf. C-cursor
     }
 
     Shutdown();                                            // App_Shutdown 0x461642
@@ -424,7 +424,7 @@ bool App::Init() {
     // EMBARQUÉS dans les ressources .exe (RT_GROUP_CURSOR). Échouera tant que
     // ClientSource n'embarque pas les mêmes ids dans son .rc — comportement honnête
     // documenté (Game/MiscManagers.h), non bloquant ici.
-    cursorsReady_ = cursors_.LoadResources(hInst_);
+    cursorsReady_ = game::Cursors().LoadResources(hInst_); // singleton UNIQUE (mPOINTER), cf. C-cursor
     if (cursorsReady_)
         TS2_LOG("[mPOINTER] 9 curseurs charges.");
     else
@@ -858,7 +858,7 @@ void App::Shutdown() {
     // 25. Tips002_Free                 0x4C1830 (mGAMENOTICE) — [no-op binaire + RAII g_Strings.notices].
     // 26. Dict001_Free                 0x4C1400 (mBADWORD) — [no-op binaire + RAII g_Strings.bannedWords].
     // 27. CursorSet_DestroyAll         0x4C10B0 (mPOINTER) — APPEL (DestroyIcon sur les 9 curseurs).
-    cursors_.DestroyAll();
+    game::Cursors().DestroyAll(); // singleton UNIQUE (mPOINTER), cf. C-cursor
     // 28. AutoPlay_ShutdownStub        0x4B43B0 (mTRANSFER) — [no-op] binaire.
     // 29. Net_PacketSizeTable_Dtor     0x464150 (mWORKER) — [no-op] binaire (table de tailles ; couverte par net RAII).
     // 30. Net_Shutdown                 0x462820 (mNETWORK) — APPEL (closesocket + WSACleanup).
