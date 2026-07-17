@@ -64,8 +64,11 @@ std::vector<uint8_t> ReadFxTextureBlock(asset::ByteReader& r) {
         throw asset::AssetError("FX .PARTICLE : texture packedSize dépasse le flux");
     std::vector<uint8_t> out = asset::Zlib::Instance().InflateTo(r.Ptr(), packed, rawSize);
     r.Skip(packed);
-    if (rawSize != imageSize + 8)                       // trailer 8o (cf. ReadTextureBlock @WorldChunk)
-        throw asset::AssetError("FX .PARTICLE : texture rawSize != imageSize+8");
+    // trailer 8o (cf. ReadTextureBlock @WorldChunk) : rawSize == imageSize + 8. Contrôle SANS overflow
+    // (correctif audit : `imageSize + 8` pouvait déborder en uint32 sur un .PARTICLE malformé, laissant
+    // passer un imageSize géant puis un OOB à `out.begin() + imageSize`).
+    if (rawSize < 8 || rawSize - 8 != imageSize || out.size() < imageSize)
+        throw asset::AssetError("FX .PARTICLE : texture rawSize != imageSize+8 (ou flux tronqué)");
     dds.assign(out.begin(), out.begin() + imageSize);   // image décodée = imageSize premiers octets
     return dds;
 }

@@ -1614,10 +1614,37 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
         // 0x6A70B0). AVANT le bloom pour que muzzle/étincelles participent au post-blur, comme dans le
         // binaire (sites 0x52DD14/0x52ECEB/0x52FAD8 précèdent GXD_RenderPostBlur @0x52FB53).
         if (worldReady_ && world_) {
+            IDirect3DDevice9* fxDev = renderer_->Device();
             D3DXMATRIX fxView; camera.BuildViewMatrix(fxView);
+            D3DXMATRIX fxProj; camera.BuildProjMatrix(fxProj,
+                screenH_ ? static_cast<float>(screenW_) / static_cast<float>(screenH_) : 1.0f);
             const float fxRight[3] = { fxView._11, fxView._21, fxView._31 }; // droite caméra en monde
             const float fxUp[3]    = { fxView._12, fxView._22, fxView._32 }; // haut caméra en monde
-            gfx::Fx_SetParticleFrame(renderer_->Device(), fxRight, fxUp, 0 /*maxQuads: pas de plafond*/, nullptr);
+            // (Gfx_BeginUnlitPass 0x69E470) État pipeline billboard OBLIGATOIRE avant Fx_EmitterDraw :
+            // le binaire le pose @0x52FA77 juste avant la passe 3 (Fx_EmitterDraw 0x585E30 ne pose AUCUN
+            // render-state, il ne fait que SetTexture+DrawPrimitiveUP). Décompilé byte-exact de 0x69E470 :
+            // LIGHTING(137)=0, ZWRITEENABLE(14)=0, ALPHABLENDENABLE(27)=1, TSS0 ALPHAOP(4)=MODULATE,
+            // ALPHAARG2(6)=DIFFUSE, SetFVF(0x142 XYZ|DIFFUSE|TEX1), SetTransform(WORLD, identité).
+            // SANS ce bracket, le FVF hérité de RenderSky (XYZRHW pré-transformé écran) réinterprète les
+            // sommets billboard 24o (coords MONDE) -> positions aberrantes, muzzle/hit invisibles.
+            // Ajouts défensifs C++ (le binaire les hérite d'un état permanent qu'on ne garantit pas ici) :
+            // VS/PS null (MeshRenderer laisse ses shaders skinnés bindés), VIEW/PROJ caméra (MeshRenderer
+            // passe par des shaders, pas par SetTransform), SRCBLEND/DESTBLEND alpha standard.
+            D3DXMATRIX fxIdent; D3DXMatrixIdentity(&fxIdent);
+            fxDev->SetVertexShader(nullptr);
+            fxDev->SetPixelShader(nullptr);
+            fxDev->SetRenderState(D3DRS_LIGHTING, FALSE);              // 137,0
+            fxDev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);         // 14,0
+            fxDev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);      // 27,1
+            fxDev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);      // défensif (binaire hérite)
+            fxDev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);  // défensif (binaire hérite)
+            fxDev->SetTextureStageState(0, D3DTSS_ALPHAOP,   D3DTOP_MODULATE); // 4,4
+            fxDev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);   // 6,0
+            fxDev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1); // 322 = 0x142
+            fxDev->SetTransform(D3DTS_WORLD, &fxIdent);              // 256, identité
+            fxDev->SetTransform(D3DTS_VIEW, &fxView);
+            fxDev->SetTransform(D3DTS_PROJECTION, &fxProj);
+            gfx::Fx_SetParticleFrame(fxDev, fxRight, fxUp, 0 /*maxQuads: pas de plafond*/, nullptr);
             for (int pass = 1; pass <= 3; ++pass)
                 for (int i = 0; i < gfx::FxPool_Count(); ++i)
                     gfx::Fx_EmitterDraw(&gfx::FxPool_Slots()[i], pass);
