@@ -97,7 +97,10 @@ static void ParseMesh(ByteReader& r, Mobject2Mesh& m, uint32_t index) {
     ReadPackedTexture(r, m.tex);         // 1 texture SOBJECT (a1+51)   @0x430a80
 
     m.extraTexCount = r.U32();           // a1[65]             @0x430ab1
-    if (m.extraTexCount == 0)            // return 1 @0x430abb : aucune texture additionnelle
+    // 0x430ab9 test eax,eax + 0x430abb jle : comparaison SIGNÉE (<=0 => aucune
+    // texture additionnelle). Un compteur à bit de poids fort (négatif signé) sort
+    // ici comme le binaire, au lieu d'être traité comme un énorme unsigned (OOB).
+    if (static_cast<int32_t>(m.extraTexCount) <= 0) // jle @0x430abb
         return;
     m.extraTex.resize(m.extraTexCount);
     for (uint32_t k = 0; k < m.extraTexCount; ++k) // 56 o chacune (a1[66])   @0x430b22

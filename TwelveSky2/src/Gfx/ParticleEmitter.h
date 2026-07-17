@@ -91,7 +91,7 @@ const EmitterSubtypeHooks& EmitterSubtypeHooksGet();
 // d'offsets 288 o ci-dessous documente le layout binaire d'origine ; la taille
 // C++ diffère (STL modernes) car ce n'est PAS un overlay mémoire.
 //
-//   +0x00  vtable off_7ED548              +0x88  keyframes  std::vector (stride 24)
+//   +0x00  vtable off_7ED548              +0x58  keyframes  std::vector (stride 24)
 //   +0x04  type (arg d'entrée)            +0x70  channels   std::vector (stride 8)
 //   +0x08  vec3[3]                        +0xB4  name2 (chaîne, vide)     [runtime]
 //   +0x14  flag (octet)                   +0xE8  duration (ComputeDuration)

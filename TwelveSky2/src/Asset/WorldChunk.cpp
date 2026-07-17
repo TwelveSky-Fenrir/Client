@@ -177,62 +177,12 @@ CollisionMesh ParseCollisionMesh(std::vector<uint8_t> buf) {
     return cm;
 }
 
-// Décode les 120 o d'en-tête matériau (geo[0..119] = Heap[0..29]) en champs nommés, dans la MÊME
-// struct asset::MeshPartMaterial que le .MOBJECT. Les .WO et .MOBJECT passent par le MÊME
-// MeshPart_Load 0x6AD160, donc l'en-tête est BYTE-IDENTIQUE et le décodage strictement le même
-// que Model.cpp:DecodeMaterialHeader. ADDITIF : `geo` reste conservé brut (aucun champ modifié).
-//
-// Mapping cross-prouvé écriture ↔ lecture (revérifié en IDA, décompilation 2026-07-17) :
-//   MeshPart_Load 0x6AD160 : `qmemcpy((void*)(this+132), Heap, 0x78)` @0x6ad2d1
-//     -> header dword k = Heap[k] = part dword [33+k] = part offset (132 + 4*k).
-//   MeshPart_RenderFull 0x6B0850 : chaque champ porte l'ancre du site qui le LIT au rendu.
-// Les floats sont lus via memcpy (aucun aliasing, aucune invention de valeur).
-void DecodeMeshPartMaterial(const std::vector<uint8_t>& geo, MeshPartMaterial& m) {
-    if (geo.size() < 0x78) {   // 0x78 = 120 o = 30 dwords (Heap[0..29])
-        m.decoded = false;
-        return;
-    }
-    const uint8_t* h = geo.data();
-    auto u32 = [h](size_t dword) -> uint32_t {
-        uint32_t v; std::memcpy(&v, h + 4 * dword, 4); return v;
-    };
-    auto f32 = [h](size_t dword) -> float {
-        float v; std::memcpy(&v, h + 4 * dword, 4); return v;
-    };
-
-    m.subCount = u32(0);                       // header[0] : opaque, non lu au rendu
-
-    m.lightAnim.Enable = u32(1);               // @0x6b087d
-    m.lightAnim.Speed  = f32(2);               // @0x6b08bb (v66 * this[35])
-    for (int i = 0; i < 8; ++i)
-        m.lightAnim.Pairs[i] = f32(3 + i);     // header[3..10] @0x6b08c5 ([0..3]=from, [4..7]=to)
-
-    m.noLight = u32(11);                       // @0x6b099b
-
-    m.glow.Enable = u32(12);                   // @0x6b0a11
-    m.glow.Mode   = u32(13);                   // @0x6b0a1f (1=constant, 2=vue-dépendant)
-    for (int i = 0; i < 4; ++i)
-        m.glow.SpecRGBA[i] = f32(14 + i);      // header[14..17] @0x6b0a48 (D3DMATERIAL9.Specular)
-    m.glow.SpecPower = f32(18);                // @0x6b0a34 (D3DMATERIAL9.Power)
-
-    m.lightOffset = f32(19);                   // @0x6b0a59 (Gfx_SetShadowProjLight this[52])
-
-    m.flipbook.Enable = u32(20);               // @0x6b0d33
-    m.flipbook.Fps    = f32(21);               // @0x6b0d78 (Crt_Dbl2Uint(v66 * this[54]))
-
-    m.uvScroll.tex1.Enable = u32(22);          // @0x6b0f59
-    m.uvScroll.tex1.Mode   = u32(23);          // @0x6b0f73 (switch 1..4)
-    m.uvScroll.tex1.Speed  = f32(24);          // @0x6b1016 (v66 * this[57])
-
-    m.billboard.Enable = u32(25);              // @0x6b107c
-    m.billboard.Mode   = u32(26);              // @0x6b11b0 (1=plan écran / autre=axe libre)
-
-    m.uvScroll.tex2.Enable = u32(27);          // @0x6b19bb
-    m.uvScroll.tex2.Mode   = u32(28);          // @0x6b19d5 (switch 1..4)
-    m.uvScroll.tex2.Speed  = f32(29);          // @0x6b1a78 (v66 * this[62])
-
-    m.decoded = true;
-}
+// NOTE (dédup audit 2026-07-17) : le décodage des 120 o d'en-tête matériau est
+// FACTORISÉ dans asset::DecodeMeshPartMaterialHeader (déclaré Model.h:294, défini
+// Model.cpp) — les .WO et .MOBJECT passent par le MÊME MeshPart_Load 0x6AD160, donc
+// l'en-tête est BYTE-IDENTIQUE : un seul corps évite toute divergence future. Ici on
+// l'appelle avec `mp.geo` (bloc géométrie ≥ 136 o garanti) ; il ne lit que les 120
+// premiers octets. Mapping cross-prouvé écriture↔lecture : voir Model.cpp.
 
 // read_meshpart : [present u32] ; si !=0 -> bloc GXD géométrie + tex1 + tex2 + matériaux.
 WorldMeshPart ReadMeshPart(ByteReader& r) {
@@ -258,8 +208,8 @@ WorldMeshPart ReadMeshPart(ByteReader& r) {
     mp.geoSizeOk = (static_cast<uint64_t>(raw) == expect);
     mp.geo       = std::move(out);
     // Décode les 120 premiers octets du bloc géométrie (= en-tête matériau Heap[0..29]) en champs
-    // nommés (ADDITIF : `geo` intact). Même décodage que le .MOBJECT (MeshPart_Load 0x6AD160 partagé).
-    DecodeMeshPartMaterial(mp.geo, mp.mat);
+    // nommés (ADDITIF : `geo` intact). Décodeur PARTAGÉ avec le .MOBJECT (MeshPart_Load 0x6AD160).
+    DecodeMeshPartMaterialHeader(mp.geo, mp.mat);
     mp.tex1      = ReadTextureBlock(r);      // this+296 (base ; tex1.mode() = base blend this[85])
     mp.tex2      = ReadTextureBlock(r);      // this+348 (2e   ; tex2.mode() = 2e blend   this[98])
     const uint32_t numMat = r.U32();         // this+400

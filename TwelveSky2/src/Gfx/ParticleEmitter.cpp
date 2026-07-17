@@ -331,21 +331,23 @@ Effect::~Effect() {
     ClearEmitters();
 }
 
-// Effect_ClearEmitters 0x42A7F0 — détruit tous les émetteurs et vide le vecteur.
+// Effect_ClearEmitters 0x42A7F0 — détruit tous les émetteurs, vide le vecteur,
+// puis remet loaded=false (*(this+8)=0 @0x42a906) avant de renvoyer 1.
 void Effect::ClearEmitters() {
     for (Emitter* e : emitters)
         delete e;
     emitters.clear();
+    loaded = false;                                         // *(this+8)=0 @0x42a906
 }
 
-// Effect_ResetAllEmitters 0x42B230 — reset runtime de chaque émetteur (motif
-// identique à la boucle de lecture : flag230=0, ResetRuntime, runtime140=0).
+// Effect_ResetAllEmitters 0x42B230 — reset runtime de CHAQUE émetteur : la boucle
+// (0x42b251) n'appelle QUE Emitter_ResetRuntime (0x42b2a1). Contrairement à la
+// boucle de lecture de ReadStream, elle NE remet NI flag230 NI runtime140 (flag230
+// est déjà remis à 0 par ResetRuntime @0x42A23E ; runtime140 reste inchangé).
 void Effect::ResetAllEmitters() {
     for (Emitter* e : emitters) {
         if (!e) continue;
-        e->flag230    = 0;
-        e->ResetRuntime();
-        e->runtime140 = 0;
+        e->ResetRuntime();                                  // Emitter_ResetRuntime @0x42b2a1
     }
 }
 
