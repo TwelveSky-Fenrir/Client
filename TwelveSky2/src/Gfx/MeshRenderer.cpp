@@ -671,6 +671,14 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
     int usePass = kPass_SkinnedLit;
     const GxdShader* mtVS = nullptr;
     const GxdShader* mtPS = nullptr;
+    // Aiguillage multi-texture (Model_DrawSkinnedSubset 0x40CA40 @0x40d62d/@0x40d660) : les modeles a
+    // mat1/mat2 (detail>=2) vont aux passes 3/4 (VS05/VS07+PS06/PS08). ⚠ SUIVI GX-MULTITEX-01 : le PORT
+    // de ces passes rend une armure multi-materiaux SOMBRE (modulation mTexture0 x tex1 x tex2 + eclairage
+    // deplace VS->PS), et un ecart de rendu SEPARE fait ECLATER l'armure multi-mesh (ex. C003035) in-world
+    // -- NON RESOLU par la passe (force-passe-2 essaye, sans effet) NI par le padding d'os (GX-BONEPAD-01,
+    // sans effet -> pas un os hors palette) NI par la palette (le corps de base rend propre+anime = palette
+    // valide). Cause profonde a instrumenter en DYNAMIQUE (positions/BLENDINDICES des sous-meshes eclates
+    // au runtime, x32dbg sur 0x40d4e8/0x40d60d). Routing laisse FIDELE (le binaire fait 3/4).
     if (realShader && lod == 0 && kTextureDetailLevel >= 2) {
         const bool t1 = (M.tex1 != nullptr); // v62 && *(v62+52)
         const bool t2 = (M.tex2 != nullptr); // v56 && *(v56+52)
@@ -733,7 +741,21 @@ void MeshRenderer::DrawSkinnedSubset(const SkinnedMesh& mesh, int lod,
         // mKeyMatrix[40] impose la borne kMaxBones pour ne pas déborder le tableau.
         if (!realShader && boneCount > kMaxBones) boneCount = kMaxBones;
     }
-    if (hKey) useCT->SetMatrixArray(dev_, hKey, palMats, boneCount);
+    // GX-BONEPAD-01 : padde la palette a kMaxBones avec l'identite. Le squelette joueur = 76 os, mais
+    // une armure multi-mesh (ex. C003035) peut referencer un os >= 76 dans ses BLENDINDICES ; sans padding,
+    // mKeyMatrix[boneCount..kMaxBones) garde des matrices PERIMEES (entite precedente) -> sommets
+    // effondres (SCATTER) + normales degenerees (SOMBRE). En remplissant [boneCount,kMaxBones) d'identite,
+    // ces sommets rendent en POSE DE REPOS ASSEMBLEE. Corps de base (os 0..75) inchange. Couvre aussi le
+    // fallback palette invalide (boneCount=1 -> tout identite = bind-pose, plutot que registres perimes).
+    if (hKey) {
+        if (boneCount < kMaxBones) {
+            std::memcpy(paletteScratch_, palMats, static_cast<size_t>(boneCount) * sizeof(D3DXMATRIX));
+            for (UINT b = boneCount; b < kMaxBones; ++b) D3DXMatrixIdentity(&paletteScratch_[b]);
+            useCT->SetMatrixArray(dev_, hKey, paletteScratch_, kMaxBones);
+        } else {
+            useCT->SetMatrixArray(dev_, hKey, palMats, boneCount);
+        }
+    }
 
     // 6) WVP + lumière (SetMatrix +84, SetFloatArray +72).
     if (hWvp) useCT->SetMatrix(dev_, hWvp, &wvp);

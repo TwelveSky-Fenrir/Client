@@ -442,6 +442,13 @@ private:
     // Palette de secours (identité) si aucune palette valide n'est fournie.
     D3DXMATRIX identityPalette_[kMaxBones];
 
+    // GX-BONEPAD-01 : scratch de palette PADDÉE à kMaxBones. Le squelette joueur a 76 os, mais une
+    // armure multi-mesh (ex. C003035) peut référencer un os >= 76 dans ses BLENDINDICES. Sans padding,
+    // mKeyMatrix[76..79] garde des matrices PÉRIMÉES (entité précédente) -> sommets effondrés (scatter)
+    // + normales dégénérées (sombre). On copie la vraie palette dans [0,count) et remplit [count,kMaxBones)
+    // d'identité (pose de repos assemblée) avant SetMatrixArray(kMaxBones).
+    D3DXMATRIX paletteScratch_[kMaxBones];
+
     // ----- Câblage shaders réels npk (AttachShaderSet) — additif W3-F2 ------------------
     // Slots réels chargés du npk (Shader03/04/15). Non possédé. Si nullptr -> fallback HLSL.
     const ShaderSet* shaderSet_ = nullptr;
