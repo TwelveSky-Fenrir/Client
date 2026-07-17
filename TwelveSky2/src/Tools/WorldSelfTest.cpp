@@ -128,6 +128,7 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
     self.name   = "Aventurier";
     self.x = selfX; self.y = selfY; self.z = selfZ;
     self.hp = 100; self.mp = 100;
+    self.anim.state = 1;                        // STAND (idle) — DEEP IDA render : etat 1 debout (pas 0=spawn)
     // Apparence (mêmes bornes que -charselecttest, résout C001001001/C001002001/... sur disque).
     PutBodyU32(self.body, 68, 0);  // race
     PutBodyU32(self.body, 72, 0);  // gender
@@ -140,7 +141,7 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
     // de PALETTE/rendu PlayerPaperdoll vs CharPreview3D, A INVESTIGUER. On laisse le self en corps de base
     // (equip 0 -> variantEff 0 -> C%03d003001, l'entree AssetMgr catalogue[0]) pour une demo propre.
     // Pour tester l'armure : decommenter (FindEquipItemWithField196 + PutBodyU32 108/132).
-    const int32_t armorItem = 0; // FindEquipItemWithField196(34);
+    const int32_t armorItem = 0; // FindEquipItemWithField196(34); -- armure OFF (scatter in-world, cf. SUIVI)
     TS2_LOG("WorldSelfTest : armure equipee id=%d (0 = corps de base).", armorItem);
     PutBodyU32(self.body, 108, static_cast<uint32_t>(armorItem)); // equip[2] = torse
     PutBodyU32(self.body, 132, static_cast<uint32_t>(armorItem)); // equip[5] = jambes
