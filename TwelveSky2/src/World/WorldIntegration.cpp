@@ -392,11 +392,13 @@ bool WorldAssets::LoadShadowTexture(void* user, const char* path) {
     return self->shadow_->LoadDDS(full);
 }
 // CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (WM1/2/3 -> mRANGE1/2/3). Ancre IDA :
-// MapColl_LoadFaces 0x694510. TODO terrain WM (hauteur de sol) : le chunk est chargé (framing GXD
-// byte-exact) mais son `CollisionMesh.raw` n'est JAMAIS décodé typé ni requêté -> sol nul partout.
-// Voir SPEC TS2_WORLD_ROSETTA.md §3 : G01 (décoder raw -> CollisionTri 156o [matIndex@0, plan@124]
-// + QuadNode 48o), puis G02 = porter MapColl_GetGroundHeight 0x697130 (descente quadtree XZ +
-// plane-solve y=(d - x*a - z*c)/b + barycentrique MapColl_RayHitTriangle 0x695ae0). Landing = World/.
+// MapColl_LoadFaces 0x694510. RÉSOLU (Gaps G01/G02/G04, campagne collision) — l'ancien commentaire
+// « raw jamais décodé -> sol nul partout » est PÉRIMÉ : le chunk .WM est désormais DÉCODÉ TYPÉ par
+// asset::WorldChunk::ParseCollisionMesh (WorldChunk.cpp, CollisionTri 156o [matIndex@0, plan@124..136]
+// + QuadNode 48o) et REQUÊTÉ par les MapColl_* portés (MapColl_GetGroundHeight 0x697130 = descente
+// quadtree XZ + plane-solve y=(d - x*a - z*c)/b + barycentrique MapColl_RayHitTriangle 0x695ae0, dans
+// World/WorldMap.cpp ; SegPick pour l'ombre planaire Collision_SegPickA 0x420D60 dans World/CollisionMesh.cpp).
+// MainCollisionMesh() renvoie cette maille décodée, consommée par GetGroundPlaneForShadow / GetGroundHeight.
 bool WorldAssets::LoadFaces(void* user, CollisionSlot slot, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     auto chunk = std::make_unique<asset::WorldChunk>();
