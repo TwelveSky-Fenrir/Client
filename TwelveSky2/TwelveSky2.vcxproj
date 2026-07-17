@@ -196,6 +196,12 @@
     <ClCompile Include="src\Gfx\PlayerPaperdoll.cpp" />
     <ClCompile Include="src\Gfx\ModelCache.cpp" />
     <ClCompile Include="src\Gfx\ModelObjectRenderer.cpp" />
+    <ClCompile Include="src\Gfx\MeshPartMaterial.cpp" />
+    <ClCompile Include="src\Gfx\EquipModelResolver.cpp" />
+    <ClCompile Include="src\Gfx\PlayerMotionSlotResolver.cpp" />
+    <ClCompile Include="src\Gfx\EmitterMeshRenderer.cpp" />
+    <ClCompile Include="src\Gfx\EnvLightingFog.cpp" />
+    <ClCompile Include="src\Gfx\SkyboxCube.cpp" />
     <ClCompile Include="src\Gfx\Renderer.cpp" />
     <ClCompile Include="src\Gfx\ShaderSet.cpp" />
     <ClCompile Include="src\Gfx\SilverLiningSky.cpp" />
@@ -356,6 +362,12 @@
     <ClInclude Include="src\Gfx\PlayerPaperdoll.h" />
     <ClInclude Include="src\Gfx\ModelCache.h" />
     <ClInclude Include="src\Gfx\ModelObjectRenderer.h" />
+    <ClInclude Include="src\Gfx\MeshPartMaterial.h" />
+    <ClInclude Include="src\Gfx\EquipModelResolver.h" />
+    <ClInclude Include="src\Gfx\PlayerMotionSlotResolver.h" />
+    <ClInclude Include="src\Gfx\EmitterMeshRenderer.h" />
+    <ClInclude Include="src\Gfx\EnvLightingFog.h" />
+    <ClInclude Include="src\Gfx\SkyboxCube.h" />
     <ClInclude Include="src\Gfx\FxRenderer.h" />
     <ClInclude Include="src\Gfx\ParticleSystem.h" />
     <ClInclude Include="src\Gfx\ParticleEmitter.h" />
