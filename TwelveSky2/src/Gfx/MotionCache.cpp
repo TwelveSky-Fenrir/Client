@@ -62,6 +62,18 @@ std::string MotionCache::BuildPlayerMotionStem(int race, int gender, int weaponT
     return buf;
 }
 
+// Motion_BuildPathAndLoad 0x4D7390 cas 5 : "F%03d001%03d.MOTION" % (trailIndex+1, motionSub+1),
+// dossier 005 (front F_WEAPONTRAIL). trailIndex = v6 de la traînée (boucle i23<42 d'AssetMgr_
+// InitAllSlots 0x4DEB50) ; motionSub in [0,3) = sous-bloc (boucle interne i24<3) choisi par l'état
+// d'action (Game/WeaponTrailResolver::ResolveWeaponTrailMotionSub).
+std::string MotionCache::BuildWeaponTrailMotionStem(int trailIndex, int motionSub) {
+    if (trailIndex < 0 || trailIndex >= 42) return {};  // 42 entrées (boucle i23<42)
+    if (motionSub  < 0 || motionSub  >= 3)  return {};  // 3 sous-blocs F54DB4/E50/EEC (boucle i24<3)
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "F%03d001%03d", trailIndex + 1, motionSub + 1);
+    return buf;
+}
+
 // Motion_BuildPathAndLoad 0x4D7390 : dossier G03_GDATA\D03_GMOTION\NNN\<stem>.MOTION.
 std::string MotionCache::BuildMotionPath(const std::string& stem, const char* folder) const {
     if (stem.empty()) return {};
@@ -146,6 +158,12 @@ const gfx::MotionPalette* MotionCache::GetForPlayer(int race, int gender, int we
     // PcModel_ResolveEquipSlot 0x4E46A0 (chemin par defaut) : slot joueur par (race,gender,weaponPose,animState).
     const std::string stem = BuildPlayerMotionStem(race, gender, weaponType, animState);
     return Get(stem, "001");
+}
+
+const gfx::MotionPalette* MotionCache::GetForWeaponTrail(int trailIndex, int motionSub) {
+    // Motion de l'effet de traînée (unk_F54DB4/E50/EEC + 468*v6 dans 0x56BF90) : cat. 5, dossier 005.
+    const std::string stem = BuildWeaponTrailMotionStem(trailIndex, motionSub);
+    return Get(stem, "005");
 }
 
 gfx::BonePalette MotionCache::SampleByGameTime(const gfx::MotionPalette& mp, float gameTimeSec) {

@@ -443,6 +443,13 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
         //   Fx_Attach*/muzzle/UI restent TODO ancre (pool g_FxPool/dword_17D06F4 non attache,
         //   aucune aura active a ce spawn -> boucles Fx_Attach* = no-op fidele).
         e->anim.state = RdI32(e->body.data(), kPActionState); // a1[61]=entity+244=body+220 (0x570ED5)
+        // (Vague G — traîne d'arme) Gate maître de Char_DrawWeaponEffectVariantB 0x56BF90 (@0x56c01b :
+        // weaponAnimSlot(this+55=entity+220=body+196) != 0 && !altWeaponSet(this+144=entity+576=body+552)).
+        // Alimentés au spawn comme anim.state ci-dessus -> sinon resolveWeaponTrail échoue au gate =
+        // aucune traîne (dégradation propre). TODO(ancre) : recopier depuis les paquets d'action/skill
+        // qui changent l'anim active (Pkt_ItemActionDispatch/skill) pour refléter les casts en cours de jeu.
+        e->anim.weaponAnimSlot = RdI32(e->body.data(), 196);      // entity+220 = body+196 (idx55)
+        e->anim.altWeaponSet   = RdI32(e->body.data(), 552) != 0; // entity+576 = body+552 (idx144)
         e->anim.fxAuraAttachedLatch = false; // a1[221]=0 (Char_RefreshStatusEffectVisuals 0x570936)
         Char_ApplyActionAnimParams(e->anim); // switch 0x570ED5 (pose 156=0 puis idx156-160)
         // TODO ancre : Fx_Attach* (0x570890/0x570E70), Char_UpdateWeaponGlowState 0x55D740,

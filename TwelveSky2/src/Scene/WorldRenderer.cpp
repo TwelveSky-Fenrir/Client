@@ -29,6 +29,7 @@
 #include "Game/EntityLifecycleTick.h" // g_MonsterTickExt (motionState/animFrame par monstre) — W7
 #include "Gfx/MotionCache.h"      // palette d'os animee (miroir g_ModelMotionArray 0x8E8B30) — W3-F1
 #include "Gfx/PlayerPaperdoll.h"  // paperdoll joueur (calque Char_RenderModel 0x527020) — W3-F1
+#include "Game/WeaponTrailResolver.h" // trainee d'arme : switch id->v6 + stems (front F_WEAPONTRAIL)
 #include "Core/Log.h"
 #include <cstring>
 
@@ -545,6 +546,20 @@ void WorldRenderer::renderPlanarShadows(const std::vector<DrawableEntity>& drawa
                                                        modelHeight * 2.5f, gp) || !gp.valid)
             continue;
 
+        // TRAINEE D'ARME — passe OMBRE PLANAIRE (Char_DrawWeaponEffectVariantB 0x56BF90 ->
+        // SObject_DrawAnimated2 0x4D91C0 -> Model_RenderPlanarShadow 0x40F720). Dessinée AVANT le
+        // corps, comme le bloc traînée en tête de 0x56BF90 précède les pièces de corps. Même
+        // SObject/palette/transformée que la traînée opaque de renderOne -> silhouette aplatie
+        // cohérente. resolveWeaponTrail() self-gate sur hasBody (no-op monstres/PNJ) et indépendante
+        // de la résolution du corps ci-dessous (le `continue` du paperdoll ne l'annule pas).
+        {
+            const gfx::SkinnedModel* trailModel = nullptr;
+            gfx::BonePalette trailPalette;
+            if (resolveWeaponTrail(ent, trailModel, trailPalette))
+                meshRenderer_.DrawModelPlanarShadow(*trailModel, pos, rotDeg, scaleVec,
+                                                    trailPalette, gp.shadowPlane);
+        }
+
         // Résolution du/des modèle(s) + palette — MÊME source que renderOne (le corps et son ombre
         // partagent géométrie ET transformée), pour que la silhouette aplatie corresponde au corps.
         if (ent.hasBody) {
@@ -620,6 +635,53 @@ void WorldRenderer::drawEntityLabel(const std::string& text, const D3DXVECTOR3& 
     if (!worldToScreen(worldPos, viewProj, sx, sy)) return;
     const int w = font_.MeasureText(text.c_str());
     font_.DrawTextStyled(text.c_str(), sx - w / 2, sy, color, gfx::kStyleOutline);
+}
+
+// ===========================================================================
+//  Traînée d'arme — résolution partagée opaque/ombre (front F_WEAPONTRAIL)
+//  Char_DrawWeaponEffectVariantB 0x56BF90 (switch id->v6 @0x56c001, gate état @0x56c411) /
+//  Char_DrawWeaponTrailEffect 0x55E9D0 (même switch, primitive opaque). Cf. WorldRenderer.h.
+// ===========================================================================
+
+bool WorldRenderer::resolveWeaponTrail(const DrawableEntity& ent,
+                                       const gfx::SkinnedModel*& outModel,
+                                       gfx::BonePalette& outPalette) {
+    outModel   = nullptr;
+    outPalette = gfx::BonePalette{}; // repli identité (invalide) par défaut
+
+    // (1) Traînée = effet JOUEUR uniquement (0x55E9D0/0x56BF90 bouclent sur g_EntityArray).
+    if (!ent.hasBody || !modelCache_) return false;
+    // (2) Gate maître @0x56c01b : weaponAnimSlot != 0 ET !altWeaponSet (this+55 / this+144).
+    if (ent.weaponAnimSlot == 0 || ent.altWeaponSet) return false;
+    // (3) Switch id d'anim -> index d'effet v6 ∈ [0,41] (transcrit de 0x56BF90).
+    const int v6 = game::ResolveWeaponTrailIndex(ent.weaponAnimSlot);
+    if (v6 < 0) return false;
+    // (4) Gate d'état d'action (this+61 = entity+244 = CharAnimState::state, porté dans animType)
+    //     -> sous-bloc de motion 0/1/2, ou -1 (aucun dessin).
+    const int motionSub = game::ResolveWeaponTrailMotionSub(ent.animType);
+    if (motionSub < 0) return false;
+
+    // Motion F/cat.5 de l'effet (unk_F54DB4/E50/EEC + 468*v6). Le sous-bloc 2 n'est dessiné QUE
+    // si frameCount>=1 (Motion_GetFrameCount @0x56c43e) ; les sous-blocs 0/1 sont inconditionnels.
+    const gfx::MotionPalette* mp = Motions().GetForWeaponTrail(v6, motionSub);
+    if (game::WeaponTrailMotionSubIsFrameGated(motionSub) && (!mp || mp->frameCount < 1))
+        return false;
+
+    // (5) SObject de l'effet (stem "Y%03d001" cat.9, résolu par ModelCache::Get). Sans modèle
+    //     sur disque -> pas de traînée (SObject_Load échouerait pareillement dans le binaire).
+    const gfx::SkinnedModel* model = modelCache_->Get(game::BuildWeaponTrailStem(v6));
+    if (!model || model->Empty()) return false;
+
+    // Palette d'os : même curseur (entity+248 = this+62 = animCursor) que le corps. Repli identité
+    // si aucune motion ne résout (sous-blocs 0/1) — SampleByCursor/SampleByGameTime rendent une
+    // BonePalette invalide dans ce cas, DrawModel retombe alors sur identityPalette_.
+    if (mp) {
+        outPalette = ent.hasAnimCursor
+                        ? gfx::MotionCache::SampleByCursor(*mp, ent.animCursor)
+                        : gfx::MotionCache::SampleByGameTime(*mp, game::g_World.gameTimeSec);
+    }
+    outModel = model;
+    return true;
 }
 
 // ===========================================================================
@@ -704,6 +766,22 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
     // DEVENUE FAUSSE, corrigée. Ces entités n'ont AUCUN libellé dans le client d'origine
     // (Char_DrawNameTag 0x583470 = code mort, catégorie de clic 6 = aucun dessin — cf.
     // drawNameplatePass, case 6). Elles ne produisent donc plus rien du tout ici.
+
+    // TRAINEE D'ARME — passe OPAQUE (Char_DrawWeaponTrailEffect 0x55E9D0 -> SObject_DrawEx 0x4D9330
+    // -> Model_Render 0x40EBB0), dessinée AVANT le corps : dans 0x55E9D0 le bloc traînée (switch
+    // @0x55EAxx) précède le dessin du corps (flt_F59A7C/F5B21C @0x561750/0x561949) — même ordre que
+    // dans 0x56BF90 (traînée en tête). Même transformée que le corps (pos=this+63, cap=this+69=rotDeg.y,
+    // scaleVec ; animTime=this+62=animCursor via la palette). resolveWeaponTrail() self-gate sur
+    // hasBody -> no-op pour monstres/PNJ ; gate strict (weaponAnimSlot/altWeaponSet/v6/état) => pas de
+    // traînée permanente. Indépendante de la résolution du corps (émise même si le corps retombe sur
+    // le cube). ⚠ weaponAnimSlot non alimenté réseau à ce jour -> aucune traînée en pratique (cf. header).
+    {
+        const gfx::SkinnedModel* trailModel = nullptr;
+        gfx::BonePalette trailPalette;
+        if (resolveWeaponTrail(ent, trailModel, trailPalette))
+            meshRenderer_.DrawModel(*trailModel, pos, rotDeg, scaleVec, trailPalette);
+    }
+
     if (ent.bodyMeshEligible) {
         if (ent.hasBody) {
             // JOUEUR — PlayerPaperdoll (calque Char_RenderModel 0x527020) : UNE palette d'os
@@ -737,6 +815,7 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
             drawPlaceholderCube(pos, scale, ent.placeholderColor, rotDeg.y, view, proj);
         }
     }
+
     // NOTE FIDÉLITÉ : monstre = chemin le mieux ancré (Char_Draw 0x5805C0 EST le dessin monstre
     // en jeu). Joueur = extrapolation de Char_RenderModel 0x527020 (dessin corps joueur en jeu non
     // localisé statiquement) — palette animée appliquée en jeu comme choix honnête, supérieure à
@@ -1212,6 +1291,19 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         ent.animType      = p.anim.state;                       // entity+244, selecteur de clip (reseau)
         ent.animCursor    = p.anim.animFrame;                   // entity+248, curseur reel (avance en UPDATE)
         ent.hasAnimCursor = game::Player_AnimCursorTickIsWired();
+
+        // TRAINEE D'ARME (front F_WEAPONTRAIL, 2026-07-17) — gate maître de
+        // Char_DrawWeaponTrailEffect 0x55E9D0 (opaque) / Char_DrawWeaponEffectVariantB 0x56BF90
+        // (ombre) : weaponAnimSlot (entity+220 = this+55, id d'anim de skill/arme actif) -> switch
+        // game::ResolveWeaponTrailIndex ; altWeaponSet (entity+576 = this+144) doit valoir 0. Lus
+        // depuis CharAnimState, valables pour soi (i==0) ET les distants sans distinction (même
+        // champ entity+220/+576 pour tous). ⚠ NON alimentés depuis le réseau à ce jour côté
+        // ClientSource (CharAnimState::weaponAnimSlot/altWeaponSet ne sont écrits nulle part — cf.
+        // rapport de front / integrationForMain) -> weaponAnimSlot vaut 0 -> le gate échoue ->
+        // AUCUNE traînée n'est émise (dégradation propre). Se résorbe dès que MAIN peuple ces
+        // champs (EntityManager, body+196 / body+552 = entity+220 / entity+576).
+        ent.weaponAnimSlot = p.anim.weaponAnimSlot;             // entity+220 = this+55
+        ent.altWeaponSet   = p.anim.altWeaponSet;               // entity+576 = this+144
         // reflectionEligible reste false (défaut) : Char_DrawReflection 0x581090 n'est JAMAIS
         // appelée sur g_EntityArray dans le binaire d'origine (appelant unique @0x52DB09, dans
         // la boucle monstre) -> câbler drawReflectionOverlay() ICI serait une invention.

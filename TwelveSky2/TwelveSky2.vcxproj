@@ -135,6 +135,7 @@
     <ClCompile Include="src\Game\ActionStateMachine.cpp" />
     <ClCompile Include="src\Game\AnimationTick.cpp" />
     <ClCompile Include="src\Game\PlayerAnimCursorTick.cpp" />
+    <ClCompile Include="src\Game\WeaponTrailResolver.cpp" />
     <ClCompile Include="src\Game\AutoPlaySystem.cpp" />
     <ClCompile Include="src\Game\AutoTargetCombatGate.cpp" />
     <ClCompile Include="src\Game\BitPacking.cpp" />
@@ -295,6 +296,7 @@
     <ClInclude Include="src\Game\ActionStateMachine.h" />
     <ClInclude Include="src\Game\AnimationTick.h" />
     <ClInclude Include="src\Game\PlayerAnimCursorTick.h" />
+    <ClInclude Include="src\Game\WeaponTrailResolver.h" />
     <ClInclude Include="src\Game\AutoPlaySystem.h" />
     <ClInclude Include="src\Game\AutoTargetCombatGate.h" />
     <ClInclude Include="src\Game\BitPacking.h" />

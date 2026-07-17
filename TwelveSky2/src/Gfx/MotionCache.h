@@ -75,6 +75,17 @@ public:
     // PlayerPaperdoll. nullptr sinon.
     const gfx::MotionPalette* GetForPlayer(int race, int gender, int weaponType, int animState);
 
+    // Palette d'animation de la TRAINEE D'ARME (front F_WEAPONTRAIL, 2026-07-17) — motion cat. 5
+    // "F%03d001%03d.MOTION" % (trailIndex+1, motionSub+1), dossier 005 (Motion_BuildPathAndLoad
+    // 0x4D7390 case 5, cf. Docs/TS2_EXTRACT_WEAPON_TRAIL_V2.md §3). trailIndex = v6 in [0,42) issu
+    // du switch Game/WeaponTrailResolver.h ; motionSub in [0,3) = sous-bloc choisi par l'etat
+    // d'action (ResolveWeaponTrailMotionSub) et indexe unk_F54DB4/E50/EEC dans le binaire. C'est le
+    // MEME cache que le corps (fidelite : dans 0x56BF90 la trainee et le corps partagent
+    // g_ModelMotionArray via Motion_GetData). nullptr si trailIndex/motionSub hors bornes, fichier
+    // absent ou parsing KO. Le frameCount de la palette (MotionPalette+4) alimente le gate
+    // Motion_GetFrameCount>=1 du sous-bloc 2 (cf. Scene/WorldRenderer.cpp::resolveWeaponTrail).
+    const gfx::MotionPalette* GetForWeaponTrail(int trailIndex, int motionSub);
+
     // Echantillonne la tranche d'os de la frame courante par g_World.gameTimeSec.
     //
     // ///// MISATTRIBUTION CORRIGEE — Passe 4 / vague W7, front motion-anim (2026-07-16) /////
@@ -148,6 +159,7 @@ private:
     static std::string BuildMonsterMotionStem(int kindIndex, int animType); // "M%03d001%03d"
     static std::string BuildNpcMotionStem(int kindIndex, int animType);     // "N%03d001%03d"
     static std::string BuildPlayerMotionStem(int race, int gender, int weaponType, int animState); // "C%03d%03d%03d"
+    static std::string BuildWeaponTrailMotionStem(int trailIndex, int motionSub); // "F%03d001%03d" (cat.5, dossier 005)
 
     // Chemin complet <gameDataDir>\G03_GDATA\D03_GMOTION\NNN\<stem>.MOTION (0x4D7390).
     std::string BuildMotionPath(const std::string& stem, const char* folder) const;

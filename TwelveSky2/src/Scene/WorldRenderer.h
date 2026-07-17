@@ -500,6 +500,21 @@ private:
         uint32_t    monsterDefId = 0;
         uint32_t    weaponItemId = 0;
 
+        // TRAINEE D'ARME (front F_WEAPONTRAIL, 2026-07-17) — effet de swoosh/lueur skinné dessiné
+        // pendant un cast, JOUEURS UNIQUEMENT (Char_DrawWeaponTrailEffect 0x55E9D0 opaque /
+        // Char_DrawWeaponEffectVariantB 0x56BF90 ombre, tous deux sur g_EntityArray). Gate maître
+        // @0x56c01b : dessiné seulement si weaponAnimSlot != 0 ET !altWeaponSet.
+        //   weaponAnimSlot = CharAnimState::weaponAnimSlot (entity+220 = this+55), id d'anim de
+        //                    skill/arme actif -> switch game::ResolveWeaponTrailIndex -> v6 ∈ [0,41].
+        //   altWeaponSet   = CharAnimState::altWeaponSet   (entity+576 = this+144).
+        // Renseignés pour les joueurs (hasBody) ; 0/false pour monstres/PNJ (pas de traînée).
+        // ⚠ À CE JOUR weaponAnimSlot/altWeaponSet ne sont PAS alimentés depuis le réseau côté
+        // ClientSource (cf. rapport de front / integrationForMain) -> weaponAnimSlot vaut 0 ->
+        // le gate échoue -> AUCUNE traînée n'est émise (dégradation propre, pas de crash). Le
+        // câblage devient effectif dès que MAIN peuple ces champs (EntityManager, body+196/+552).
+        int         weaponAnimSlot = 0;
+        bool        altWeaponSet   = false;
+
         // PNJ DE DÉCOR (mission "PNJ DECOR VISIBLES A L'ÉCRAN", 2026-07-14, cf. bandeau de
         // tête §"PNJ") : non-nul UNIQUEMENT pour les entrées de `game::ZoneNpcs()`
         // (StaticNpcLoader) — jamais pour joueurs/monstres/PNJ gameplay. Consommé par
@@ -570,6 +585,23 @@ private:
     };
     void renderOne(const DrawableEntity& ent, const game::DrawCullContext& cull,
                   const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXMATRIX& viewProj);
+
+    // TRAINEE D'ARME (front F_WEAPONTRAIL) — résolution PARTAGÉE entre la passe opaque (renderOne,
+    // Char_DrawWeaponTrailEffect 0x55E9D0 -> DrawModel) et la passe d'ombre planaire
+    // (renderPlanarShadows, Char_DrawWeaponEffectVariantB 0x56BF90 -> DrawModelPlanarShadow), pour
+    // que la silhouette aplatie corresponde exactement à la traînée opaque (même SObject, même
+    // palette, même transformée que le corps). Applique le gate complet du binaire :
+    //   1. joueur (hasBody) + modelCache_ prêt,
+    //   2. weaponAnimSlot != 0 && !altWeaponSet (@0x56c01b),
+    //   3. v6 = ResolveWeaponTrailIndex(weaponAnimSlot) != -1,
+    //   4. motionSub = ResolveWeaponTrailMotionSub(animType=state) != -1,
+    //   5. sous-bloc 2 : garde frameCount>=1 (Motion_GetFrameCount @0x56c43e).
+    // Renvoie true + (outModel, outPalette) prêts à dessiner ; false = aucune traînée (skip propre).
+    // outPalette : SampleByCursor(animCursor) si hasAnimCursor, sinon repli SampleByGameTime — même
+    // curseur (entity+248 = this+62) que le corps.
+    bool resolveWeaponTrail(const DrawableEntity& ent,
+                            const gfx::SkinnedModel*& outModel,
+                            gfx::BonePalette& outPalette);
 
     // =======================================================================
     // Passe OMBRE PLANAIRE PROJETÉE — Vague B / branchement B8 (front F_ENTITY3D).
