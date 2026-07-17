@@ -19,6 +19,12 @@
 #include <string>
 #include <vector>
 
+// asset::MeshPartMaterial (en-tête matériau 120 o décodé) : RÉUTILISÉ tel quel pour le
+// WorldMeshPart des .WO. Les .WO ET les .MOBJECT passent par le MÊME chargeur MeshPart_Load
+// 0x6AD160, donc leur en-tête matériau est BYTE-IDENTIQUE — on partage donc la même struct
+// (pas de doublon : AssetSelfTest.cpp inclut les deux en-têtes dans la même unité).
+#include "Asset/Model.h"
+
 namespace ts2::asset {
 
 // Sous-format détecté (par extension). WM et WJ partagent la même structure.
@@ -38,6 +44,17 @@ struct TextureBlock {
     std::string imgType;             // "DDS", "BMP", ou hex des 4 octets magiques
     uint32_t    trailer[2] = {0, 0}; // 8 octets à l'offset imageSize (deux u32)
     std::vector<uint8_t> data;       // image décodée (imageSize octets) — exploitable en aval
+
+    // --- Trailer décodé (Tex_LoadCompressedFromHandle 0x6A9CF0) ---------------
+    // Le bloc décompressé vaut [image(imageSize)][u32 @imageSize][u32 @imageSize+4]. Les DEUX
+    // u32 de queue sont rangés dans la struct texture runtime (52 o), prouvé par décompilation :
+    //   struct+40 = trailer[0]  (this[10], écrit `*(this+10)=*(lpMem+imageSize)`   @0x6a9ea1)
+    //   struct+44 = trailer[1]  (this[11], écrit `*(this+11)=*(lpMem+imageSize+4)` @0x6a9eab)
+    // Pour les textures d'un MeshPart (part+296 = base, part+348 = 2e), le champ +44 EST le mode
+    // de blend LU par MeshPart_RenderFull 0x6B0850 : base = `this[85]` (v24), 2e = `this[98]`
+    // (v42). Valeurs : 1 = alpha-test (RS15=1/RS24=128), 2 = blend alpha, autre = additif (si fade).
+    uint32_t category() const { return trailer[0]; } // struct+40 (this[10]) @0x6a9ea1
+    uint32_t mode()     const { return trailer[1]; } // struct+44 (this[11]) @0x6a9eab = blend MeshPart
 };
 
 // -------------------------------------------------------------------------
@@ -150,10 +167,21 @@ struct WorldMeshPart {
     bool     present   = false;
     uint32_t A = 0, B = 0, C = 0, D = 0;
     bool     geoSizeOk = false;      // raw == 136 + (A<<6) + 32*A*B + 6*D
-    std::vector<uint8_t> geo;        // bloc GXD géométrie décodé
-    TextureBlock tex1;               // this+296
-    TextureBlock tex2;               // this+348
-    std::vector<TextureBlock> materials; // this+404[] (num_mat entrées)
+    std::vector<uint8_t> geo;        // bloc GXD géométrie décodé (les 120 premiers o = en-tête mat)
+    TextureBlock tex1;               // this+296 (texture de BASE ; tex1.mode() = base blend this[85])
+    TextureBlock tex2;               // this+348 (2e texture   ; tex2.mode() = 2e blend   this[98])
+    std::vector<TextureBlock> materials; // this+404[] (num_mat entrées = atlas flipbook this[101])
+
+    // En-tête matériau 120 o (Heap[0..29]) DÉCODÉ en champs nommés — MÊME struct et MÊME décodage
+    // que le .MOBJECT (chargeur MeshPart_Load 0x6AD160 partagé ; `qmemcpy(this+132, Heap, 0x78)`
+    // @0x6ad2d1). ADDITIF : `geo` reste conservé brut (fidélité + audit). Chaque champ pilote une
+    // couche de MeshPart_RenderFull 0x6B0850 (mapping cross-prouvé écriture↔lecture, voir Model.h).
+    MeshPartMaterial mat;            // décodé si mat.decoded (geo >= 120 o)
+
+    // Cas billboard-quad détecté par MeshPart_Load @0x6ad413 : `B==4 && C==4 && D==2` -> le part
+    // est un gabarit de quad face-caméra (2 triangles / 4 sommets), AABB des 4 verts calculé au
+    // chargement. Complète le flag mat.billboard.Enable (this[58]).
+    bool IsBillboardQuad() const { return B == 4 && C == 4 && D == 2; }
 };
 
 // Modèle statique (Model_LoadFromHandle) = liste de MeshPart.

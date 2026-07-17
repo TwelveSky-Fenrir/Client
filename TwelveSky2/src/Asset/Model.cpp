@@ -278,6 +278,63 @@ static void ParseGeometry(const std::vector<uint8_t>& blob, MGeometry& g) {
     g.indices  = slice(idx);
 }
 
+// Décode les 120 o d'en-tête matériau (MGeometry::header = Heap[0..29]) en champs nommés.
+// ADDITIF : ne modifie ni `header` ni aucun champ existant — pure réinterprétation.
+// PARTAGÉ .MOBJECT / .WO : déclaré dans Model.h, réutilisé par WorldMeshPart (en-tête
+// BYTE-IDENTIQUE, même chargeur MeshPart_Load 0x6AD160).
+//
+// Mapping cross-prouvé écriture ↔ lecture :
+//   MeshPart_Load 0x6AD160 : `qmemcpy((void*)(this+132), Heap, 0x78)` @0x6ad2d1
+//     -> header dword `k` = Heap[k] = part dword [33+k] = part offset (132 + 4*k).
+//   MeshPart_RenderFull 0x6B0850 : chaque champ porte l'ancre du site qui le LIT.
+// Les floats sont lus tels quels via memcpy (aucun aliasing, pas d'invention de valeur).
+void DecodeMeshPartMaterialHeader(const std::vector<uint8_t>& header, MeshPartMaterial& m) {
+    if (header.size() < MGeometry::kHeaderSize) {   // 0x78 = 30 dwords
+        m.decoded = false;
+        return;
+    }
+    const uint8_t* h = header.data();
+    auto u32 = [h](size_t dword) -> uint32_t {
+        uint32_t v; std::memcpy(&v, h + 4 * dword, 4); return v;
+    };
+    auto f32 = [h](size_t dword) -> float {
+        float v; std::memcpy(&v, h + 4 * dword, 4); return v;
+    };
+
+    m.subCount = u32(0);                       // header[0] : opaque, non lu au rendu
+
+    m.lightAnim.Enable = u32(1);               // @0x6b087d
+    m.lightAnim.Speed  = f32(2);               // @0x6b08bb (v66 * this[35])
+    for (int i = 0; i < 8; ++i)
+        m.lightAnim.Pairs[i] = f32(3 + i);     // header[3..10] @0x6b08c5 ([0..3]=from, [4..7]=to)
+
+    m.noLight = u32(11);                       // @0x6b099b
+
+    m.glow.Enable = u32(12);                   // @0x6b0a11
+    m.glow.Mode   = u32(13);                   // @0x6b0a1f (1=constant, 2=vue-dépendant)
+    for (int i = 0; i < 4; ++i)
+        m.glow.SpecRGBA[i] = f32(14 + i);      // header[14..17] @0x6b0a48 (D3DMATERIAL9.Specular)
+    m.glow.SpecPower = f32(18);                // @0x6b0a34 (D3DMATERIAL9.Power)
+
+    m.lightOffset = f32(19);                   // @0x6b0a59 (Gfx_SetShadowProjLight this[52])
+
+    m.flipbook.Enable = u32(20);               // @0x6b0d33
+    m.flipbook.Fps    = f32(21);               // @0x6b0d78 (Crt_Dbl2Uint(v66 * this[54]))
+
+    m.uvScroll.tex1.Enable = u32(22);          // @0x6b0f59
+    m.uvScroll.tex1.Mode   = u32(23);          // @0x6b0f73 (switch 1..4)
+    m.uvScroll.tex1.Speed  = f32(24);          // @0x6b1016 (v66 * this[57])
+
+    m.billboard.Enable = u32(25);              // @0x6b107c
+    m.billboard.Mode   = u32(26);              // @0x6b11b0 (1=plan écran / autre=axe libre)
+
+    m.uvScroll.tex2.Enable = u32(27);          // @0x6b19bb
+    m.uvScroll.tex2.Mode   = u32(28);          // @0x6b19d5 (switch 1..4)
+    m.uvScroll.tex2.Speed  = f32(29);          // @0x6b1a78 (v66 * this[62])
+
+    m.decoded = true;
+}
+
 bool MObject::Load(const std::string& path) {
     *this = MObject{}; // remise à zéro
 
@@ -302,6 +359,7 @@ bool MObject::Load(const std::string& path) {
             }
             std::vector<uint8_t> geo = ReadEntity(r, p.geoRaw, p.geoPacked);
             ParseGeometry(geo, p.geo);
+            DecodeMeshPartMaterialHeader(p.geo.header, p.mat); // décode les 120 o d'en-tête en champs nommés (ADDITIF)
             if (!p.geo.sizeOk) {
                 warned = true;
                 TS2_WARN("MOBJECT : part %u : taille geometrie interne incoherente : %s",

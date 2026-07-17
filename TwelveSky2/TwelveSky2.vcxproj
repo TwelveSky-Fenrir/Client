@@ -121,6 +121,9 @@
     <ClCompile Include="src\Asset\AtmosphereFile.cpp" />
     <ClCompile Include="src\Asset\ImgFile.cpp" />
     <ClCompile Include="src\Asset\Model.cpp" />
+    <ClCompile Include="src\Asset\SObjectMeshHeader.cpp" />
+    <ClCompile Include="src\Asset\DdsPixelFormat.cpp" />
+    <ClCompile Include="src\Asset\Mobject2.cpp" />
     <ClCompile Include="src\Asset\Motion.cpp" />
     <ClCompile Include="src\Asset\NpkArchive.cpp" />
     <ClCompile Include="src\Asset\Sound.cpp" />
@@ -186,6 +189,7 @@
     <ClCompile Include="src\Gfx\MotionCache.cpp" />
     <ClCompile Include="src\Gfx\FxRenderer.cpp" />
     <ClCompile Include="src\Gfx\ParticleSystem.cpp" />
+    <ClCompile Include="src\Gfx\ParticleEmitter.cpp" />
     <ClCompile Include="src\Gfx\ZoneFxEmitter.cpp" />
     <ClCompile Include="src\Gfx\FxBillboard.cpp" />
     <ClCompile Include="src\Gfx\FxSetters.cpp" />
@@ -280,6 +284,9 @@
     <ClInclude Include="src\Asset\FileUtil.h" />
     <ClInclude Include="src\Asset\ImgFile.h" />
     <ClInclude Include="src\Asset\Model.h" />
+    <ClInclude Include="src\Asset\SObjectMeshHeader.h" />
+    <ClInclude Include="src\Asset\DdsPixelFormat.h" />
+    <ClInclude Include="src\Asset\Mobject2.h" />
     <ClInclude Include="src\Asset\Motion.h" />
     <ClInclude Include="src\Asset\NpkArchive.h" />
     <ClInclude Include="src\Asset\Sound.h" />
@@ -351,6 +358,7 @@
     <ClInclude Include="src\Gfx\ModelObjectRenderer.h" />
     <ClInclude Include="src\Gfx\FxRenderer.h" />
     <ClInclude Include="src\Gfx\ParticleSystem.h" />
+    <ClInclude Include="src\Gfx\ParticleEmitter.h" />
     <ClInclude Include="src\Gfx\ZoneFxEmitter.h" />
     <ClInclude Include="src\Gfx\FxBillboard.h" />
     <ClInclude Include="src\Gfx\FxSetters.h" />

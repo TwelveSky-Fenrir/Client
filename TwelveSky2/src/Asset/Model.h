@@ -209,6 +209,90 @@ struct MGeometry {
     bool     sizeOk = false;       // 0x88 + mats + vtx + idx == taille décompressée
 };
 
+// En-tête matériau 120 o du MeshPart, DÉCODÉ en champs nommés.
+//
+// Provenance : MeshPart_Load 0x6AD160 copie les 120 premiers octets du blob géométrie
+// décompressé dans part+132 (`qmemcpy((void*)(this+132), Heap, 0x78)` @0x6ad2d1), soit
+// Heap[0..29] = 30 dwords. Ce même blob est conservé brut dans `MGeometry::header`
+// (kHeaderSize = 0x78) ; on le RÉINTERPRÈTE ici sans le modifier (décodage ADDITIF ;
+// geo.header reste intact pour audit).
+//
+// Correspondance d'offset prouvée par l'accord écriture (Load) ↔ lecture
+// (MeshPart_RenderFull 0x6B0850) : header dword `k` = Heap[k] = part dword [33+k] =
+// part offset (132 + 4*k). Chaque champ porte l'ancre du site qui le LIT au rendu.
+// A/B/X/D (Heap[30..33]) sont HORS de ce bloc (déjà exposés en MGeometry::M/V/X/I).
+//
+// STRUCT PARTAGÉE : les .MOBJECT (MeshPart) ET les .WO (WorldMeshPart, Asset/WorldChunk.h)
+// passent par le MÊME chargeur MeshPart_Load 0x6AD160 → en-tête matériau BYTE-IDENTIQUE.
+// WorldMeshPart réutilise donc CE type (cf. bandeau Asset/WorldChunk.h) — pas de doublon.
+//
+// ⚠ Sémantique fine NON PINNÉE (résidu runtime, cf. TS2_DEEP_MESHPART_MATERIAL.md §10 /
+// TS2_DEEP_MOBJECT.md §2) : le rôle R/G/B/A des canaux de `lightAnim.Pairs` (passés à
+// Gfx_SetLight slot 2 @0x6b0988 comme couleur diffuse animée) et des canaux
+// `glow.SpecRGBA` (posés en D3DMATERIAL9.Specular @0x6b0a48) — seuls les OFFSETS sont
+// prouvés, pas l'ordre des composantes.
+struct MeshPartMaterial {
+    // header[0] = Heap[0] : sous-compte interne, JAMAIS lu par MeshPart_RenderFull
+    // (exposé pour complétude ; ne rien en déduire).
+    uint32_t subCount = 0;
+
+    // Lumière émissive animée (ping-pong triangulaire) — gate `this[34]` @0x6b087d.
+    // Boucle 4 canaux `v10=(float*)(this+144)` : canal i lit v10[0]=Pairs[i] (« from »)
+    // et v10[4]=Pairs[i+4] (« to ») @0x6b08c5 ; phase = v66 * Speed @0x6b08bb.
+    struct {
+        uint32_t Enable  = 0;                        // header[1]  = part[34] (+136)  @0x6b087d
+        float    Speed   = 0.0f;                     // header[2]  = part[35] (+140)  @0x6b08bb
+        float    Pairs[8] = {0,0,0,0,0,0,0,0};       // header[3..10] = part[36..43] (+144..+175)
+                                                     //   [0..3]=« from », [4..7]=« to » ; canaux non pinnés
+    } lightAnim;
+
+    // Neutralise la lumière 0 (Gfx_SetLight(1,0…)) — gate `this[44]` @0x6b099b.
+    uint32_t noLight = 0;                            // header[11] = part[44] (+176)
+
+    // Glow spéculaire vue-dépendant : Gfx_SetMaterialEmissive pose en réalité le
+    // D3DMATERIAL9.Specular (RGBA) + Power — gate `a5 && this[45] && !this[99]` @0x6b0a11.
+    struct {
+        uint32_t Enable      = 0;                    // header[12] = part[45] (+180)  @0x6b0a11
+        uint32_t Mode        = 0;                    // header[13] = part[46] (+184)  @0x6b0a1f (1=constant, 2=vue-dépendant)
+        float    SpecRGBA[4] = {0,0,0,0};            // header[14..17] = part[47..50] (+188..+203) @0x6b0a48 (this+188=(_DWORD*)this+47)
+        float    SpecPower   = 0.0f;                 // header[18] = part[51] (+204)  @0x6b0a34 (D3DMATERIAL9.Power)
+    } glow;
+
+    // Scalaire d'intensité de la lumière de projection (Gfx_SetShadowProjLight(this[52],…))
+    // @0x6b0a59. Hors de la liste demandée mais dans les 120 o : exposé pour un décodage complet.
+    float lightOffset = 0.0f;                        // header[19] = part[52] (+208)
+
+    // Flipbook de la texture de base (atlas animé, modulo matCount) — gate `this[53]` @0x6b0d33.
+    struct {
+        uint32_t Enable = 0;                         // header[20] = part[53] (+212)  @0x6b0d33
+        float    Fps    = 0.0f;                      // header[21] = part[54] (+216)  @0x6b0d78 (Crt_Dbl2Uint(v66*this[54]))
+    } flipbook;
+
+    // Défilement UV par matrice de texture. Mode (switch 1..4) :
+    // 1=scroll V, 2=scroll U, 3=diagonale, 4=anti-diagonale ; vitesse = v66 * Speed.
+    struct UvScroll {
+        uint32_t Enable = 0;                         // tex1 header[22]=part[55](+220) @0x6b0f59 | tex2 header[27]=part[60](+240) @0x6b19bb
+        uint32_t Mode   = 0;                         // tex1 header[23]=part[56](+224) @0x6b0f73 | tex2 header[28]=part[61](+244) @0x6b19d5
+        float    Speed  = 0.0f;                      // tex1 header[24]=part[57](+228) @0x6b1016 | tex2 header[29]=part[62](+248) @0x6b1a78
+    };
+    struct {
+        UvScroll tex1;                               // header[22..24] (stage 0)
+        UvScroll tex2;                               // header[27..29] (2e passe)
+    } uvScroll;
+
+    // Overlay billboard face-caméra (quad construit CPU + DrawPrimitiveUP) — gate `this[58]` @0x6b107c.
+    struct {
+        uint32_t Enable = 0;                         // header[25] = part[58] (+232)  @0x6b107c
+        uint32_t Mode   = 0;                         // header[26] = part[59] (+236)  @0x6b11b0 (1=plan écran flt_8001D4 / autre=axe libre unk_80022C)
+    } billboard;
+
+    bool decoded = false;                            // true si les 120 o d'en-tête ont été décodés
+};
+
+// Décode les 120 o d'en-tête matériau (MGeometry::header) en champs nommés (ADDITIF).
+// Partagé .MOBJECT / .WO (même MeshPart_Load 0x6AD160). Implémentation : Model.cpp.
+void DecodeMeshPartMaterialHeader(const std::vector<uint8_t>& header, MeshPartMaterial& out);
+
 // Un "part" du modèle MOBJECT (MeshPart_Load 0x6AD160).
 struct MeshPart {
     uint32_t index    = 0;
@@ -216,6 +300,7 @@ struct MeshPart {
     uint32_t geoRaw   = 0;      // rawSize de l'enveloppe géométrie
     uint32_t geoPacked = 0;     // packedSize de l'enveloppe géométrie
     MGeometry geo;
+    MeshPartMaterial mat;       // en-tête matériau 120 o décodé (depuis geo.header) — ADDITIF
     MTexture  tex0;             // texture principale
     MTexture  tex1;             // 2e texture
     uint32_t  matCount = 0;     // nombre de matériaux additionnels
