@@ -58,10 +58,12 @@
 // recréer sur device-lost (pas de OnDeviceLost/Reset). Aucun câblage dans la boucle de rendu :
 // FLOTTE C/MAIN appellera Render() depuis ModelObjectRenderer/WorldGeometryRenderer.
 //
-// PRÉ-CONDITION D'APPEL (fidèle à Model_RenderWithShadow_0 0x6A4110 @0x6a4299) : l'appelant a
-// DÉJÀ posé SetTransform(D3DTS_WORLD, matriceMonde) AVANT Render() — MeshPart_RenderFull ne pose
-// la matrice monde QUE dans la branche billboard (identité puis restauration). rt.world sert au
-// transform des centres de nœuds (D3DXVec3TransformCoord) et à la restauration billboard.
+// PRÉ-CONDITION D'APPEL (fidèle à Model_RenderWithShadow_0 0x6A4110), à poser AVANT Render() :
+//   (a) SetFVF(D3DFVF_XYZ|D3DFVF_NORMAL|D3DFVF_TEX1 = 0x112 = 274) @0x6a4186 — le base-draw et le
+//       billboard supposent le stride 32 o ; MeshPart_RenderFull ne repose PAS la FVF elle-même.
+//   (b) SetTransform(D3DTS_WORLD, matriceMonde) @0x6a4299 — MeshPart_RenderFull ne pose la matrice
+//       monde QUE dans la branche billboard (identité puis restauration). rt.world sert au transform
+//       des centres de nœuds (D3DXVec3TransformCoord) et à la restauration billboard.
 #pragma once
 #include "Asset/Model.h"   // asset::MeshPartMaterial (FLOTTE A — décodé, champs nommés)
 #include <d3d9.h>

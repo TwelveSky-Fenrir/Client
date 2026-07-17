@@ -286,6 +286,13 @@ std::string BuildArmorBodyStem(int race, int gender, EquipBodySlot slot, int var
 
     const int kind = race + 3 * gender;
     char buf[24];
+    // TODO-ancre (Audit-B, off-by-one candidat, NON vérifié — code actuellement NON câblé) :
+    //   AssetMgr_InitAllSlots 0x4DEB50 peuplerait les slots Base2/Slot14/Slot15 avec a6 = i-1
+    //   (@0x4df483/@0x4df8c1/@0x4df91e), et SObject_BuildPath case 1 @0x4d8a30 émet a6+1 -> l'entrée
+    //   catalogue d'indice M porterait alors le champ final = M pour CES slots (donc `variant`, pas
+    //   `variant+1`). Base0/Base1/Slot16..21 utiliseraient a6 = i (=> `variant+1`, correct ci-dessous).
+    //   Les seuls slots CÂBLÉS aujourd'hui (Base0/Base1 via PlayerPaperdoll) ne sont PAS concernés.
+    //   À TRANCHER en dynamique (x32dbg) avant de câbler les slots 2/14..21 -> ne rien deviner ici.
     std::snprintf(buf, sizeof(buf), "C%03d%s%03d", kind + kindOffset, token, variant + 1);
     return buf;
 }

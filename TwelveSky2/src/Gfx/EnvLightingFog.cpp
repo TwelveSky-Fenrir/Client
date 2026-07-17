@@ -88,9 +88,10 @@ void EnvLightingFog::ApplyPerFrame(IDirect3DDevice9* dev, const EnvLightingFogSt
 
     // ---- Lumière solaire directionnelle — Env_UpdateSunLight 0x412210 ----
     // Le binaire ne fait QUE SetLight(0,&light) via renderer vtbl+204 (@0x412367). LightEnable(0,TRUE)
-    // et RS 137 LIGHTING proviennent du frame-setup vivant (GXD_SetDirectionalLight 0x403980 pose
-    // vtbl+212=LightEnable(0,1) ; GxdRenderer::SetupFrame pose les deux) — reproduits ici pour que le
-    // module soit auto-suffisant. Chaque volet est gouverné par un flag de l'état source.
+    // et RS 137 LIGHTING proviennent du frame-setup vivant du moteur GXD (GXD_SetDirectionalLight
+    // 0x403980 pose vtbl+212=LightEnable(0,1) ; D3DRS_LIGHTING=TRUE posé par le setup device vivant
+    // ~0x405B32 — PAS par GxdRenderer::SetupFrame qui est MORTE, cf. GxdRenderer.cpp). Reproduits ici
+    // pour que le module soit auto-suffisant. Chaque volet est gouverné par un flag de l'état source.
     if (src.applySun) {
         dev->SetLight(0, &src.sun);                         // SetLight(index 0)  @0x412367 (vtbl+204)
         if (src.enableLight)  dev->LightEnable(0, TRUE);    // LightEnable(0,1)    (GXD_SetDirectionalLight vtbl+212)

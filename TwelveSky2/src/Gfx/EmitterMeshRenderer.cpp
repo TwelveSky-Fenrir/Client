@@ -332,8 +332,8 @@ void EmitterMeshRenderer::DrawMesh(IDirect3DDevice9* dev, const EmitterGpuMesh& 
         SetRS(D3DRS_TEXTUREFACTOR, texFactor);
     };
     auto tssTail = [&]() {                              // @0x430F76 / @0x430F8C
-        dev->SetTextureStageState(0, D3DTSS_COLOROP, 4); // D3DTOP_MODULATE
-        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, 3); // D3DTOP_SELECTARG2
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP,   D3DTOP_MODULATE); // (0,4,4) @0x430F76
+        dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);   // (0,6,3) @0x430F8C
     };
     if (blendMode == 1) {                              // @0x430E59
         SetRS(D3DRS_ALPHATESTENABLE, 1);               // @0x430E64
@@ -458,8 +458,8 @@ void EmitterMeshRenderer::DrawMesh(IDirect3DDevice9* dev, const EmitterGpuMesh& 
 
     // Teardown de fondu selon blendMode (miroir @0x431626..0x4317B1).
     auto restoreOpaque = [&]() {                       // LABEL_67
-        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, 1); // D3DTOP_DISABLE @0x431639
-        dev->SetTextureStageState(0, D3DTSS_COLOROP, 2); // D3DTOP_SELECTARG1 @0x431663
+        dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_CURRENT);     // (0,6,1) @0x431639
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP,   D3DTOP_SELECTARG1); // (0,4,2=SELECTARG1) @0x431663
         SetRS(D3DRS_TEXTUREFACTOR, 0xFFFFFFFF);        // @0x431677
         SetRS(D3DRS_DESTBLEND, 1);                     // D3DBLEND_ZERO @0x43168B
         SetRS(D3DRS_SRCBLEND, 2);                      // D3DBLEND_ONE @0x43169F

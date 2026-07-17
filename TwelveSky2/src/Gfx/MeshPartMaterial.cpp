@@ -194,12 +194,11 @@ void MeshPartMaterialRenderer::Render(IDirect3DDevice9* dev,
     uint32_t f = (frame < 0) ? 0u : static_cast<uint32_t>(frame);
     if (f >= A) f = A - 1u;
 
-    // Repli demandé : en-tête NON décodé => aucune couche matériau, base-draw pur (tex.base).
-    if (!mat.decoded) {
-        dev->SetTexture(0, tex.base);   // SetTexture(0, this[86]|0)
-        drawIndexed(dev, geo, f);       // base-draw @0x6B1327
-        return;
-    }
+    // En-tête NON décodé (part dégénérée) : le binaire ne dessine RIEN. MeshPart_RenderFull n'a PAS
+    // de base-draw « nu » — le gate this[32]==0 (@0x6b0866 : mov eax,[esi+80h] ; jz loc_6B1E43) saute
+    // directement au return @0x6b1e43. On reproduit ce « ne rien dessiner » (aucune géométrie parasite
+    // inventée ; le base-draw précédent n'avait aucune base IDA). L'appelant garde son propre repli.
+    if (!mat.decoded) return;
 
     // Snapshots pour les restaurations Gfx_ApplyMeshMaterial 0x69D0E0 (matériau) et
     // Gfx_SkyboxEndState 0x69D780 (lumière 0). Le singleton FF restaure un DÉFAUT interne

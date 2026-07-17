@@ -415,6 +415,14 @@ void ModelObjectRenderer::MeshDraw(FxMeshBank bank, int /*idxA*/, int /*idxB*/, 
     // --- Boucle sur les parts (stride 408 côté binaire), cull par-part + couche matériau B1 ---
     for (const GpuPart& p : e->parts) {
         if (!p.vb || !p.ib || p.B == 0 || p.D == 0) continue;
+        // Partition opaque/transparent des passes (Model_RenderWithShadow_0 0x6A4110) : chaque part
+        // n'est dessinée que dans SA passe. Passe 1 = opaque @0x6a4560 (flipbook inactif ET
+        // baseMode!=2) ; passe 2 = transparent @0x6a43a3 (flipbook actif [this[53] && *(this[101]+48)]
+        // OU baseMode this[85]==2). Sans ce filtre, chaque part FX était dessinée en passe 1 ET 2
+        // -> sur-brillance additive (double-draw). (Audit-C, vérifié en IDA.)
+        const bool flipbookActive = p.mat.flipbook.Enable && !p.flipbook.empty();
+        const bool isTransparent  = flipbookActive || (p.baseMode == 2);
+        if ((pass == 1) == isTransparent) continue;
         // A peut différer entre parts (le binaire suppose A uniforme et ne re-borne pas) : on
         // borne défensivement au VB de la part pour ne pas lire hors buffer.
         const uint32_t pf = (frame < static_cast<int>(p.A)) ? static_cast<uint32_t>(frame) : (p.A - 1);

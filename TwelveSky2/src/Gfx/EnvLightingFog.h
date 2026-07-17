@@ -23,7 +23,7 @@
 //     1. Un EnvLightingFogState complet fourni par une source atmosphérique réelle (p.ex. SilverLiningSky
 //        en mode moteur, ou un futur solveur d'éphéméride) — chemin plein soleil+fog.
 //     2. À défaut : le D3DLIGHT9 PAR DÉFAUT que GxdRenderer construit (GxdRenderer::Light(),
-//        = BuildDefaultMaterialAndLight, PROUVÉ bit-exact @0x402711 : Diffuse 0.7 / Ambient 0.3 /
+//        construit par GXD_DeviceReinit (light par défaut @0x402711) : Diffuse 0.7 / Ambient 0.3 /
 //        Direction normalize(-1,-1,1)). C'est un ARTEFACT GENUINE du moteur, pas une valeur inventée.
 //        → repli NEUTRE documenté : on applique la mécanique de lumière avec ce light, et FOG OFF
 //          (aucune couleur/densité de fog n'est reproductible fidèlement sans SilverLining — voir
