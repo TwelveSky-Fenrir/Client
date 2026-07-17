@@ -69,9 +69,16 @@ public:
     // animSlot (entity+240 = body+216 = 2*weaponClass). Sélectionne le jeu MOTION de la POSE D'ARME
     // (base + 19968*weaponPose). 0 = pose désarmée (repli). DOIT être identique à celui passé à
     // WorldPlayerMotionFrameCount (sinon wrap du curseur et clip dessiné divergent).
+    // torsoItemId/legsItemId (G3, DEEP IDA #5 equip-slot-layout) : id d'item ITEM_INFO des pieces
+    // d'armure de CORPS dessinees en jeu par Char_DrawWeaponTrailEffect 0x55E9D0 (bloc corps 0x5616EC) :
+    //   torse = equip[2] = body+92+8*2 = body+108 (token SObject 003, catalogue unk_F5BC3C @0x561bd1)
+    //   jambes= equip[5] = body+92+8*5 = body+132 (token SObject 004, catalogue unk_F7147C @0x561e47)
+    // variant de mesh = ITEM_INFO(item)+196 (field196, SANS -1 pour l'armure de corps) ; 0 = rien equipe
+    // (catalogue[0]). 0 -> corps de base. Sans eux, le joueur reste en corps de base (nu).
     static PaperdollResult Resolve(ModelCache& models, MotionCache& motions,
                                    int race, int gender, int costume0, int costume1,
-                                   uint32_t weaponItemId, int weaponPose,
+                                   uint32_t weaponItemId, uint32_t torsoItemId, uint32_t legsItemId,
+                                   int weaponPose,
                                    int animState, float animCursor, bool hasAnimCursor,
                                    float gameTimeSec);
 };

@@ -53,6 +53,17 @@ void PutBodyU32(std::array<uint8_t, 600>& body, int off, uint32_t v) {
     std::memcpy(body.data() + off, &v, sizeof(v));
 }
 
+// Cherche dans mITEM le 1er item dont field196 == targetEntry (= variant de mesh d'armure de corps ;
+// C%03d{token}%03d avec suffixe field196+1). Sert a EQUIPER le self : field196=34 -> suffixe 035 =
+// l'armure "showcase" que l'ecran de creation utilise. 0 si aucun -> corps de base.
+int32_t FindEquipItemWithField196(uint32_t targetEntry) {
+    for (int32_t id = 1; id <= 99999; ++id) {
+        const game::ItemInfo* it = game::GetItemInfo(static_cast<uint32_t>(id));
+        if (it && it->field196 == targetEntry) return id;
+    }
+    return 0;
+}
+
 } // namespace
 
 int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float selfZ,
@@ -122,6 +133,17 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
     PutBodyU32(self.body, 72, 0);  // gender
     PutBodyU32(self.body, 76, 0);  // costume slot0
     PutBodyU32(self.body, 80, 0);  // costume slot1
+    // ARMURE (G3, DEEP IDA #5) : equip[2]=body+108 (torse token 003), equip[5]=body+132 (jambes token
+    // 004). Le CODE G3 (PlayerPaperdoll) resout le variant via ITEM_INFO+196 -> C%03d003{f196+1}. ⚠ Le
+    // rendu in-world de l'armure "showcase" (field196=34 -> C003035, 6 meshes) presente un ECART (pieces
+    // detachees + sombre) alors que la MEME armure rend PROPREMENT en CharSelect (meme fichier) -> ecart
+    // de PALETTE/rendu PlayerPaperdoll vs CharPreview3D, A INVESTIGUER. On laisse le self en corps de base
+    // (equip 0 -> variantEff 0 -> C%03d003001, l'entree AssetMgr catalogue[0]) pour une demo propre.
+    // Pour tester l'armure : decommenter (FindEquipItemWithField196 + PutBodyU32 108/132).
+    const int32_t armorItem = 0; // FindEquipItemWithField196(34);
+    TS2_LOG("WorldSelfTest : armure equipee id=%d (0 = corps de base).", armorItem);
+    PutBodyU32(self.body, 108, static_cast<uint32_t>(armorItem)); // equip[2] = torse
+    PutBodyU32(self.body, 132, static_cast<uint32_t>(armorItem)); // equip[5] = jambes
     game::g_World.players.push_back(self);
 
     // Joueur DISTANT (race 1, genre 1 = femme) a cote : montre le rendu MULTI-JOUEURS + la variete
@@ -190,7 +212,8 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
         scene.Update(1.0 / 30.0, camera);
         if (renderer.Ready() && renderer.BeginFrame()) {
             scene.Render(renderer.Device(), camera);
-            if (frameNo == kCaptureFrame && !captured) { captured = true; capturePng("preview_world.png"); }
+            if (frameNo == kCaptureFrame) { captured = true; capturePng("preview_world.png"); }
+            if (frameNo == kCaptureFrame + 45) capturePng("preview_world_anim2.png"); // ~1.5s + tard : DETECTE l'anim
             renderer.EndFrame();
         }
         if (frameNo % 30 == 0)

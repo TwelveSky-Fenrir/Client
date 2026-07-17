@@ -19,7 +19,8 @@ namespace ts2::gfx {
 
 PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motions,
                                          int race, int gender, int costume0, int costume1,
-                                         uint32_t weaponItemId, int weaponPose,
+                                         uint32_t weaponItemId, uint32_t torsoItemId, uint32_t legsItemId,
+                                         int weaponPose,
                                          int animState, float animCursor, bool hasAnimCursor,
                                          float gameTimeSec) {
     PaperdollResult r;
@@ -117,10 +118,22 @@ PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motion
     //        via equip[k]=body+92+8*k — DEEP IDA render/agent 6.)
     // ===========================================================================
     if (race >= 0 && race < 3 && gender >= 0 && gender < 2) {
+        // G3 (DEEP IDA #5) : le TORSE (equip[2], token 003) et les JAMBES (equip[5], token 004) sont
+        // dessinees par catalogue[variantEff] où variantEff = ITEM_INFO(item)+196 (SANS -1 pour l'armure
+        // de corps, @0x561bd1/@0x561e47), ou 0 si rien equipe. SObject_BuildPath 0x4d8ba7 nomme le fichier
+        // "C%03d{token}%03d" % (kind, variantEff+1) -> suffixe = variantEff+1 (base=001, PAS 000 ; l'entree
+        // AssetMgr catalogue[0] est le fichier ...001). kind = race+3*gender+1 (selecteur d'art body+64 !=3,
+        // cas commun ; ==3 -> kind+7 = TODO). Item non equipe -> corps de base (variantEff 0 -> suffixe 001).
         const int kind = race + 3 * gender + 1;
+        auto bodyArmorVariant = [](uint32_t itemId) -> int {
+            if (itemId == 0) return 0;                                   // catalogue[0] = corps de base
+            if (const game::ItemInfo* it = game::GetItemInfo(itemId))
+                return static_cast<int>(it->field196);                   // variantEff = field196 (sans -1)
+            return 0;
+        };
         char sTorso[16] = {}, sLegs[16] = {};
-        std::snprintf(sTorso, sizeof(sTorso), "C%03d003%03d", kind, 0); // EquipA entry 0 = torse de base
-        std::snprintf(sLegs,  sizeof(sLegs),  "C%03d004%03d", kind, 0); // EquipB entry 0 = jambes de base
+        std::snprintf(sTorso, sizeof(sTorso), "C%03d003%03d", kind, bodyArmorVariant(torsoItemId) + 1); // token 003
+        std::snprintf(sLegs,  sizeof(sLegs),  "C%03d004%03d", kind, bodyArmorVariant(legsItemId)  + 1); // token 004
         if (const gfx::SkinnedModel* m = models.Get(sTorso)) if (!m->Empty()) r.pieces.push_back(m);
         if (const gfx::SkinnedModel* m = models.Get(sLegs))  if (!m->Empty()) r.pieces.push_back(m);
     }

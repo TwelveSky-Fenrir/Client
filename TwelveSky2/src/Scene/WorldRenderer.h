@@ -499,6 +499,11 @@ private:
         // "câblage arme joueur distant" -> PlayerEntity::body+148 pour les distants).
         uint32_t    monsterDefId = 0;
         uint32_t    weaponItemId = 0;
+        // G3 (DEEP IDA #5) — armure de CORPS equipee (joueurs) : id d'item ITEM_INFO du torse
+        // (equip[2]=body+108, token 003) et des jambes (equip[5]=body+132, token 004). 0 = corps de
+        // base. PlayerPaperdoll::Resolve resout le variant via ITEM_INFO+196.
+        uint32_t    torsoItemId  = 0;
+        uint32_t    legsItemId   = 0;
 
         // TRAINEE D'ARME (front F_WEAPONTRAIL, 2026-07-17) — effet de swoosh/lueur skinné dessiné
         // pendant un cast, JOUEURS UNIQUEMENT (Char_DrawWeaponTrailEffect 0x55E9D0 opaque /

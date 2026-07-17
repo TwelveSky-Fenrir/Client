@@ -571,7 +571,8 @@ void WorldRenderer::renderPlanarShadows(const std::vector<DrawableEntity>& drawa
             // Passe aussi a la passe d'ombre planaire (silhouette aplatie = MEME anim que le corps).
             gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
                 *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
-                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId, ent.animSlot,
+                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                ent.torsoItemId, ent.legsItemId, ent.animSlot,
                 ent.animType, ent.animCursor, ent.hasAnimCursor,
                 game::g_World.gameTimeSec);
             if (!pd.valid) continue; // corps non résolu -> pas d'ombre (pas de cube d'ombre inventé)
@@ -795,7 +796,8 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
             // Passe aussi a la passe d'ombre planaire (silhouette aplatie = MEME anim que le corps).
             gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
                 *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
-                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId, ent.animSlot,
+                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                ent.torsoItemId, ent.legsItemId, ent.animSlot,
                 ent.animType, ent.animCursor, ent.hasAnimCursor,
                 game::g_World.gameTimeSec);
             if (pd.valid) {
@@ -1282,6 +1284,11 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         ent.bodyGender       = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyGenderOffset));
         ent.bodyCostumeSlot0 = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyCostumeSlot0Offset));
         ent.bodyCostumeSlot1 = static_cast<int>(ReadBodyU32LE(p.body, kPlayerBodyCostumeSlot1Offset));
+        // G3 (DEEP IDA #5) — armure de corps equipee : equip[2]=body+92+8*2=body+108 (torse token 003),
+        // equip[5]=body+92+8*5=body+132 (jambes token 004). 0 = corps de base. Char_DrawWeaponTrailEffect
+        // 0x55E9D0 def_55FF4D 0x5603AA (13x MobDb_GetEntry sur body+92+8*k, stride 8).
+        ent.torsoItemId      = ReadBodyU32LE(p.body, 108);
+        ent.legsItemId       = ReadBodyU32LE(p.body, 132);
 
         // ANIMATION JOUEUR (front F_PLAYERANIM, 2026-07-17) — MEME patron que monstres/PNJ (cf.
         // la boucle monstre ci-dessous et renderOne) : animType = etat FSM entity+244
