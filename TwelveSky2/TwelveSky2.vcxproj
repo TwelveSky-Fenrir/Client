@@ -244,6 +244,7 @@
     <ClCompile Include="src\UI\BuffStatusPanel.cpp" />
     <ClCompile Include="src\UI\CharacterStatsWindow.cpp" />
     <ClCompile Include="src\UI\ChatWindow.cpp" />
+    <ClCompile Include="src\UI\ConfirmMsgBox.cpp" />
     <ClCompile Include="src\UI\ConsumableBarWindow.cpp" />
     <ClCompile Include="src\UI\EnchantWindow.cpp" />
     <ClCompile Include="src\UI\EnterWorldRender.cpp" />
@@ -432,6 +433,7 @@
     <ClInclude Include="src\UI\ServerSelectRender.h" />
     <ClInclude Include="src\UI\SkillTreeWindow.h" />
     <ClInclude Include="src\UI\SocialWindow.h" />
+    <ClInclude Include="src\UI\ConfirmMsgBox.h" />
     <ClInclude Include="src\UI\UIManager.h" />
     <ClInclude Include="src\UI\UiProjection.h" />
     <ClInclude Include="src\UI\VendorShopWindow.h" />

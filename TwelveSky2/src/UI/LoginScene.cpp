@@ -54,25 +54,13 @@ constexpr int kBtnW   = 72,  kBtnH   = 24;
 // sur les vrais sprites (panneau slot 40 unk_8EA270 @0x51E4C5, +/- slots 41/42 en état
 // PRESSÉ seul, Confirmer/Annuler slots 9/12, caret slot 43 g_SprTextInputCaret @0x51E53E)
 // — cf. CreateFormRender(). kColText = couleur des VALEURS réelles que le binaire dessine
-// (champs Login, niveaux de perso, valeurs du formulaire de création).
+// (champs Login, niveaux de perso, valeurs du formulaire de création, titre du MsgBox).
 //
-// 🔴 TODO [ancre 0x5C08C0 / dword_1822438] — kColPanel/kColPanelEdge sont NON FIDÈLES.
-// L'ancienne justification (« overlay Oui/Non sans asset dédié identifié dans IDA ») était
-// FAUSSE : l'asset est identifié. Le binaire n'émet AUCUN rectangle pour ces deux
-// confirmations — il ouvre le MsgBox PARTAGÉ dword_1822438 (UI_MsgBox_Open 0x5C08C0,
-// EA 0x5254DD pour la suppression / EA 0x519B3E pour la sortie), un vrai sous-système de
-// dialogue à SPRITES (40+ xrefs vérifiées : Pkt_PlayerShopOpen 0x48DD0E, Pkt_PartyInvitePrompt
-// 0x48FB64, Net_OnWorldEntityDispatch ×7, UI_InitAllDialogs 0x5ABFAB, rendu par
-// UI_RenderAllDialogs 0x5AE2D0 @0x5AE56C, routage UI_RouteLButtonUp 0x5AD0F0 @0x5AD17F).
-// Ce sous-système n'a AUCUN port C++ (grep : zéro occurrence de MsgBox hors commentaires) et
-// son portage dépasse le périmètre CharSelect (il faudrait UI_InitAllDialogs/UI_UpdateAllDialogs/
-// UI_RenderAllDialogs/UI_Route*, hors de ce fichier). Ces deux couleurs peignent donc un
-// panneau de SUBSTITUTION assumé, à supprimer dès que UI_MsgBox sera porté — elles ne sont
-// PAS un sprite d'atlas et ne prétendent plus l'être. Seuls consommateurs :
-// DeleteConfirmRender/ExitConfirmRender.
-constexpr D3DCOLOR kColPanel     = 0xF01E2A44; // ⚠ INVENTÉ — panneau de substitution du MsgBox
-constexpr D3DCOLOR kColPanelEdge = 0xFF3C5580; // ⚠ INVENTÉ — liseré  de substitution du MsgBox
-constexpr D3DCOLOR kColText      = 0xFFE8ECF4; // texte principal (VALEURS réelles)
+// NOTE : les ex-couleurs de SUBSTITUTION kColPanel/kColPanelEdge ont été RETIRÉES avec les
+// ex-DeleteConfirmRender/ExitConfirmRender — les confirmations Oui/Non sont désormais le
+// MsgBox à sprites réels (UI/ConfirmMsgBox.h, dword_1822438, UI_MsgBox_* 0x5C08C0) : plus
+// aucun aplat inventé.
+constexpr D3DCOLOR kColText      = 0xFFE8ECF4; // texte principal (VALEURS réelles + titre MsgBox)
 
 inline RECT MakeRect(int x, int y, int w, int h) {
     RECT r; r.left = x; r.top = y; r.right = x + w; r.bottom = y + h; return r;
@@ -159,8 +147,7 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     createBtn_.SetLabel("Creer");  deleteBtn_.SetLabel("Supprimer");
     restoreBtn_.SetLabel("Restaurer"); // texte placeholder ; sprite réel slots 3086/3087/3088 (0x51E354)
     createConfirmBtn_.SetLabel("Confirmer"); createCancelBtn_.SetLabel("Annuler");
-    deleteYesBtn_.SetLabel("Oui"); deleteNoBtn_.SetLabel("Non");
-    exitConfirmYesBtn_.SetLabel("Oui"); exitConfirmNoBtn_.SetLabel("Non"); // confirmation de sortie (ServerSelect)
+    // (Les confirmations Oui/Non delete/exit sont désormais le MsgBox à sprites msgBox_, pas des Button.)
     jobMinusBtn_.SetLabel("-");    jobPlusBtn_.SetLabel("+");
     factionMinusBtn_.SetLabel("-"); factionPlusBtn_.SetLabel("+");
     faceMinusBtn_.SetLabel("-");   facePlusBtn_.SetLabel("+");
@@ -218,34 +205,15 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     hairPlusBtn_.SetOnClick([this]     { game::SetCreateHairColor(charState_, +1); });
     variantMinusBtn_.SetOnClick([this] { game::SetCreateVariant(charState_, -1); });
     variantPlusBtn_.SetOnClick([this]  { game::SetCreateVariant(charState_, +1); });
-    // Confirmation de suppression (Oui/Non) : Oui -> ConfirmDeleteCharacter (opcode 18),
-    // Non -> ferme simplement la confirmation (le binaire ne renvoie aucune requête).
-    deleteYesBtn_.SetOnClick([this] {
-        deleteConfirmOpen_ = false;
-        game::ConfirmDeleteCharacter(charState_, charHost_);
-    });
-    deleteNoBtn_.SetOnClick([this] { deleteConfirmOpen_ = false; });
-
-    // Confirmation de SORTIE du jeu (ServerSelect, bouton d'action). Fidèle à
-    // UI_MsgBox_OnLButtonUp case 1 (action_id=1, EA 0x5C0BEC-0x5C0BFB) : "Oui" journalise
-    // "[ABNORMAL_END] ( 4 )" (Log_WriteLine aAbnormalEnd4 0x7BA830, EA 0x5C0BF6) puis pose
-    // g_QuitFlag=1 (EA 0x5C0BFB) — modélisé par PostQuitMessage(0), idiome projet de
-    // g_QuitFlag=1 (App.cpp:313 `if (quit_) break;` sur WM_QUIT ; cf. VK_ESCAPE / CharSelect).
-    // "Non" referme sans quitter (UI_ConfirmPrompt_Close : aucun case dans le switch).
-    exitConfirmYesBtn_.SetOnClick([this] {
-        exitConfirmOpen_ = false;
-        TS2_LOG("[ABNORMAL_END] ( 4 )");
-        PostQuitMessage(0);
-    });
-    exitConfirmNoBtn_.SetOnClick([this] { exitConfirmOpen_ = false; });
+    // Confirmations Oui/Non (suppression + sortie) : désormais portées par msgBox_ (ConfirmMsgBox),
+    // dont l'action OK est fournie à l'ouverture (charHost_.ShowDeleteConfirm pour delete type 2 ;
+    // ServerSelectOnMouseUp pour l'exit type 1). Plus de SetOnClick de boutons Yes/No ici.
 
     // Textures réelles des boutons "Confirm"/"Cancel" (Docs/TS2_LOGIN_BUTTON_ASSETS.md §4) :
-    // OK/Quitter du Login et Oui/Non de la confirmation de suppression — même paire de
-    // sprites génériques réutilisée (doc §5). Repli sur le rect coloré déjà en place
-    // (ApplyConfirmCancelSkin) si les fichiers sont réellement absents/illisibles.
+    // OK/Quitter du Login — même paire de sprites génériques. Repli sur le rect coloré
+    // (ApplyConfirmCancelSkin) si les .IMG sont absents. Les Oui/Non delete/exit ne sont plus
+    // des Button (le MsgBox à sprites msgBox_ dessine slots 8-13 directement).
     ApplyConfirmCancelSkin(okBtn_, exitBtn_);
-    ApplyConfirmCancelSkin(deleteYesBtn_, deleteNoBtn_);
-    ApplyConfirmCancelSkin(exitConfirmYesBtn_, exitConfirmNoBtn_);
 
     // CharSelect écran Liste : chaque bouton de la colonne principale a ses PROPRES sprites
     // idle/hover/pressé dédiés dans l'atlas 001 (Docs/TS2_CHARSELECT_RE.md §4/§7, slots
@@ -860,10 +828,9 @@ void LoginScene::ServerSelectRender() {
         font_.EndBatch();
     }
 
-    // Overlay de confirmation de sortie (UI_MsgBox dword_1822438, ouvert par
-    // ServerSelectOnMouseUp) — dessiné PAR-DESSUS l'écran ServerSelect, comme
-    // DeleteConfirmRender pour CharSelect.
-    if (exitConfirmOpen_) ExitConfirmRender();
+    // MsgBox modal partagé (dword_1822438) en QUEUE de scène (UI_RenderAllDialogs 0x5AE2D0) —
+    // dessiné PAR-DESSUS l'écran ServerSelect. Ne dessine rien s'il n'est pas ouvert.
+    RenderMsgBox();
 }
 
 // Scene_ServerSelectOnMouseDown 0x519780 : la boucle de hit-test serveur réelle est
@@ -878,11 +845,9 @@ void LoginScene::ServerSelectRender() {
 // serveur plein ou dont le statut n'est pas encore arrivé. OnServerClicked persiste aussi
 // le choix (host.SaveLastServer -> Cfg_SaveLastServer) et écrit selectedServer (this[15374]).
 void LoginScene::ServerSelectOnMouseDown(int x, int y) {
-    // Overlay de confirmation de sortie prioritaire (UI_MsgBox modal) : route le clic vers
-    // ses boutons Oui/Non, comme deleteConfirmOpen_ pour CharSelect.
-    if (exitConfirmOpen_) {
-        exitConfirmYesBtn_.OnMouseDown(x, y);
-        exitConfirmNoBtn_.OnMouseDown(x, y);
+    // MsgBox modal prioritaire (UI_MsgBox_OnLButtonDown 0x5C0980) : consomme le clic.
+    if (msgBox_.IsOpen()) {
+        msgBox_.OnMouseDown([this](int s) { return GetAtlasSprite(s); }, x, y, screenW_, screenH_);
         return;
     }
     {
@@ -914,16 +879,23 @@ void LoginScene::ServerSelectOnMouseDown(int x, int y) {
 // 0x519B31, appel EA 0x519B3E). Sinon rien. Quand l'overlay est déjà ouvert, route le clic
 // vers ses boutons Oui/Non.
 void LoginScene::ServerSelectOnMouseUp(int x, int y) {
-    if (exitConfirmOpen_) {
-        exitConfirmYesBtn_.OnMouseUp(x, y);   // "Oui" -> PostQuitMessage(0) (g_QuitFlag=1)
-        exitConfirmNoBtn_.OnMouseUp(x, y);    // "Non" -> exitConfirmOpen_ = false
+    // MsgBox modal prioritaire (UI_MsgBox_OnLButtonUp 0x5C0A90) : OK -> action de sortie, sinon ferme.
+    if (msgBox_.IsOpen()) {
+        msgBox_.OnMouseUp([this](int s) { return GetAtlasSprite(s); }, x, y, screenW_, screenH_);
         return;
     }
     UiContext ctx;
     ctx.screenW = screenW_;
     ctx.screenH = screenH_;
-    if (serverSelectRender_.OnActionButtonMouseUp(x, y, ctx))
-        exitConfirmOpen_ = true; // clic confirmé sur le bouton -> ouvre la MsgBox de sortie
+    if (serverSelectRender_.OnActionButtonMouseUp(x, y, ctx)) {
+        // UI_MsgBox_Open(dword_1822438, 1, StrTable005_Get(g_LangId,1), "") @0x519B3E. Action OK
+        // (type 1) = UI_MsgBox_OnLButtonUp case 1 (EA 0x5C0BEC-0x5C0BFB) : journalise
+        // "[ABNORMAL_END] ( 4 )" (0x7BA830) puis g_QuitFlag=1 -> PostQuitMessage(0) (idiome projet).
+        msgBox_.Open(game::Str(1), 1, [] {
+            TS2_LOG("[ABNORMAL_END] ( 4 )");
+            PostQuitMessage(0);
+        });
+    }
 }
 
 // ===========================================================================
@@ -1566,7 +1538,7 @@ void LoginScene::CharSelectRenderUi2D() {
     // game::CharSelectPinState est un état inerte (opcodes 13/14/15 non câblés).
     // TODO [0x51ECC5] : porter l'assistant PIN (this[15375]/15376/15377, pavé permuté
     // this[15385..15394], sprites unk_93EF4C) — hors périmètre de ce front.
-    if (deleteConfirmOpen_) DeleteConfirmRender(); // overlay, cf. host.ShowDeleteConfirm
+    RenderMsgBox(); // MsgBox modal partagé (suppression type 2) en queue, cf. host.ShowDeleteConfirm
 }
 
 // ===========================================================================
@@ -1966,8 +1938,9 @@ POINT LoginScene::CharSelectCursorClient() const {
 // panneau (slot 40), les boutons -/+ (slots 41/42, état PRESSÉ uniquement), Confirmer/Annuler
 // (slots 9/12), le caret (slot 43) et les 5 VALEURS localisées + le nom. Aucune chaîne
 // "Créer/Nom/Classe/…" n'existe dans l'exe.
-// (⚠ l'ancienne affirmation « Plus AUCUN aplat FillRect » portait sur le FICHIER : elle était
-//  fausse — DeleteConfirmRender/ExitConfirmRender en peignent 3 chacun, cf. leurs TODO.)
+// (⚠ ce fichier ne dessine PLUS AUCUN aplat FillRect pour les confirmations : les ex-
+//  DeleteConfirmRender/ExitConfirmRender à géométrie inventée sont remplacés par le MsgBox à
+//  sprites réels UI/ConfirmMsgBox.h.)
 //
 // 🔴 ORDRE DE PEINTRE RE-ÉTABLI CE FRONT en balayant les sites de dessin de la plage
 // [0x51E4A1, 0x51ECC5) : (1) panneau slot 40 @0x51E4CA ; (2) NOM saisi @0x51E507 ;
@@ -2080,106 +2053,19 @@ void LoginScene::CreateFormRender() {
     }
 }
 
-// Confirmation Oui/Non de suppression (host.ShowDeleteConfirm), overlay au-dessus
-// de l'écran Liste. "Oui" -> ConfirmDeleteCharacter (opcode 18) ; "Non" referme.
-//
-// ⚠ NON FIDÈLE — GÉOMÉTRIE ENTIÈREMENT INVENTÉE (aucune ancre : bw/bh, le centrage, les
-// rects des boutons 64x24, les offsets de texte +24/+30 et +20/+5 ne sont prouvés par RIEN).
-// Le binaire n'ouvre PAS un panneau propre et ne dessine AUCUN rect : il fait
-//   UI_MsgBox_Open(dword_1822438, a2=2, StrTable005_Get(g_LangId,49), "")  EA 0x5254C4-0x5254DD
-// sur l'objet de dialogue PARTAGÉ à 40+ xrefs, dont la géométrie est celle des sprites du
-// MsgBox — non déterminable en statique (les dims viennent du .IMG, spec §13.1).
-// TODO [ancre 0x5C08C0] : porter UI_MsgBox (open 0x5C08C0, OnLButtonUp 0x5C0A90, rendu via
-// UI_RenderAllDialogs 0x5AE2D0) et router les deux confirmations dessus — ce qui supprimera
-// du même coup kColPanel/kColPanelEdge et toute la géométrie ci-dessous.
-void LoginScene::DeleteConfirmRender() {
-    const int bw = 300, bh = 110;
-    const int bx = screenW_ / 2 - bw / 2, by = screenH_ / 2 - bh / 2;
-    deleteYesBtn_.SetBounds(bx + 40,          by + bh - 40, 64, 24);
-    deleteNoBtn_.SetBounds(bx + bw - 104,     by + bh - 40, 64, 24);
-    // Overlay de la scène 4 -> MÊME source de curseur que le reste de CharSelect
-    // (GetPhysicalCursorPos @0x51D493), pas le GetCursorPos des scènes 2/3.
-    const POINT mp = CharSelectCursorClient();
-    deleteYesBtn_.OnMouseMove(mp.x, mp.y);
-    deleteNoBtn_.OnMouseMove(mp.x, mp.y);
-
-    if (sprites_.Ready()) {
-        sprites_.Begin();
-        // TODO [ancre 0x5254DD] : ces 3 aplats N'EXISTENT PAS dans le binaire (voile modal,
-        // liseré, panneau). Substitution provisoire du MsgBox partagé dword_1822438.
-        FillRect(0, 0, screenW_, screenH_, 0x88000000);       // ⚠ inventé — voile modal
-        FillRect(bx - 2, by - 2, bw + 4, bh + 4, kColPanelEdge); // ⚠ inventé — liseré
-        FillRect(bx, by, bw, bh, kColPanel);                     // ⚠ inventé — panneau
-        // Oui/Non : sprites réels "Confirm"/"Cancel" réutilisés (cf. ApplyConfirmCancelSkin) —
-        // même paire générique que Login/CharSelect, mapping sémantique Oui=Confirm/Non=Cancel.
-        deleteYesBtn_.DrawSkin(sprites_);
-        deleteNoBtn_.DrawSkin(sprites_);
-        sprites_.End();
-    }
-    if (font_.Ready()) {
-        font_.BeginBatch();
-        // Corps = StrTable005_Get(g_LangId, 49) — RE-DÉSASSEMBLÉ ce front :
-        //   `push offset String` (a4="") @0x5254C4 ; `push 31h` (=49) @0x5254C9 ;
-        //   `mov ecx, offset g_LangId` @0x5254CB ; `call StrTable005_Get` @0x5254D0 ;
-        //   `push eax` (a3=corps) ; `push 2` (a2=action id) @0x5254D6 ;
-        //   `mov ecx, offset dword_1822438` @0x5254D8 ; `call UI_MsgBox_Open` @0x5254DD.
-        // L'ancien littéral français "Supprimer ce personnage ?" était une INVENTION : le
-        // binaire ne contient aucun texte FR, tout passe par StrTable005 (game::Str = fidèle,
-        // même motif que la confirmation de sortie ci-dessous, Str(1) / EA 0x519B2A).
-        const std::string body = game::Str(49);
-        font_.DrawTextAt(body.c_str(), bx + 24, by + 30, kColText);
-        if (!deleteYesBtn_.HasAnySkin())
-            font_.DrawTextAt(deleteYesBtn_.Label().c_str(), deleteYesBtn_.X() + 20, deleteYesBtn_.Y() + 5, kColText);
-        if (!deleteNoBtn_.HasAnySkin())
-            font_.DrawTextAt(deleteNoBtn_.Label().c_str(), deleteNoBtn_.X() + 20, deleteNoBtn_.Y() + 5, kColText);
-        font_.EndBatch();
-    }
-}
-
-// Confirmation Oui/Non de SORTIE du jeu (ServerSelect, bouton d'action slot 4), overlay
-// au-dessus de l'écran ServerSelect. Mirroir de UI_MsgBox_Open(dword_1822438, 1,
-// StrTable005_Get(g_LangId,1), &String) ouvert par Scene_ServerSelectOnMouseUp 0x519B3E —
-// même dialogue partagé que la confirmation de suppression (le binaire réutilise
-// dword_1822438). "Oui" -> g_QuitFlag=1 (UI_MsgBox_OnLButtonUp case 1) ; "Non" referme.
-//
-// ⚠ NON FIDÈLE — MÊME géométrie inventée que DeleteConfirmRender (aucune ancre sur bw/bh,
-// le centrage, les rects 64x24 et les offsets de texte). Seuls le TEXTE (Str(1), EA
-// 0x519B2A) et l'objet (dword_1822438, EA 0x519B3E) sont ancrés ; le binaire ne dessine
-// aucun rect. TODO [ancre 0x519B3E] : router sur UI_MsgBox une fois porté (cf. 0x5C08C0).
-void LoginScene::ExitConfirmRender() {
-    const int bw = 300, bh = 110;
-    const int bx = screenW_ / 2 - bw / 2, by = screenH_ / 2 - bh / 2;
-    exitConfirmYesBtn_.SetBounds(bx + 40,      by + bh - 40, 64, 24);
-    exitConfirmNoBtn_.SetBounds(bx + bw - 104, by + bh - 40, 64, 24);
-    const POINT mp = CursorClient();
-    exitConfirmYesBtn_.OnMouseMove(mp.x, mp.y);
-    exitConfirmNoBtn_.OnMouseMove(mp.x, mp.y);
-
-    if (sprites_.Ready()) {
-        sprites_.Begin();
-        // TODO [ancre 0x519B3E] : ces 3 aplats N'EXISTENT PAS dans le binaire. Substitution
-        // provisoire du MsgBox partagé dword_1822438 (cf. en-tête de fonction).
-        FillRect(0, 0, screenW_, screenH_, 0x88000000);       // ⚠ inventé — voile modal
-        FillRect(bx - 2, by - 2, bw + 4, bh + 4, kColPanelEdge); // ⚠ inventé — liseré
-        FillRect(bx, by, bw, bh, kColPanel);                     // ⚠ inventé — panneau
-        // Oui/Non : sprites réels "Confirm"/"Cancel" réutilisés (cf. ApplyConfirmCancelSkin) —
-        // même paire générique que Login/CharSelect (le binaire réutilise dword_1822438).
-        exitConfirmYesBtn_.DrawSkin(sprites_);
-        exitConfirmNoBtn_.DrawSkin(sprites_);
-        sprites_.End();
-    }
-    if (font_.Ready()) {
-        font_.BeginBatch();
-        // Corps = StrTable005_Get(g_LangId, 1) (Scene_ServerSelectOnMouseUp EA 0x519B31,
-        // game::Str = StrTable005_Get fidèle) : texte localisé de confirmation de sortie.
-        const std::string body = game::Str(1);
-        font_.DrawTextAt(body.c_str(), bx + 24, by + 30, kColText);
-        if (!exitConfirmYesBtn_.HasAnySkin())
-            font_.DrawTextAt(exitConfirmYesBtn_.Label().c_str(), exitConfirmYesBtn_.X() + 20, exitConfirmYesBtn_.Y() + 5, kColText);
-        if (!exitConfirmNoBtn_.HasAnySkin())
-            font_.DrawTextAt(exitConfirmNoBtn_.Label().c_str(), exitConfirmNoBtn_.X() + 20, exitConfirmNoBtn_.Y() + 5, kColText);
-        font_.EndBatch();
-    }
+// Peint le MsgBox modal partagé (msgBox_ = dword_1822438) en QUEUE de la scène active
+// (UI_RenderAllDialogs 0x5AE2D0). REMPLACE les ex-DeleteConfirmRender/ExitConfirmRender à
+// géométrie INVENTÉE (voile modal + 2 aplats panneau/liseré + boutons Button 64x24, aucune
+// ancre) : le binaire ne dessine AUCUN aplat, seulement les sprites d'atlas via UI_MsgBox_Render
+// 0x5C3100 (panneau slot 7 centré sur sa taille native ; OK 8/9/10 @ +165,+90 ; Annuler
+// 11/12/13 @ +241,+90 ; titre centré +234,+42 corps vide). Curseur de survol = position
+// PHYSIQUE (CharSelectCursorClient = GetPhysicalCursorPos+ScreenToClient, comme le pipeline de
+// dialogues @0x5AE2DD). No-op si msgBox_ est fermé -> appelable en queue de N'IMPORTE quelle scène.
+void LoginScene::RenderMsgBox() {
+    if (!msgBox_.IsOpen()) return;
+    const POINT cur = CharSelectCursorClient(); // curseur physique (pipeline dialogues 0x5AE2DD)
+    msgBox_.Render([this](int s) { return GetAtlasSprite(s); },
+                   sprites_, font_, screenW_, screenH_, cur, kColText);
 }
 
 // Scene_CharSelectOnMouseDown 0x520F40 : arme les latches (boutons) / sélectionne
@@ -2191,13 +2077,12 @@ void LoginScene::CharSelectOnMouseDown(int x, int y) {
     // modale : `mov eax,[...] ; cmp dword ptr [eax+4], 1 ; jnz -> return` @0x520F4D.
     // Le binaire sort IMMÉDIATEMENT si this[1] != 1 : la souris est inerte pendant l'Init
     // (30 frames d'écran vide) ET pendant le Verrouillé (image figée). Placer cette garde
-    // APRÈS `deleteConfirmOpen_` laisserait cliquer la modale dans un état où le binaire ne
-    // route rien.
+    // APRÈS le test `msgBox_.IsOpen()` laisserait cliquer la modale dans un état où le binaire
+    // ne route rien.
     if (charState_.subState != game::CharSelectSubState::Active) return;
 
-    if (deleteConfirmOpen_) {
-        deleteYesBtn_.OnMouseDown(x, y);
-        deleteNoBtn_.OnMouseDown(x, y);
+    if (msgBox_.IsOpen()) { // MsgBox modal (UI_MsgBox_OnLButtonDown 0x5C0980) : consomme le clic
+        msgBox_.OnMouseDown([this](int s) { return GetAtlasSprite(s); }, x, y, screenW_, screenH_);
         return;
     }
     if (charState_.screen == game::CharSelectScreen::CreateForm) {
@@ -2261,9 +2146,8 @@ void LoginScene::CharSelectOnMouseUp(int x, int y) {
     // [A2] MÊME garde, MÊME position : `cmp dword ptr [eax+4], 1 ; jnz -> return` @0x522E70.
     if (charState_.subState != game::CharSelectSubState::Active) return;
 
-    if (deleteConfirmOpen_) {
-        deleteYesBtn_.OnMouseUp(x, y);
-        deleteNoBtn_.OnMouseUp(x, y);
+    if (msgBox_.IsOpen()) { // MsgBox modal (UI_MsgBox_OnLButtonUp 0x5C0A90) : OK -> action, sinon ferme
+        msgBox_.OnMouseUp([this](int s) { return GetAtlasSprite(s); }, x, y, screenW_, screenH_);
         return;
     }
     if (charState_.screen == game::CharSelectScreen::CreateForm) {
@@ -2403,16 +2287,17 @@ void LoginScene::BuildCharSelectHost() {
     net::g_LoginNoticeHook = [this](int32_t id) {
         OpenNotice(game::Str(id).c_str());
     };
-    // TODO [ancre 0x5C08C0] : UI_MsgBox_Open ne fait pas QUE lever un drapeau. Décompilée,
-    // TOUTE ouverture exécute d'abord, inconditionnellement :
-    //   Util_SetClampedU8Field(dword_8E714C, 0)      (0x4C1110, EA 0x5C08D0)
-    //   UI_FocusEditBox(&g_UIEditBoxMgr, 0)          (0x50F4A0, EA 0x5C08DC) -> DÉFOCALISE
-    // puis this+20 = g_GameTimeSec (0x815180), this+8 = 1 (ouvert), this+12/+16 = 0 (les 2
-    // latches de bouton), this+24 = a2 (action id). Conséquence non reproduite ici : dans le
-    // binaire, cliquer SUPPRIMER retire le focus clavier du champ de nom ; côté C++ le champ
-    // le garde et continue de recevoir les frappes sous la modale. Même manque sur la
-    // confirmation de sortie. À refermer au portage de UI_MsgBox (cf. DeleteConfirmRender).
-    charHost_.ShowDeleteConfirm = [this] { deleteConfirmOpen_ = true; };
+    // UI_MsgBox_Open(dword_1822438, 2, StrTable005_Get(g_LangId,49), "") @0x5254C4-0x5254DD :
+    // ouvre le MsgBox modal partagé (type 2 = suppression). L'action OK (UI_MsgBox_OnLButtonUp
+    // case 2) = CharSelect_ReqDeleteChar 0x528FD0 -> game::ConfirmDeleteCharacter (opcode 18) ;
+    // Annuler = fermeture sèche. Le titre est game::Str(49) (fidèle, aucun texte FR dans l'exe).
+    // ÉCART RÉSIDUEL [ancre 0x5C08D0/0x5C08DC] : le vrai UI_MsgBox_Open DÉFOCALISE aussi le champ
+    // de nom (Util_SetClampedU8Field(dword_8E714C,0) + UI_FocusEditBox(&g_UIEditBoxMgr,0)) ; ici
+    // le champ garde le focus sous la modale (non reproduit — hors périmètre de ce module).
+    charHost_.ShowDeleteConfirm = [this] {
+        msgBox_.Open(game::Str(49), 2,
+                     [this] { game::ConfirmDeleteCharacter(charState_, charHost_); });
+    };
     // Str_ValidateNameChars 0x53FD70, reproduction FIDELE : ValidateNameCharset()
     // (Game/CharSelectFlow.cpp) — encodage + longueur (12 caracteres utiles max, via
     // le buffer WCHAR[13] d'origine) + jeu de caracteres EXACT (0-9/A-Z/a-z/thai).
@@ -2493,8 +2378,7 @@ void LoginScene::BuildCharSelectHost() {
                           &quitBtn_, &jobMinusBtn_, &jobPlusBtn_, &factionMinusBtn_,
                           &factionPlusBtn_, &faceMinusBtn_, &facePlusBtn_, &hairMinusBtn_,
                           &hairPlusBtn_, &variantMinusBtn_, &variantPlusBtn_,
-                          &createConfirmBtn_, &createCancelBtn_,
-                          &deleteYesBtn_, &deleteNoBtn_ };
+                          &createConfirmBtn_, &createCancelBtn_ };
         for (Button* b : all) b->Reset(); // armed_ = false ; hover_active_ = false (Widgets.h:223)
         // Latches COLLANTS de rotation (this[15]/this[16]) — effacés ICI seulement (boucle
         // 150-latch de l'Init @0x51BE83 couvre +0x3C/+0x40), jamais pendant l'état Actif.

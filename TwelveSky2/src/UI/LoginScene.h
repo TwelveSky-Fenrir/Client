@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "UI/Widgets.h"         // ts2::ui::EditBox / ts2::ui::Button
+#include "UI/ConfirmMsgBox.h"   // ts2::ui::ConfirmMsgBox (MsgBox partagé dword_1822438, UI_MsgBox_* 0x5C08C0)
 #include "UI/ServerSelectRender.h" // ts2::ui::ServerSelectRender (rendu géométrie réelle ServerSelect)
 #include "UI/IntroRender.h"        // ts2::ui::IntroRender (rendu géométrie réelle Intro)
 #include "UI/EnterWorldRender.h"   // ts2::ui::EnterWorldRender (rendu géométrie réelle EnterWorld)
@@ -169,7 +170,6 @@ private:
     void ServerSelectRender();
     void ServerSelectOnMouseDown(int x, int y);
     void ServerSelectOnMouseUp(int x, int y);   // Scene_ServerSelectOnMouseUp 0x519AC0 (confirme la sortie)
-    void ExitConfirmRender();                    // overlay Oui/Non de sortie (UI_MsgBox dword_1822438, EA 0x519B3E)
     RECT ServerRowRect(int i) const;
     // Lance le worker de statut serveur (fidèle à CreateThread(Net_ServerStatusThread
     // 0x518AB0) au passage sous-état Init->Idle) : interroge en TCP bloquant borné
@@ -210,7 +210,10 @@ private:
     void LayoutCreateForm();     // écran Formulaire de création (this[15714]==2)
     void CharListRender();
     void CreateFormRender();
-    void DeleteConfirmRender();  // confirmation Oui/Non (host.ShowDeleteConfirm)
+    // Peint le MsgBox modal partagé (msgBox_) en QUEUE de la scène active (UI_RenderAllDialogs
+    // 0x5AE2D0). Cursor de survol = position PHYSIQUE (CharSelectCursorClient, comme le binaire
+    // @0x5AE2DD). Appelé après tout le reste du rendu de ServerSelect ET de CharSelect.
+    void RenderMsgBox();
 
     // --- CharSelect : ordre de peintre EXACT (Scene_CharSelectRender 0x51CED0) ---
     // fond (Begin2D..End2D) -> PASSE 3D -> UI 2D (Begin2D..End2D). Les trois helpers
@@ -407,16 +410,11 @@ private:
     bool rotLeftLatched_  = false; // this[15]
     bool rotRightLatched_ = false; // this[16]
 
-    // Confirmation de suppression (Oui/Non), ouverte par host.ShowDeleteConfirm().
-    bool   deleteConfirmOpen_ = false;
-    Button deleteYesBtn_, deleteNoBtn_;
-
-    // Confirmation Oui/Non de SORTIE du jeu (ServerSelect, bouton d'action slot 4). Mirroir
-    // de UI_MsgBox_Open(dword_1822438, 1, StrTable005[1], ...) ouvert par
-    // Scene_ServerSelectOnMouseUp 0x519B3E ; "Oui" -> Log "[ABNORMAL_END] ( 4 )" + g_QuitFlag=1
-    // (UI_MsgBox_OnLButtonUp case 1, EA 0x5C0BEC-0x5C0BFB) ; "Non" referme (UI_ConfirmPrompt_Close).
-    bool   exitConfirmOpen_ = false;
-    Button exitConfirmYesBtn_, exitConfirmNoBtn_;
+    // MsgBox modal partagé (dword_1822438) : confirmation de SUPPRESSION (CharSelect,
+    // host.ShowDeleteConfirm, type 2) ET de SORTIE (ServerSelect, bouton d'action, type 1).
+    // Un seul objet réutilisé par le binaire — un seul membre ici (UI/ConfirmMsgBox.h). Remplace
+    // les ex-membres deleteConfirmOpen_/exitConfirmOpen_ + leurs 4 boutons Oui/Non inventés.
+    ui::ConfirmMsgBox msgBox_;
 
     // --- Notice ---
     bool        noticeOpen_ = false;

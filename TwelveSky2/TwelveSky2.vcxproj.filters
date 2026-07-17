@@ -495,6 +495,9 @@
     <ClCompile Include="src\UI\LoginScene.cpp">
       <Filter>Source Files\UI</Filter>
     </ClCompile>
+    <ClCompile Include="src\UI\ConfirmMsgBox.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
     <ClCompile Include="src\UI\MinimapWidget.cpp">
       <Filter>Source Files\UI\Windows</Filter>
     </ClCompile>
@@ -981,6 +984,9 @@
       <Filter>Header Files\UI</Filter>
     </ClInclude>
     <ClInclude Include="src\UI\UiProjection.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\ConfirmMsgBox.h">
       <Filter>Header Files\UI</Filter>
     </ClInclude>
     <ClInclude Include="src\UI\Win32EditBox.h">
