@@ -123,6 +123,21 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
     PutBodyU32(self.body, 76, 0);  // costume slot0
     PutBodyU32(self.body, 80, 0);  // costume slot1
     game::g_World.players.push_back(self);
+
+    // Joueur DISTANT (race 1, genre 1 = femme) a cote : montre le rendu MULTI-JOUEURS + la variete
+    // d'apparence in-world (MEME chemin PlayerPaperdoll que le self, idx>0). Position dans le champ
+    // de la camera 3e personne (self + offset).
+    game::PlayerEntity distant{};
+    distant.active  = true;
+    distant.name    = "Compagnon";
+    distant.x = selfX + 22.0f; distant.y = selfY; distant.z = selfZ + 6.0f;
+    distant.hp = 100; distant.mp = 100;
+    distant.heading = 200.0f;      // orientation differente du self
+    PutBodyU32(distant.body, 68, 1);  // race 1
+    PutBodyU32(distant.body, 72, 1);  // gender 1 (femme)
+    PutBodyU32(distant.body, 76, 0);
+    PutBodyU32(distant.body, 80, 0);
+    game::g_World.players.push_back(distant);
     TS2_LOG("WorldSelfTest : zone=%d self=(%.1f,%.1f,%.1f) injecte a players[0].",
             zoneId, selfX, selfY, selfZ);
 
