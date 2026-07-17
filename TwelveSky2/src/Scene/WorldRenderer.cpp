@@ -1199,8 +1199,19 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
     D3DXMatrixMultiply(&viewProj, &view, &proj);
 
     meshRenderer_.SetCamera(view, proj);
-    // Lumière : valeurs par défaut posées par MeshRenderer::Init (cf. MeshRenderer.h) ;
-    // pas de branchement sur une lumière de zone réelle ici (TODO Gfx futur).
+    // CORRECTIF visibilité perso in-world (interim, avant le G1 atmosphère complet). Avant, le perso
+    // était rendu avec la lumière PAR DÉFAUT du MeshRenderer (ambient 0.3 / diffuse 0.7) : vu de dos en
+    // 3e personne, son côté caméra restait sombre. On applique la MÊME lumière PROUVÉE que l'aperçu
+    // CharSelect (D3DLIGHT9 0x18C5358, Scene_CharSelectRender @0x51D034 : dir=normalize(-1,-1,-1),
+    // ambient=diffuse=(0.8,0.8,0.8)) — l'ambient 0.8 élevé rend le perso clairement visible sous tous
+    // les angles, cohérent avec le terrain clair. TODO G1 (DEEP IDA render/sky) : dériver dir+couleur du
+    // SOLEIL de l'atmosphère de zone (Env_UpdateSunLight 0x412210 : Diffuse=soleil, Ambient=horizon,
+    // Dir=-normalize(dirSoleil), jour/nuit .ATM) et l'appliquer AUSSI au terrain pour la cohérence.
+    {
+        D3DXVECTOR3 lightDir(-1.0f, -1.0f, -1.0f);
+        D3DXVec3Normalize(&lightDir, &lightDir);
+        meshRenderer_.SetLight(lightDir, D3DXVECTOR3(0.8f, 0.8f, 0.8f), D3DXVECTOR3(0.8f, 0.8f, 0.8f));
+    }
 
     game::DrawCullContext cull;
     if (!game::g_World.players.empty()) {
