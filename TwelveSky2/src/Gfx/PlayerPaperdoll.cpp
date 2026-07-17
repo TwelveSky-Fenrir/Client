@@ -13,6 +13,7 @@
 #include "Gfx/EquipModelResolver.h"        // B2 : BuildArmorBodyStem (stem SObject des pieces de corps)
 #include "Gfx/PlayerMotionSlotResolver.h"  // B3 : ResolvePlayerMotionSlot (garde + slot MOTION joueur)
 #include "Game/GameDatabase.h"             // game::GetItemInfo (resolution modele arme via ITEM_INFO)
+#include <cstdio>                          // snprintf (stems corps de base torse/jambes)
 
 namespace ts2::gfx {
 
@@ -102,6 +103,26 @@ PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motion
         const std::string s1 = gfx::BuildArmorBodyStem(race, gender, gfx::EquipBodySlot::Base1, costume1);
         if (const gfx::SkinnedModel* m = models.Get(s1))
             if (!m->Empty()) r.pieces.push_back(m);            // SLOT1 (flt_F5B21C)
+    }
+
+    // ===========================================================================
+    // 2-bis) CORPS de base : TORSE (token 003) + JAMBES (token 004) — CORRECTIF « perso IN-WORLD
+    //        tête-seule ». Sans ce bloc, PlayerPaperdoll ne produisait que SLOT0(001=visage) +
+    //        SLOT1(002=cheveux) = une TÊTE flottante (prouvé au runtime -worldtest : seuls
+    //        C001001001/C001002001 chargés). Char_RenderModel 0x527020 (branche a3==0) ET
+    //        CharPreview3D::BuildFromRecord dessinent EN PLUS le corps via EquipA(003)/EquipB(004) à
+    //        l'entrée 0 quand rien n'est équipé -> stems "C%03d003000" / "C%03d004000" (kind =
+    //        race+3*gender+1, SObject_BuildPath 0x4D89C0 case 1). MÊME palette v37 partagée + MÊME
+    //        transformée que le reste. (TODO G3 : entrée = ITEM_INFO+196 de l'item équipé au lieu de 0,
+    //        via equip[k]=body+92+8*k — DEEP IDA render/agent 6.)
+    // ===========================================================================
+    if (race >= 0 && race < 3 && gender >= 0 && gender < 2) {
+        const int kind = race + 3 * gender + 1;
+        char sTorso[16] = {}, sLegs[16] = {};
+        std::snprintf(sTorso, sizeof(sTorso), "C%03d003%03d", kind, 0); // EquipA entry 0 = torse de base
+        std::snprintf(sLegs,  sizeof(sLegs),  "C%03d004%03d", kind, 0); // EquipB entry 0 = jambes de base
+        if (const gfx::SkinnedModel* m = models.Get(sTorso)) if (!m->Empty()) r.pieces.push_back(m);
+        if (const gfx::SkinnedModel* m = models.Get(sLegs))  if (!m->Empty()) r.pieces.push_back(m);
     }
 
     // ===========================================================================
