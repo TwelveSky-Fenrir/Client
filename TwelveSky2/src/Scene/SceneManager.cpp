@@ -553,24 +553,21 @@ void SceneManager::Change(Scene s) {
         }
     }
 
-    // --- Slot BGM de scène (cSceneMgr +612) : câblage enter-world / exit ---
-    // Entrée en jeu = "enter-world" : charge+joue en boucle le .BGM de la zone courante,
-    //   comme World_LoadZoneResource 0x4DCB60 case 12 (chemin "G03_GDATA\D10_WORLDBGM\Z%03d.BGM")
-    //   puis le play gaté g_BgmEnabled (Player_ResetCombatState 0x50f761/0x50f76e ; MÊME cycle
-    //   release->load->play que Scene_ServerSelectUpdate 0x518B30 sur le slot cSceneMgr +612).
-    //   Hors des gardes du bloc géométrie ci-dessus : le BGM doit se charger même si le rendu
-    //   .WO échoue. Filet de sécurité robuste pour les chemins qui forcent Change(InGame)
-    //   directement ; le flux EnterWorld (host.LoadZoneResource idx=12) ne charge, lui, qu'un
-    //   SoundBuffer throwaway côté WorldAssets. LoadZoneBgm fait Release AVANT reload (0x518bde).
-    // TODO(zone-change en cours de partie) : un warp/MapWarp (Game/MapWarp.h) ne repasse PAS
-    //   par Change(InGame) aujourd'hui (même limite que la géométrie .WO, cf. lignes ci-dessus).
-    //   Quand le flux de warp sera câblé, il devra rappeler LoadZoneBgm(nouveauZoneId) pour
-    //   recharger l'ambiance (World_LoadZoneResource case 12 est ré-appelée par zone dans le binaire).
+    // --- BGM de zone : slot MONDE g_GameWorld+2236 (worldBgm_) — CORRECTIF FIDÉLITÉ ---
+    // Le play RÉEL du BGM de zone est Player_ResetCombatState @0x50F76E (gaté g_BgmEnabled
+    // 0x84DEF0 @0x50F75A), sur le slot MONDE g_GameWorld+2236 (worldBgm_), DISTINCT du slot de
+    // scène cSceneMgr+612 (SceneManager::bgm_/LoadZoneBgm, réservé au BGM de MENU Z000). Le
+    // CHARGEMENT du .BGM de zone a lieu pendant le Loading (World_LoadZoneResource 0x4DCB60
+    // case 12 -> WorldAssets::LoadWorldBgm, via EnterWorld host.LoadZoneResource idx=12) : ici on
+    // ne fait QUE JOUER, sans re-décoder.
+    // ⚠ L'ex-appel LoadZoneBgm(zoneId) re-décodait le même .BGM dans le MAUVAIS slot
+    //   (cSceneMgr+612) — double décodage + slot erroné. Remplacé par PlayWorldBgm (slot monde).
     if (s == Scene::InGame) {
-        LoadZoneBgm(game::g_World.zoneId);
+        if (worldAssets_) worldAssets_->PlayWorldBgm(config::g_Options.BgmEnabled == 1); // 0x50F76E
     } else if (prev == Scene::InGame) {
-        // Sortie du jeu (retour menu / déconnexion) : coupe l'ambiance de zone.
-        //   SceneMgr_ReleaseSoundBuffers 0x517B60 -> Snd_ReleaseBuffers 0x6A80D0.
+        // Sortie du jeu (retour menu / déconnexion) : coupe l'ambiance de zone (slot monde) —
+        //   Snd_ReleaseBuffers 0x6A80D0 ; + le slot de scène vestigial (inoffensif si vide).
+        if (worldAssets_) worldAssets_->ReleaseWorldBgm();
         ReleaseBgm();
     }
 }
@@ -643,9 +640,11 @@ void SceneManager::ReloadZone(int zoneId) {
                 "(%zu parts GPU).", zoneId, worldGeom_->UploadedPartCount());
     }
 
-    // 4. Recharge l'ambiance BGM de la nouvelle zone (LEVE la garde one-shot ; meme cycle
-    //    release->load->play que World_LoadZoneResource 0x4DCB60 case 12). // 0x4DCB60 case 12
-    LoadZoneBgm(zoneId);
+    // 4. Rejoue l'ambiance BGM de la nouvelle zone. worldBgm_ (slot monde g_GameWorld+2236) vient
+    //    d'être RECHARGÉ par la boucle idx 1..12 ci-dessus (case 12 -> WorldAssets::LoadWorldBgm,
+    //    release AVANT reload via make_unique) : ici on ne fait QUE JOUER (Play @0x50F76E, gate
+    //    g_BgmEnabled). Plus de re-décodage dans le slot de scène (ex-LoadZoneBgm). // 0x4DCB60 case 12
+    if (worldAssets_) worldAssets_->PlayWorldBgm(config::g_Options.BgmEnabled == 1);
 }
 
 void SceneManager::ConsumePending() {
@@ -854,14 +853,12 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             // slot DISTINCT tenu par g_GameWorld, qui n'est pas appelé à cette EA.
             ReleaseBgm();                                                  // 0x52C089 / 0x6A80D0
 
-            // ÉCART CONNU (hors mission, non introduit ici) : dans le binaire, la case 1
-            // rechargera le BGM via World_LoadZoneResource 0x4DCB60 case 12 (~120 frames plus
-            // tard). Côté C++, host.LoadZoneResource(idx=12) ne charge qu'un SoundBuffer
-            // throwaway côté WorldAssets ; le vrai rechargement n'a lieu qu'à l'entrée InGame
-            // (Change() -> LoadZoneBgm). Le silence dure donc un peu plus longtemps que dans
-            // l'original, sans autre conséquence.
-            // TODO [ancre 0x4DCB60 case 12] : faire appeler LoadZoneBgm(zoneId) par
-            // host.LoadZoneResource quand idx==12 pour aligner exactement la fenêtre de silence.
+            // FENÊTRE DE SILENCE ALIGNÉE (correctif C-BGM) : la case 12 de host.LoadZoneResource
+            // (idx==12) CHARGE désormais le vrai .BGM de zone dans le slot MONDE worldBgm_
+            // (WorldAssets::LoadWorldBgm, g_GameWorld+2236) pendant le Loading, exactement comme
+            // World_LoadZoneResource 0x4DCB60 case 12 ; le PLAY a lieu à l'entrée InGame via
+            // WorldAssets::PlayWorldBgm (0x50F76E, gate g_BgmEnabled). Plus de re-décodage dans le
+            // slot de scène cSceneMgr+612 (ex-LoadZoneBgm) — cf. le bloc BGM de Change() ci-dessus.
         };
         host.LoadZoneResource = [this](int zoneId, int idx) {
             // World_LoadZoneResource 0x4DCB60 : idx EST directement world::ResourceKind
