@@ -11,6 +11,8 @@
 #include "Core/Log.h"
 
 #include <windows.h>
+#include <d3d9.h>
+#include <d3dx9.h>   // D3DXSaveSurfaceToFileA (capture back buffer -> PNG pour verification visuelle)
 #include <string>
 #include <cstring>
 #include <algorithm> // std::min (troncature du nom a 12 o)
@@ -158,6 +160,8 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
     };
 
     bool quit = false;
+    int  frameNo = 0;
+    bool captured = false;
     while (!quit && (seconds <= 0 || elapsedSec() < static_cast<double>(seconds))) {
         MSG msg{};
         while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -168,6 +172,21 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
         scene.Update(1.0 / 30.0, camera);
         if (renderer.Ready() && renderer.BeginFrame()) {
             scene.Render(renderer.Device(), camera);
+            // Capture du back buffer (PNG) : permet de VERIFIER VISUELLEMENT le rendu (perso 3D)
+            // sans acces a l'ecran. Frame 45 = APRES le chargement des modeles (Init ~30 frames)
+            // mais AVANT le 1er keep-alive de session (scene-frame 60) qui, faute de vrai serveur,
+            // ouvre la notice « session expiree » (id 20) et masquerait le perso.
+            if (++frameNo == 45 && !captured) {
+                captured = true;
+                IDirect3DSurface9* bb = nullptr;
+                if (SUCCEEDED(renderer.Device()->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+                    const HRESULT hr = D3DXSaveSurfaceToFileA("preview_capture.png", D3DXIFF_PNG,
+                                                             bb, nullptr, nullptr);
+                    TS2_LOG("CharSelectSelfTest : capture back buffer -> preview_capture.png (hr=0x%08lX)",
+                            static_cast<unsigned long>(hr));
+                    bb->Release();
+                }
+            }
             renderer.EndFrame();
         }
         Sleep(16);
