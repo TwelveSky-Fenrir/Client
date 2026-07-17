@@ -436,6 +436,15 @@ void WorldRenderer::drawPlaceholderCube(const D3DXVECTOR3& pos, float scale, D3D
     device_->SetTextureStageState(0, D3DTSS_ALPHAOP,   D3DTOP_MODULATE);
     device_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device_->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+
+    // CORRECTIF AUDIT (même classe que le crash CharSelect, cf. MeshRenderer.h:369-380) : ce cube
+    // a posé SetVertexShader/PixelShader(nullptr) sur le device PARTAGÉ (L401-402) sans que
+    // MeshRenderer le sache -> son cache currentPass_ est désormais périmé. Sans cette invalidation,
+    // le PROCHAIN modèle skinné de la MÊME passe (currentPass_ inchangé) saute le re-bind VS/PS dans
+    // DrawSkinnedSubset (MeshRenderer.cpp `if (currentPass_ != usePass)`) et se dessine avec le VS
+    // NULL du cube (pipeline fixe, mal placé/invisible) — dès qu'un asset manquant côtoie un modèle
+    // résolu de même passe dans la boucle de corps.
+    meshRenderer_.InvalidateShaderBindingCache();
 }
 
 // ===========================================================================
