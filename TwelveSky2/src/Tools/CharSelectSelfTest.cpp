@@ -74,7 +74,8 @@ LRESULT CALLBACK WndProcTest(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
 //   race@40 / gender@44 / face@48 / hair@52 -> tous doivent etre dans les bornes valides
 //   (race 0..2, gender 0..1, face 0..6, hair 0..2).
 void InjectDefaultChar(int slot, const char* name, int32_t race, int32_t gender,
-                       int32_t face, int32_t hair, int32_t job, int32_t level) {
+                       int32_t face, int32_t hair, int32_t job, int32_t level,
+                       int32_t equipAItemId = 0, int32_t equipBItemId = 0) {
     if (slot < 0 || slot >= net::kCharRecordCount) return;
     uint8_t* rec = net::g_CharRecords[slot];
     std::memset(rec, 0, net::kCharRecordSize);
@@ -88,6 +89,21 @@ void InjectDefaultChar(int slot, const char* name, int32_t race, int32_t gender,
     put(48, face);   // visage
     put(52, hair);   // cheveux
     put(56, level);  // power = niveau (selection par defaut = plus haut niveau occupe)
+    // Equipement : IDs d'items lus par CharPreview3D::BuildFromRecord (kRecOffItemEquipA=136,
+    // kRecOffItemEquipB=184) -> GetItemInfo(id)->field196 = index de mesh de l'armure.
+    put(136, equipAItemId); // armure "torse" (EquipA)
+    put(184, equipBItemId); // armure "jambes" (EquipB)
+}
+
+// Cherche dans mITEM le 1er item dont field196 == targetEntry (index de mesh EquipA/B). Sert a
+// EQUIPER la fiche de liste : entree 35 = l'armure "showcase" que l'ecran de creation utilise
+// (kCreateBodyEntryIndex). Renvoie 0 si aucun (fiche reste en corps de base, fidele).
+int32_t FindEquipItemWithEntry(uint32_t targetEntry) {
+    for (int32_t id = 1; id <= 99999; ++id) {
+        const game::ItemInfo* it = game::GetItemInfo(static_cast<uint32_t>(id));
+        if (it && it->field196 == targetEntry) return id;
+    }
+    return 0;
 }
 
 } // namespace
@@ -150,7 +166,10 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
     // Injecte 2 fiches perso par defaut AVANT de pomper : l'init de scene CharSelect
     // (RunInitBlock, ~30 frames) appelle host.LoadCharacterSlots -> LoadCharacterSlotsFromRecords
     // qui lit net::g_CharRecords. Elles apparaissent dans la liste avec leur apercu 3D.
-    InjectDefaultChar(0, "Guerrier", /*race*/0, /*gender*/0, /*face*/0, /*hair*/0, /*job*/0, /*level*/50);
+    const int32_t armorItem = FindEquipItemWithEntry(35); // 35 = armure "creation" (kCreateBodyEntryIndex)
+    TS2_LOG("CharSelectSelfTest : item armure (field196==35) = id %d (0 = aucun -> corps de base).", armorItem);
+    InjectDefaultChar(0, "Guerrier", /*race*/0, /*gender*/0, /*face*/0, /*hair*/0, /*job*/0, /*level*/50,
+                      /*equipA*/armorItem, /*equipB*/armorItem);
     InjectDefaultChar(1, "Sorciere", /*race*/1, /*gender*/1, /*face*/2, /*hair*/1, /*job*/1, /*level*/30);
     TS2_LOG("CharSelectSelfTest : 2 persos injectes. Clic gauche = interaction (CRÉER, fleches, "
             "selection). Ferme la fenetre pour quitter.");
