@@ -1149,13 +1149,15 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
             // idiome UNIVERSEL du switch terminal 0x5727BF (frame += dt*30 puis wrap par SOUSTRACTION,
             // Char_TickMoveState 0x574922), que la version C++ de Char_UpdateAnimationFrame ne fait pas
             // (stateHandler nul). frameCount du clip courant via l'oracle adossé au MÊME MotionCache que
-            // le dessin ; race/genre = body+68/+72 (MÊME source que WorldRenderer), weaponType 0 (a8 de
-            // PcModel_ResolveEquipSlot 0x4E46A0, switch ~500 cas non reversé). Player_AdvanceAnimCursor
-            // arme lui-même le latch IsWired -> pas de figement (dégradation propre si non appelé).
+            // le dessin ; race/genre = body+68/+72 (MÊME source que WorldRenderer). CORRECTIF G5 (DEEP
+            // IDA render) : le 3e param (weaponType) = a4 de PcModel_ResolveEquipSlot 0x4E46A0 @0x4e578e =
+            // animSlot (entity+240 = body+216 = 2*weaponClass), PAS a8 (special item, switch ~500 cas). Sans
+            // lui (0 figé), un joueur ARMÉ jouait le clip désarmé. p.anim.animSlot lu au spawn (EntityManager).
+            // Player_AdvanceAnimCursor arme lui-même le latch IsWired -> pas de figement (dégradation propre).
             int animRace = 0, animGender = 0;
             std::memcpy(&animRace,   p.body.data() + 68, sizeof(animRace));
             std::memcpy(&animGender, p.body.data() + 72, sizeof(animGender));
-            const int animFrameCount = ts2::WorldPlayerMotionFrameCount(animRace, animGender, 0, p.anim.state);
+            const int animFrameCount = ts2::WorldPlayerMotionFrameCount(animRace, animGender, p.anim.animSlot, p.anim.state);
             game::Player_AdvanceAnimCursor(p.anim, dt, animFrameCount);
 
             if (isSelf && result.contactFiredThisTick) {
@@ -1611,7 +1613,25 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
         // zoneId = game::g_World.zoneId (même valeur qu'EnterWorldFlow_Update).
         if (login_) login_->RenderEnterWorld(enterWorldState_, game::g_World.zoneId);
         break;
-    case Scene::InGame:
+    case Scene::InGame: {
+        // --- GATE g_SceneSubState (Scene_InGameRender 0x52D0B0, v78 = *(a1+4) @0x52D0E4) ---
+        // Le binaire choisit son rendu selon g_SceneSubState (= inGameTickState_, cf. L1483 :
+        // Setup=0/WaitFirstSpawn=1/Failed=2/InitCamera=3/MainTick=4) :
+        //   <=1 (chargement) : ECRAN VIDE (BeginFrame + Present, aucun monde ; branches lignes
+        //        137-148 du désasm). Le BeginFrame de l'appelant a déjà effacé -> rien à dessiner.
+        //   ==2 (Failed / notice de timeout) : DIALOGS 2D SEULS (Gfx_Begin2D + UI_RenderAllDialogs
+        //        0x5AE2D0 + Gfx_End2D ; lignes 149-163). Ni monde, ni HUD.
+        //   >=3 (InitCamera/MainTick) : FRAME MONDE COMPLÈTE (ci-dessous).
+        // Sans ce gate, le C++ dessinait le monde inconditionnellement pendant le spool de zone
+        // et la notice de timeout (infidèle). Le harnais/flux normal atteint sub>=3 dès que
+        // players[0] (self) est actif -> monde rendu.
+        const int inGameSub = g_SceneSubState;
+        if (inGameSub <= 1) break;                        // écran de chargement vide (@0x52D0E4)
+        if (inGameSub == 2) {                             // dialogs seuls (@lignes 149-163)
+            if (windowsReady_ && windows_) windows_->Render(); // UI_RenderAllDialogs 0x5AE2D0
+            break;
+        }
+        // inGameSub >= 3 : frame monde complète.
         // ORDRE CORRIGÉ : la couche SilverLining minimale est appelée à deux moments,
         // comme le binaire d'origine :
         //   1) avant le décor/terrain (Env_UpdateFrame -> cAtmosphere_RenderFrame),
@@ -1730,6 +1750,7 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
         if (hudReady_ && hud_) hud_->Render();
         if (windowsReady_ && windows_) windows_->Render();
         break;
+    }
     default:
         // None : écran effacé par Renderer::BeginFrame.
         break;

@@ -68,6 +68,13 @@ struct FxTimerSlot {
 
 struct CharAnimState {
     // --- Miroir direct de ActionFsm (état/timing/hit-detection) ---
+    // Bloc MOVE-STATE 72 o @entity+240 (= body+216) : émis par Net_SendPacket_Op16 0x4B49F0,
+    // recopié verbatim dans le body 600 o au spawn (Pkt_SpawnCharacter 0x4646C0). move-state+0 =
+    // animSlot (sélecteur de CLIP d'anim = 2*weaponClass idle / +1 recovery). Passé comme `weaponType`
+    // à PcModel_ResolveEquipSlot 0x4E46A0 @0x4e578e (base + 19968*animSlot + 156*actionState) ->
+    // sélectionne le jeu MOTION de la POSE D'ARME. Sans lui (weaponType=0 figé), un joueur ARMÉ jouait
+    // le clip DÉSARMÉ. DISTINCT de weaponAnimSlot (entity+220 = body+196 = traînée d'arme). // 0x574830
+    int32_t animSlot          = 0;     // entity+240 = body+216 = move-state+0 (Char_TickMoveState arg4 @0x5748e0)
     int32_t state             = 0;     // entity+244 (CharActionState, miroir "facing") — ex-VeryOldClient: aType (ACTION_INFO ; nom aType/aSort permutable, Rosetta §7) [CONFIRMED offset]
     float   animFrame         = 0.0f;  // entity+248 — ex-VeryOldClient: aFrame [CONFIRMED, Rosetta §2]
     bool    hitCheckActive    = false; // entity+624 (idx156) — ex-VeryOldClient: mUsingSkill (nom tentatif) [CONFIRMED offset, Rosetta §3.5]

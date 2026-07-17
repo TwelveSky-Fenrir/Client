@@ -554,6 +554,10 @@ private:
         // Player_AnimCursorTickIsWired selon la famille (garde anti-régression : n'active
         // SampleByCursor que si le tick de curseur correspondant a réellement tourné).
         int   animType      = 0;
+        // Pose d'arme (G5, DEEP IDA render) : entity+240 = body+216 = move-state+0 = 2*weaponClass.
+        // 3e param (weaponType) de MotionCache::GetForPlayer / PcModel_ResolveEquipSlot 0x4E46A0
+        // (base + 19968*animSlot). 0 pour monstres/PNJ. Joueur armé -> clip de la pose d'arme.
+        int   animSlot      = 0;
         float animCursor    = 0.0f;
         bool  hasAnimCursor = false;
 

@@ -65,9 +65,13 @@ struct PaperdollResult {
 // passe, seul le SampleByCursor vs SampleByGameTime est garde par hasAnimCursor).
 class PlayerPaperdoll {
 public:
+    // weaponPose (G5, DEEP IDA render) = a4 de PcModel_ResolveEquipSlot 0x4E46A0 @0x4e578e =
+    // animSlot (entity+240 = body+216 = 2*weaponClass). Sélectionne le jeu MOTION de la POSE D'ARME
+    // (base + 19968*weaponPose). 0 = pose désarmée (repli). DOIT être identique à celui passé à
+    // WorldPlayerMotionFrameCount (sinon wrap du curseur et clip dessiné divergent).
     static PaperdollResult Resolve(ModelCache& models, MotionCache& motions,
                                    int race, int gender, int costume0, int costume1,
-                                   uint32_t weaponItemId,
+                                   uint32_t weaponItemId, int weaponPose,
                                    int animState, float animCursor, bool hasAnimCursor,
                                    float gameTimeSec);
 };

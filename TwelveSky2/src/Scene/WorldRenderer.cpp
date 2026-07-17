@@ -571,7 +571,7 @@ void WorldRenderer::renderPlanarShadows(const std::vector<DrawableEntity>& drawa
             // Passe aussi a la passe d'ombre planaire (silhouette aplatie = MEME anim que le corps).
             gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
                 *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
-                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId, ent.animSlot,
                 ent.animType, ent.animCursor, ent.hasAnimCursor,
                 game::g_World.gameTimeSec);
             if (!pd.valid) continue; // corps non résolu -> pas d'ombre (pas de cube d'ombre inventé)
@@ -795,7 +795,7 @@ void WorldRenderer::renderOne(const DrawableEntity& ent, const game::DrawCullCon
             // Passe aussi a la passe d'ombre planaire (silhouette aplatie = MEME anim que le corps).
             gfx::PaperdollResult pd = gfx::PlayerPaperdoll::Resolve(
                 *modelCache_, Motions(), ent.bodyRace, ent.bodyGender,
-                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId,
+                ent.bodyCostumeSlot0, ent.bodyCostumeSlot1, ent.weaponItemId, ent.animSlot,
                 ent.animType, ent.animCursor, ent.hasAnimCursor,
                 game::g_World.gameTimeSec);
             if (pd.valid) {
@@ -1289,6 +1289,7 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
         // globale). On ne consomme SampleByCursor(animFrame) QUE si le curseur est reellement avance,
         // sinon on figerait TOUS les joueurs a la frame 0 (strictement pire que l'idle en phase).
         ent.animType      = p.anim.state;                       // entity+244, selecteur de clip (reseau)
+        ent.animSlot      = p.anim.animSlot;                    // entity+240 = 2*weaponClass (pose d'arme, G5 DEEP IDA)
         ent.animCursor    = p.anim.animFrame;                   // entity+248, curseur reel (avance en UPDATE)
         ent.hasAnimCursor = game::Player_AnimCursorTickIsWired();
 

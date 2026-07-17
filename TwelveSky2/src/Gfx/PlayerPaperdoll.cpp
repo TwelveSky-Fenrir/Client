@@ -18,7 +18,7 @@ namespace ts2::gfx {
 
 PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motions,
                                          int race, int gender, int costume0, int costume1,
-                                         uint32_t weaponItemId,
+                                         uint32_t weaponItemId, int weaponPose,
                                          int animState, float animCursor, bool hasAnimCursor,
                                          float gameTimeSec) {
     PaperdollResult r;
@@ -53,7 +53,7 @@ PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motion
     // invalide (jamais un stem hors table). weaponPose=0 assume (le vrai a4=pose in-game vient du
     // switch a8, non porte) -- MEME repli que l'ancien weaponType=0, pas une invention.
     const gfx::PlayerMotionSlot ms = gfx::ResolvePlayerMotionSlot(
-        race, gender, /*weaponPose=*/0, animState, /*ctxA6=*/1, /*ctxA7=*/0, /*itemOrSkillId=*/0);
+        race, gender, weaponPose, animState, /*ctxA6=*/1, /*ctxA7=*/0, /*itemOrSkillId=*/0);
 
     if (ms.category == gfx::PlayerMotionCategory::BodyC) {
         // Categorie 1 "C" (le seul cas atteignable ici, a8=0) -> GetForPlayer public, stem identique.

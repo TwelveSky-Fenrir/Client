@@ -443,6 +443,10 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
         //   Fx_Attach*/muzzle/UI restent TODO ancre (pool g_FxPool/dword_17D06F4 non attache,
         //   aucune aura active a ce spawn -> boucles Fx_Attach* = no-op fidele).
         e->anim.state = RdI32(e->body.data(), kPActionState); // a1[61]=entity+244=body+220 (0x570ED5)
+        // Sélecteur de CLIP d'anim = 2*weaponClass (move-state+0 = body+216 = entity+240). Arg4 de
+        // Char_TickMoveState 0x574830 @0x5748e0 -> PcModel_ResolveEquipSlot 0x4E46A0 (base+19968*animSlot).
+        // Sans lui (weaponType=0 figé), un joueur ARMÉ jouait le clip DÉSARMÉ (gap G5, DEEP IDA render).
+        e->anim.animSlot = RdI32(e->body.data(), static_cast<int>(kPMoveState)); // entity+240 = body+216
         // (Vague G — traîne d'arme) Gate maître de Char_DrawWeaponEffectVariantB 0x56BF90 (@0x56c01b :
         // weaponAnimSlot(this+55=entity+220=body+196) != 0 && !altWeaponSet(this+144=entity+576=body+552)).
         // Alimentés au spawn comme anim.state ci-dessus -> sinon resolveWeaponTrail échoue au gate =
