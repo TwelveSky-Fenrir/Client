@@ -187,15 +187,18 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
         }
         // Sequence scriptee (fenetre SURE [modeles charges ~30 .. keep-alive scene-frame 60[ :
         // au-dela la notice « session expiree » id 20 masquerait le perso, faute de vrai serveur) :
-        //   35 -> capture LISTE (perso selectionne)   42 -> clic bouton « Creer » (930,518 : x0=884,
-        //   y0=504 + centre sprite)   52 -> capture ECRAN DE CREATION (apercu 3D + formulaire).
+        //   35 capture LISTE   42 clic « Creer » (930,518)   44 capture CREATION (Male/Black Snake)
+        //   48 clic « + » Gender (893,183 : panelX+196=885, panelY+102=175 + centre sprite) -> Female
+        //   54 capture CREATION (Female) : prouve le rendu des modeles feminins (variete perso).
         ++frameNo;
-        if (frameNo == 42) { scene.OnLButtonDown(930, 518); scene.OnLButtonUp(930, 518); }
+        if (frameNo == 42) { scene.OnLButtonDown(930, 518); scene.OnLButtonUp(930, 518); } // Creer
+        if (frameNo == 48) { scene.OnLButtonDown(893, 183); scene.OnLButtonUp(893, 183); } // Gender +
         scene.Update(1.0 / 30.0, camera);
         if (renderer.Ready() && renderer.BeginFrame()) {
             scene.Render(renderer.Device(), camera);
             if (frameNo == 35) capturePng("preview_capture.png");
-            if (frameNo == 52) capturePng("preview_create.png");
+            if (frameNo == 44) capturePng("preview_create.png");
+            if (frameNo == 54) capturePng("preview_create_female.png");
             renderer.EndFrame();
         }
         Sleep(16);
