@@ -319,6 +319,25 @@ int32_t ReqCancelEnter(NetClient& nc);
 // (rx+1, @0x52BFB0).
 int32_t AccountReq_op27(NetClient& nc, int32_t arg);
 
+// --- Assistant PIN / mot de passe secondaire (opcodes 13/14/15) ---
+// Requêtes BLOQUANTES synchrones (send + recv immédiat, socket login) émises par l'assistant
+// PIN de CharSelect (branche dword_16692A4 != 0). PIN = 4 chiffres ASCII + NUL (5 o). Sur
+// succès (code 0) le serveur renvoie le nouveau PIN en écho et le client remet à 0 le flag
+// « PIN requis » (net::g_SecondaryPwRequired = dword_16692A4) et stocke le PIN
+// (net::g_StoredSecondaryPw = unk_16692A8). Layout et resets RE-VÉRIFIÉS au désassemblage.
+//
+// op13 SET (Net_AccountReq_op13 0x529AA0) : payload PIN[5]@9 (len 14) ; recv 10 =
+//   [1..4]=code, [5..9]=PIN écho. Sur code 0 : g_SecondaryPwRequired=0 + g_StoredSecondaryPw
+//   <- recv+5 (@0x529CEC).
+int32_t SecondaryPasswordSet(NetClient& nc, const uint8_t pin5[5]);        // op13 0x529AA0
+// op14 CHANGE (Net_AccountReq_op14 0x529D20) : payload old[5]@9 + new[5]@14 (len 19) ;
+//   recv 10 = [1..4]=code, [5..9]=PIN écho. Sur code 0 : g_SecondaryPwRequired=0 +
+//   g_StoredSecondaryPw <- recv+5 (nouveau PIN, @0x529F7E).
+int32_t SecondaryPasswordChange(NetClient& nc, const uint8_t oldPin5[5], const uint8_t newPin5[5]); // op14 0x529D20
+// op15 VERIFY (Net_AccountReq_op15 0x529FB0) : payload PIN[5]@9 (len 14) ; recv 5 =
+//   [1..4]=code. Sur code 0 : g_SecondaryPwRequired=0 SEUL (pas de maj du PIN, @0x52A1FC).
+int32_t SecondaryPasswordVerify(NetClient& nc, const uint8_t pin5[5]);     // op15 0x529FB0
+
 // --- Layout CONFIRMÉ du "struct72" partagé (Op12.a4 / Op15.a2 / Op16.a2) ---
 // RE-CONFIRMÉ par décompilation fraîche (2026-07-14, accès idaTs2 direct) de
 // Scene_CharSelectUpdate 0x51BD90 (EA 0x51c765-0x51c7f9, écrivain du record juste

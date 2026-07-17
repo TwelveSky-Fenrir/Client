@@ -356,6 +356,42 @@ int32_t ReqCancelEnter(NetClient& nc) {
     return 0;
 }
 
+// --- Assistant PIN / mot de passe secondaire (op13/14/15) — cf. header ---
+
+int32_t SecondaryPasswordSet(NetClient& nc, const uint8_t pin5[5]) { // Net_AccountReq_op13 0x529AA0
+    if (!SendFrame(nc, 13, pin5, 5)) return kCharSelectErrSend;      // opcode 13, PIN[5]@9 (len 14)
+    if (!RecvExact(nc, 10)) { NetCloseSocket(nc); return kCharSelectErrRecv; } // recv 10
+    const int32_t code = ReadResultCode(nc);                        // [1..4]
+    if (code == 0) {                                                // @0x529CEC
+        g_SecondaryPwRequired = 0;                                  // dword_16692A4 = 0
+        std::memcpy(g_StoredSecondaryPw, nc.recvBuf + 5, 5);        // unk_16692A8 <- PIN écho (recv+5)
+    }
+    return code;
+}
+
+int32_t SecondaryPasswordChange(NetClient& nc, const uint8_t oldPin5[5], const uint8_t newPin5[5]) { // Net_AccountReq_op14 0x529D20
+    uint8_t payload[10];
+    std::memcpy(payload + 0, oldPin5, 5);                           // ancien PIN [9..13]
+    std::memcpy(payload + 5, newPin5, 5);                           // nouveau PIN [14..18]
+    if (!SendFrame(nc, 14, payload, 10)) return kCharSelectErrSend; // opcode 14 (len 19)
+    if (!RecvExact(nc, 10)) { NetCloseSocket(nc); return kCharSelectErrRecv; } // recv 10
+    const int32_t code = ReadResultCode(nc);
+    if (code == 0) {                                                // @0x529F7E
+        g_SecondaryPwRequired = 0;                                  // dword_16692A4 = 0
+        std::memcpy(g_StoredSecondaryPw, nc.recvBuf + 5, 5);        // unk_16692A8 <- nouveau PIN écho
+    }
+    return code;
+}
+
+int32_t SecondaryPasswordVerify(NetClient& nc, const uint8_t pin5[5]) { // Net_AccountReq_op15 0x529FB0
+    if (!SendFrame(nc, 15, pin5, 5)) return kCharSelectErrSend;      // opcode 15, PIN[5]@9 (len 14)
+    if (!RecvExact(nc, 5)) { NetCloseSocket(nc); return kCharSelectErrRecv; } // recv 5
+    const int32_t code = ReadResultCode(nc);
+    if (code == 0)                                                  // @0x52A1FC
+        g_SecondaryPwRequired = 0;                                  // dword_16692A4 = 0 SEUL (pas de maj PIN)
+    return code;
+}
+
 int32_t AccountReq_op27(NetClient& nc, int32_t arg) {
     // Net_AccountReq_op27 0x52BD80 (opcode 27), émis depuis Scene_CharSelectOnMouseUp
     // @0x523E07. Voir CharSelectPackets.h::AccountReq_op27 pour les 2 anomalies fidèles.
