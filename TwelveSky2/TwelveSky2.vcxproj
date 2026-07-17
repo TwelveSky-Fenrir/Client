@@ -223,6 +223,7 @@
     <ClCompile Include="src\Net\GameHandlers_Misc.cpp" />
     <ClCompile Include="src\Net\GameHandlers_PartyGuild.cpp" />
     <ClCompile Include="src\Net\GameHandlers_VendorTrade.cpp" />
+    <ClCompile Include="src\Net\GameServerDomains.cpp" />
     <ClCompile Include="src\Net\GameVarDispatch.cpp" />
     <ClCompile Include="src\Net\ItemActionDispatch.cpp" />
     <ClCompile Include="src\Net\ItemEffectDispatch.cpp" />
@@ -388,6 +389,7 @@
     <ClInclude Include="src\Net\CombatResultApply.h" />
     <ClInclude Include="src\Net\Framing.h" />
     <ClInclude Include="src\Net\GameHandlers.h" />
+    <ClInclude Include="src\Net\GameServerDomains.h" />
     <ClInclude Include="src\Net\GameVarDispatch.h" />
     <ClInclude Include="src\Net\ItemActionDispatch.h" />
     <ClInclude Include="src\Net\ItemEffectDispatch.h" />

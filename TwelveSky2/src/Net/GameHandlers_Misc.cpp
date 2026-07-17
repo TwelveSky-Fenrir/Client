@@ -27,6 +27,7 @@
 #include "Net/GameHandlers.h"
 #include "Net/ClientState.h"   // ts2::net::g_GmCmdCooldownLatch, g_MorphInProgress (0x1675A88)
 #include "Net/Login.h"         // net::ConnectGameServer 0x462A70, net::kLoginHostCom, codes kNet*
+#include "Net/GameServerDomains.h" // net::SelectGameServerHost (Net_SelectServerDomain 0x53FE90)
 #include "Net/SendPackets.h"   // net::Net_SendPacket_Op21 0x4B5190
 #include "Game/ClientRuntime.h"
 #include "Game/StatEngine.h"   // game::StatEngine::CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0) — M3
@@ -261,15 +262,16 @@ void RegisterMiscHandlers(NetSystem& sys) {
     OnPacket<GameServerConnectResult>(sys, 0x18, [&sys](const GameServerConnectResult& p) {
         switch (p.resultCode) {                                    // switch(v38) — Pkt_GameServerConnectResult 0x469CF0
         case 0: {
-            // Net_SelectServerDomain 0x53FE90 = stub VIDE dans l'image déballée (table
-            // d'hôtes geniusorc.com non reconstructible) -> réutilise net::kLoginHostCom,
-            // comme LoginScene (host callback CharSelect). serverId consommé nominalement.
-            const char* host = net::kLoginHostCom;                 // (void)p.serverId
+            // Net_SelectServerDomain 0x53FE90 (EA interne à Pkt_GameServerConnectResult) :
+            // traduit p.serverId (= domainId reçu, unk_8156C5) en hostname via la table
+            // reconstruite (Net/GameServerDomains.h). Fallback = net::kLoginHostCom (index
+            // hors-plage / garde OFF). MÊME point de résolution que LoginScene::ConnectToGameServer.
+            const std::string host = net::SelectGameServerHost(p.serverId, net::kLoginHostCom); // 0x53FE90
             // Net_ConnectGameServer 0x462A70 : nouvelle socket + bannière 5o + clé XOR@+4 /
             // seq@+5 + auth 141o + WSAAsyncSelect(WM_USER+1). Requiert hWndParent 0x815184.
             const HWND wnd = ts2::net::g_GameSocketNotifyWnd;      // == hWndParent 0x815184
             const int v40 = wnd
-                ? net::ConnectGameServer(sys.Client(), host,
+                ? net::ConnectGameServer(sys.Client(), host.c_str(),
                                          static_cast<uint16_t>(p.port), wnd)
                 : net::kNetErrAsyncSelect;  // pas de fenêtre -> code 6 -> Str107 (dégradé honnête, cf. §hWndParent)
             switch (v40) {                                         // switch(v40) — sous-résultat Net_ConnectGameServer

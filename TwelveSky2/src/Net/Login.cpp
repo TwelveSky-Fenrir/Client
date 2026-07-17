@@ -217,6 +217,17 @@ int LoginRequest(NetClient& nc, const char* username, const char* password,
         std::memcpy(g_AccountName, nc.recvBuf + 5, 128);   // byte_1669194 <- recvBuf+5
         std::memcpy(&g_GmAuthLevel, nc.recvBuf + 133, 4);  // dword_1669294 <- recvBuf+133
 
+        // Mot de passe secondaire / PIN — RÉIFIÉ cette passe (offsets ABSOLUS recvBuf) :
+        //   dword_16692A4 <- recvBuf+0x95 (=149), 4 o   (Crt_Memcpy EA 0x51BBE7)
+        //   unk_16692A8   <- recvBuf+0x99 (=153), 5 o   (Crt_Memcpy EA 0x51BBFB)
+        // Consommés par l'assistant PIN de CharSelect (hooks IsSecondaryPasswordRequired /
+        // HasStoredSecondaryPassword). ⚠ Sans eux, un compte À PIN prend la MAUVAISE branche
+        // à l'entrée en CharSelect (la branche PIN permute un pavé via ≥10 tirages Rng_Next),
+        // ce qui DÉSYNCHRONISE le flux _holdrand PARTAGÉ (fond, rotation de spawn, job initial).
+        // Voir Net/NetClient.h::g_SecondaryPwRequired/g_StoredSecondaryPw et [A12] CharSelectFlow.h.
+        std::memcpy(&g_SecondaryPwRequired, nc.recvBuf + 0x95, 4); // dword_16692A4  EA 0x51BBE7
+        std::memcpy(g_StoredSecondaryPw,    nc.recvBuf + 0x99, 5); // unk_16692A8    EA 0x51BBFB
+
         // 3 fiches personnage BRUTES de 10088 o chacune (unk_1669380/unk_166BAE8/
         // unk_166E250 dans le binaire) — offsets RE-CONFIRMÉS par décompilation
         // fraîche de Net_LoginRequest 0x51B8E0 (EA 0x51bc56/0x51bc6d/0x51bc84,
@@ -227,11 +238,10 @@ int LoginRequest(NetClient& nc, const char* username, const char* password,
         // complétude documenté par l'audit (les ~20 Ko restants étaient perdus) :
         // désormais persistés, exploitables par CharSelectPackets::LoadCharacterSlotsFromRecords.
         //
-        // Champs annexes du blob (unk_1669298.. dword_16692B8, offsets 137..365 —
-        // système d'overlay compte-GM/mot-de-passe secondaire, cf. Game/CharSelectFlow.h
-        // en tête de fichier « ÉCART CONNU… DÉLIBÉRÉMENT NON REPRODUIT ») : hors
-        // périmètre de cette mission (flux CharSelect standard 3 emplacements
-        // uniquement), délibérément non persistés ici non plus.
+        // Champs annexes du blob (unk_1669298.. dword_16692B8, offsets 137..365 — système
+        // d'overlay compte-GM/mot-de-passe secondaire). Les DEUX champs pilotant l'assistant
+        // PIN (dword_16692A4 @149 + unk_16692A8 @153) sont désormais réifiés ci-dessus ; le
+        // RESTE de cette bande (autres offsets 137..365) demeure hors périmètre (non persisté).
         std::memcpy(g_CharRecords[0], nc.recvBuf + 367,   kCharRecordSize);
         std::memcpy(g_CharRecords[1], nc.recvBuf + 10456, kCharRecordSize);
         std::memcpy(g_CharRecords[2], nc.recvBuf + 20545, kCharRecordSize);

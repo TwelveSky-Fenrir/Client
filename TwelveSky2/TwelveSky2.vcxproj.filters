@@ -363,6 +363,9 @@
     <ClCompile Include="src\Net\CharSelectPackets.cpp">
       <Filter>Source Files\Net</Filter>
     </ClCompile>
+    <ClCompile Include="src\Net\GameServerDomains.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
     <ClCompile Include="src\Net\CharStatDeltaDispatch.cpp">
       <Filter>Source Files\Net</Filter>
     </ClCompile>
@@ -816,6 +819,9 @@
       <Filter>Header Files\Input</Filter>
     </ClInclude>
     <ClInclude Include="src\Net\CharSelectPackets.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\GameServerDomains.h">
       <Filter>Header Files\Net</Filter>
     </ClInclude>
     <ClInclude Include="src\Net\CharStatDeltaDispatch.h">

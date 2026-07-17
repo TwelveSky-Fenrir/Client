@@ -118,6 +118,20 @@ extern uint32_t& g_LocalElement;   // == game::g_World.self.element (dword_16731
 // dword_1669294 : niveau GM renvoyé par le serveur login.
 inline uint32_t g_GmAuthLevel      = 0;
 
+// --- Mot de passe secondaire / PIN (champs de la réponse de login, réifiés cette passe) ---
+// dword_16692A4 : drapeau « assistant PIN requis » = offset ABSOLU recvBuf+0x95 (=149) de la
+// réponse de Net_LoginRequest 0x51B8E0 (Crt_Memcpy(&dword_16692A4, recvBuf+0x95, 4) EA
+// 0x51BBE7). ⚠ Ce n'est PAS l'offset 148 (celui-là est relatif au payload, qui débute à
+// recvBuf+1). Non-nul => Scene_CharSelectUpdate ouvre l'assistant PIN (EA 0x51beae). Remis à
+// 0 par les opcodes secondaires 13/14/15/16 (Net_AccountReq_op13..16). Ce n'est PAS un
+// drapeau GM/compte de test (cf. [A12] Game/CharSelectFlow.h).
+inline int32_t g_SecondaryPwRequired = 0;
+// unk_16692A8 : PIN stocké de 5 octets (C-string), offset ABSOLU recvBuf+0x99 (=153) de la
+// réponse de login (Crt_Memcpy EA 0x51BBFB). Non vide => un PIN est DÉJÀ défini sur le compte
+// (assistant en mode VÉRIFIER=2) ; vide => mode DÉFINIR=1 (Crt_Strcmp(unk_16692A8,"") EA
+// 0x51bf3d). 5 octets = capacité du buffer du binaire.
+inline char g_StoredSecondaryPw[5] = {};
+
 // --- Fiches personnage brutes (renvoyées par LoginRequest, persistées ici) ---
 // Le blob de réponse de Net_LoginRequest (30659 o) contient, après le compte/niveau
 // GM, 3 fiches personnage BRUTES de 10088 o (0x2768) chacune — `unk_1669380`,

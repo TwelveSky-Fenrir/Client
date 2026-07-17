@@ -19,6 +19,7 @@
 #include "Net/Login.h"             // ConnectLoginServer / LoginRequest / ConnectGameServer
 #include "Net/CharSelectPackets.h" // AccountKeepAlive/CreateCharacter/CharSlotAction/ReqEnterCharInfo/ReqCancelEnter
 #include "Net/Rng.h"                // DefaultRng() — Rng_Next() % 360 pour spawnRotationDeg (cf. GameState.h)
+#include "Net/GameServerDomains.h"  // SelectGameServerHost / g_ServerMode (Net_SelectServerDomain 0x53FE90)
 #include "Game/GameState.h"        // game::g_World.zoneId (consommé par EnterWorldFlow)
 #include "Game/StringTables.h"     // game::g_Strings.bannedWords (001.DAT, 1432 mots — filtre de creation)
 #include "Game/ClientRuntime.h"    // game::Str(id) — texte reel StrTable005 pour les notices CharSelect
@@ -107,6 +108,8 @@ bool LoginScene::Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notify
     screenW_       = screenW;
     screenH_       = screenH;
     serverModeFlag_ = serverModeFlag;           // dword_166918C : consommé par BuildServerList()
+    net::g_ServerMode = serverModeFlag;         // miroir de g_ServerModeFlag 0x166918C pour
+                                                // Net_SelectServerDomain 0x53FE90 (connect game-server)
     gfxRenderer_   = renderer;                  // aperçu 3D CharSelect (cf. LoginScene.h::Init)
     if (!device_) { TS2_ERR("LoginScene::Init : device nul"); return false; }
 
@@ -2295,6 +2298,22 @@ void LoginScene::BuildCharSelectHost() {
     // de restauration). Sans ce câblage, RecomputeRestoreListCount prenait TOUJOURS la
     // branche `else`.
     charHost_.IsServerModeFlag = [this] { return serverModeFlag_ != 0; };
+    // this[15374] (+0xF038) = index serveur « à plat » (= 5*groupe + bouton), écrit par
+    // Scene_ServerSelectOnMouseDown 0x519A36 sur la MÊME cellule que serverState_.selectedServer
+    // (confirmé décompilation). Ferme le TODO 0x51c09d/0x51c13f sans deviner : en mode
+    // SingleServer (/0/0/2/…, 1 entrée) il vaut 0 -> les gardes CharSelect ==40/50/60 restent
+    // inertes (fidèle). La divergence 40/50/60 n'apparaît qu'avec la liste multi-groupes live
+    // (front ServerSelect distinct).
+    charHost_.GetServerIndex = [this]() -> int32_t {
+        std::lock_guard<std::mutex> lk(serverMutex_);
+        return serverState_.selectedServer;
+    };
+    // Assistant PIN / mot de passe secondaire — réifié côté Net/ cette passe (offsets
+    // recvBuf+0x95=149 / +0x99=153, cf. Net/Login.cpp + Net/NetClient.h). dword_16692A4 != 0
+    // (EA 0x51beae) => assistant requis ; Crt_Strcmp(unk_16692A8,"") != 0 (EA 0x51bf3d) => PIN
+    // déjà stocké (mode VÉRIFIER). Débloque le flux PIN de CharSelectFlow (fidélité PRNG).
+    charHost_.IsSecondaryPasswordRequired = [] { return net::g_SecondaryPwRequired != 0; };
+    charHost_.HasStoredSecondaryPassword  = [] { return net::g_StoredSecondaryPw[0] != '\0'; };
     // UI_FocusEditBox 0x50F4A0 (g_UIEditBoxMgr 0x1668FC0) — décompilée : `if (idx < 0x16)
     // { *this = idx; return idx ? SetFocus(hwnd[idx]) : SetFocus(hWndParent); }` — elle ne
     // fait QUE SetFocus + poser l'index de focus. Indices PROUVÉS :
@@ -2401,20 +2420,19 @@ void LoginScene::BuildCharSelectHost() {
         return net::ReqEnterCharInfo(net_->Client(), slot);
     };
     charHost_.ConnectToGameServer = [this](int32_t domainId, int32_t gamePort) -> int32_t {
-        (void)domainId; // Net_SelectServerDomain : table de rotation d'hôtes non
-                        // reconstruite ici (même TODO que Net/GameHandlers_Misc.cpp,
-                        // opcode 0x18) — on réutilise l'hôte du canal login sélectionné ;
-                        // le PORT, lui, vient bien de la réponse serveur réelle (opcode
-                        // 22), plus du placeholder jamais renseigné de l'ancien code
-                        // (cf. audit §2.5).
+        // Net_SelectServerDomain 0x53FE90 (EA d'appel 0x51c850) : traduit le domainId reçu du
+        // serveur (réponse op22) en hostname via la table codée en dur (Net/GameServerDomains.h),
+        // PUIS Net_ConnectGameServer 0x462A70 (EA 0x51c866). Le PORT vient de la réponse op22.
+        // Fallback (index hors-plage OU garde OFF) = hôte du canal login sélectionné.
         if (!net_) return net::kNetErrSocketSend;
-        std::string host = net::kLoginHostCom;
+        std::string fallback = net::kLoginHostCom;
         {
             std::lock_guard<std::mutex> lk(serverMutex_);
             const int idx = serverState_.selectedServer;
             if (idx >= 0 && idx < static_cast<int>(serverState_.servers.size()))
-                host = serverState_.servers[static_cast<size_t>(idx)].name; // name == host (cf. BuildServerList)
+                fallback = serverState_.servers[static_cast<size_t>(idx)].name; // name == host (cf. BuildServerList)
         }
+        std::string host = net::SelectGameServerHost(domainId, fallback.c_str()); // 0x53FE90
         return net::ConnectGameServer(net_->Client(), host.c_str(), static_cast<uint16_t>(gamePort), notifyWnd_);
     };
     charHost_.CancelEnter = [this]() -> int32_t {
