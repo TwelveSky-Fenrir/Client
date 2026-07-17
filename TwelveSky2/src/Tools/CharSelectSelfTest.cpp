@@ -187,6 +187,7 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
     const int32_t armorItem  = FindEquipItemWithEntry(35); // 35 = armure "creation" (kCreateBodyEntryIndex)
     const int32_t weaponItem = FindWeaponItem();           // arme (typeCode 13..21)
     TS2_LOG("CharSelectSelfTest : armure id=%d, arme id=%d (0 = aucun).", armorItem, weaponItem);
+    // Slot 0 : perso EQUIPE realiste (armure + arme) ; slot 1 : corps de base (comparaison).
     InjectDefaultChar(0, "Guerrier", /*race*/0, /*gender*/0, /*face*/0, /*hair*/0, /*job*/0, /*level*/50,
                       /*equipA*/armorItem, /*equipB*/armorItem, /*weapon*/weaponItem);
     InjectDefaultChar(1, "Sorciere", /*race*/1, /*gender*/1, /*face*/2, /*hair*/1, /*job*/1, /*level*/30);
