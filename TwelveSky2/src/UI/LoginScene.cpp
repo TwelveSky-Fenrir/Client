@@ -744,8 +744,15 @@ void LoginScene::LaunchServerStatusThread() {
                 s.maxPopulation     = st.maxPopulation;
                 s.loadStep          = st.loadStep;
                 s.currentPopulation = st.currentPopulation;
+                // Diagnostic : le serveur devient CLIQUABLE ssi 0 <= pop < max (OnServerClicked).
+                TS2_LOG("ServerSelect : statut '%s:%u' recu -> population %d/%d%s.",
+                        t.name.c_str(), t.port, st.currentPopulation, st.maxPopulation,
+                        (st.currentPopulation < st.maxPopulation) ? " (CLIQUABLE)" : " (PLEIN)");
             } else {                           // échec/déconnexion -> -1 (max/load inchangés, fidèle)
                 s.currentPopulation = -1;
+                TS2_WARN("ServerSelect : statut '%s:%u' INJOIGNABLE (sonde -> -1) -> clic serveur "
+                         "bloque (fidele Net_QueryServerStatus). Verifier connectivite/serveur.",
+                         t.name.c_str(), t.port);
             }
         }
     });
