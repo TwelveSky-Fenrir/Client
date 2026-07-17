@@ -185,20 +185,24 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
-        // Sequence scriptee (fenetre SURE [modeles charges ~30 .. keep-alive scene-frame 60[ :
-        // au-dela la notice « session expiree » id 20 masquerait le perso, faute de vrai serveur) :
-        //   35 capture LISTE   42 clic « Creer » (930,518)   44 capture CREATION (Male/Black Snake)
-        //   48 clic « + » Gender (893,183 : panelX+196=885, panelY+102=175 + centre sprite) -> Female
-        //   54 capture CREATION (Female) : prouve le rendu des modeles feminins (variete perso).
+        // Sequence scriptee (fenetre SURE [modeles ~30 .. keep-alive scene-frame 60[ : au-dela la
+        // notice « session expiree » id 20 masquerait le perso, faute de vrai serveur). Fleches « + »
+        // du formulaire a panelX+196=885 (centre ~893), rangees panelY+{78,102,126,150,174}={151,175,
+        // 199,223,247}. Dans la CREATION : « Clan » = index de RACE (change tout le corps), « Weapon »
+        // = variant (classe d'arme). SetCreateJob (Clan) RAZ genre/visage/cheveux/variant.
+        //   35 LISTE · 38 clic Creer (930,518) · 41 capture race1 defaut · 43 Clan+ ->race2 · 47 capture
+        //   race2 · 49 Weapon+ ->classe d'arme suivante · 53 capture race2+arme2.
         ++frameNo;
-        if (frameNo == 42) { scene.OnLButtonDown(930, 518); scene.OnLButtonUp(930, 518); } // Creer
-        if (frameNo == 48) { scene.OnLButtonDown(893, 183); scene.OnLButtonUp(893, 183); } // Gender +
+        if (frameNo == 38) { scene.OnLButtonDown(930, 518); scene.OnLButtonUp(930, 518); } // Creer
+        if (frameNo == 43) { scene.OnLButtonDown(893, 159); scene.OnLButtonUp(893, 159); } // Clan + (race)
+        if (frameNo == 49) { scene.OnLButtonDown(893, 255); scene.OnLButtonUp(893, 255); } // Weapon + (variant)
         scene.Update(1.0 / 30.0, camera);
         if (renderer.Ready() && renderer.BeginFrame()) {
             scene.Render(renderer.Device(), camera);
             if (frameNo == 35) capturePng("preview_capture.png");
-            if (frameNo == 44) capturePng("preview_create.png");
-            if (frameNo == 54) capturePng("preview_create_female.png");
+            if (frameNo == 41) capturePng("preview_create.png");           // race 1 (defaut)
+            if (frameNo == 47) capturePng("preview_create_clan2.png");     // autre clan/race
+            if (frameNo == 53) capturePng("preview_create_weapon2.png");   // + classe d'arme suivante
             renderer.EndFrame();
         }
         Sleep(16);
