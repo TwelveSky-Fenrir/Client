@@ -447,6 +447,9 @@
     <ClCompile Include="src\Scene\WorldRenderer.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
+    <ClCompile Include="src\Tools\CharSelectSelfTest.cpp">
+      <Filter>Source Files\Tools</Filter>
+    </ClCompile>
     <ClCompile Include="src\Tools\UiWindowSelfTest.cpp">
       <Filter>Source Files\Tools</Filter>
     </ClCompile>
@@ -892,6 +895,9 @@
     </ClInclude>
     <ClInclude Include="src\Scene\WorldRenderer.h">
       <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Tools\CharSelectSelfTest.h">
+      <Filter>Header Files\Tools</Filter>
     </ClInclude>
     <ClInclude Include="src\Tools\UiWindowSelfTest.h">
       <Filter>Header Files\Tools</Filter>

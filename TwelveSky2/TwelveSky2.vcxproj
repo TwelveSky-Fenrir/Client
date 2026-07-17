@@ -238,6 +238,7 @@
     <ClCompile Include="src\Scene\SceneAudit.cpp" />
     <ClCompile Include="src\Scene\SceneManager.cpp" />
     <ClCompile Include="src\Scene\WorldRenderer.cpp" />
+    <ClCompile Include="src\Tools\CharSelectSelfTest.cpp" />
     <ClCompile Include="src\Tools\UiWindowSelfTest.cpp" />
     <ClCompile Include="src\Tools\WorldReflectionSelfTest.cpp" />
     <ClCompile Include="src\UI\AutoPlayWindow.cpp" />
@@ -407,6 +408,7 @@
     <ClInclude Include="src\Scene\SceneAudit.h" />
     <ClInclude Include="src\Scene\SceneManager.h" />
     <ClInclude Include="src\Scene\WorldRenderer.h" />
+    <ClInclude Include="src\Tools\CharSelectSelfTest.h" />
     <ClInclude Include="src\Tools\UiWindowSelfTest.h" />
     <ClInclude Include="src\Tools\WorldReflectionSelfTest.h" />
     <ClInclude Include="src\UI\AutoPlayWindow.h" />

@@ -4,6 +4,7 @@
 #include "App/App.h"
 #include "Tools/UiWindowSelfTest.h"
 #include "Tools/WorldReflectionSelfTest.h"
+#include "Tools/CharSelectSelfTest.h"
 #include <cstring>
 #include <cstdlib>
 
@@ -24,6 +25,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR lpCmdLine, in
         int seconds = 8, width = 0, height = 0;
         std::sscanf(args, "%d %d %d", &seconds, &width, &height);
         return ts2::tools::RunWorldReflectionSelfTest(seconds, width, height);
+    }
+    // -charselecttest [seconds] [width] [height] : PREVIEW de l'ecran CharSelect/CreateChar
+    // (scene 4, inatteignable hors serveur). Force la scene, injecte 2 persos par defaut, et
+    // ouvre une fenetre INTERACTIVE (clic = CRÉER/fleches/selection). seconds<=0 => jusqu'a
+    // fermeture. Sert a VOIR le rendu 3D perso + la creation sans serveur de login.
+    if (lpCmdLine && std::strncmp(lpCmdLine, "-charselecttest", 15) == 0) {
+        const char* args = lpCmdLine + 15;
+        while (*args == ' ') ++args;
+        int seconds = 0, width = 0, height = 0; // 0 s = jusqu'a fermeture de la fenetre
+        std::sscanf(args, "%d %d %d", &seconds, &width, &height);
+        return ts2::tools::RunCharSelectSelfTest(seconds, width, height);
     }
     ts2::App app;
     return app.Run(hInstance, lpCmdLine);
