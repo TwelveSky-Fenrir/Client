@@ -16,11 +16,23 @@
 //        SKINNEE au bone de main via la palette du corps, PAS positionnee par un offset. C'est
 //        l'attache "main" demandee (Char_RenderModel 0x527bfe).
 //
-// HORS PERIMETRE (TODO ancre) : les 12 autres slots d'equipement (casque/armure/...) via
-// catalogues flt_F5xxxx indexes *(entry+196) (Char_RenderModel) — necessite de reverser ~40
-// adresses de base de catalogue non resolvables par l'API stem actuelle de ModelCache ; et le
-// body distant ne porte que l'arme (@body+148, cf. GameState.h). Le paperdoll = corps 2 pieces
-// + arme ; le reste reste en TODO ancre.
+// CABLAGE FLOTTE C / FRONT C3 (integration, 2026-07-17) — voir PlayerPaperdoll.cpp pour le detail
+// et les ancres. Resume :
+//   * B3 Gfx/PlayerMotionSlotResolver.h : la palette v37 passe desormais par ResolvePlayerMotionSlot
+//     0x4E46A0 (avec sa garde Motion_IsValidWeaponPose 0x4E3A30). Comme Char_RenderModel appelle
+//     PcModel_ResolveEquipSlot avec a8=0 ET a6=1, le slot est TOUJOURS categorie 1 "C" -> route via le
+//     MotionCache::GetForPlayer PUBLIC (stem "C..." identique) sans toucher a l'API du cache. Effet net :
+//     un couple (pose=0, etat) invalide tombe sur l'idle prouve C001001128 au lieu d'un stem hors table.
+//   * B2 Gfx/EquipModelResolver.h : le corps de base 2 pieces passe par BuildArmorBodyStem(Base0/Base1)
+//     -> ModelCache::Get (public), stem BIT-POUR-BIT celui de l'ancien GetForPlayerBody.
+//
+// HORS PERIMETRE (TODO ancre) : les 12 autres slots d'equipement (casque/armure/...) — B2 fournit
+// desormais BuildArmorBodyStem pour les slots 14..21 (stem "C..." indexe par *(itemRec+196)), MAIS la
+// DONNEE manque : Char_RenderModel n'est appele QU'EN CharSelect (a4[30..74]), le layout IN-GAME des id
+// d'items equipes n'est pas prouve -> seul l'arme est reversee (self=equip[7], distant=body+148, cf.
+// GameState.h) ; casque/torse/etc. des joueurs distants n'ont aucun offset prouve. L'arme elle-meme
+// reste en repli GetForItem (le vrai catalogue flt_100EA3C indexe par field196 n'est pas trace). Le
+// paperdoll = corps 2 pieces + arme ; le reste reste en TODO ancre (pas d'invention de stem/offset).
 #pragma once
 #include "Gfx/ModelCache.h"
 #include "Gfx/MotionCache.h"

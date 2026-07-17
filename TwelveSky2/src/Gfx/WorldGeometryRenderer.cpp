@@ -285,8 +285,12 @@ void WorldGeometryRenderer::Shutdown() {
 
 void WorldGeometryRenderer::releaseObjects() {
     // B6 : chaque StaticObject possède un VB natif (A frames), un IB et sa texture diffuse.
+    // FRONT C2 : + la 2e texture et l'atlas flipbook (materials[]), tous possédés (câblage B1).
     for (StaticObject& obj : objects_) {
         SafeRelease(obj.vb); SafeRelease(obj.ib); SafeRelease(obj.diffuse);
+        SafeRelease(obj.second);
+        for (IDirect3DTexture9*& t : obj.flipbook) SafeRelease(t);
+        obj.flipbook.clear();
     }
     objects_.clear();
     modelRanges_.clear();
@@ -445,9 +449,22 @@ bool WorldGeometryRenderer::uploadPart(const asset::WorldMeshPart& part, StaticO
     }
 
     out.A = part.A; out.B = part.B; out.D = part.D;
-    // tex1 seul (diffuse). TODO .WO (matériaux secondaires) : tex2/materials[] parsés mais ignorés
-    // -> voir SPEC TS2_WORLD_ROSETTA.md §3 G09 ; ancre IDA : MeshPart_Load 0x6ad160 (tex1@296).
-    out.diffuse = createTextureFromBlock(dev_, part.tex1);
+    // FRONT C2 (2026-07-17) — RESSOURCES MATÉRIAU du part pour B1 MeshPart_RenderFull 0x6b0850 (le TODO
+    // « tex2/materials[] parsés mais ignorés » est RÉSOLU) :
+    //   base     = tex1  -> a1[86]/+344 ; mode base = tex1.mode() (= trailer[1] = struct+44 = a1[85]/+340)
+    //   2e tex   = tex2  -> a1[99]/+396 ; mode 2e   = tex2.mode() (= a1[98]/+392)
+    //   flipbook = materials[] (atlas animé) -> a1[101]/+404, une IDirect3DTexture9 par entrée présente
+    //   mat      = en-tête matériau 120o décodé (part.mat), COPIÉ PAR VALEUR (le WorldChunk peut être libéré)
+    // Ancre IDA : MeshPart_Load 0x6ad160 (tex1@296, tex2@348, materials@404 ; qmemcpy(this+132,Heap,0x78) @0x6ad2d1).
+    out.diffuse    = createTextureFromBlock(dev_, part.tex1);
+    out.second     = createTextureFromBlock(dev_, part.tex2);
+    out.baseMode   = static_cast<int>(part.tex1.mode()); // this[85] : 1=alpha-test / 2=blend / autre=additif
+    out.secondMode = static_cast<int>(part.tex2.mode()); // this[98]
+    out.mat        = part.mat;                            // copie du header 120o décodé (mat.decoded préservé)
+    out.flipbook.clear();
+    out.flipbook.reserve(part.materials.size());
+    for (const asset::TextureBlock& m : part.materials)
+        out.flipbook.push_back(createTextureFromBlock(dev_, m)); // nullptr si holder absent (imageSize==0)
     if (part.A > 1) ++multiAnchorStaticCount_; // A>1 = flipbook de sway (désormais REJOUÉ, cf. B6)
     return true;
 }
@@ -1183,7 +1200,8 @@ void WorldGeometryRenderer::Render(const Camera& camera, int screenW, int screen
     renderTerrain(view, proj, eye);
 
     // FRONT F_TERRAIN (B6) : props .WO avec REJEU DU SWAY (frame par instance via l'offset de stream).
-    renderObjects(view, proj);
+    // FRONT C2 : `eye` (g_CameraPos) transmis -> alimente le MeshPartRuntime de la couche matériau B1.
+    renderObjects(view, proj, eye);
 
     // FRONT W3-F3 : FX de zone .WP APRÈS les props (passe a5=2 @0x698c6d : blend actif, depth-write
     // off). C'est le point d'entrée de rendu .WP réel (corrige WorldIntegration « non identifié »).
@@ -1191,50 +1209,119 @@ void WorldGeometryRenderer::Render(const Camera& camera, int screenW, int screen
 }
 
 // ===========================================================================
-//  FRONT F_TERRAIN (B6) — dessin des props .WO en FIXED-FUNCTION natif, AVEC REJEU DU SWAY.
-//  Reproduit Model_RenderParts 0x6a3720 + MeshPart_Render 0x6aed60 (vérifiés en IDA 2026-07-17) :
-//    - FVF 274 = 0x112 (XYZ|NORMAL|TEX1, stride 32) : SetFVF(274) @0x6a377f ;
-//    - matrice monde PAR INSTANCE = Rz*Ry*Rx*T (SetTransform(256,m) @0x6a3892) ;
-//    - frame = Crt_Dbl2Uint(animPhase) @0x6a3739, GATE [0, A-1] avec A = MeshPart[0]+252 @0x6a3756 ;
+//  FRONT F_TERRAIN (B6) + FRONT C2 (2026-07-17) — dessin des props .WO en FIXED-FUNCTION natif, avec
+//  REJEU DU SWAY et COUCHE MATÉRIAU COMPLÈTE.
+//  Placement/sway reproduits d'après Model_RenderWithShadow_0 0x6a4110 (le vrai chemin matériau des
+//  props ; Model_RenderParts 0x6a3720 est la variante simple sans matériau) :
+//    - FVF 274 = 0x112 (XYZ|NORMAL|TEX1, stride 32) : SetFVF(274) @0x6a4186 ;
+//    - matrice monde PAR INSTANCE = Rz*Ry*Rx*T (SetTransform(256,m) @0x6a4299) ;
+//    - frame = Crt_Dbl2Uint(animPhase) @0x6a4148, GATE [0, A-1] avec A = MeshPart[0]+252 @0x6a415e ;
 //    - SWAP : SetStreamSource(0, vb, 32*frame*B, 32) @0x6aeea5 (B = a1[64]/+256) ; SetIndices(+292)
 //      @0x6aeedc ; DrawIndexedPrimitive(TRIANGLELIST, 0,0, B, 0, D) @0x6aef00 (D = a1[66]/+264).
 //  Le VB porte les A frames contiguës (uploadPart) : changer de frame = décaler l'offset, sans
 //  ré-upload. animPhase est avancé par TickWorldAnim (déjà appelé par SceneManager, wrap [0,A)).
 //
+//  FRONT C2 — CÂBLAGE B1 : pour chaque part `mat.decoded`, le base-draw est REMPLACÉ par la machine à
+//  états matériau MeshPartMaterialRenderer::Render (MeshPart_RenderFull 0x6b0850), qui ré-inclut le
+//  base-draw (32*frame*B). Ce que la couche matériau APPORTE désormais (couches NON-lit, actives sous
+//  LIGHTING=FALSE) : flipbook de texture (atlas materials[], @0x6b0d33), UV-scroll tex1/tex2
+//  (@0x6b0f59/@0x6b19bb), 2e texture en 2e passe blendée (@0x6b19ad), et modes alpha-test/blend de la
+//  base ET de la 2e texture (a1[85]/a1[98]). Les 4 arguments de contexte suivent les défauts « chemin
+//  FX » de B1 : frame=frame de morph, animTime=v66 (repli wavePhase_), glowEnable=1, alphaFade=0,
+//  decal=nullptr (cf. corps + bandeau .h). mat.decoded==false conserve exactement le base-draw B6.
+//
 //  ÉCARTS ASSUMÉS (build-safe, documentés) :
-//   - Rendu FF UNLIT, diffuse tex1 seule (comme le chemin terrain) : la sélection texture/état par
-//     part (a1[85]/+340 type, a1[101]/+404 matériaux, passes opaque/alpha de Model_RenderParts) et
-//     l'éclairage matériel de l'original ne sont pas reproduits (déjà TODO avant ce front). Seul le
-//     REJEU DE FRAME (objet de B6) est ajouté ; le placement/geométrie est inchangé.
+//   - LIGHTING=FALSE conservé (préserve le rendu texturé actuel, pas de noir faute des lumières/ambient
+//     globaux de l'original) : les couches LIT de B1 (émissif @0x6b08a5, glow spéculaire @0x6b0a11,
+//     proj-light) sont posées & restaurées mais INERTES. sunDir/sceneCenter indisponibles -> (0,0,0)
+//     (le fresnel du glow mode 2 retombe donc à 0 même sous lighting). Écart de fidélité PRÉ-EXISTANT
+//     (avant C2 il n'y avait aucun matériau), pas une régression.
+//   - Billboard face-caméra (mat.billboard.Enable) : B1 fait un repli draw-indexé (axes flt_8001D4/
+//     unk_80022C runtime non prouvés) — bloc nœuds 64*A non retenu (geo.frameNodes=nullptr).
 //   - CULLMODE=NONE : le binaire hérite du cull matériel du device (winding MOBJ non re-vérifié ici)
 //     -> NONE garantit que les props restent visibles (pas de régression), au prix d'un léger overdraw.
 //   - Cull distance + fondu alpha des .WO lointains (Terrain_Render 0x69977c/0x69979f, via
-//     Model_RenderWithShadow_0 0x6a4110) : NON reproduit ici (les valeurs a9/a10/a11 du site d'appel
-//     Scene_InGameRender ne sont pas disponibles en statique — cf. TS2_EXTRACT_TERRAIN_CULL.md §10).
-//     TODO ancre 0x698670 (boucles a1+108) : à câbler quand a10/a11 seront dumpés au runtime.
+//     Model_RenderWithShadow_0 0x6a4110 args a6/a8/a9) : NON reproduit ici (valeurs du site d'appel
+//     Scene_InGameRender non dumpables en statique — cf. TS2_EXTRACT_TERRAIN_CULL.md §10). C'est aussi
+//     pourquoi glow/alphaFade prennent les défauts « chemin FX » plutôt que les vrais a8/a9.
 // ===========================================================================
-void WorldGeometryRenderer::renderObjects(const D3DXMATRIX& view, const D3DXMATRIX& proj) {
+void WorldGeometryRenderer::renderObjects(const D3DXMATRIX& view, const D3DXMATRIX& proj,
+                                          const D3DXVECTOR3& eye) {
     if (!ready_ || objects_.empty() || instances_.empty()) return;
 
-    // Sauvegarde des états modifiés (device partagé).
-    DWORD prevLighting = TRUE, prevCull = D3DCULL_CCW;
+    // --- Sauvegarde des états PERTURBÉS (device PARTAGÉ avec meshRenderer_ / voisins FX/ombre/bloom).
+    //     FRONT C2 : B1 MeshPart_RenderFull 0x6B0850 pilote une machine à états matériau
+    //     (blend/z-write/alpha-test/alpharef/alphafunc/texturefactor/specular + matrice de texture)
+    //     qu'il restaure à un BASELINE FIXE, pas à l'état d'entrée -> on sauve l'ensemble ici et on le
+    //     rend intégralement en sortie pour ne rien polluer. ---
+    DWORD prevLighting = TRUE, prevCull = D3DCULL_CCW, prevBlend = FALSE, prevZWrite = TRUE,
+          prevAlphaTest = FALSE, prevAlphaRef = 0, prevAlphaFunc = D3DCMP_GREATEREQUAL,
+          prevSrc = D3DBLEND_SRCALPHA, prevDst = D3DBLEND_INVSRCALPHA, prevTexFactor = 0xFFFFFFFF,
+          prevSpecular = FALSE;
     dev_->GetRenderState(D3DRS_LIGHTING, &prevLighting);
     dev_->GetRenderState(D3DRS_CULLMODE, &prevCull);
+    dev_->GetRenderState(D3DRS_ALPHABLENDENABLE, &prevBlend);
+    dev_->GetRenderState(D3DRS_ZWRITEENABLE, &prevZWrite);
+    dev_->GetRenderState(D3DRS_ALPHATESTENABLE, &prevAlphaTest);
+    dev_->GetRenderState(D3DRS_ALPHAREF, &prevAlphaRef);
+    dev_->GetRenderState(D3DRS_ALPHAFUNC, &prevAlphaFunc);
+    dev_->GetRenderState(D3DRS_SRCBLEND, &prevSrc);
+    dev_->GetRenderState(D3DRS_DESTBLEND, &prevDst);
+    dev_->GetRenderState(D3DRS_TEXTUREFACTOR, &prevTexFactor);
+    dev_->GetRenderState(D3DRS_SPECULARENABLE, &prevSpecular);
 
+    // Pré-condition device commune (fidèle à Model_RenderWithShadow_0 0x6a4110 : SetFVF(274) @0x6a4186,
+    // pas de shader). VS/PS coupés -> le cache de bind de meshRenderer_ est invalidé en sortie.
     dev_->SetVertexShader(nullptr);
     dev_->SetPixelShader(nullptr);
-    dev_->SetFVF(kFvfWo);                                 // 274 (0x112) @0x6a377f
+    dev_->SetFVF(kFvfWo);                                 // 274 (0x112) @0x6a4186
     dev_->SetTransform(D3DTS_VIEW, &view);
     dev_->SetTransform(D3DTS_PROJECTION, &proj);
-    dev_->SetRenderState(D3DRS_LIGHTING, FALSE);          // FF unlit (texture diffuse pure)
+    dev_->SetRenderState(D3DRS_LIGHTING, FALSE);          // FF UNLIT : cf. bandeau — les couches LIT de B1
+                                                          // (émissif/glow/proj-light) restent INERTES ; on
+                                                          // préserve le rendu texturé actuel (pas de noir).
     dev_->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);   // build-safe (cf. bandeau)
-    // Stage 0 : diffuse = texture (SELECTARG1), sur uv0.
+
+    // BASELINE EXACT vers lequel B1 restaure (restoreBlendTriplet 0x6b1440/0x6b1ce6 : blend off, z-write
+    // on, alpha-test off, ALPHAREF=0, ALPHAFUNC=GREATER(5), TEXTUREFACTOR=-1, SPECULAR off). Posé AVANT
+    // la boucle pour que parts décodées (B1) et non décodées (base-draw) s'entrelacent sur le MÊME état
+    // de départ. B1 active le blend SANS reposer les facteurs -> on pose SRCALPHA/INVSRCALPHA (état
+    // permanent du device, Gfx_InitDevice @0x69c526/@0x69c535, valeurs PROUVÉES).
+    dev_->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev_->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    dev_->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev_->SetRenderState(D3DRS_ALPHAREF, 0);
+    dev_->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER);       // 25,5 (baseline B1)
+    dev_->SetRenderState(D3DRS_SRCBLEND,  D3DBLEND_SRCALPHA);
+    dev_->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    dev_->SetRenderState(D3DRS_TEXTUREFACTOR, 0xFFFFFFFF);       // 60,-1 (baseline B1)
+    dev_->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+
+    // Stage 0 : couleur = texture (SELECTARG1) sur uv0 ; alpha = texture (requis pour alpha-test/blend
+    // de B1). ALPHAARG2=CURRENT + TTFF=DISABLE = baseline de restauration de B1.
     dev_->SetTextureStageState(0, D3DTSS_COLOROP,  D3DTOP_SELECTARG1);
     dev_->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,  D3DTOP_SELECTARG1);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,  D3DTOP_SELECTARG1); // 4,2 (baseline B1)
     dev_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_CURRENT);    // 6,1 (baseline B1)
     dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev_->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE); // baseline UV-scroll
     dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    D3DXMATRIX texIdent; D3DXMatrixIdentity(&texIdent);
+    dev_->SetTransform(D3DTS_TEXTURE0, &texIdent);        // baseline matrice texture stage 0
+
+    // animTime = v66 (MeshPart_RenderFull @0x6b0883 : Terrain_PushRenderState() + a3) : horloge des
+    // couches animées de B1 (flipbook @0x6b0d78, UV-scroll @0x6b1016, ping-pong @0x6b08bb). REPLI
+    // DOCUMENTÉ : la phase a3 du site d'appel (Terrain_Render -> Model_RenderWithShadow_0 0x6a4110,
+    // arg a6) n'est pas dumpable en statique -> on n'utilise que la part QPC-secondes, approximée par
+    // wavePhase_ (accumulateur dt secondes de TickWorldAnim). GLOBAL (pas par instance), comme le v66 QPC.
+    const float animTime = wavePhase_;
+
+    // cameraAt (cible caméra +804..812) : REPLI depuis le forward de la matrice vue (LH row-vector,
+    // colonne 3 = direction de visée monde ; at = eye + forward). N'alimente que Gfx_SetShadowProjLight
+    // (glow, couche LIT inerte sous LIGHTING=FALSE) -> valeur raisonnable, effet nul. sunDir/sceneCenter
+    // indisponibles ici -> laissés à (0,0,0) : ils ne pilotent QUE les couches LIT (glow/émissif) inertes.
+    const D3DXVECTOR3 camAt(eye.x + view._13, eye.y + view._23, eye.z + view._33);
 
     for (size_t idx = 0; idx < instances_.size(); ++idx) {
         const asset::AuxRecord& inst = instances_[idx];
@@ -1242,8 +1329,9 @@ void WorldGeometryRenderer::renderObjects(const D3DXMATRIX& view, const D3DXMATR
         const ModelRange& range = modelRanges_[inst.modelIndex];
         if (range.count == 0) continue;                       // gabarit sans part uploadée
 
-        // frame = Crt_Dbl2Uint(animPhase), gate [0, A-1] (Model_RenderParts 0x6a3739/0x6a3756).
-        // instancePhase_ est wrap [0,A) par TickWorldAnim -> Dbl2Uint (troncature vers 0) donne [0,A-1].
+        // frame = Crt_Dbl2Uint(animPhase), gate [0, A-1] (Model_RenderWithShadow_0 0x6a4148/0x6a415e ;
+        // Model_RenderParts 0x6a3739/0x6a3756). instancePhase_ est wrap [0,A) par TickWorldAnim ->
+        // Dbl2Uint (troncature vers 0) donne [0,A-1].
         const uint32_t A     = (idx < instanceFrameCount_.size() && instanceFrameCount_[idx] > 0)
                                    ? instanceFrameCount_[idx] : 1u;
         const float    phase = (idx < instancePhase_.size()) ? instancePhase_[idx] : 0.0f;
@@ -1251,27 +1339,84 @@ void WorldGeometryRenderer::renderObjects(const D3DXMATRIX& view, const D3DXMATR
         if (frame > A - 1) frame = A - 1;                     // gate (borne haute)
 
         const D3DXMATRIX world = BuildInstanceWorldMatrix(inst);
-        dev_->SetTransform(D3DTS_WORLD, &world);              // SetTransform(256, m) vtbl+176 @0x6a3892
+        dev_->SetTransform(D3DTS_WORLD, &world);              // SetTransform(256, m) @0x6a4299 (PRÉ-COND B1)
 
         for (size_t i = 0; i < range.count; ++i) {
             const StaticObject& obj = objects_[range.start + i];
             if (!obj.vb || !obj.ib || obj.B == 0 || obj.D == 0) continue;
-            // Borne défensive : si A n'est pas uniforme entre parts, ne pas dépasser le VB de la part
-            // (l'original suppose A uniforme et ne re-borne pas -> lecture OOB possible ; on la garde).
-            const uint32_t pf = (frame < obj.A) ? frame : (obj.A - 1);
-            dev_->SetTexture(0, obj.diffuse);
-            // SWAP DE FRAME : offset stream = 32*frame*B (MeshPart_Render 0x6aeea5), stride 32.
-            dev_->SetStreamSource(0, obj.vb, 32u * pf * obj.B, 32u);
-            dev_->SetIndices(obj.ib);                                                   // vtbl+416 @0x6aeedc
-            dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, obj.B, 0, obj.D);       // vtbl+328 @0x6aef00
+
+            if (obj.mat.decoded) {
+                // ===== FRONT C2 — COUCHE MATÉRIAU COMPLÈTE via B1 (remplace le base-draw). =====
+                // Chemin réel : Model_RenderWithShadow_0 0x6a4110 -> MeshPart_RenderFull 0x6b0850.
+                // MeshPartGpu : A/B/D depuis la géométrie WO (a1[63]/[64]/[66]) + VB (A frames) / IB.
+                MeshPartGpu geo;
+                geo.vb            = obj.vb;
+                geo.ib            = obj.ib;
+                geo.vertsPerFrame = obj.B;   // a1[64]/+256 (numVerts du DrawIndexedPrimitive)
+                geo.triCount      = obj.D;   // a1[66]/+264 (primCount)
+                geo.frameCount    = obj.A;   // a1[63]/+252 (B1 re-borne la frame sur A)
+                geo.frameNodes    = nullptr; // bloc nœuds 64*A (a1[71]/+284) NON retenu : il n'alimente
+                                             // que le glow fresnel (mode 2) et le billboard — inertes ici
+                                             // (glow sous LIGHTING=FALSE + sunDir=(0,0,0) ; billboard =
+                                             // repli draw indexé sans lecture de nœud). nullptr = saut sûr.
+
+                // MeshPartTextures : base=tex1, second=tex2, flipbook=materials[] (déjà uploadés).
+                MeshPartTextures tex;
+                tex.base          = obj.diffuse;     // a1[86]/+344
+                tex.baseMode      = obj.baseMode;    // a1[85]/+340
+                tex.second        = obj.second;      // a1[99]/+396
+                tex.secondMode    = obj.secondMode;  // a1[98]/+392
+                tex.flipbook      = obj.flipbook.empty() ? nullptr : obj.flipbook.data(); // a1[101]/+404
+                tex.flipbookCount = static_cast<uint32_t>(obj.flipbook.size());           // a1[100]/+400
+
+                // MeshPartRuntime depuis la caméra/scène RÉELLES (repli documenté pour sunDir/sceneCenter).
+                MeshPartRuntime rt;
+                rt.world      = world;   // dword_800244 (déjà posé en D3DTS_WORLD ci-dessus)
+                rt.worldValid = true;
+                rt.cameraEye  = eye;     // g_CameraPos 0x800130
+                rt.cameraAt   = camAt;   // cible caméra (repli forward de la vue, cf. ci-dessus)
+                // rt.sunDir / rt.sceneCenter : (0,0,0) par défaut (indisponibles ; couches LIT inertes).
+
+                // frame = frame de morph (a2) ; animTime = v66 (a3). glowEnable=1 / alphaFade=0 /
+                // decal=nullptr = défauts « chemin FX » DOCUMENTÉS par B1 : les vrais a8/a9/a6 du site
+                // d'appel Terrain_Render ne sont pas dumpables en statique (cf. bandeau .h renderObjects).
+                MeshPartMaterialRenderer::Render(dev_, obj.mat, geo, tex,
+                                                 static_cast<int>(frame), animTime, rt);
+            } else {
+                // ===== mat.decoded == false : BASE-DRAW ACTUEL PRÉSERVÉ (inchangé). =====
+                // Ancre IDA : MeshPart_Render 0x6aed60 (SetStreamSource 0x6aeea5 / SetIndices 0x6aeedc /
+                // DrawIndexedPrimitive 0x6aef00). Swap de frame par offset de stream = 32*frame*B.
+                // Borne défensive : si A n'est pas uniforme entre parts, ne pas dépasser le VB de la part.
+                const uint32_t pf = (frame < obj.A) ? frame : (obj.A - 1);
+                dev_->SetTexture(0, obj.diffuse);
+                dev_->SetStreamSource(0, obj.vb, 32u * pf * obj.B, 32u);                 // 0x6aeea5
+                dev_->SetIndices(obj.ib);                                                // 0x6aeedc
+                dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, obj.B, 0, obj.D);   // 0x6aef00
+            }
         }
     }
 
-    // Restauration.
+    // Restauration : baseline B1 -> état d'entrée RÉEL (ne pas polluer FX/ombre/bloom voisins).
     dev_->SetTexture(0, nullptr);
+    dev_->SetTexture(1, nullptr);
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);            // valeur FF par défaut
+    dev_->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+    dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev_->SetTransform(D3DTS_TEXTURE0, &texIdent);
+    dev_->SetRenderState(D3DRS_ALPHABLENDENABLE, prevBlend);
+    dev_->SetRenderState(D3DRS_ZWRITEENABLE, prevZWrite);
+    dev_->SetRenderState(D3DRS_ALPHATESTENABLE, prevAlphaTest);
+    dev_->SetRenderState(D3DRS_ALPHAREF, prevAlphaRef);
+    dev_->SetRenderState(D3DRS_ALPHAFUNC, prevAlphaFunc);
+    dev_->SetRenderState(D3DRS_SRCBLEND, prevSrc);
+    dev_->SetRenderState(D3DRS_DESTBLEND, prevDst);
+    dev_->SetRenderState(D3DRS_TEXTUREFACTOR, prevTexFactor);
+    dev_->SetRenderState(D3DRS_SPECULARENABLE, prevSpecular);
     dev_->SetRenderState(D3DRS_LIGHTING, prevLighting);
     dev_->SetRenderState(D3DRS_CULLMODE, prevCull);
-    meshRenderer_.InvalidateShaderBindingCache();
+    dev_->LightEnable(1, FALSE); // B1 peut activer la lumière slot 1 (glow) ; garantir OFF en sortie
+    meshRenderer_.InvalidateShaderBindingCache();          // le prochain draw skinné rebinde VS/PS
 }
 
 // ===========================================================================

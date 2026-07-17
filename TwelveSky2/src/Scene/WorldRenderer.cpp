@@ -1409,6 +1409,31 @@ void WorldRenderer::Render(const gfx::Camera& camera) {
     //   game::NpcEntity n'expose pas le champ +27 (id de template d'aura). Effet conditionnel
     //   (seulement si cet id est posé) -> ne rien dessiner reste le comportement correct tant
     //   que la source n'existe pas.
+    //
+    // ///// FLOTTE C / FRONT C3 — BUT2 : AURA DE ZONE MORPH (Fx_DrawZoneAura 0x583F90) — TODO-ancre.
+    // Le binaire dessine une aura de morph sur CE tableau (dword_17AB534) dans le bracket de
+    // Scene_InGameRender 0x52D0B0, DEUX fois (Fx_DrawZoneAura @0x52dd70 passe 1 / @0x52ed47 passe 2 —
+    // xrefs verifiees IDA). Corps de 0x583F90 (decompile relu cette session) :
+    //     if (*(a1) && a3 in [1,2]) {
+    //       switch (g_SelfMorphNpcId) { 1:v7=0  6:v7=1  11:v7=2  140:v7=3 }   // sinon v7 reste 0
+    //       slot = &unk_B60AB8 + 148*v7 + 34040;  // 34040/148 = 230 -> idxC = 230 + v7 (banque MiscC)
+    //       if (ModelObj_GetSubObjectCount(slot,0) > 0) {
+    //         frame = ftol(g_GameTimeSec*30) % subCount;
+    //         ModelObj_Draw(slot, a3 /*pass*/, frame, a1+24 /*pos*/, &orient0 /*=0,0,0*/, 0); } }
+    // => idxC in {230,231,232,233} (E{idxC+1}001.MOBJECT), selectionne par g_SelfMorphNpcId (== zone id
+    // == game::g_World.zoneId, DISPONIBLE) mais UNIQUEMENT pour les zones {1,6,11,140}.
+    // NON CABLE ICI, a dessein (le consommateur n'est pas atteignable depuis WorldRenderer) :
+    //   1. Le rendu passe par la banque MiscC de ModelObjectRenderer (Gfx/ModelObjectRenderer.h, front
+    //      F_MOBJ : idxC 230..233 y sont documentes « non routes »). WorldRenderer ne POSSEDE aucun
+    //      ModelObjectRenderer et ne peut en recevoir un sans changer sa signature publique appelee par
+    //      Scene/SceneManager.cpp (interdit par la contrainte de disjonction C3). De plus le shim
+    //      ModelObjectRenderer_MeshDrawShim n'admet qu'UN renderer actif (enregistre par FxRenderer) :
+    //      instancier un 2e ici casserait le hook FX mesh existant.
+    //   2. Le gate par-entite (`*(a1)` actif + position a1+24) porte sur dword_17AB534 (cette boucle),
+    //      mais aucune entite n'a d'aura sans etat de morph runtime -> depend d'un etat non porte.
+    // -> BUT2 = documente + TODO-ancre [0x583F90 / ModelObjectRenderer MiscC idxC 230..233 /
+    //    g_SelfMorphNpcId]. A cabler par MAIN : router Fx_DrawZoneAura vers ModelObjectRenderer::MeshDraw
+    //    (bank MiscC, idxC=230+v7) depuis la passe de scene qui possede le renderer d'objets, pas d'ici.
     for (size_t i = 0; i < game::g_World.npcs.size(); ++i) {
         const game::NpcEntity& n = game::g_World.npcs[i];
         if (!n.active) continue;

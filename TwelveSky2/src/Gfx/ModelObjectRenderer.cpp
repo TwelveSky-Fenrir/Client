@@ -102,7 +102,12 @@ void ModelObjectRenderer::OnDeviceLost() {}
 void ModelObjectRenderer::OnDeviceReset() {}
 
 void ModelObjectRenderer::releaseEntry(MObjEntry& e) {
-    for (GpuPart& p : e.parts) { SafeRelease(p.vb); SafeRelease(p.ib); SafeRelease(p.diffuse); }
+    for (GpuPart& p : e.parts) {
+        SafeRelease(p.vb); SafeRelease(p.ib);
+        SafeRelease(p.diffuse); SafeRelease(p.second);      // tex0 + tex1 possédées
+        for (IDirect3DTexture9* ft : p.flipbook) SafeRelease(ft); // atlas flipbook possédé
+        p.flipbook.clear();
+    }
     e.parts.clear();
 }
 
@@ -118,7 +123,32 @@ void ModelObjectRenderer::SetFrame(const D3DXMATRIX& view, const D3DXMATRIX& pro
     D3DXMATRIX vp;
     D3DXMatrixMultiply(&vp, &view, &proj);
     ExtractFrustumPlanes(vp, planes_);
+
+    // Œil/cible caméra monde pour MeshPartRuntime (glow fresnel @0x6b0a90 + direction proj-light
+    // = cible - œil @0x69d8ae). g_GfxRenderer 0x7FFE18 (œil g_CameraPos 0x800130, cible +804) est
+    // absent -> on les DÉRIVE de la matrice vue (source RÉELLE de la frame, aucune invention) :
+    //   œil = inverse(view) translation ; forward monde = (view._13, view._23, view._33) = zaxis
+    //   (D3DXMatrixLookAtLH) ; cible = œil + forward. Direction proj-light = cible - œil = forward.
+    D3DXMATRIX invView;
+    if (D3DXMatrixInverse(&invView, nullptr, &view)) {
+        cameraEye_ = D3DXVECTOR3(invView._41, invView._42, invView._43);
+        cameraAt_  = D3DXVECTOR3(cameraEye_.x + view._13, cameraEye_.y + view._23, cameraEye_.z + view._33);
+    }
     frameValid_ = true;
+}
+
+// Horloge d'animation matériau (v66) — timer QPC, secondes écoulées depuis le 1er appel (origine
+// locale = phase relative). Miroir Terrain_PushRenderState 0x69CB80 ((now - start)/freq, cf.
+// WorldGeometryRenderer.cpp) et EmitterMeshRenderer::ElapsedSeconds (QPC @0x430C16/@0x430C34).
+float ModelObjectRenderer::animClockSeconds() {
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    if (!qpcInit_) {
+        LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+        qpcFreq_  = (f.QuadPart != 0) ? f.QuadPart : 1;
+        qpcStart_ = now.QuadPart;
+        qpcInit_  = true;
+    }
+    return static_cast<float>(double(now.QuadPart - qpcStart_) / double(qpcFreq_));
 }
 
 // Cam_FrustumTestSphere 0x69EF90 : sphère gardée SSI plane·c + d >= -rayon pour les 6 plans
@@ -213,9 +243,24 @@ bool ModelObjectRenderer::uploadPart(const asset::MeshPart& part, GpuPart& out) 
     }
 
     out.A = g.M; out.B = g.V; out.D = g.I;
-    out.frameBbox = g.matrices;                              // A*64 o (cull par-part ; vide si corrompu)
-    out.diffuse   = createTexture(dev_, part.tex0);          // tex0 diffuse (MeshPart+296/+344)
-    // TODO ancre : tex1/materials (glow/overlay/animée) — MeshPart+348/+404, différés (cf. .h).
+    out.frameBbox = g.matrices;                              // A*64 o (cull par-part + nœuds fresnel ; vide si corrompu)
+    out.diffuse   = createTexture(dev_, part.tex0);          // tex0 diffuse/base (MeshPart+296/+344)
+
+    // FRONT C1 : couche matériau (câblage B1). Modes = trailer1 (alphaMode) du bloc texture —
+    // Tex_LoadCompressedFromHandle 0x6A9CF0 @0x6a9eab range this[11]=data[imgSize+4] au holder+44,
+    // soit MeshPart+340 (tex0, a1[85]) / +392 (tex1, a1[98]) lus par MeshPart_RenderFull.
+    out.baseMode   = static_cast<int>(part.tex0.trailer1);  // MeshPart+340 (a1[85])
+    out.second     = createTexture(dev_, part.tex1);         // tex1 (MeshPart_Load @0x6ad6eb, holder +348 / ptr +396)
+    out.secondMode = static_cast<int>(part.tex1.trailer1);  // MeshPart+392 (a1[98])
+    out.mat        = part.mat;                               // en-tête matériau 120 o décodé (DecodeMeshPartMaterialHeader)
+    // Flipbook (a1[101] MeshPart+404, count=a1[100]=matCount) : boucle Tex_LoadCompressedFromHandle
+    // @0x6ad7a0. On uploade chaque MTexture ; on ne garde que les textures créées (indices valides
+    // pour MeshPart_RenderFull @0x6b0d95 `idx % this[100]`, qui teste flipbook[0] non-nul @0x6b0d33).
+    out.flipbook.reserve(part.mats.size());
+    for (const asset::MTexture& mt : part.mats) {
+        IDirect3DTexture9* ft = createTexture(dev_, mt);
+        if (ft) out.flipbook.push_back(ft);
+    }
     return true;
 }
 
@@ -266,7 +311,8 @@ uint32_t ModelObjectRenderer::FrameCount(int idxC) {
 }
 
 // ===========================================================================
-//  MeshDraw — ModelObj_Draw 0x4D71B0 + Model_RenderWithShadow_0 0x6A4110 réduits (base-draw).
+//  MeshDraw — ModelObj_Draw 0x4D71B0 + Model_RenderWithShadow_0 0x6A4110 (setup + cull par-part)
+//  puis, par-part, MeshPartMaterialRenderer::Render (= MeshPart_RenderFull 0x6B0850, FRONT C1).
 // ===========================================================================
 void ModelObjectRenderer::MeshDraw(FxMeshBank bank, int /*idxA*/, int /*idxB*/, int idxC,
                                    int pass, float drawParam, const float pos[3], const float* orient) {
@@ -303,6 +349,17 @@ void ModelObjectRenderer::MeshDraw(FxMeshBank bank, int /*idxA*/, int /*idxB*/, 
     dev_->GetRenderState(D3DRS_SRCBLEND, &oldSrc);
     dev_->GetRenderState(D3DRS_DESTBLEND, &oldDst);
     dev_->GetRenderState(D3DRS_ALPHAFUNC, &oldAFunc);
+    // Extension FRONT C1 : MeshPartMaterialRenderer::Render modifie AUSSI ces états (par-part, puis
+    // les repose à SON état « propre » via restoreBlendTriplet — cf. MeshPart_RenderFull). On les
+    // snapshotte pour que MeshDraw reste AUTO-CONTENU (la passe billboard 3 retrouve SON état exact).
+    // (Matériau D3DMATERIAL9 + lumières 0/1 : Render les restaure à SON snapshot d'entrée = notre état
+    //  courant, ET ils sont INERTES sous LIGHTING=FALSE -> non re-snapshottés ici. Cf. §CAVEAT du .h.)
+    DWORD oldZW=TRUE, oldATE=FALSE, oldARef=0, oldSpec=FALSE, oldTF=0xFFFFFFFF;
+    dev_->GetRenderState(D3DRS_ZWRITEENABLE,    &oldZW);
+    dev_->GetRenderState(D3DRS_ALPHATESTENABLE, &oldATE);
+    dev_->GetRenderState(D3DRS_ALPHAREF,        &oldARef);
+    dev_->GetRenderState(D3DRS_SPECULARENABLE,  &oldSpec);
+    dev_->GetRenderState(D3DRS_TEXTUREFACTOR,   &oldTF);
     DWORD s0co=0, s0c1=0, s0ao=0, s0a1=0, s0tci=0, s1co=0;
     dev_->GetTextureStageState(0, D3DTSS_COLOROP,       &s0co);
     dev_->GetTextureStageState(0, D3DTSS_COLORARG1,     &s0c1);
@@ -310,10 +367,24 @@ void ModelObjectRenderer::MeshDraw(FxMeshBank bank, int /*idxA*/, int /*idxB*/, 
     dev_->GetTextureStageState(0, D3DTSS_ALPHAARG1,     &s0a1);
     dev_->GetTextureStageState(0, D3DTSS_TEXCOORDINDEX, &s0tci);
     dev_->GetTextureStageState(1, D3DTSS_COLOROP,       &s1co);
+    DWORD s0aa2=D3DTA_CURRENT, s0ttf=D3DTTFF_DISABLE;    // Render touche ALPHAARG2 + TEXTURETRANSFORMFLAGS (stage 0)
+    dev_->GetTextureStageState(0, D3DTSS_ALPHAARG2,             &s0aa2);
+    dev_->GetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, &s0ttf);
     IDirect3DBaseTexture9* oldTex0 = nullptr; dev_->GetTexture(0, &oldTex0);
-    D3DXMATRIX oldWorld; dev_->GetTransform(D3DTS_WORLD, &oldWorld);
+    D3DXMATRIX oldWorld;  dev_->GetTransform(D3DTS_WORLD,    &oldWorld);
+    D3DXMATRIX oldTex0M;  dev_->GetTransform(D3DTS_TEXTURE0, &oldTex0M); // UV-scroll pose une matrice tex (@0x6b1067)
 
     // --- États FF du dessin de base (chemin FX a4=0/a6=0 : ni texture-projetée ni alpha-fade) ---
+    // PRÉ-CONDITION Render (fidèle à Model_RenderWithShadow_0 @0x6a4299) : VS/PS coupés (FF pur) +
+    // FVF(274) + WORLD posés AVANT Render ; Render ne touche PAS VS/PS/FVF/WORLD.
+    // PIÈGE shader-bind-cache (device D3D9 PARTAGÉ, 2 singletons) : on coupe VS/PS ici — MAIS on les
+    // RESTAURE symétriquement en fin de fonction (SetVertexShader(oldVS)/SetPixelShader(oldPS), sur
+    // TOUS les chemins : AUCUN return entre la coupe et la restauration). Le device reste donc
+    // NET-INCHANGÉ (VS/PS/FVF identiques avant/après l'appel) -> aucun MeshRenderer ne voit son
+    // currentPass_ devenir périmé (le bug ne survient QUE si VS/PS restent coupés APRÈS, cf.
+    // Gfx/MeshRenderer.h::InvalidateShaderBindingCache). Contrairement à WorldGeometryRenderer (qui
+    // coupe VS/PS puis dessine skinné SANS restaurer -> lui DOIT invalider), ici la restauration
+    // symétrique EST la garantie ; aucun MeshRenderer n'est d'ailleurs joignable depuis ce renderer.
     dev_->SetVertexShader(nullptr);                          // coupe le VS skinné éventuel (ModelObj_Draw @0x4d7266)
     dev_->SetPixelShader(nullptr);
     dev_->SetFVF(kFvfMobj);                                  // 274 (0x112)
@@ -331,7 +402,17 @@ void ModelObjectRenderer::MeshDraw(FxMeshBank bank, int /*idxA*/, int /*idxB*/, 
     dev_->SetTextureStageState(1, D3DTSS_COLOROP,       D3DTOP_DISABLE);
     dev_->SetTransform(D3DTS_WORLD, &world);
 
-    // --- Boucle sur les parts (stride 408 côté binaire), cull par-part + base-draw @0x6B1327 ---
+    // --- État runtime partagé pour la couche matériau B1 (identique pour toutes les parts) ---
+    const float animTime = animClockSeconds();  // v66 = Terrain_PushRenderState()+a3, a3=0 (ModelObj_Draw @0x4d72af)
+    MeshPartRuntime rt;
+    rt.world       = world;                     // dword_800244 (déjà posé en D3DTS_WORLD ci-dessus)
+    rt.worldValid  = true;
+    rt.cameraEye   = frameValid_ ? cameraEye_ : D3DXVECTOR3(0.0f, 0.0f, 0.0f); // repli documenté si SetFrame absent
+    rt.cameraAt    = frameValid_ ? cameraAt_  : D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    rt.sunDir      = D3DXVECTOR3(0.0f, 0.0f, 0.0f); // flt_800308/30C/310 INDISPONIBLE -> dot fresnel=0 => pas de flash (sûr)
+    rt.sceneCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f); // centre AABB scène (g_GfxRenderer+1204*0.5+1236) INDISPONIBLE -> repli (inerte sous LIGHTING=FALSE)
+
+    // --- Boucle sur les parts (stride 408 côté binaire), cull par-part + couche matériau B1 ---
     for (const GpuPart& p : e->parts) {
         if (!p.vb || !p.ib || p.B == 0 || p.D == 0) continue;
         // A peut différer entre parts (le binaire suppose A uniforme et ne re-borne pas) : on
@@ -349,21 +430,53 @@ void ModelObjectRenderer::MeshDraw(FxMeshBank bank, int /*idxA*/, int /*idxB*/, 
             if (!sphereInFrustum(worldC, radius)) continue;
         }
 
-        dev_->SetTexture(0, p.diffuse);                                          // SetTexture(0, tex0)
-        dev_->SetStreamSource(0, p.vb, 32u * pf * p.B, 32u);                     // 32*frame*B @0x6b1327
-        dev_->SetIndices(p.ib);                                                  // @0x6b133c
-        dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, p.B, 0, p.D);        // @0x6b1360
+        if (p.mat.decoded) {
+            // === Câblage B1 : machine à états matériau COMPLÈTE (MeshPart_RenderFull 0x6B0850,
+            //     appelée par Model_RenderWithShadow_0 @0x6a4362/@0x6a45f7). Remplace le base-draw. ===
+            MeshPartGpu geo;
+            geo.vb            = p.vb;
+            geo.ib            = p.ib;
+            geo.vertsPerFrame = p.B;                                            // B = this[64] (+256)
+            geo.triCount      = p.D;                                            // D = this[66] (+264)
+            geo.frameCount    = p.A;                                            // A = this[63] (+252) — Render re-borne frame
+            geo.frameNodes    = p.frameBbox.empty() ? nullptr : p.frameBbox.data(); // this[71] (+284), centre @+48
+            MeshPartTextures tx;
+            tx.base          = p.diffuse;                                       // this[86] (+344)
+            tx.baseMode      = p.baseMode;                                      // this[85] (+340)
+            tx.second        = p.second;                                        // this[99] (+396)
+            tx.secondMode    = p.secondMode;                                    // this[98] (+392)
+            tx.flipbook      = p.flipbook.empty() ? nullptr : p.flipbook.data(); // this[101] (+404)
+            tx.flipbookCount = static_cast<uint32_t>(p.flipbook.size());        // this[100] (+400)
+            // Chemin FX PROUVÉ (ModelObj_Draw 0x4D71B0 @0x4d72af -> Model_RenderWithShadow_0(…,0.0,0,1,0)) :
+            // animTime phase=0, decal=null, glowEnable=1 (a8), alphaFade=0 (a9). frame=v10 (Render re-borne).
+            MeshPartMaterialRenderer::Render(dev_, p.mat, geo, tx, frame, animTime, rt,
+                                             /*glowEnable*/ 1, /*alphaFade*/ 0, /*decal*/ nullptr);
+        } else {
+            // Repli : en-tête matériau NON décodé (part dégénérée) -> base-draw actuel INCHANGÉ.
+            dev_->SetTexture(0, p.diffuse);                                     // SetTexture(0, tex0)
+            dev_->SetStreamSource(0, p.vb, 32u * pf * p.B, 32u);                // 32*frame*B @0x6b1327
+            dev_->SetIndices(p.ib);                                            // @0x6b133c
+            dev_->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, p.B, 0, p.D);  // @0x6b1360
+        }
     }
 
     // --- Restauration (self-contained : la passe billboard 3 retrouve son état) ---
-    dev_->SetTransform(D3DTS_WORLD, &oldWorld);
+    dev_->SetTransform(D3DTS_TEXTURE0, &oldTex0M);           // matrice de texture (UV-scroll) — FRONT C1
+    dev_->SetTransform(D3DTS_WORLD,    &oldWorld);
     dev_->SetTexture(0, oldTex0); if (oldTex0) oldTex0->Release();
-    dev_->SetTextureStageState(1, D3DTSS_COLOROP,       s1co);
-    dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, s0tci);
-    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG1,     s0a1);
-    dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,       s0ao);
-    dev_->SetTextureStageState(0, D3DTSS_COLORARG1,     s0c1);
-    dev_->SetTextureStageState(0, D3DTSS_COLOROP,       s0co);
+    dev_->SetTextureStageState(1, D3DTSS_COLOROP,              s1co);
+    dev_->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, s0ttf);         // FRONT C1
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG2,            s0aa2);          // FRONT C1
+    dev_->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX,        s0tci);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAARG1,            s0a1);
+    dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,              s0ao);
+    dev_->SetTextureStageState(0, D3DTSS_COLORARG1,            s0c1);
+    dev_->SetTextureStageState(0, D3DTSS_COLOROP,              s0co);
+    dev_->SetRenderState(D3DRS_TEXTUREFACTOR,   oldTF);                         // FRONT C1
+    dev_->SetRenderState(D3DRS_SPECULARENABLE,  oldSpec);                       // FRONT C1
+    dev_->SetRenderState(D3DRS_ALPHAREF,        oldARef);                       // FRONT C1
+    dev_->SetRenderState(D3DRS_ALPHATESTENABLE, oldATE);                        // FRONT C1
+    dev_->SetRenderState(D3DRS_ZWRITEENABLE,    oldZW);                         // FRONT C1
     dev_->SetRenderState(D3DRS_ALPHAFUNC, oldAFunc);
     dev_->SetRenderState(D3DRS_DESTBLEND, oldDst);
     dev_->SetRenderState(D3DRS_SRCBLEND, oldSrc);

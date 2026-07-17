@@ -7,7 +7,7 @@
 // TS2_EXTRACT_MESHPART_FULL.md, TS2_EXTRACT_MOBJ_BANKS.md, TS2_EXTRACT_MOBJ_VERDICT.md.
 //
 // ===========================================================================================
-//  CHAÎNE D'ORIGINE REPRODUITE (réduite au dessin de base diffus)
+//  CHAÎNE D'ORIGINE REPRODUITE (matériau complet via B1 — cf. section FRONT C1 ci-dessous)
 // ===========================================================================================
 //   Fx_EmitterDraw 0x585E30 (déjà porté, FxRenderer.cpp) — s_meshDraw câblé ICI
 //     -> ModelObj_Draw 0x4D71B0        : lazy-load + reset d'états D3D + Model_RenderWithShadow_0
@@ -30,20 +30,25 @@
 //  230..233 = auras de morph (Fx_DrawZoneAura, non routé par ce hook — cf. INTÉGRATION MAIN).
 //
 // ===========================================================================================
-//  TRANCHE MINIMALE — ce qui est fait, ce qui est différé (TODO ancré, PAS inventé)
+//  FRONT C1 (2026-07-17) — MACHINE À ÉTATS MATÉRIAU COMPLÈTE (câblage de B1)
 // ===========================================================================================
-//  FAIT (chemin FX a4=0/a6=0 qui TUE texture-projetée + alpha-fade) : dessin de base diffus
-//  frame-indexé, transform Rz*Ry*Rx*T du slot, cull par-part, passes 1/2, cache paresseux.
-//  DIFFÉRÉ (branches optionnelles de MeshPart_RenderFull, gatées par des flags d'en-tête de la
-//  part — voir §6 de TS2_EXTRACT_MESHPART_FULL.md) :
-//    - glow émissif animé   (part+180/this[45], part+184 mode)          TODO ancre 0x6B0A11
-//    - UV-scroll matrice tex (part+220/this[55], part+240/this[60])     TODO ancre 0x6B0F59
-//    - sprite billboard glow (part+232/this[58])                        TODO ancre 0x6B107C
-//    - 2e texture / overlay  (part+396/this[99])                        TODO ancre 0x6B19AD
-//    - texture animée flipbook (part+212/this[53] -> materials[idx])    TODO ancre 0x6B0D33
-//  Ces branches restent des surcouches : à champs d'en-tête nuls (cas par défaut du binaire),
-//  MeshPart_RenderFull dégénère EXACTEMENT en ce dessin de base. Bank AvatarA/NpcB (types 1-4)
-//  non gérées en V1 (une seule banque MiscC) — TODO ancre.
+//  Le base-draw indexé par-part est désormais REMPLACÉ par MeshPartMaterialRenderer::Render
+//  (Gfx/MeshPartMaterial.h, port intégral de MeshPart_RenderFull 0x6B0850) : les couches
+//  fixed-function (light-anim ping-pong 0x6B08AF, glow spéculaire 0x6B0A11, flipbook 0x6B0D33,
+//  UV-scroll tex1/tex2 0x6B0F59/0x6B19BB, 2e texture 0x6B19AD, billboard 0x6B107C — repli honnête)
+//  sont posées par UNE machine à états, exactement comme Model_RenderWithShadow_0 0x6A4110
+//  @0x6a4362/@0x6a45f7 appelle MeshPart_RenderFull. Chemin FX PROUVÉ (ModelObj_Draw 0x4D71B0
+//  @0x4d72af : Model_RenderWithShadow_0(model, pass, frame, pos, orient, 0.0, 0, 1, 0)) ->
+//  animTime phase=0, decal=null, glowEnable=1, alphaFade=0.
+//  À champs d'en-tête nuls (cas par défaut de la plupart des FX), Render dégénère EXACTEMENT en
+//  le dessin de base diffus (SetTexture(0,tex0) + base-draw @0x6B1327) — comportement d'origine.
+//  CAVEAT LIGHTING (repli documenté) : ce renderer garde LIGHTING=FALSE (dessin unlit, choix de la
+//  tranche d'origine — comportement PRÉSERVÉ). Les couches à base de LUMIÈRE (light-anim/glow/
+//  noLight) sont donc POSÉES mais visuellement inertes (D3DMATERIAL9/lights ignorés sous
+//  LIGHTING=FALSE) ; les couches TEXTURE/BLEND (flipbook, uv-scroll, 2e texture, modes alpha) sont
+//  pleinement actives. Aucune invention de LIGHTING=TRUE (état non prouvé sur ce chemin — TODO ancre).
+//  Si mat.decoded==false (part dégénérée) : repli = base-draw actuel INCHANGÉ.
+//  Bank AvatarA/NpcB (types 1-4) non gérées en V1 (une seule banque MiscC) — TODO ancre.
 //
 //  DÉGRADATION HONNÊTE (placement) : le placement exact sur l'os d'arme
 //  (SObject_Draw 0x4D8F90 -> Model_GetAttachTransform 0x40FDC0) n'est PAS porté. `pos`/`orient`
@@ -59,8 +64,9 @@
 //  threading devient un objectif.
 #pragma once
 #include "Gfx/Renderer.h"
-#include "Gfx/FxRenderer.h"   // FxMeshBank, FxModelObjDrawFn (hook s_meshDraw)
-#include "Asset/Model.h"      // asset::MObject / MeshPart / MGeometry / MTexture (parseur porté)
+#include "Gfx/FxRenderer.h"        // FxMeshBank, FxModelObjDrawFn (hook s_meshDraw)
+#include "Gfx/MeshPartMaterial.h"  // FRONT C1 : MeshPartMaterialRenderer::Render + MeshPartGpu/MeshPartTextures/MeshPartRuntime
+#include "Asset/Model.h"           // asset::MObject / MeshPart / MGeometry / MTexture / MeshPartMaterial (parseur porté)
 #include <d3d9.h>
 #include <d3dx9.h>
 #include <cstdint>
@@ -115,12 +121,21 @@ private:
     struct GpuPart {
         IDirect3DVertexBuffer9* vb      = nullptr; // 32*A*B o (A frames), MeshPart+288 (a1[72])
         IDirect3DIndexBuffer9*  ib      = nullptr; // 6*D o (partagé toutes frames), MeshPart+292 (a1[73])
-        IDirect3DTexture9*      diffuse = nullptr; // tex0 (POSSÉDÉE), MeshPart+344 (a1[86])
+        IDirect3DTexture9*      diffuse = nullptr; // tex0/base (POSSÉDÉE), MeshPart+344 (a1[86])
+        IDirect3DTexture9*      second  = nullptr; // tex1/2e texture (POSSÉDÉE), MeshPart+396 (a1[99])
+        int                     baseMode   = 0;    // MeshPart+340 (a1[85]) = tex0.trailer1 (alphaMode) — 1=alpha-test/2=blend
+        int                     secondMode = 0;    // MeshPart+392 (a1[98]) = tex1.trailer1 (alphaMode)
+        // Flipbook atlas animé (MeshPart+404 a1[101], count = a1[100] = matCount) : textures POSSÉDÉES.
+        std::vector<IDirect3DTexture9*> flipbook;
+        // En-tête matériau 120 o DÉCODÉ (asset::MeshPartMaterial, FLOTTE A) — copié depuis part.mat ;
+        // mat.decoded==false => repli base-draw. Value-type (aucun pointeur), copie sûre.
+        asset::MeshPartMaterial mat;
         uint32_t                A = 1;             // frames du flipbook (MGeometry.M = MeshPart+252)
         uint32_t                B = 0;             // sommets par frame (MGeometry.V = MeshPart+256)
         uint32_t                D = 0;             // triangles/primCount (MGeometry.I = MeshPart+264)
-        // Bloc bbox par frame (A*64 o, MeshPart+284 / a1[71]) : par élément 64 o, centre vec3 @+48,
-        // rayon @+60 — source du frustum-cull par-part (Model_RenderWithShadow_0 @0x6a431b/@0x6a4339).
+        // Bloc bbox/nœuds par frame (A*64 o, MeshPart+284 / a1[71]) : par élément 64 o, centre vec3 @+48,
+        // rayon @+60 — source du frustum-cull par-part (Model_RenderWithShadow_0 @0x6a431b/@0x6a4339)
+        // ET du glow fresnel vue-dépendant (MeshPart_RenderFull @0x6b0a81, MeshPartRuntime.frameNodes).
         std::vector<uint8_t>    frameBbox;
     };
     // Entrée de banque = un slot ModelObj 148 o (miroir : conteneur Model chargé + parts GPU).
@@ -145,11 +160,25 @@ private:
     // Cam_FrustumTestSphere 0x69EF90 (marge ×1 : plane·c + d >= -rayon) sur les 6 plans reconstruits.
     bool sphereInFrustum(const D3DXVECTOR3& c, float radius) const;
 
+    // Horloge d'animation matériau (v66 = Terrain_PushRenderState() + a3 ; a3=0 sur le chemin FX).
+    // Miroir Terrain_PushRenderState 0x69CB80 = timer QPC (secondes écoulées), même patron que
+    // EmitterMeshRenderer::ElapsedSeconds. Origine LOCALE au 1er appel (phase relative, fidèle).
+    float animClockSeconds();
+
     IDirect3DDevice9*                  dev_ = nullptr;
     std::string                        gameDataDir_;
     bool                               ready_      = false;
     bool                               frameValid_ = false; // SetFrame appelé cette frame ?
     float                              planes_[6][4] = {};  // 6 plans frustum (rentrants, normalisés)
+    // Œil/cible caméra monde (MeshPartRuntime) DÉRIVÉS de la matrice vue dans SetFrame (g_GfxRenderer
+    // 0x7FFE18 absent) : œil = inverse(view) translation ; cible = œil + forward (zaxis LookAtLH).
+    // Repli (0,0,0) tant que SetFrame n'a pas été appelé (frameValid_==false).
+    D3DXVECTOR3                        cameraEye_ = {0.0f, 0.0f, 0.0f};
+    D3DXVECTOR3                        cameraAt_  = {0.0f, 0.0f, 0.0f};
+    // Timer QPC (animClockSeconds) : origine locale lazy.
+    long long                          qpcFreq_  = 0;
+    long long                          qpcStart_ = 0;
+    bool                               qpcInit_  = false;
     std::unordered_map<int, MObjEntry> cacheMiscC_;         // banque MiscC (unk_B60AB8), clé = idxC
 };
 

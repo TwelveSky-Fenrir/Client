@@ -9,7 +9,8 @@
 #include "Scene/SceneManager.h"
 #include "Scene/WorldRenderer.h"
 #include "Gfx/WorldGeometryRenderer.h" // géométrie statique .WO (distinct de WorldRenderer=entités)
-#include "Gfx/GxdRenderer.h"           // GXD_RenderPostBlur 0x4053E0 (bloom, câblé en fin de rendu InGame)
+#include "Gfx/GxdRenderer.h"           // GXD_RenderPostBlur 0x4053E0 (bloom, câblé en fin de rendu InGame) + Light() défaut GENUINE
+#include "Gfx/EnvLightingFog.h"        // B5 : applicateur soleil/fog par frame (Env_UpdateSunLight 0x412210 / Env_UpdateFogState 0x412370)
 #include "Game/PlayerAnimCursorTick.h" // Player_AdvanceAnimCursor (avance curseur anim joueur, switch 0x5727BF)
 #include "Gfx/FxSetters.h"             // FxPool_* + FxSlot (pool FX combat dword_17D06F4, Vague D)
 #include "Gfx/FxBillboard.h"           // FxBillboard_PoolTick/SetDevice (leaf Object A .PARTICLE, Vague D)
@@ -1639,6 +1640,55 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
         // Ici on l'applique autour du rendu monde: ciel -> décor .WO -> entités -> ciel
         // de fin -> HUD -> fenêtres.
         if (worldGeomReady_ && worldGeom_) worldGeom_->RenderSky(screenW_, screenH_);
+        // ===================================================================================
+        // B5 — EnvLightingFog : lumière solaire directionnelle + fog par frame in-game.
+        // ANCRE VIVANTE (vérifiée en IDA cette mission) : Scene_InGameRender 0x52D0B0 appelle
+        // Env_UpdateFrame 0x412550 @0x52D30D (`mov ecx, offset g_WorldEnv ; call Env_UpdateFrame`),
+        // UNE FOIS PAR FRAME en jeu (xrefs_to 0x412550 = 1 seul appelant, ce site) -> la chaîne
+        // est bel et bien VIVANTE. Env_UpdateFrame enchaîne : Env_UpdateSkyMatrix 0x412190 ->
+        // cAtmosphere_RenderFrame 0x793B80 (rendu du ciel SilverLining) -> Env_UpdateSunLight
+        // 0x412210 (SetLight(0) vtbl+204 @0x412367) -> Env_UpdateFogState 0x412370 (RS 28/34/35/38
+        // via g_GxdRenderer_pDevice 0x18C5104).
+        //
+        // POURQUOI SANS SOLEIL/FOG « ORIGINE » ICI (repli neutre documenté, pas du mort ranimé) :
+        // dans le binaire les COULEURS/DIRECTION viennent EXCLUSIVEMENT du SDK SilverLining, absent
+        // du dépôt :
+        //   Env_UpdateSunLight -> cAtmosphere_GetSunDirectionA 0x7904D0 (direction),
+        //                         cAtmosphere_GetSunColorFaded 0x7938A0 (diffuse),
+        //                         cAtmosphere_GetHorizonColorFaded 0x793AB0 (ambient), sur *(g_WorldEnv+8) ;
+        //   Env_UpdateFogState -> cAtmosphere_GetSunColorFaded/IsSunUp 0x790AF0/GetSunColor 0x790B00/
+        //                         GetColorAtDirection 0x790A20/GetColorBasePtr 0x7042B0 (densité = colorBase.z/8435).
+        // Hors TS2_SILVERLINING_ENGINE_AVAILABLE, *(g_WorldEnv+8) est nul -> aucune de ces valeurs
+        // n'existe. On applique donc la MÉCANIQUE device prouvée bit-exact, pilotée par la source
+        // GENUINE déjà disponible : GxdRenderer::Light() = m_light (BuildDefaultMaterialAndLight
+        // @0x402711 : Diffuse 0.7 / Ambient 0.3 / Dir normalize(-1,-1,1)), et FOG OFF (aucune
+        // couleur/densité de fog reproductible fidèlement sans SilverLining — cf. EnvLightingFog.h
+        // §« N'INVENTE RIEN » et Docs/TS2_DEEP_MATERIALS_FX.md §13 TODO T-16). AUCUN azimut/couleur
+        // de soleil n'est fabriqué ici.
+        //
+        // ORDRE (fidèle au binaire) : APRÈS le ciel/GxdRenderer setup (RenderSky ci-dessus =
+        // cAtmosphere_RenderFrame + light 0 par défaut) et AVANT le décor à normales
+        // (worldGeom_->Render ci-dessous, cible de l'éclairage FF). Appel INCONDITIONNEL comme
+        // Env_UpdateFrame dans Scene_InGameRender ; ApplyPerFrame s'auto-garde sur device nul.
+        // Device = GxdRenderer::Instance().Device() = g_GxdRenderer_pDevice 0x18C5104, EXACTEMENT le
+        // device de la passe fog du binaire (device physique partagé par les 2 singletons renderer).
+        //
+        // PIÈGE shader-bind-cache : NON APPLICABLE. EnvLightingFog::ApplyPerFrame ne pose que
+        // SetLight(0)/LightEnable(0)/SetRenderState (LIGHTING 137, FOGENABLE 28) — il ne touche NI
+        // SetVertexShader NI SetPixelShader (vérifié dans Gfx/EnvLightingFog.cpp) : le currentPass_
+        // du MeshRenderer n'est donc pas invalidé et n'a pas à l'être. Poser LIGHTING=TRUE est inerte
+        // pour les draws skinnés à shaders qui suivent (le décor .WO) et fidèle au binaire.
+        //
+        // NON CÂBLÉS VOLONTAIREMENT (fidélité : consommateur mort, on ne ranime pas du mort) :
+        //   • B4 EmitterMeshRenderer (Gfx/EmitterMeshRenderer) — les Object B Effect_* sont morts,
+        //     sans xref vivant : aucun producteur ne les alimente -> pas de câblage ici.
+        //   • B6 SkyboxCube (Gfx/SkyboxCube) — a2 (le cube) est NULL aux 8 sites d'appel de
+        //     Gfx_BeginFrame 0x6A2280 (xrefs_to 0x6A2280 = 8 : Scene_{Intro/ServerSelect/Login/
+        //     CharSelect/EnterWorld}Render + 3× Scene_InGameRender) : la skybox cube est morte dans
+        //     le binaire -> pas de câblage. Le ciel vivant reste worldGeom_->RenderSky ci-dessus.
+        // ===================================================================================
+        gfx::EnvLightingFog::ApplyPerFrame(gfx::GxdRenderer::Instance().Device(),  // 0x18C5104 (device fog @0x4124fe)
+                                           gfx::GxdRenderer::Instance().Light());  // m_light GENUINE @0x402711
         if (worldGeomReady_ && worldGeom_) worldGeom_->Render(camera, screenW_, screenH_);
         if (worldReady_ && world_) world_->Render(camera);
         if (worldGeomReady_ && worldGeom_) worldGeom_->RenderSky(screenW_, screenH_);

@@ -267,6 +267,7 @@
 #include "Gfx/Camera.h"
 #include "Gfx/SkyRenderer.h" // ciel dérivé du .ATM réel (cf. MISE À JOUR 2026-07-14 ci-dessus)
 #include "Gfx/ZoneFxEmitter.h" // FRONT F_ZONEFX : moteur de particules « Object A » des .WP (sim VIVANTE)
+#include "Gfx/MeshPartMaterial.h" // FRONT C2 : couche matériau MeshPart_RenderFull 0x6b0850 (B1) des props .WO
 #include "Asset/WorldChunk.h" // asset::AuxRecord : type complet requis (membre std::vector direct)
 #include <cstddef>
 #include <vector>
@@ -370,7 +371,17 @@ private:
     struct StaticObject {
         IDirect3DVertexBuffer9* vb      = nullptr; // 32*A*B o (A frames), a1[72]/+288
         IDirect3DIndexBuffer9*  ib      = nullptr; // 6*D o (partagé par toutes les frames), a1[73]/+292
-        IDirect3DTexture9*      diffuse = nullptr; // tex1 (POSSÉDÉE), a1[86]/+344
+        IDirect3DTexture9*      diffuse = nullptr; // tex1 = base tex0 (POSSÉDÉE), a1[86]/+344
+        // FRONT C2 (2026-07-17) — CÂBLAGE B1 MeshPart_RenderFull 0x6B0850 : au-delà de la diffuse, le
+        // part porte sa 2e texture (2e passe blendée, a1[99]/+396), son atlas flipbook (a1[101]/+404) et
+        // son en-tête matériau 120o DÉCODÉ (part.mat, MeshPart_Load qmemcpy 0x78 @0x6ad2d1). `second` et
+        // `flipbook` sont POSSÉDÉS (créés à l'upload, libérés dans releaseObjects). `mat` est une COPIE
+        // PAR VALEUR (le WorldChunk source peut être libéré au changement de zone -> pas de pointeur vif).
+        IDirect3DTexture9*      second  = nullptr; // tex2 = 2e texture (POSSÉDÉE), a1[99]/+396
+        std::vector<IDirect3DTexture9*> flipbook;  // atlas materials[] (POSSÉDÉES), a1[101]/+404 -> [tex]
+        asset::MeshPartMaterial mat;               // en-tête matériau 120o décodé (part.mat) — COPIE
+        int                     baseMode   = 0;    // part.tex1.mode() = a1[85]/+340 (1=alpha-test/2=blend)
+        int                     secondMode = 0;    // part.tex2.mode() = a1[98]/+392 (idem)
         uint32_t                A = 1;             // nb de frames du flipbook (borne du swap), MeshPart+252
         uint32_t                B = 0;             // sommets par frame, a1[64]/+256 (offset = 32*frame*B)
         uint32_t                D = 0;             // nb de triangles (primCount), a1[66]/+264
@@ -436,7 +447,11 @@ private:
     // par instance, frame = Crt_Dbl2Uint(instancePhase_[i]) gate [0, A-1] ; par part,
     // SetStreamSource(0, vb, 32*frame*B, 32) sélectionne la frame du flipbook. Ancre IDA :
     // Model_RenderParts 0x6a3720 / MeshPart_Render 0x6aed60. Appelée par Render() APRÈS le terrain.
-    void renderObjects(const D3DXMATRIX& view, const D3DXMATRIX& proj);
+    // FRONT C2 (2026-07-17) : pour chaque part `mat.decoded`, le base-draw est REMPLACÉ par la couche
+    // matériau complète MeshPartMaterialRenderer::Render (B1, MeshPart_RenderFull 0x6B0850) — chemin
+    // réel Model_RenderWithShadow_0 0x6a4110 -> 0x6b0850 ; `mat.decoded==false` conserve le base-draw.
+    // `eye` (g_CameraPos 0x800130) alimente le MeshPartRuntime de B1. Méthode PRIVÉE : signature libre.
+    void renderObjects(const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXVECTOR3& eye);
     // Passe eau d'UNE couche cat==3 : matrice bump-env animée (cos/sin de wavePhase_) + falloffTex_ en
     // BUMPENVMAPLUMINANCE stage 0 (TWS-01), diffuse eau stage 1. Ancre IDA : Terrain_Render @0x699206-0x6992b7.
     void bindWaterStates(IDirect3DTexture9* waterDiffuse);
