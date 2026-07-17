@@ -7,6 +7,7 @@
 #include "Gfx/Renderer.h"
 #include "Gfx/Camera.h"
 #include "Game/GameDatabase.h"    // game::LoadGameDatabases (mITEM etc. — resolution d'apparence)
+#include "Game/StringTables.h"    // game::LoadStringTables / g_Strings.messages (StrTable005 : texte de Str(id))
 #include "Core/Types.h"
 #include "Core/Log.h"
 
@@ -98,6 +99,12 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
         TS2_WARN("CharSelectSelfTest : GameData introuvable — assets illisibles, ecran vide probable.");
     if (!game::LoadGameDatabases(gd))
         TS2_WARN("CharSelectSelfTest : LoadGameDatabases incomplet (DB items pour l'apercu).");
+    // StrTable005 (005.DAT -> mMESSAGE) : sans elle, game::Str(id) renvoie "#id" (labels create,
+    // notices...). App::Init la charge (App.cpp:438) ; le harnais doit faire pareil pour des
+    // labels REELS (Clan/Gender/Head/Face/Weapon, notices) au lieu de "#24/#26/...".
+    if (!game::LoadStringTables(game::g_Strings, gd, 0.0f, /*trVariant=*/false))
+        TS2_WARN("CharSelectSelfTest : LoadStringTables partiel (labels 'Str(id)' -> #id).");
+    TS2_LOG("CharSelectSelfTest : StrTable005 = %u messages.", game::g_Strings.messages.Count());
 
     WNDCLASSA wc{};
     wc.lpfnWndProc   = WndProcTest;
@@ -159,9 +166,18 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
         return static_cast<double>(now.QuadPart - t0.QuadPart) / static_cast<double>(freq.QuadPart);
     };
 
+    // Sauve le back-buffer courant dans un PNG (verification visuelle sans acces ecran).
+    auto capturePng = [&](const char* file) {
+        IDirect3DSurface9* bb = nullptr;
+        if (SUCCEEDED(renderer.Device()->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+            const HRESULT hr = D3DXSaveSurfaceToFileA(file, D3DXIFF_PNG, bb, nullptr, nullptr);
+            TS2_LOG("CharSelectSelfTest : capture -> %s (hr=0x%08lX)", file, static_cast<unsigned long>(hr));
+            bb->Release();
+        }
+    };
+
     bool quit = false;
     int  frameNo = 0;
-    bool captured = false;
     while (!quit && (seconds <= 0 || elapsedSec() < static_cast<double>(seconds))) {
         MSG msg{};
         while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -169,24 +185,17 @@ int RunCharSelectSelfTest(int seconds, int width, int height) {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
+        // Sequence scriptee (fenetre SURE [modeles charges ~30 .. keep-alive scene-frame 60[ :
+        // au-dela la notice « session expiree » id 20 masquerait le perso, faute de vrai serveur) :
+        //   35 -> capture LISTE (perso selectionne)   42 -> clic bouton « Creer » (930,518 : x0=884,
+        //   y0=504 + centre sprite)   52 -> capture ECRAN DE CREATION (apercu 3D + formulaire).
+        ++frameNo;
+        if (frameNo == 42) { scene.OnLButtonDown(930, 518); scene.OnLButtonUp(930, 518); }
         scene.Update(1.0 / 30.0, camera);
         if (renderer.Ready() && renderer.BeginFrame()) {
             scene.Render(renderer.Device(), camera);
-            // Capture du back buffer (PNG) : permet de VERIFIER VISUELLEMENT le rendu (perso 3D)
-            // sans acces a l'ecran. Frame 45 = APRES le chargement des modeles (Init ~30 frames)
-            // mais AVANT le 1er keep-alive de session (scene-frame 60) qui, faute de vrai serveur,
-            // ouvre la notice « session expiree » (id 20) et masquerait le perso.
-            if (++frameNo == 45 && !captured) {
-                captured = true;
-                IDirect3DSurface9* bb = nullptr;
-                if (SUCCEEDED(renderer.Device()->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
-                    const HRESULT hr = D3DXSaveSurfaceToFileA("preview_capture.png", D3DXIFF_PNG,
-                                                             bb, nullptr, nullptr);
-                    TS2_LOG("CharSelectSelfTest : capture back buffer -> preview_capture.png (hr=0x%08lX)",
-                            static_cast<unsigned long>(hr));
-                    bb->Release();
-                }
-            }
+            if (frameNo == 35) capturePng("preview_capture.png");
+            if (frameNo == 52) capturePng("preview_create.png");
             renderer.EndFrame();
         }
         Sleep(16);
