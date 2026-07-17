@@ -251,8 +251,9 @@ void SkyRenderer::rebuildCubeVertices() {
 void SkyRenderer::renderCube() {
     rebuildCubeVertices();
 
-    // @0x6a92d7 : SetRenderState(D3DRS_ZWRITEENABLE=7, FALSE) — z-write off (ciel au fond).
-    dev_->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    // @0x6a92d7 : push 7 -> SetRenderState(D3DRS_ZENABLE=7, FALSE) — depth-TEST off
+    //   (RS 7 = D3DRS_ZENABLE, PAS 14=ZWRITEENABLE ; immédiat `push 7` prouvé @0x6a92d4).
+    dev_->SetRenderState(D3DRS_ZENABLE, FALSE);
 
     // @0x6a9324 : Gfx_SetLight(g_GfxRenderer, 1, ...) configure le light slot 0 (champs
     //   d'Object A non possédés par ce front). La FVF (XYZ|TEX1) n'a NI normale NI diffuse =>
@@ -314,8 +315,9 @@ void SkyRenderer::renderCube() {
     dev_->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
     dev_->SetTextureStageState(0, D3DTSS_ALPHAOP,   D3DTOP_MODULATE);
 
-    // @0x6a9446 : SetRenderState(D3DRS_ZWRITEENABLE=7, TRUE) — restaure z-write.
-    dev_->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    // @0x6a9446 : push 7 -> SetRenderState(D3DRS_ZENABLE=7, TRUE) — restaure le depth-TEST
+    //   (immédiat `push 7` prouvé @0x6a9443 ; valeur `push 1` @0x6a9441).
+    dev_->SetRenderState(D3DRS_ZENABLE, TRUE);
 }
 
 // --- Setters de la skybox cube (état runtime modélisé, cf. SkyRenderer.h) -----------------

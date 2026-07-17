@@ -41,10 +41,11 @@ struct Mobject2Subset {
     // VB : taille disque = 20 * N * vertexCount octets (N = Mobject2Mesh::n).
     //   @0x4307c1 (chemin CPU mode1 : v47 = 20 * a1[21] * vertexCount)
     //   @0x430897 (chemin GXD       : CreateVertexBuffer(20 * a1[21] * vertexCount, FVF=258))
-    // ⚠ Le multiplicateur `20·N` est byte-exact (c'est littéralement la taille lue), mais la SÉMANTIQUE
-    //   de N n'est PAS prouvée en statique (cf. Mobject2Mesh::n). La lecture ci-dessous reste correcte
-    //   quel que soit N ; seule l'INTERPRÉTATION « 20 o/sommet » suppose N==1.
-    std::vector<uint8_t> vertexBuffer;  // 20 * N * vertexCount o
+    // Le multiplicateur `20·N` est byte-exact. SÉMANTIQUE DE N RÉSOLUE (B4, 2026-07-17) : N = nombre de
+    //   FRAMES du flipbook, prouvé par Mesh_DrawAnimatedFrame 0x430BE0 (offset VB de la frame f =
+    //   20·f·vertexCount @0x431520 ; bloc bbox = 40·f @0x431207). N==1 dégénère en mesh statique. La
+    //   lecture ci-dessous reste byte-exacte quel que soit N.
+    std::vector<uint8_t> vertexBuffer;  // 20 * N * vertexCount o (N frames, stride sommet 20 o)
     std::vector<uint8_t> indexBuffer;   // 6 * faceCount o        @0x430942 (CPU) / @0x430a03 (GXD)
 };
 
@@ -62,10 +63,10 @@ struct Mobject2Mesh {
     bool     empty = false;             // type==0 => mesh vide (rien d'autre à lire)  @0x4304a9
     uint32_t type  = 0;                 // a1[0] : type/flag                            @0x4304a7
     std::vector<uint8_t> header1;       // 76 o (a1[2..20]) — transform/bornes, non décodé
-    // a1[21] : facteur multiplicatif de la taille de sommet (VB = 20·N·vertexCount, @0x4304fd).
-    // Le DEEP doc l'appelle « nbFrames » (flipbook, cf. MeshPart A frames) — PLAUSIBLE mais NON PROUVÉ.
-    // Autre hypothèse ouverte : N = nombre de jeux de texcoords (sommet 20·N o). Résidu à dumper en
-    // runtime (Docs/TS2_DEEP_MOBJECT.md §3.3/§T5). TODO ancre @0x4307c1 : ne rien inventer en aval.
+    // a1[21] : NOMBRE DE FRAMES du flipbook (VB = 20·N·vertexCount, @0x4304fd). SÉMANTIQUE RÉSOLUE
+    // (B4, 2026-07-17) par Mesh_DrawAnimatedFrame 0x430BE0 : la frame f indexe le VB à 20·f·vertexCount
+    // (@0x431520) et son bloc bbox à 40·f (@0x431207) ; N==1 => mesh statique. Consommé par
+    // Gfx/EmitterMeshRenderer. (L'ancienne hypothèse « jeux de texcoords » est écartée.)
     uint32_t n = 0;
     std::vector<uint8_t> boneTable;     // 40 * N o (a1[22]) — table d'os/matrices, non décodée
     std::vector<uint8_t> table4;        // 4  * N o (a1[23]) — table parallèle, non décodée
