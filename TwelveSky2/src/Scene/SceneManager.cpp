@@ -1539,6 +1539,39 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
                                       fx.ptclDefIndex, static_cast<float>(dt), epos, erot, nullptr);
         }
 
+        // (Vague F — FX combat mesh) Tick des slots MESH (types 8/9/10 = block/parry/deflect ; 0xC/0xD
+        // = 12/13 routés AUSSI vers la banque MiscC par Fx_EmitterDraw 0x585E30). Trois rôles :
+        //  (a) POSITION : le binaire place le mesh sur l'os d'arme (Model_GetAttachTransform 0x40FDC0,
+        //      non porté) ; approximation FIDÈLE = centre de l'entité source (résolu par idHi/idLo, MÊME
+        //      pattern que le tick particule) ; slot.orient (+0x50) laissé à 0 (aucune transformée d'os inventée).
+        //  (b) FLIPBOOK : drawParam (+0x40) = index de frame (prouvé Vague F, 30 fps) -> += dt*30.
+        //  (c) RECYCLAGE (correctif audit Vague F) : quand le flipbook est terminé (frame >= frameCount du
+        //      .MOBJECT), libérer le slot (Fx_AttachSlotClear 0x584220) -> SANS ça, câbler s_meshDraw
+        //      laisserait le mesh affiché EN PERMANENCE (régression) + fuite de pool. Reconstruction fidèle
+        //      d'un effet one-shot ; TODO(ancre) confirmer la condition exacte (hold/loop/clear) par dump dynamique.
+        if (modelObjRenderer_) {
+            for (int i = 0; i < gfx::FxPool_Count(); ++i) {
+                gfx::FxSlot& mfx = gfx::FxPool_Slots()[i];
+                if (!mfx.state) continue;
+                if (mfx.type != 8 && mfx.type != 9 && mfx.type != 10 && mfx.type != 12 && mfx.type != 13) continue;
+                const uint32_t* mid = reinterpret_cast<const uint32_t*>(&mfx);
+                const uint32_t idHi = mid[3], idLo = mid[4]; // slot[3]=+0xC, slot[4]=+0x10
+                bool mfound = false;
+                for (size_t k = 0; !mfound && k < game::g_World.players.size(); ++k) {
+                    const game::PlayerEntity& p = game::g_World.players[k];
+                    if (p.active && p.id.hi==idHi && p.id.lo==idLo) { mfx.position[0]=p.x; mfx.position[1]=p.y; mfx.position[2]=p.z; mfound=true; }
+                }
+                for (size_t k = 0; !mfound && k < game::g_World.monsters.size(); ++k) {
+                    const game::MonsterEntity& m = game::g_World.monsters[k];
+                    if (m.active && m.id.hi==idHi && m.id.lo==idLo) { mfx.position[0]=m.x; mfx.position[1]=m.y; mfx.position[2]=m.z; mfound=true; }
+                }
+                mfx.drawParam += static_cast<float>(dt) * 30.0f;                 // avance flipbook
+                const uint32_t fc = modelObjRenderer_->FrameCount(mfx.meshIdxC); // idxC banque MiscC
+                if (fc > 0 && mfx.drawParam >= static_cast<float>(fc))
+                    gfx::Fx_AttachSlotClear(&mfx);                               // one-shot terminé -> recycle
+            }
+        }
+
         // W9 — Npc_RenderSlotTick 0x5803A0 : anim des PNJ de DÉCOR (mZONENPCINFO). Appelée
         // 1x/frame et par slot actif depuis Scene_InGameUpdate 0x52C600 @0x52CA4C (xref
         // UNIQUE, confirmée IDA cette mission). Boucle d'origine @0x52CA19 : `i < g_NpcCount
@@ -1655,26 +1688,10 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
             fxDev->SetTransform(D3DTS_VIEW, &fxView);
             fxDev->SetTransform(D3DTS_PROJECTION, &fxProj);
             gfx::Fx_SetParticleFrame(fxDev, fxRight, fxUp, 0 /*maxQuads: pas de plafond*/, nullptr);
-            // (Vague F) Renderer mesh : plans de frustum (cull par-part) + position des slots MESH
-            // (types 8/9/10 = block/parry/deflect). Le placement exact sur l'os d'arme
-            // (Model_GetAttachTransform 0x40FDC0) n'est PAS porté -> slot.position (+0x44) = centre de
-            // l'entité source, résolu par idHi/idLo (MÊME pattern que le tick particule), dégradation
-            // honnête documentée ; slot.orient (+0x50) laissé à 0. Sans ça Fx_EmitterDraw passe pos={0,0,0}.
+            // (Vague F) Plans de frustum pour le cull par-part des meshes FX. La POSITION et le
+            // RECYCLAGE (flipbook one-shot) des slots MESH se font en phase UPDATE (tick ci-dessus) ;
+            // le rendu ne fait que consommer slot.position/drawParam déjà résolus.
             if (modelObjRenderer_) modelObjRenderer_->SetFrame(fxView, fxProj);
-            for (int i = 0; i < gfx::FxPool_Count(); ++i) {
-                gfx::FxSlot& mfx = gfx::FxPool_Slots()[i];
-                if (!mfx.state || (mfx.type != 8 && mfx.type != 9 && mfx.type != 10)) continue;
-                const uint32_t* mid = reinterpret_cast<const uint32_t*>(&mfx);
-                const uint32_t idHi = mid[3], idLo = mid[4]; // slot[3]=+0xC, slot[4]=+0x10
-                for (size_t k = 0; k < game::g_World.players.size(); ++k) {
-                    const game::PlayerEntity& p = game::g_World.players[k];
-                    if (p.active && p.id.hi==idHi && p.id.lo==idLo) { mfx.position[0]=p.x; mfx.position[1]=p.y; mfx.position[2]=p.z; break; }
-                }
-                for (size_t k = 0; k < game::g_World.monsters.size(); ++k) {
-                    const game::MonsterEntity& m = game::g_World.monsters[k];
-                    if (m.active && m.id.hi==idHi && m.id.lo==idLo) { mfx.position[0]=m.x; mfx.position[1]=m.y; mfx.position[2]=m.z; break; }
-                }
-            }
             for (int pass = 1; pass <= 3; ++pass)
                 for (int i = 0; i < gfx::FxPool_Count(); ++i)
                     gfx::Fx_EmitterDraw(&gfx::FxPool_Slots()[i], pass);
@@ -1819,7 +1836,7 @@ void SceneManager::OnDeviceLost() {
     if (windows_)  windows_->OnDeviceLost();
     if (world_)    world_->OnDeviceLost();
     if (worldGeom_) worldGeom_->OnDeviceLost();
-    if (modelObjRenderer_) modelObjRenderer_->OnDeviceLost(); // (Vague F) purge cache D3DPOOL_MANAGED
+    if (modelObjRenderer_) modelObjRenderer_->OnDeviceLost(); // (Vague F) no-op : ressources MANAGED survivent au Reset
 }
 
 void SceneManager::OnDeviceReset() {

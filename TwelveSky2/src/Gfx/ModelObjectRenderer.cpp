@@ -259,6 +259,12 @@ ModelObjectRenderer::MObjEntry* ModelObjectRenderer::getOrLoadMiscC(int idxC) {
     return ins->second.loadFailed ? nullptr : &ins->second;
 }
 
+// Nombre de frames du flipbook pour un slot MiscC (A = parts[0].geo.M, cf. getOrLoadMiscC).
+uint32_t ModelObjectRenderer::FrameCount(int idxC) {
+    MObjEntry* e = getOrLoadMiscC(idxC);
+    return e ? e->frameCountA : 0u;
+}
+
 // ===========================================================================
 //  MeshDraw — ModelObj_Draw 0x4D71B0 + Model_RenderWithShadow_0 0x6A4110 réduits (base-draw).
 // ===========================================================================

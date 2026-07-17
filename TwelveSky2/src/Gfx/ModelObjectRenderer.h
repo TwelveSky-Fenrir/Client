@@ -104,6 +104,11 @@ public:
     // Sanité : nombre d'entrées .MOBJECT résidentes dans le cache MiscC.
     size_t ResidentCount() const { return cacheMiscC_.size(); }
 
+    // Nombre de frames du flipbook (parts[0].A) d'un slot MiscC — lazy-load synchrone si besoin.
+    // Sert au cycle de vie du slot FX mesh (recyclage quand le flipbook est terminé, cf. SceneManager,
+    // sinon le mesh resterait affiché en permanence). Renvoie 0 si idxC hors bornes / chargement échoué.
+    uint32_t FrameCount(int idxC);
+
 private:
     // Part GPU d'un .MOBJECT (miroir MeshPart 408 o, champs GPU) — même disposition que
     // WorldGeometryRenderer::StaticObject, source = asset::MeshPart au lieu de WorldMeshPart.
