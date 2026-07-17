@@ -33,6 +33,7 @@
 
 #include "Game/GameState.h"      // g_World, PlayerEntity, MonsterEntity, EntityId
 #include "Game/ClientRuntime.h"  // g_Client, game::Str(id)
+#include "Gfx/FxSetters.h"       // FxPool_* (pool dword_17D06F4) + Fx_Attach* (setters combat)
 
 #include <cstdio>   // snprintf
 #include <cstdint>
@@ -136,6 +137,38 @@ void StockerBlocCombat(std::unordered_map<uint64_t, BlocCombat>& cache,
     b.valid = true;
 }
 
+// -----------------------------------------------------------------------------
+// Vue FxEntitySource (champs a2[N] lus par les setters Fx_Attach*) depuis une entité C++.
+// Les setters reçoivent l'ADRESSE du record (&player[i]=this+908·i+6892 / &monster[i]=this+
+// 280·i+923692) ; on n'y transpose que les champs prouvés. Cf. Gfx/FxSetters.h.
+gfx::FxEntitySource SourceFromPlayer(const PlayerEntity& p) {
+    gfx::FxEntitySource s;
+    s.idHi = p.id.hi;                       // a2[1]  entity+4
+    s.idLo = p.id.lo;                       // a2[2]  entity+8
+    // a2[6] = entity+24 = body[0] : gate « modèle chargé » (non nul quand l'apparence est reçue).
+    if (p.body.size() >= 4)
+        std::memcpy(&s.modelReady, p.body.data(), 4);
+    s.modelClass    = p.anim.modelIndex;    // a2[23] entity+92 (aTribe RACE 0..2)
+    s.modelSubclass = p.anim.modelVariant;  // a2[24] entity+96 (aGender 0..1)
+    return s;
+}
+gfx::FxEntitySource SourceFromMonster(const MonsterEntity& m) {
+    gfx::FxEntitySource s;
+    s.idHi = m.id.hi;   // a2[1]  record+4
+    s.idLo = m.id.lo;   // a2[2]  record+8
+    // Les setters monstre (MuzzleVariant particule / Parry-Deflect mesh) ne lisent que l'id
+    // pour le chemin VISIBLE ; l'ancre (a2[24]=record+96=def modèle, +244) relève du sous-
+    // système modèle → TODO côté setter. modelClass/Subclass non transposés (non requis).
+    return s;
+}
+
+// Alloue un slot FX libre et renvoie son pointeur, ou nullptr si le pool est plein. Miroir du
+// motif partagé `for(j…) if(j<g_FxAuraCount) Fx_AttachXxx(&slot[j], …)` (ex. @0x55ab24/@0x55ab82).
+gfx::FxSlot* SlotLibreFx() {
+    const int j = gfx::FxPool_FindFreeSlot();
+    return (j >= 0) ? &gfx::FxPool_Slots()[j] : nullptr;
+}
+
 } // namespace
 
 // =============================================================================
@@ -230,8 +263,10 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
                 if (i >= 0) {
                     PlayerEntity& p = g_World.players[i];
                     if (a[13] == 1) {
-                        // TODO(fx) @0x55ABC4 : si slot fx libre -> Fx_AttachBlockGuard(1,
-                        //   &player[i], i==0) (parade sur crit externe).
+                        // @0x55ABC4 : parade sur crit externe. Scan slot libre @0x55ab24 puis
+                        //   Fx_AttachBlockGuard(&slot, 1, &player[i], i==0).
+                        if (gfx::FxSlot* fx = SlotLibreFx())
+                            gfx::Fx_AttachBlockGuard(fx, 1, SourceFromPlayer(p), i == 0);
                     }
                     p.hp -= a[16];          // dégâts externes (@0x55ABFA)
                     p.hp -= a[18];          // dégâts internes  (@0x55AC32)
@@ -240,8 +275,10 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
                     // Crt_Memcpy(player[i]+7536, block, 76) @0x55AC92 — cache du bloc
                     //   de combat sur l'entité (modélisé hors-struct, cf. règle #6).
                     StockerBlocCombat(CacheJoueur(), tgt, block);
-                    // TODO(fx) @0x55AD2C : si slot fx libre -> Fx_AttachMuzzleFlash(
-                    //   &player[i], 1).
+                    // @0x55AD2C : muzzle sur la cible touchée. Scan slot libre @0x55ac9a puis
+                    //   Fx_AttachMuzzleFlash(&slot, &player[i], 1).
+                    if (gfx::FxSlot* fx = SlotLibreFx())
+                        gfx::Fx_AttachMuzzleFlash(fx, SourceFromPlayer(p), 1);
                 }
             }
 
@@ -300,22 +337,59 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
             if (i >= 0) {
                 MonsterEntity& m = g_World.monsters[i];
                 if (a[13] == 1) {
-                    // TODO(fx) @0x55B326 : si slot fx libre -> Fx_AttachParry(&monstre[i]).
+                    // @0x55B326 : parade. Scan slot libre @0x55b296 puis Fx_AttachParry(&slot, &monstre[i]).
+                    if (gfx::FxSlot* fx = SlotLibreFx())
+                        gfx::Fx_AttachParry(fx, SourceFromMonster(m));
                 }
-                // TODO(fx) @0x55B358 : effet de « déviation » si monstre.def+232==2 et
-                //   g_Opt_GfxDetailShadows==1, déclenché quand le franchissement de palier
-                //   de barre de vie change :
-                //     v39 = 3 - ftol(hp*100 / def+368)/30
-                //     v43 = 3 - ftol((hp-a[16])*100 / def+368)/30 ; si v39<v43 ->
-                //     Fx_AttachDeflect(&monstre[i]). (def+368 = PV max MONSTER_INFO)
+                // @0x55B358 : « déviation » si monstre.def+232==2 ET g_Opt_GfxDetailShadows==1,
+                //   déclenchée quand le palier de barre de vie franchi CHANGE (avant/après dégâts).
+                //     v43 = 3 - ftol(hp*100 / (def+368)) / 30       (palier avant)
+                //     v47 = 3 - ftol((hp-a[16])*100 / (def+368)) / 30 (palier après)
+                //     si v43 < v47 -> Fx_AttachDeflect(&monstre[i]).   (def+368 = PV max MONSTER_INFO)
+                // g_Opt_GfxDetailShadows 0x84DEF8 lu via la longue traîne (0 si non câblé -> no-op
+                // honnête) ; def+232/+368 = champs bruts du record MONSTER_INFO résolu (m.def), guardé.
+                if (m.def && g_Client.VarGet(0x84DEF8) == 1) {
+                    const uint8_t* def = static_cast<const uint8_t*>(m.def);
+                    int32_t deflectMode, maxHp;
+                    std::memcpy(&deflectMode, def + 232, 4);   // def+232 (@0x55b358)
+                    std::memcpy(&maxHp,       def + 368, 4);   // def+368 PV max (@0x55b39c)
+                    if (deflectMode == 2 && maxHp != 0) {
+                        const int v43 = 3 - static_cast<int>(static_cast<double>(m.hp) * 100.0 / maxHp) / 30;
+                        const int v47 = 3 - static_cast<int>(static_cast<double>(m.hp - a[16]) * 100.0 / maxHp) / 30;
+                        if (v43 < v47) {                        // @0x55b42c
+                            if (gfx::FxSlot* fx = SlotLibreFx()) // scan @0x55b432
+                                gfx::Fx_AttachDeflect(fx, SourceFromMonster(m)); // @0x55b4c2
+                        }
+                    }
+                }
                 m.hp -= a[16];              // dégâts externes (@0x55B4F8)
                 // Crt_Memcpy(monstre[i]+923816, block, 76) @0x55B51F — cache du bloc
                 //   de combat sur l'entité (modélisé hors-struct, cf. règle #6).
                 StockerBlocCombat(CacheMonstre(), tgt, block);
-                // TODO(fx) @0x55B573.. : si hp>0 et monstre.def+240==2 et slot fx libre,
-                //   variante de muzzle selon a[8]/a[9] :
-                //     a[8]==1 -> switch a[9] {1->var1, 2->var2, 3->var3}
-                //     a[8]==2 -> var2 ; sinon rien. (Fx_AttachMuzzleVariant)
+                // @0x55B573 : variante de muzzle si hp>0 ET monstre.def+240==2 (après dégâts).
+                //   Sélection : a[8]==1 -> switch a[9] {1->var1, 2->var2, 3->var3} ; a[8]==2 -> var2 ;
+                //   sinon aucun (LABEL_162/163). def+240 = champ brut MONSTER_INFO (m.def, guardé).
+                if (m.hp > 0 && m.def) {
+                    int32_t muzzleMode;
+                    std::memcpy(&muzzleMode, static_cast<const uint8_t*>(m.def) + 240, 4); // def+240
+                    if (muzzleMode == 2) {
+                        int variant = 0;                        // 0 = aucun effet
+                        if (a[8] == 1) {                        // @0x55b5f6
+                            switch (a[9]) {                     // @0x55b61d
+                                case 1: variant = 1; break;     // @0x55b668
+                                case 2: variant = 2; break;     // LABEL_162 @0x55b6e1
+                                case 3: variant = 3; break;     // @0x55b6da
+                                default: variant = 0; break;    // (a[9] autre) -> aucun
+                            }
+                        } else if (a[8] == 2) {                 // @0x55b5ff
+                            variant = 2;                        // LABEL_162 @0x55b6e1
+                        }
+                        if (variant >= 1) {
+                            if (gfx::FxSlot* fx = SlotLibreFx()) // scan @0x55b57f
+                                gfx::Fx_AttachMuzzleVariant(fx, SourceFromMonster(m), variant);
+                        }
+                    }
+                }
             }
         }
 
@@ -358,10 +432,12 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
                 if (i >= 0) {
                     PlayerEntity& p = g_World.players[i];
                     // TODO(fx) @0x55BD35/0x55BD76 : Snd3D_PlayPositional(flt_14914FC si
-                    //   a[13], sinon flt_148927C) — son coup bloqué / normal.
+                    //   a[13], sinon flt_148927C) — son coup bloqué / normal. (audio, hors périmètre FX)
                     if (a[13] == 1) {
-                        // TODO(fx) @0x55BE28 : si slot fx libre -> Fx_AttachBlockGuard(2,
-                        //   &player[i], i==0).
+                        // @0x55BE28 : garde sur crit externe. Scan slot libre @0x55bd88 puis
+                        //   Fx_AttachBlockGuard(&slot, 2, &player[i], i==0).
+                        if (gfx::FxSlot* fx = SlotLibreFx())
+                            gfx::Fx_AttachBlockGuard(fx, 2, SourceFromPlayer(p), i == 0);
                     }
                     p.hp -= a[16];          // dégâts externes (@0x55BE5E)
                     if (i == 0) g_World.self.hp = p.hp;     // miroir HUD self
@@ -369,8 +445,10 @@ void ApplyCombatResult(const uint8_t* block, uint32_t len) {
                     // Crt_Memcpy(player[i]+7536, block, 76) @0x55BE85 — cache du bloc
                     //   de combat sur l'entité (modélisé hors-struct, cf. règle #6).
                     StockerBlocCombat(CacheJoueur(), tgt, block);
-                    // TODO(fx) @0x55BF1F : si slot fx libre -> Fx_AttachMuzzleFlash(
-                    //   &player[i], 1).
+                    // @0x55BF1F : muzzle sur la cible touchée. Scan slot libre @0x55be8d puis
+                    //   Fx_AttachMuzzleFlash(&slot, &player[i], 1).
+                    if (gfx::FxSlot* fx = SlotLibreFx())
+                        gfx::Fx_AttachMuzzleFlash(fx, SourceFromPlayer(p), 1);
                 }
             }
         } else if (SelfEst(tgt)) {          // raté (@0x55BA35)

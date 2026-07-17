@@ -30,6 +30,8 @@
 #include <cstdint>
 #include <cstddef>
 
+struct IDirect3DDevice9;   // forward (évite de tirer d3d9.h dans ce header léger)
+
 namespace ts2::gfx {
 
 // ---------------------------------------------------------------------------
@@ -81,6 +83,23 @@ using FxModelObjDrawFn = void (*)(FxMeshBank bank, int idxA, int idxB, int idxC,
 using FxParticleRenderFn = void (*)(int ptclDefIndex, void* pool48);
 
 void SetFxRenderHooks(FxModelObjDrawFn meshDraw, FxParticleRenderFn particleRender);
+
+// ---------------------------------------------------------------------------
+// Câblage par DÉFAUT des hooks sur le LEAF billboard Object A (Gfx/FxBillboard).
+//
+// Ancre de frame du rendu particule : miroir des globales du renderer Object A lues par
+// Particle_RenderBillboards 0x6A70B0 (base billboard monde flt_8001D4..E8 = droite/haut caméra,
+// device dword_800074, plafond quads dword_7FFEE0). MAIN les pose UNE FOIS par frame, avant les
+// 3 passes Fx_EmitterDraw (miroir de Scene_InGameRender 0x52D0B0). `frustum` = Cam_FrustumTestPoint6
+// 0x69ED30 (nullptr => toujours visible).
+using FxFrustumHook = bool (*)(const float pos[3]);
+void Fx_SetParticleFrame(IDirect3DDevice9* device, const float right[3], const float up[3],
+                         int maxQuads, FxFrustumHook frustum);
+
+// Câble s_particleRender -> FxBillboard_PoolRender (= Particle_EnsureLoadedThenRender 0x4D9F90
+// -> Particle_RenderBillboards 0x6A70B0). s_meshDraw reste NUL (ModelObj_Draw 0x4D71B0 = sous-
+// système modèle non porté à ce jalon → les FX mesh types 1-4/8-D restent invisibles, TODO ancre).
+void Fx_WireLeafHooks();
 
 // ---------------------------------------------------------------------------
 // Fx_EmitterDraw 0x585E30 — rend UN slot pour la passe `pass` (1 et 2 = meshes,

@@ -11,6 +11,8 @@
 #include "Gfx/WorldGeometryRenderer.h" // géométrie statique .WO (distinct de WorldRenderer=entités)
 #include "Gfx/GxdRenderer.h"           // GXD_RenderPostBlur 0x4053E0 (bloom, câblé en fin de rendu InGame)
 #include "Game/PlayerAnimCursorTick.h" // Player_AdvanceAnimCursor (avance curseur anim joueur, switch 0x5727BF)
+#include "Gfx/FxSetters.h"             // FxPool_* + FxSlot (pool FX combat dword_17D06F4, Vague D)
+#include "Gfx/FxBillboard.h"           // FxBillboard_PoolTick/SetDevice (leaf Object A .PARTICLE, Vague D)
 #include <cstring>                     // std::memcpy (lecture race/genre depuis PlayerEntity::body)
 #include "World/WorldIntegration.h"    // world::WorldAssets (charge réellement Z%03d.WO)
 #include "World/WorldMap.h"            // world::WorldMap::LoadZoneResource / ZoneIdToFileId
@@ -459,6 +461,11 @@ void SceneManager::Change(Scene s) {
     if (s == Scene::InGame)
         inGameTickState_ = game::InGameTickFlowState{};
 
+    // (Vague D — FX combat) Reset du pool de slots FX (dword_17D06F4) à chaque entrée en jeu :
+    // miroir de Pkt_EnterWorld 0x464160 @0x4642A4 (for i<g_FxAuraCount Fx_AttachSlotClear(&slot[i])).
+    if (s == Scene::InGame)
+        gfx::FxPool_Reset();
+
     // Entrée en jeu : initialise le HUD et les fenêtres de jeu une seule fois (device stable).
     if (s == Scene::InGame && hud_ && !hudReady_ && renderer_) {
         hudReady_ = hud_->Init(*renderer_, screenW_, screenH_);
@@ -487,6 +494,14 @@ void SceneManager::Change(Scene s) {
         // GetGroundHeight (worldAssets_ construit une seule fois en Init L388, détruit au Shutdown
         // AVEC world_ L403/409) -> aucun dangling. Sans ce câblage, la passe d'ombre est un no-op propre.
         if (worldReady_ && worldAssets_) world_->SetCollisionSource(worldAssets_.get());
+        // (Vague D — FX combat) Amorçage UNE FOIS du leaf Object A + dispatch : device physique
+        // (g_GfxRenderer 0x7FFE18), racine des assets (contient G03_GDATA\D05_GPARTICLE), et câblage
+        // du hook de rendu particule s_particleRender -> FxBillboard_PoolRender (= lazy-load .PARTICLE
+        // + Particle_RenderBillboards 0x6A70B0). s_meshDraw reste nul (ModelObj_Draw 0x4D71B0, système
+        // modèle non porté -> les FX mesh block/parry/deflect restent invisibles à ce jalon).
+        gfx::FxBillboard_SetDevice(renderer_->Device());
+        gfx::FxBillboard_SetDataRoot(gameDataDir_.c_str());
+        gfx::Fx_WireLeafHooks();
     }
     // Géométrie de monde statique (.WO) : chargement UNE SEULE FOIS à l'entrée en InGame,
     // pour le zoneId courant (game::g_World.zoneId). Pas de rechargement au changement de
@@ -1487,6 +1502,34 @@ void SceneManager::Update(double dt, gfx::Camera& camera) {
         if (worldGeomReady_ && worldGeom_)
             worldGeom_->TickWorldAnim(static_cast<float>(dt));
 
+        // (Vague D — FX combat) Tick des slots particule (types 5/6/7 = muzzle/hitspark/hitburst) :
+        // miroir de la boucle d'update de Scene_InGameUpdate 0x52C600 (Particle_EnsureLoadedThenUpdateEmit
+        // 0x4D9F40 -> Particle_UpdateEmit 0x6A7530). POSITION d'émission : le binaire suit l'os via
+        // slot[30]=flt_FABB5C (système d'os non porté) ; approximation FIDÈLE = position de l'entité
+        // source (elle suit l'entité frame par frame comme l'os), résolue par l'id réseau stocké dans le
+        // slot (idHi@+0xC / idLo@+0x10, écrits par les setters Fx_Attach*, cf. Gfx/FxSetters.cpp). Si
+        // l'entité a disparu -> pas d'émission (aucune particule à l'origine du monde) : dégradation honnête.
+        for (int i = 0; i < gfx::FxPool_Count(); ++i) {
+            gfx::FxSlot& fx = gfx::FxPool_Slots()[i];
+            if (!fx.state || (fx.type != 5 && fx.type != 6 && fx.type != 7)) continue;
+            const uint32_t* rawId = reinterpret_cast<const uint32_t*>(&fx);
+            const uint32_t idHi = rawId[3], idLo = rawId[4]; // slot[3]=+0xC, slot[4]=+0x10
+            float epos[3] = { 0.0f, 0.0f, 0.0f };
+            bool found = false;
+            for (size_t k = 0; !found && k < game::g_World.players.size(); ++k) {
+                const game::PlayerEntity& p = game::g_World.players[k];
+                if (p.active && p.id.hi == idHi && p.id.lo == idLo) { epos[0]=p.x; epos[1]=p.y; epos[2]=p.z; found=true; }
+            }
+            for (size_t k = 0; !found && k < game::g_World.monsters.size(); ++k) {
+                const game::MonsterEntity& m = game::g_World.monsters[k];
+                if (m.active && m.id.hi == idHi && m.id.lo == idLo) { epos[0]=m.x; epos[1]=m.y; epos[2]=m.z; found=true; }
+            }
+            if (!found) continue;
+            const float erot[3] = { 0.0f, 0.0f, 0.0f };
+            gfx::FxBillboard_PoolTick(reinterpret_cast<gfx::FxParticlePool*>(fx.ptclPool),
+                                      fx.ptclDefIndex, static_cast<float>(dt), epos, erot, nullptr);
+        }
+
         // W9 — Npc_RenderSlotTick 0x5803A0 : anim des PNJ de DÉCOR (mZONENPCINFO). Appelée
         // 1x/frame et par slot actif depuis Scene_InGameUpdate 0x52C600 @0x52CA4C (xref
         // UNIQUE, confirmée IDA cette mission). Boucle d'origine @0x52CA19 : `i < g_NpcCount
@@ -1565,6 +1608,20 @@ void SceneManager::Render(IDirect3DDevice9* /*device*/, const gfx::Camera& camer
         // BeginScene, laissant la scène OUVERTE pour le HUD 2D ci-dessous. Les PS12/PS14 du npk
         // GXDEffect proviennent du ShaderSet du WorldRenderer (chargé quand worldReady_). Le device
         // du singleton GxdRenderer est attaché à App_Init (App.cpp:374, GXD_DeviceReinit 0x4023F0).
+        // (Vague D — FX combat) Rendu des slots FX : ancre de frame (droite/haut caméra depuis la
+        // matrice vue) puis 3 passes Fx_EmitterDraw (miroir Scene_InGameRender 0x52D0B0 : passes 1/2 =
+        // meshes no-op faute de s_meshDraw, passe 3 = particules -> leaf Object A Particle_RenderBillboards
+        // 0x6A70B0). AVANT le bloom pour que muzzle/étincelles participent au post-blur, comme dans le
+        // binaire (sites 0x52DD14/0x52ECEB/0x52FAD8 précèdent GXD_RenderPostBlur @0x52FB53).
+        if (worldReady_ && world_) {
+            D3DXMATRIX fxView; camera.BuildViewMatrix(fxView);
+            const float fxRight[3] = { fxView._11, fxView._21, fxView._31 }; // droite caméra en monde
+            const float fxUp[3]    = { fxView._12, fxView._22, fxView._32 }; // haut caméra en monde
+            gfx::Fx_SetParticleFrame(renderer_->Device(), fxRight, fxUp, 0 /*maxQuads: pas de plafond*/, nullptr);
+            for (int pass = 1; pass <= 3; ++pass)
+                for (int i = 0; i < gfx::FxPool_Count(); ++i)
+                    gfx::Fx_EmitterDraw(&gfx::FxPool_Slots()[i], pass);
+        }
         if (worldReady_ && world_)
             gfx::GxdRenderer::Instance().RenderPostBlur(world_->BloomShaderSet());
         if (hudReady_ && hud_) hud_->Render();

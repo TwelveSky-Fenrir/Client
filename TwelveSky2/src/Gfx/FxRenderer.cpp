@@ -3,6 +3,7 @@
 // Vérité IDA : TwelveSky2.exe. Chaque bloc cite son ancre (nom + 0xADDR).
 // Voir FxRenderer.h pour la carte du slot et les frontières (pool POBJECT 48 o).
 #include "FxRenderer.h"
+#include "FxBillboard.h"   // FxBillboard_PoolRender, FxParticlePool (LEAF Object A) — pour Fx_WireLeafHooks
 #include <cstring>   // std::memcpy
 
 namespace ts2::gfx {
@@ -14,6 +15,37 @@ static FxParticleRenderFn s_particleRender = nullptr; // Particle_EnsureLoadedTh
 
 void SetFxRenderHooks(FxModelObjDrawFn meshDraw, FxParticleRenderFn particleRender) {
     s_meshDraw = meshDraw; s_particleRender = particleRender;
+}
+
+// ---------------------------------------------------------------------------
+// Ancre de frame du rendu particule (miroir des globales du renderer Object A).
+static IDirect3DDevice9* s_fxDevice   = nullptr;                 // dword_800074
+static float             s_fxRight[3] = { 1.0f, 0.0f, 0.0f };    // flt_8001D4/D8/DC (droite caméra monde)
+static float             s_fxUp[3]    = { 0.0f, 1.0f, 0.0f };    // flt_8001E0/E4/E8 (haut caméra monde)
+static int               s_fxMaxQuads = 0;                       // dword_7FFEE0 (0 => pas de plafond)
+static FxFrustumHook     s_fxFrustum  = nullptr;                 // Cam_FrustumTestPoint6 0x69ED30
+
+void Fx_SetParticleFrame(IDirect3DDevice9* device, const float right[3], const float up[3],
+                         int maxQuads, FxFrustumHook frustum) {
+    s_fxDevice = device;
+    if (right) { s_fxRight[0] = right[0]; s_fxRight[1] = right[1]; s_fxRight[2] = right[2]; }
+    if (up)    { s_fxUp[0]    = up[0];    s_fxUp[1]    = up[1];    s_fxUp[2]    = up[2];    }
+    s_fxMaxQuads = maxQuads;
+    s_fxFrustum  = frustum;
+}
+
+// s_particleRender terminal — lazy-load + rendu billboard du pool POBJECT 48 o (LEAF Object A).
+// Miroir de Particle_EnsureLoadedThenRender 0x4D9F90 : (&byte_1151CBC[336·idx], pool@+132).
+static void LeafParticleRender(int ptclDefIndex, void* pool48) {
+    FxBillboard_PoolRender(reinterpret_cast<FxParticlePool*>(pool48), ptclDefIndex,
+                           s_fxDevice, s_fxRight, s_fxUp, s_fxMaxQuads, s_fxFrustum);
+}
+
+void Fx_WireLeafHooks() {
+    // s_meshDraw reste nul : ModelObj_Draw 0x4D71B0 (sous-système modèle) non porté → les FX mesh
+    // (types 1-4/8-D : Deflect/BlockGuard/Parry) sont invisibles à ce jalon. TODO(ancre) : câbler
+    // le renderer de modèles. Le chemin particule (types 5-7/0xB/0xE) est complet via le LEAF.
+    SetFxRenderHooks(nullptr, &LeafParticleRender);
 }
 
 // ---------------------------------------------------------------------------
