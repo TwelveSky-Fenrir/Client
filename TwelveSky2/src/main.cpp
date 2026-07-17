@@ -5,6 +5,7 @@
 #include "Tools/UiWindowSelfTest.h"
 #include "Tools/WorldReflectionSelfTest.h"
 #include "Tools/CharSelectSelfTest.h"
+#include "Tools/WorldSelfTest.h"
 #include <cstring>
 #include <cstdlib>
 
@@ -36,6 +37,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR lpCmdLine, in
         int seconds = 0, width = 0, height = 0; // 0 s = jusqu'a fermeture de la fenetre
         std::sscanf(args, "%d %d %d", &seconds, &width, &height);
         return ts2::tools::RunCharSelectSelfTest(seconds, width, height);
+    }
+    // -worldtest [seconds] [zoneId] [selfX] [selfY] [selfZ] : VOIR le perso DANS le monde 3D.
+    // Charge une vraie zone (terrain+objets) + injecte un self + force InGame + capture PNG.
+    if (lpCmdLine && std::strncmp(lpCmdLine, "-worldtest", 10) == 0) {
+        const char* args = lpCmdLine + 10;
+        while (*args == ' ') ++args;
+        int seconds = 0, zoneId = 1;
+        float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+        std::sscanf(args, "%d %d %f %f %f", &seconds, &zoneId, &sx, &sy, &sz);
+        return ts2::tools::RunWorldSelfTest(seconds, zoneId, sx, sy, sz, 0, 0);
     }
     ts2::App app;
     return app.Run(hInstance, lpCmdLine);

@@ -241,6 +241,7 @@
     <ClCompile Include="src\Tools\CharSelectSelfTest.cpp" />
     <ClCompile Include="src\Tools\UiWindowSelfTest.cpp" />
     <ClCompile Include="src\Tools\WorldReflectionSelfTest.cpp" />
+    <ClCompile Include="src\Tools\WorldSelfTest.cpp" />
     <ClCompile Include="src\UI\AutoPlayWindow.cpp" />
     <ClCompile Include="src\UI\BuffStatusPanel.cpp" />
     <ClCompile Include="src\UI\CharacterStatsWindow.cpp" />
@@ -411,6 +412,7 @@
     <ClInclude Include="src\Tools\CharSelectSelfTest.h" />
     <ClInclude Include="src\Tools\UiWindowSelfTest.h" />
     <ClInclude Include="src\Tools\WorldReflectionSelfTest.h" />
+    <ClInclude Include="src\Tools\WorldSelfTest.h" />
     <ClInclude Include="src\UI\AutoPlayWindow.h" />
     <ClInclude Include="src\UI\BuffStatusPanel.h" />
     <ClInclude Include="src\UI\CharacterStatsWindow.h" />

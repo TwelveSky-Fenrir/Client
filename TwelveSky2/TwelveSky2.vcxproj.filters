@@ -450,6 +450,9 @@
     <ClCompile Include="src\Tools\CharSelectSelfTest.cpp">
       <Filter>Source Files\Tools</Filter>
     </ClCompile>
+    <ClCompile Include="src\Tools\WorldSelfTest.cpp">
+      <Filter>Source Files\Tools</Filter>
+    </ClCompile>
     <ClCompile Include="src\Tools\UiWindowSelfTest.cpp">
       <Filter>Source Files\Tools</Filter>
     </ClCompile>
@@ -897,6 +900,9 @@
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Tools\CharSelectSelfTest.h">
+      <Filter>Header Files\Tools</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Tools\WorldSelfTest.h">
       <Filter>Header Files\Tools</Filter>
     </ClInclude>
     <ClInclude Include="src\Tools\UiWindowSelfTest.h">
