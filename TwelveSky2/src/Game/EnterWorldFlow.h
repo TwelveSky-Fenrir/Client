@@ -1,68 +1,68 @@
-// Game/EnterWorldFlow.h — Machine d'état d'ENTRÉE EN MONDE (scène EnterWorld = 5).
+// Game/EnterWorldFlow.h — WORLD ENTRY state machine (EnterWorld scene = 5).
 //
-// Réécriture C++ fidèle de Scene_EnterWorldUpdate 0x52BFF0 (dispatché par
-// cSceneMgr_Update 0x517BF0 quand g_SceneMgr.sceneId == Scene::EnterWorld). Source
-// UNIQUE de vérité : décompilation Hex-Rays via idaTs2 (voir rapport de session).
+// Faithful C++ rewrite of Scene_EnterWorldUpdate 0x52BFF0 (dispatched by
+// cSceneMgr_Update 0x517BF0 when g_SceneMgr.sceneId == Scene::EnterWorld). SOLE
+// source of truth: Hex-Rays decompilation via idaTs2 (see session report).
 //
-// FLUX RÉEL DÉCOUVERT (4 sous-états explicites + 1 état d'échec terminal) :
+// ACTUAL FLOW DISCOVERED (4 explicit sub-states + 1 terminal failure state):
 //
-//   0 WaitBeforeUnload  : attend 30 frames (0x1E) puis purge l'UI/audio résiduels de
-//                         CharSelect, remet à zéro l'index de préchargement de zone,
-//                         capture zoneId-1 comme "zone précédente" -> état 1.
-//   1 LoadZoneResources : toutes les 10 frames (0xA), appelle
-//                         World_LoadZoneResource(dword_14A883C, dword_1675A9C, idx) avec idx
-//                         = 0..19 (compteur brut, PAS une table de lookup) ; après idx==20e
-//                         incrément (20 appels) -> état 2. => 200 frames (~6,67 s à 30 FPS).
-//                         AUDIT 2026-07-14 (décompilation directe de World_LoadZoneResource
-//                         0x4DCB60, cf. World/WorldMap.h::ResourceKind) : `idx` EST
-//                         directement le paramètre a3 du dispatch, SANS indirection. Le
-//                         switch de 0x4DCB60 ne couvre QUE les valeurs 1..12 (= les 12
-//                         ResourceKind existants, WorldMap.h::ResourceKind est donc DÉJÀ
-//                         COMPLET, pas un sous-ensemble). idx==0 et idx==13..19 (8 valeurs
-//                         sur 20) tombent dans le `default` du switch d'origine, qui ne fait
-//                         RIEN (renvoie a3 tronqué en char, aucun effet de bord) — ce ne
-//                         sont PAS 20 "types de ressource" distincts mais 12 chargements
-//                         réels + 8 itérations no-op qui ne servent qu'à consommer du temps
-//                         (fidélité du timing 200 frames, pas du chargement). Câblage
-//                         correct côté host.LoadZoneResource : caster idx en
-//                         world::ResourceKind et appeler WorldMap::LoadZoneResource(zoneId,
-//                         kind) pour idx∈[1,12] ; idx==0/[13,19] peuvent être ignorés sans
-//                         rien casser (le binaire ne fait rien non plus pour ces valeurs).
-//   2 SendEnterRequest  : attend 30 frames (0x1E) puis envoie la requête d'entrée en
-//                         monde (Net_SendPacket_Op12, opcode 12, 222 o). Succès -> état 3
-//                         (WaitServerAck). Échec d'émission -> notice d'erreur (StrTable005
-//                         id 67) -> état 4 (Failed).
-//   3 WaitServerAck     : attente PASSIVE avec timeout 5000 frames (0x1388, ~166 s). Le
-//                         client N'INITIE PAS lui-même la bascule vers InGame : c'est le
-//                         paquet serveur Pkt_EnterWorld (opcode 12 entrant, EA 0x464160,
-//                         RÉSEAU — hors périmètre de ce module) qui, en le recevant, écrit
-//                         directement g_SceneMgr.sceneId=InGame et subState=0. Si l'ACK
-//                         n'arrive jamais avant le timeout : notice (StrTable005 id 68) ->
-//                         état 4 (Failed). update() ne peut donc QUE détecter le timeout ;
-//                         la sortie normale de cet état est observée par l'appelant via le
-//                         changement de scène (SceneManager), pas via la valeur de retour.
-//   4 Failed            : terminal, aucune progression (comportement fidèle : le "default"
-//                         du switch d'origine ne fait rien et retourne).
+//   0 WaitBeforeUnload  : waits 30 frames (0x1E) then purges residual CharSelect
+//                         UI/audio, resets the zone preload index, captures
+//                         zoneId-1 as the "previous zone" -> state 1.
+//   1 LoadZoneResources : every 10 frames (0xA), calls
+//                         World_LoadZoneResource(dword_14A883C, dword_1675A9C, idx) with idx
+//                         = 0..19 (raw counter, NOT a lookup table); after the 20th
+//                         increment (20 calls) -> state 2. => 200 frames (~6.67 s at 30 FPS).
+//                         AUDIT 2026-07-14 (direct decompilation of World_LoadZoneResource
+//                         0x4DCB60, see World/WorldMap.h::ResourceKind): `idx` IS
+//                         directly the a3 parameter of the dispatch, with NO indirection. The
+//                         0x4DCB60 switch only covers values 1..12 (= the 12 existing
+//                         ResourceKind values, so WorldMap.h::ResourceKind is ALREADY
+//                         COMPLETE, not a subset). idx==0 and idx==13..19 (8 of the 20
+//                         values) fall into the original switch's `default`, which does
+//                         NOTHING (returns a3 truncated to char, no side effect) — these are
+//                         NOT 20 distinct "resource types" but 12 real loads + 8 no-op
+//                         iterations that only serve to burn time (fidelity of the 200-frame
+//                         timing, not of the loading). Correct wiring on the
+//                         host.LoadZoneResource side: cast idx to world::ResourceKind and call
+//                         WorldMap::LoadZoneResource(zoneId, kind) for idx∈[1,12]; idx==0/[13,19]
+//                         can be ignored without breaking anything (the binary does nothing for
+//                         those values either).
+//   2 SendEnterRequest  : waits 30 frames (0x1E) then sends the world-entry
+//                         request (Net_SendPacket_Op12, opcode 12, 222 bytes). Success -> state 3
+//                         (WaitServerAck). Send failure -> error notice (StrTable005
+//                         id 67) -> state 4 (Failed).
+//   3 WaitServerAck     : PASSIVE wait with a 5000-frame timeout (0x1388, ~166 s). The
+//                         client does NOT itself trigger the switch to InGame: it's the
+//                         server packet Pkt_EnterWorld (incoming opcode 12, EA 0x464160,
+//                         NETWORK — out of scope for this module) that, upon receiving it,
+//                         directly writes g_SceneMgr.sceneId=InGame and subState=0. If the ACK
+//                         never arrives before the timeout: notice (StrTable005 id 68) ->
+//                         state 4 (Failed). update() can therefore ONLY detect the timeout;
+//                         the normal exit of this state is observed by the caller via the
+//                         scene change (SceneManager), not via the return value.
+//   4 Failed            : terminal, no progress (faithful behavior: the original switch's
+//                         "default" does nothing and returns).
 //
-// Écart connu / TODO : le code d'origine fait aussi, au passage état2, une manipulation de
-// g_SelfMorphNpcId (sauvegarde dans dword_1675A94 puis écrasement par la zone cible,
-// dword_1675A9C) et, à la réception de Pkt_EnterWorld, remet à zéro plusieurs compteurs
-// (dword_16760D8/DC/E0), recalcule un palier de croissance (dword_1675D90 = f(g_GrowthIndex))
-// et peut ré-émettre des commandes GM en attente (téléport/vault, dword_1675A8C == 5/8/9).
-// Cette partie appartient au système de morph/téléport (SkillCombat/MapWarp) et à
-// Pkt_EnterWorld lui-même (paquet réseau) : DÉLIBÉRÉMENT PAS reproduite ici (hors
-// périmètre "flux de scène pur"), simplement documentée pour le câblage ultérieur.
+// Known gap / TODO: the original code also, on the state-2 transition, manipulates
+// g_SelfMorphNpcId (saving it to dword_1675A94 then overwriting it with the target
+// zone, dword_1675A9C) and, upon receiving Pkt_EnterWorld, resets several counters
+// (dword_16760D8/DC/E0), recomputes a growth tier (dword_1675D90 = f(g_GrowthIndex))
+// and may re-emit pending GM commands (teleport/vault, dword_1675A8C == 5/8/9).
+// This part belongs to the morph/teleport system (SkillCombat/MapWarp) and to
+// Pkt_EnterWorld itself (network packet): DELIBERATELY NOT reproduced here (out of
+// scope for "pure scene flow"), simply documented for later wiring.
 //
-// GameGuard/anticheat (Ac_*) : Scene_EnterWorldUpdate n'en contient PAS directement (le
-// polling GameGuard est fait par les AUTRES scènes en ligne, cf. Scene_InGameUpdate côté
-// InGameTickFlow) — rien à ignorer ici, confirmé par lecture du désassemblage.
+// GameGuard/anticheat (Ac_*): Scene_EnterWorldUpdate does NOT contain any directly
+// (GameGuard polling is done by the OTHER online scenes, see Scene_InGameUpdate on the
+// InGameTickFlow side) — nothing to skip here, confirmed by reading the disassembly.
 //
-// Rendu 3D : aucun rendu dans cette fonction d'origine (elle est pure logique/état) — pas
-// de TODO de rendu à noter pour ce module.
+// 3D rendering: no rendering in this original function (it is pure logic/state) — no
+// rendering TODO to note for this module.
 //
-// Autonomie : ce module n'inclut que la STL. Les actions à effet de bord (I/O UI, réseau,
-// chargement d'assets) sont exposées via EnterWorldFlowHost (callbacks), à brancher par
-// l'appelant — AUCUN couplage à Scene/SceneManager.h ni à un singleton global.
+// Standalone: this module only includes the STL. Side-effecting actions (UI I/O, network,
+// asset loading) are exposed via EnterWorldFlowHost (callbacks), to be wired by the
+// caller — NO coupling to Scene/SceneManager.h or to a global singleton.
 #pragma once
 #include <functional>
 
@@ -73,56 +73,56 @@ enum class EnterWorldState : int {
     LoadZoneResources = 1, // case 1 @0x52C0CF
     SendEnterRequest  = 2, // case 2 @0x52C149
     WaitServerAck     = 3, // case 3 @0x52C1F3
-    Failed            = 4, // default @0x52C232 (état terminal, plus de code de scène dédié)
+    Failed            = 4, // default @0x52C232 (terminal state, no dedicated scene code anymore)
 };
 
-// État persistant de la machine (équivalent de g_SceneMgr.subState/frameCounter pendant
-// que sceneId == EnterWorld, + les 2 scratch propres à cette scène : index de ressource de
-// zone (this+15726 d'origine) et zone précédente capturée (this+15727)).
+// Persistent state machine (equivalent to g_SceneMgr.subState/frameCounter while
+// sceneId == EnterWorld, + the 2 scratch fields specific to this scene: zone resource
+// index (this+15726 originally) and captured previous zone (this+15727)).
 struct EnterWorldFlowState {
     EnterWorldState state = EnterWorldState::WaitBeforeUnload;
-    int frameCounter       = 0;  // g_SceneMgr.frameCounter (dword_1676188 d'origine)
-    int zoneResourceIndex  = 0;  // index 0..19 de préchargement (this+15726)
-    int previousZoneId     = -1; // zoneId - 1 capturé à l'entrée dans LoadZoneResources (this+15727)
+    int frameCounter       = 0;  // g_SceneMgr.frameCounter (dword_1676188 originally)
+    int zoneResourceIndex  = 0;  // 0..19 preload index (this+15726)
+    int previousZoneId     = -1; // zoneId - 1 captured on entering LoadZoneResources (this+15727)
 };
 
-// Points d'intégration (effets de bord hors périmètre de ce module — réseau/UI/assets).
+// Integration points (side effects out of scope for this module — network/UI/assets).
 struct EnterWorldFlowHost {
     // UI_ResetAllDialogs(&unk_1821D4C) 0x5AC3F0 + sub_4C1110(0) 0x4C1110 (reset tooltip) +
-    // UI_FocusEditBox(&g_UIEditBoxMgr,0) 0x50F4A0 + Snd_ReleaseBuffers 0x6A80D0 : purge
-    // regroupée de l'UI et de l'audio résiduels de CharSelect. Un seul hook.
+    // UI_FocusEditBox(&g_UIEditBoxMgr,0) 0x50F4A0 + Snd_ReleaseBuffers 0x6A80D0: grouped
+    // purge of residual CharSelect UI and audio. A single hook.
     std::function<void()> ResetUiAndAudio;
 
-    // World_LoadZoneResource(dword_14A883C, zoneId, resourceIndex) 0x4DCB60 : `resourceIndex`
-    // (0..19) EST DIRECTEMENT le paramètre a3 du dispatch d'origine (pas d'indirection) —
-    // voir l'audit en tête de fichier. Seules les valeurs 1..12 correspondent à un
-    // world::ResourceKind réel (World/WorldMap.h) et déclenchent un chargement ; 0 et
-    // 13..19 sont des no-op fidèles (le binaire d'origine ne fait rien non plus pour ces
-    // valeurs — switch `default`). L'appelant (SceneManager) doit caster resourceIndex en
-    // world::ResourceKind et appeler WorldMap::LoadZoneResource(zoneId, kind) directement ;
-    // ce module reste volontairement découplé de World/WorldMap.h (leaf STL-only, cf. note
-    // "Autonomie" en tête de fichier). Bloquant côté original.
+    // World_LoadZoneResource(dword_14A883C, zoneId, resourceIndex) 0x4DCB60: `resourceIndex`
+    // (0..19) IS DIRECTLY the a3 parameter of the original dispatch (no indirection) —
+    // see the audit at the top of the file. Only values 1..12 map to a real
+    // world::ResourceKind (World/WorldMap.h) and trigger a load; 0 and
+    // 13..19 are faithful no-ops (the original binary does nothing for those
+    // values either — `default` switch case). The caller (SceneManager) must cast
+    // resourceIndex to world::ResourceKind and call WorldMap::LoadZoneResource(zoneId, kind)
+    // directly; this module remains deliberately decoupled from World/WorldMap.h (leaf,
+    // STL-only, see "Standalone" note at the top of the file). Blocking on the original side.
     std::function<void(int zoneId, int resourceIndex)> LoadZoneResource;
 
-    // Net_SendPacket_Op12(client, g_AccountName, ..., ...) 0x4B43C0 : émet la requête
-    // d'entrée en monde (222 o : nom 128o + 13o + 72o). Retour = succès d'émission, TESTÉ
-    // par le code d'origine (if(result)) pour choisir WaitServerAck vs Failed.
+    // Net_SendPacket_Op12(client, g_AccountName, ..., ...) 0x4B43C0: sends the
+    // world-entry request (222 bytes: 128-byte name + 13 bytes + 72 bytes). Return = send
+    // success, TESTED by the original code (if(result)) to choose WaitServerAck vs Failed.
     std::function<bool()> SendEnterWorldRequest;
 
-    // UI_NoticeDlg_Open(2, StrTable005_Get(g_LangId, strId), "") 0x5C0280 : notice modale
-    // d'erreur. strId = 67 (échec d'émission Op12) ou 68 (timeout ACK serveur).
+    // UI_NoticeDlg_Open(2, StrTable005_Get(g_LangId, strId), "") 0x5C0280: modal
+    // error notice. strId = 67 (Op12 send failure) or 68 (server ACK timeout).
     std::function<void(int strId)> ShowErrorNotice;
 };
 
-// Scene_EnterWorldUpdate 0x52BFF0. Appeler 1x/frame (30 FPS) tant que la scène active est
-// EnterWorld. `zoneId` = identifiant de la zone cible à charger (dword_1675A9C d'origine,
-// déjà résolu en amont par CharSelect/Pkt_GameServerConnectResult — fourni par l'appelant,
-// PAS lu depuis un global ici).
+// Scene_EnterWorldUpdate 0x52BFF0. Call once per frame (30 FPS) while the active scene is
+// EnterWorld. `zoneId` = target zone identifier to load (dword_1675A9C originally,
+// already resolved upstream by CharSelect/Pkt_GameServerConnectResult — supplied by the
+// caller, NOT read from a global here).
 //
-// Retour : false une fois l'état Failed atteint (plus aucune progression possible sans
-// action UI hors périmètre) ; true sinon — y COMPRIS pendant WaitServerAck, où l'appelant
-// doit détecter la sortie réelle (transition vers InGame) via un canal externe (dispatch
-// réseau -> changement de scène), pas via cette valeur de retour.
+// Return: false once the Failed state is reached (no further progress possible without
+// out-of-scope UI action); true otherwise — INCLUDING during WaitServerAck, where the
+// caller must detect the real exit (transition to InGame) via an external channel
+// (network dispatch -> scene change), not via this return value.
 bool EnterWorldFlow_Update(EnterWorldFlowState& state, const EnterWorldFlowHost& host, int zoneId);
 
 } // namespace ts2::game

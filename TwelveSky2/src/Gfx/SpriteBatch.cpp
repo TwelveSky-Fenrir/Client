@@ -1,5 +1,5 @@
-// Gfx/SpriteBatch.cpp — implémentation du pass de rendu 2D GXD (ID3DXSprite).
-// Traduction fidèle des ancres listées dans SpriteBatch.h.
+// Gfx/SpriteBatch.cpp — implementation of the GXD 2D render pass (ID3DXSprite).
+// Faithful translation of the anchors listed in SpriteBatch.h.
 #include "Gfx/SpriteBatch.h"
 #include "Core/Log.h"
 
@@ -7,7 +7,7 @@
 
 namespace ts2::gfx {
 
-// --- Globales de module (mirroir des globales du binaire) -------------------
+// --- Module globals (mirror of the binary's globals) -------------------
 float g_GameTimeSec = 0.0f;                       // flt_815180 / g_GameTimeSec
 
 static SpriteBatch*        s_activeSprite = nullptr; // dword_800078 / g_GxdRenderer_pSprite
@@ -23,22 +23,22 @@ void SetSpriteTextureLoader(SpriteTextureLoader loader) { s_texLoader = loader; 
 void GXD_SetupLitSpritePass(IDirect3DDevice9* dev) {
     if (!dev) return;
 
-    // États de fusion alpha (offset device vtbl 228 = SetRenderState).
+    // Alpha-blend states (device vtbl offset 228 = SetRenderState).
     dev->SetRenderState(D3DRS_ZWRITEENABLE,     FALSE);                // (14, 0)
     dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);                 // (27, 1)
     dev->SetRenderState(D3DRS_SRCBLEND,         D3DBLEND_SRCALPHA);    // (19, 5)
     dev->SetRenderState(D3DRS_DESTBLEND,        D3DBLEND_INVSRCALPHA); // (20, 6)
 
-    // Étage de texture 0 : ALPHAOP = MODULATE (offset 268 = SetTextureStageState).
+    // Texture stage 0: ALPHAOP = MODULATE (offset 268 = SetTextureStageState).
     dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);     // (0, 4, 4)
 
-    // GXD_SetDirectionalLight(rndr, 1, 0,0,0,0) 0x403980 :
-    //   LightEnable(0, TRUE)  (vtbl+212) puis SetLight(0, &D3DLIGHT9)  (vtbl+204),
-    //   avec une lumière directionnelle dont la diffuse dérive de la position
-    //   caméra du renderer (rndr+1124..). Non reproductible ici sans l'objet
-    //   renderer -> à brancher via le Renderer.
-    //   Idem le drapeau *(rndr+526884) = 0 (champ interne du renderer).
-    // TODO(renderer) : GXD_SetDirectionalLight + flag rndr+0x80A24.
+    // GXD_SetDirectionalLight(rndr, 1, 0,0,0,0) 0x403980:
+    //   LightEnable(0, TRUE)  (vtbl+212) then SetLight(0, &D3DLIGHT9)  (vtbl+204),
+    //   with a directional light whose diffuse derives from the renderer's
+    //   camera position (rndr+1124..). Not reproducible here without the
+    //   renderer object -> to be wired via Renderer.
+    //   Same for flag *(rndr+526884) = 0 (internal renderer field).
+    // TODO(renderer): GXD_SetDirectionalLight + flag rndr+0x80A24.
 
     dev->SetVertexShader(nullptr); // (vtbl+368) SetVertexShader(NULL)
     dev->SetPixelShader(nullptr);  // (vtbl+428) SetPixelShader(NULL)
@@ -46,7 +46,7 @@ void GXD_SetupLitSpritePass(IDirect3DDevice9* dev) {
     // FVF 0x142 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1 (offset 356 = SetFVF).
     dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
-    // World = identité (les 16 floats rndr+988..rndr+1048), puis SetTransform.
+    // World = identity (the 16 floats rndr+988..rndr+1048), then SetTransform.
     D3DXMATRIX world;
     D3DXMatrixIdentity(&world);
     dev->SetTransform(D3DTS_WORLD, &world); // (vtbl+176 : D3DTS_WORLD = 256)
@@ -58,7 +58,7 @@ void GXD_SetupLitSpritePass(IDirect3DDevice9* dev) {
 bool SpriteBatch::Create(IDirect3DDevice9* dev) {
     Destroy();
     if (!dev) { TS2_ERR("SpriteBatch::Create : device nul"); return false; }
-    // GXD_DeviceCreate 0x401610 : D3DXCreateSprite(device, &pSprite) ; erreur -> code 8.
+    // GXD_DeviceCreate 0x401610 : D3DXCreateSprite(device, &pSprite) ; error -> code 8.
     // ex-VeryOldClient: GXD::mGraphicSprite (Object A @+608 / dword_800078 ; Object B pSprite @+528).
     HRESULT hr = D3DXCreateSprite(dev, &sprite_);
     if (FAILED(hr)) {
@@ -84,7 +84,7 @@ HRESULT SpriteBatch::End()              { return sprite_ ? sprite_->End()       
 HRESULT SpriteBatch::DrawSprite(IDirect3DTexture9* tex, const RECT* srcRect,
                                 int x, int y, D3DCOLOR color) {
     if (!sprite_) return E_FAIL;
-    // UI_DrawSprite : pos = { (float)x, (float)y, 0 } ; centre = NULL.
+    // UI_DrawSprite : pos = { (float)x, (float)y, 0 } ; center = NULL.
     D3DXVECTOR3 pos(static_cast<float>(x), static_cast<float>(y), 0.0f);
     return sprite_->Draw(tex, srcRect, nullptr, &pos, color); // (vtbl+36)
 }
@@ -93,28 +93,28 @@ HRESULT SpriteBatch::DrawSpriteScaled(IDirect3DTexture9* tex, const RECT* srcRec
                                       int x, int y, float scaleX, float scaleY,
                                       D3DCOLOR color, bool compensatePos) {
     if (!sprite_) return E_FAIL;
-    // Sauvegarde de la transform courante du sprite (vtbl+16 = GetTransform).
+    // Saves the sprite's current transform (vtbl+16 = GetTransform).
     D3DXMATRIX saved, scaling;
     sprite_->GetTransform(&saved);
     // GXD_MatrixScaling 0x6BB66C = D3DXMatrixScaling(&m, sx, sy, 1.0f).
     D3DXMatrixScaling(&scaling, scaleX, scaleY, 1.0f);
     sprite_->SetTransform(&scaling); // (vtbl+20)
 
-    // UI_DrawSpriteScaled : pos brute ; UI_DrawSpriteScaledAlpha : pos pré-divisée.
+    // UI_DrawSpriteScaled : raw pos ; UI_DrawSpriteScaledAlpha : pre-divided pos.
     const float px = compensatePos ? static_cast<float>(x) / scaleX : static_cast<float>(x);
     const float py = compensatePos ? static_cast<float>(y) / scaleY : static_cast<float>(y);
     D3DXVECTOR3 pos(px, py, 0.0f);
 
     HRESULT hr = sprite_->Draw(tex, srcRect, nullptr, &pos, color); // (vtbl+36)
-    sprite_->SetTransform(&saved);   // restauration (vtbl+20)
+    sprite_->SetTransform(&saved);   // restore (vtbl+20)
     return hr;
 }
 
 // ===========================================================================
-// Helpers de blit fidèles
+// Faithful blit helpers
 // ===========================================================================
 namespace {
-// Construit le rectangle source comme UI_DrawSprite / AutoPlay_DrawSpriteClip.
+// Builds the source rectangle like UI_DrawSprite / AutoPlay_DrawSpriteClip.
 inline RECT MakeSrcRect(const SpriteTexture* t, bool useSrcRect,
                         int left, int top, int w, int h) {
     RECT rc;
@@ -123,7 +123,7 @@ inline RECT MakeSrcRect(const SpriteTexture* t, bool useSrcRect,
         rc.top    = top;
         rc.right  = left + w;
         rc.bottom = top + h;
-    } else {                          // sprite entier {0, 0, W, H}
+    } else {                          // full sprite {0, 0, W, H}
         rc.left   = 0;
         rc.top    = 0;
         rc.right  = static_cast<LONG>(t->width);
@@ -135,24 +135,24 @@ inline RECT MakeSrcRect(const SpriteTexture* t, bool useSrcRect,
 
 int UI_DrawSprite(SpriteTexture* tex, int x, int y, bool useSrcRect,
                   int srcLeft, int srcTop, int srcW, int srcH) {
-    // if (!this->valid) return this->valid;  (renvoie 0, rien dessiné)
+    // if (!this->valid) return this->valid;  (returns 0, nothing drawn)
     if (!tex || !tex->valid) return 0;
     SpriteBatch* sb = ActiveSprite();
     if (!sb || !sb->Ready()) return 0;
     RECT rc = MakeSrcRect(tex, useSrcRect, srcLeft, srcTop, srcW, srcH);
-    // Couleur codée en dur à 0xFFFFFFFF dans le binaire.
+    // Color hardcoded to 0xFFFFFFFF in the binary.
     return static_cast<int>(sb->DrawSprite(tex->d3dTex, &rc, x, y, kSpriteWhite));
 }
 
 int AutoPlay_DrawSpriteClip(SpriteTexture* tex, int x, int y, bool useSrcRect,
                             int srcLeft, int srcTop, int srcW, int srcH) {
-    // 0x457C10 : même logique que UI_DrawSprite mais via le sprite du renderer.
+    // 0x457C10 : same logic as UI_DrawSprite but via the renderer's sprite.
     return UI_DrawSprite(tex, x, y, useSrcRect, srcLeft, srcTop, srcW, srcH);
 }
 
 int UI_DrawSpriteColored(SpriteTexture* tex, int x, int y,
                          float scaleX, float scaleY) {
-    // 0x6A3130 : blit plein-cadre mis à l'échelle, couleur blanche, pos NON compensée.
+    // 0x6A3130 : full-frame scaled blit, white color, pos NOT compensated.
     if (!tex || !tex->valid) return 0;
     SpriteBatch* sb = ActiveSprite();
     if (!sb || !sb->Ready()) return 0;
@@ -163,7 +163,7 @@ int UI_DrawSpriteColored(SpriteTexture* tex, int x, int y,
 
 int UI_DrawSpriteScaled(SpriteTexture* tex, int x, int y,
                         float scaleX, float scaleY) {
-    // 0x457CA0 : blit plein-cadre à l'échelle, couleur blanche, pos NON compensée.
+    // 0x457CA0 : full-frame scaled blit, white color, pos NOT compensated.
     if (!tex || !tex->valid) return 0;
     SpriteBatch* sb = ActiveSprite();
     if (!sb || !sb->Ready()) return 0;
@@ -174,12 +174,12 @@ int UI_DrawSpriteScaled(SpriteTexture* tex, int x, int y,
 
 void UI_DrawSpriteScaledAlpha(SpriteTexture* tex, int x, int y,
                               float scaleX, float scaleY, uint8_t alpha) {
-    // 0x457D70 : ne fait rien si texture invalide ou échelle nulle.
+    // 0x457D70 : does nothing if texture invalid or scale is zero.
     if (!tex || !tex->valid || scaleX == 0.0f || scaleY == 0.0f) return;
     SpriteBatch* sb = ActiveSprite();
     if (!sb || !sb->Ready()) return;
     RECT rc = MakeSrcRect(tex, false, 0, 0, 0, 0);
-    // Couleur = 0x00FFFFFF | (alpha<<24) ; position compensée (pos = {x/sx, y/sy}).
+    // Color = 0x00FFFFFF | (alpha<<24) ; compensated position (pos = {x/sx, y/sy}).
     sb->DrawSpriteScaled(tex->d3dTex, &rc, x, y, scaleX, scaleY,
                          SpriteAlphaWhite(alpha), /*compensatePos=*/true);
 }
@@ -191,7 +191,7 @@ bool Sprite2D::EnsureLoaded() {
     // Sprite2D_EnsureLoaded 0x4D6A90
     if (loaded) return true;                    // if (*this) return 1;
     // Tex_LoadCompressedDDS(&tex /*+0x68*/, filename /*+4*/) 0x6A2E80
-    if (!s_texLoader || !s_texLoader(&tex, filename)) return false; // -> 0 si échec
+    if (!s_texLoader || !s_texLoader(&tex, filename)) return false; // -> 0 on failure
     loaded = 1;
     return true;
 }

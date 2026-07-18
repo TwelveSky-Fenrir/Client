@@ -1,31 +1,31 @@
-// UI/GameWindows.h — intégration : possède et enregistre les fenêtres de jeu
-// (Entrepôt/Guilde/Quête/Compétences/Options/Social/AutoPlay/Marchand/Groupe/
-// Échange/Personnage/Inventaire/Dialogue PNJ) dans le UIManager, et route les
-// raccourcis clavier.
+// UI/GameWindows.h — integration: owns and registers the game windows
+// (Warehouse/Guild/Quest/Skills/Options/Social/AutoPlay/Vendor/Party/
+// Trade/Character/Inventory/NPC Dialog) with the UIManager, and routes
+// keyboard shortcuts.
 //
-// Écrit lors de l'intégration (pas par un agent de génération) : colle les 14
-// classes ts2::ui::*Window (déjà écrites par le workflow ts2-ui-giga-wave/2) sur
-// le framework UIManager (déjà écrit, Docs/TS2_CLIENT_SHELL.md §2.2) et sur les
-// systèmes Game/* qui les alimentent.
+// Written during integration (not by a generation agent): wires the 14
+// ts2::ui::*Window classes (already written by the ts2-ui-giga-wave/2 workflow) onto
+// the UIManager framework (already written, Docs/TS2_CLIENT_SHELL.md §2.2) and onto
+// the Game/* systems that feed them.
 //
-// InventoryWindow (sac 8x8 + équipement, cf. UI/InventoryWindow.h) N'HÉRITE PAS
-// de Dialog : c'est une classe autonome (Init(renderer,font) propre, Render()
-// sans arguments, son propre SpriteBatch) écrite indépendamment du framework
-// UIManager. `InventoryDialogAdapter` ci-dessous la fait entrer dans le registre
-// UIManager (routage souris « premier consommateur gagne » + rendu en ordre
-// inverse, comme les 13 autres) SANS modifier son interface publique.
+// InventoryWindow (8x8 bag + equipment, cf. UI/InventoryWindow.h) does NOT inherit
+// from Dialog: it's a standalone class (its own Init(renderer,font), argument-less
+// Render(), its own SpriteBatch) written independently of the UIManager
+// framework. `InventoryDialogAdapter` below plugs it into the UIManager registry
+// (mouse routing "first consumer wins" + reverse-order rendering, like the
+// 13 others) WITHOUT modifying its public interface.
 //
-// NpcDialogWindow (cf. UI/NpcDialogWindow.h) était écrite mais N'ÉTAIT ENREGISTRÉE
-// NULLE PART (aucune instance, aucun UIManager::Register, aucun appel Open() dans
-// tout le dépôt) avant l'audit « chaîne device PanelSkin » (2026-07-14) : sa chaîne
-// de rendu était donc cassée au tout premier maillon (Render() jamais invoquée,
-// même avec un device valide). Corrigé ici en la possédant/enregistrant EXACTEMENT
-// comme les 10 autres fenêtres PanelSkin, pour qu'elle reçoive ctx.renderer valide
-// dès qu'un futur appelant invoquera npcDialog_.Open(...). Le site d'appel réel
-// (clic sur un PNJ -> Npc_Interact 0x53A660 -> ouverture de CETTE fenêtre, cf.
-// bandeau UI/NpcDialogWindow.cpp::HandleAcceptClick) vit côté routage souris 3D,
-// hors périmètre de cette mission (Scene/SceneManager.cpp, volontairement non
-// modifié) : reste un TODO d'intégration explicite, pas une invention de logique.
+// NpcDialogWindow (cf. UI/NpcDialogWindow.h) was written but was NOT REGISTERED
+// ANYWHERE (no instance, no UIManager::Register, no Open() call anywhere
+// in the repo) before the "PanelSkin device chain" audit (2026-07-14): its render
+// chain was therefore broken at the very first link (Render() never invoked,
+// even with a valid device). Fixed here by owning/registering it EXACTLY
+// like the other 10 PanelSkin windows, so it receives a valid ctx.renderer
+// as soon as a future caller invokes npcDialog_.Open(...). The real call site
+// (click on an NPC -> Npc_Interact 0x53A660 -> opens THIS window, cf.
+// banner of UI/NpcDialogWindow.cpp::HandleAcceptClick) lives on the 3D mouse
+// routing side, out of scope for this mission (Scene/SceneManager.cpp, deliberately
+// not modified): remains an explicit integration TODO, not invented logic.
 #pragma once
 #include "UI/UIManager.h"
 #include "UI/WarehouseWindow.h"
@@ -46,7 +46,7 @@
 
 #include "Game/AutoPlaySystem.h"
 #include "Game/SkillSystem.h"
-#include "Game/QuestSystem.h"   // game::g_QuestProgress (synchronisé chaque frame)
+#include "Game/QuestSystem.h"   // game::g_QuestProgress (synced every frame)
 
 #include "Gfx/Renderer.h"
 #include "Gfx/SpriteBatch.h"
@@ -55,28 +55,28 @@
 
 namespace ts2::ui {
 
-// Raccourcis clavier (VK Win32) des fenêtres pilotées manuellement. Les fenêtres
-// « toujours visibles » (Groupe, Suivi de quête) s'ouvrent une fois à Init() et se
-// masquent elles-mêmes (logique interne à leur Render()) — pas de touche dédiée.
+// Keyboard shortcuts (Win32 VK) of the manually-driven windows. The "always
+// visible" windows (Party, Quest Tracker) open once at Init() and hide
+// themselves (logic internal to their Render()) — no dedicated key.
 namespace hotkeys {
-inline constexpr int kInventory      = 'I'; // « Inventaire » (sac 8x8 + équipement) — libre, vérifié contre
-                                             // Scene/SceneManager.cpp (C/K/G/O/N/H/V/T/Y/E déjà pris)
+inline constexpr int kInventory      = 'I'; // "Inventory" (8x8 bag + equipment) — free, checked against
+                                             // Scene/SceneManager.cpp (C/K/G/O/N/H/V/T/Y/E already taken)
 inline constexpr int kCharacterStats = 'C';
 inline constexpr int kSkillTree      = 'K';
 inline constexpr int kGuild          = 'G';
 inline constexpr int kOptions        = 'O';
-inline constexpr int kSocial         = 'N'; // « réseau social » (F est pris par le déplacement DIK)
-inline constexpr int kWarehouse      = 'H'; // « Hangar » (ouverture normale = paquet serveur 0x22)
-inline constexpr int kVendor         = 'V'; // (ouverture normale = paquet serveur 0x87)
-inline constexpr int kPlayerTrade    = 'T'; // (ouverture normale = paquet serveur 0x31)
+inline constexpr int kSocial         = 'N'; // "social network" (F is taken by DIK movement)
+inline constexpr int kWarehouse      = 'H'; // "Hangar"/warehouse (normal opening = server packet 0x22)
+inline constexpr int kVendor         = 'V'; // (normal opening = server packet 0x87)
+inline constexpr int kPlayerTrade    = 'T'; // (normal opening = server packet 0x31)
 inline constexpr int kAutoPlay       = 'Y';
 inline constexpr int kEnchant        = 'E';
 } // namespace hotkeys
 
-// InventoryDialogAdapter — pont Dialog -> InventoryWindow (cf. commentaire de tête
-// de fichier). Pas d'OnKey : InventoryWindow n'a pas de raccourci interne (type
-// Échap) ; l'ouverture/fermeture passe par GameWindows::HandleHotkey (kInventory),
-// comme les 12 autres fenêtres.
+// InventoryDialogAdapter — Dialog -> InventoryWindow bridge (cf. file header
+// comment). No OnKey: InventoryWindow has no internal shortcut (Escape-type);
+// opening/closing goes through GameWindows::HandleHotkey (kInventory),
+// like the other 12 windows.
 class InventoryDialogAdapter : public Dialog {
 public:
     explicit InventoryDialogAdapter(InventoryWindow& w) : win_(w) {}
@@ -88,11 +88,11 @@ public:
     bool OnClick(int x, int y)     override { return win_.OnMouseUp(x, y); }   // cGameHud_OnMouseUp   0x62DFA0
 
     void Render(const UiContext& ctx, int cursorX, int cursorY) override {
-        // InventoryWindow::Render() dessine panneaux ET texte en un seul appel
-        // (SpriteBatch + Font internes séparés du lot partagé UIManager) — on ne
-        // le déclenche que sur la sous-passe Panels pour éviter un double-rendu
-        // (UIManager::Render() appelle Dialog::Render deux fois par frame : une
-        // fois en phase Panels, une fois en phase Text).
+        // InventoryWindow::Render() draws panels AND text in a single call
+        // (own SpriteBatch + Font, separate from the shared UIManager batch) — only
+        // triggered on the Panels sub-pass to avoid double-rendering
+        // (UIManager::Render() calls Dialog::Render twice per frame: once in
+        // the Panels phase, once in the Text phase).
         if (ctx.phase != UiPhase::Panels) return;
         win_.SetCursorPos(cursorX, cursorY);
         win_.Render();
@@ -102,28 +102,29 @@ private:
     InventoryWindow& win_;
 };
 
-// GameWindows — possède les 14 fenêtres + leur police/sprite dédiés, les
-// enregistre dans UIManager (routage/rendu), et convertit les touches ci-dessus
-// en Open()/Close(). N'est utile qu'en scène InGame (créé/détruit avec le HUD).
+// GameWindows — owns the 14 windows + their dedicated font/sprite, registers
+// them with UIManager (routing/rendering), and converts the keys above
+// into Open()/Close() calls. Only relevant in the InGame scene (created/destroyed
+// with the HUD).
 class GameWindows {
 public:
     GameWindows();
 
-    // Instance courante (posée par Init, effacée par Shutdown ; nullptr hors scène InGame).
-    // Miroir de UIManager::Instance() — le binaire manipule des singletons globaux
-    // (g_MemberSelectWnd 0x184BE38, g_ClanWin dword_1822938, …), donc l'accès global est
-    // FIDÈLE, pas une commodité.
+    // Current instance (set by Init, cleared by Shutdown; nullptr outside the InGame scene).
+    // Mirrors UIManager::Instance() — the binary manipulates global singletons
+    // (g_MemberSelectWnd 0x184BE38, g_ClanWin dword_1822938, …), so the global accessor is
+    // FAITHFUL, not just a convenience.
     //
-    // RAISON D'ÊTRE : les handlers réseau du binaire appellent DIRECTEMENT les fenêtres
-    // (p. ex. Net_OnPartyMemberNameSet 0x4909A0 -> UI_MemberSelectWnd_Open @0x4909F8, sans
-    // aucune garde). Côté C++, Net/ n'incluait jusqu'ici AUCUN UI/ : ce point d'accès est
-    // la PREMIÈRE arête Net -> UI du dépôt, introduite pour câbler cette ancre précise
-    // (cf. Net/GameHandlers_PartyGuild.cpp, handler 0x3e). Sans elle, les émissions
-    // Op57/Op58 de PartyWindow restent du code mort (cf. UI/PartyWindow.h:71-83).
+    // RATIONALE: the binary's network handlers call the windows DIRECTLY
+    // (e.g. Net_OnPartyMemberNameSet 0x4909A0 -> UI_MemberSelectWnd_Open @0x4909F8, with
+    // no guard). On the C++ side, Net/ previously included NO UI/ at all: this access point
+    // is the FIRST Net -> UI edge in the repo, introduced to wire this precise anchor
+    // (cf. Net/GameHandlers_PartyGuild.cpp, handler 0x3e). Without it, PartyWindow's
+    // Op57/Op58 emissions stay dead code (cf. UI/PartyWindow.h:71-83).
     static GameWindows* Instance();
 
-    // Crée sprite/police dédiés + initialise UIManager (device du renderer) et
-    // enregistre toutes les fenêtres. `notifyHwnd` = fenêtre pour ScreenToClient.
+    // Creates dedicated sprite/font + initializes UIManager (renderer device) and
+    // registers all windows. `notifyHwnd` = window for ScreenToClient.
     bool Init(gfx::Renderer& renderer, void* notifyHwnd, int screenW, int screenH);
     void Shutdown();
 
@@ -131,25 +132,25 @@ public:
     void OnDeviceReset();
     void SetScreenSize(int w, int h);
 
-    // Rendu (délègue à UIManager::Instance().Render(), qui itère les dialogues
-    // enregistrés dans l'ordre inverse — popups au-dessus).
+    // Rendering (delegates to UIManager::Instance().Render(), which iterates
+    // registered dialogs in reverse order — popups on top).
     void Render();
 
-    // cSceneMgr_Update 0x517BF0 (case 6) appelle AutoPlay_Update(g_AutoPlayBot)
-    // JUSTE APRÈS Scene_InGameUpdate à CHAQUE frame InGame — confirmé par
-    // décompilation directe (Game/InGameTickFlow.h). À appeler depuis
-    // SceneManager::Update, case InGame, après le tick du monde.
+    // cSceneMgr_Update 0x517BF0 (case 6) calls AutoPlay_Update(g_AutoPlayBot)
+    // RIGHT AFTER Scene_InGameUpdate on EVERY InGame frame — confirmed by
+    // direct decompilation (Game/InGameTickFlow.h). To be called from
+    // SceneManager::Update, case InGame, after the world tick.
     void UpdateAutoPlay(float dt) { autoPlaySystem_.Update(dt); }
 
-    // Route un raccourci clavier vers Open()/Close() de la fenêtre concernée.
-    // Renvoie true si consommé (à appeler AVANT UIManager::RouteKey côté appelant,
-    // pour que les touches globales ne fuient pas vers un dialogue ouvert).
+    // Routes a keyboard shortcut to the concerned window's Open()/Close().
+    // Returns true if consumed (to be called BEFORE the caller's UIManager::RouteKey,
+    // so global keys don't leak into an open dialog).
     bool HandleHotkey(int vk);
 
-    // Accès direct (pour brancher les paquets serveur : ouverture contextuelle
-    // de l'Entrepôt/Marchand/Échange sur réception d'un paquet réseau — TODO
-    // d'intégration ultérieure, ces fenêtres restent accessibles au clavier
-    // entre-temps).
+    // Direct access (to wire server packets: contextual opening
+    // of Warehouse/Vendor/Trade on receipt of a network packet — TODO
+    // for later integration; these windows remain accessible via keyboard
+    // in the meantime).
     WarehouseWindow&       Warehouse()    { return warehouse_; }
     GuildWindow&            Guild()        { return guild_; }
     QuestTrackerWindow&     QuestTracker() { return questTracker_; }
@@ -164,55 +165,55 @@ public:
     CharacterStatsWindow&    CharStats()    { return charStats_; }
     EnchantWindow&           Enchant()      { return enchant_; }
     InventoryWindow&         Inventory()    { return inventory_; }
-    // Cf. bandeau de tête : enregistrée dans UIManager (chaîne device saine) mais
-    // aucun appelant ne déclenche encore Open(npc, questCtx, questProgress, interaction)
-    // dans ce portage — accessible ici pour le futur branchement clic-PNJ.
+    // Cf. header banner: registered in UIManager (sound device chain) but
+    // no caller yet triggers Open(npc, questCtx, questProgress, interaction)
+    // in this port — accessible here for the future NPC-click wiring.
     NpcDialogWindow&         NpcDialog()    { return npcDialog_; }
-    // Menu contextuel joueur (UI_ClanWin dword_1822938, gap SGP-1). Enregistré dans
-    // UIManager ci-dessous => rendu ET routé dès qu'un appelant invoque OpenForPlayer().
-    // Les 2 ouvreurs du binaire dépendent du picking d'entité (G-PICK-05, absent) :
-    // cf. bandeau « CÂBLAGE » de UI/ClanContextMenu.h.
+    // Player context menu (UI_ClanWin dword_1822938, gap SGP-1). Registered in
+    // UIManager below => rendered AND routed as soon as a caller invokes OpenForPlayer().
+    // The binary's 2 openers depend on entity picking (G-PICK-05, absent):
+    // cf. "WIRING" banner of UI/ClanContextMenu.h.
     ClanContextMenu&         ClanMenu()     { return clanMenu_; }
 
 private:
-    // --- Pont PromptState -> MsgBoxDialog (gaps SCN-01 + SCN-02) ---
-    // Appelé en tête de Render(). game::g_Client.prompt avait 12 ÉCRIVAINS et ZÉRO LECTEUR :
-    // la notice modale in-game n'était jamais affichée (SCN-01), et comme la boîte oui/non
-    // n'était jamais dessinée ni cliquable, Op45/49/55/61/67/74 n'étaient émis QUE par la
-    // branche de refus automatique des handlers (valeur 2) — le joueur pouvait refuser une
-    // invitation de groupe/guilde, jamais l'accepter (SCN-02). Ce pont est le LECTEUR manquant.
+    // --- PromptState -> MsgBoxDialog bridge (gaps SCN-01 + SCN-02) ---
+    // Called at the top of Render(). game::g_Client.prompt had 12 WRITERS and ZERO READERS:
+    // the in-game modal notice was never displayed (SCN-01), and since the yes/no
+    // box was never drawn or clickable, Op45/49/55/61/67/74 were only ever emitted by the
+    // handlers' automatic-refusal branch (value 2) — the player could refuse a
+    // party/guild invite but never accept one (SCN-02). This bridge is the missing READER.
     void SyncPrompt();
 
-    // Appelée par le callback de la boîte au moment où l'utilisateur tranche (OK/Annuler),
-    // pour désarmer l'état miroir DANS le même tour. Sans elle, un nouveau prompt du MÊME
-    // type arrivant avant le Render suivant serait avalé (le front montant ne se déclenche
-    // que sur `!promptShown_ || promptType_ != type`).
+    // Called by the box's callback the moment the user decides (OK/Cancel),
+    // to disarm the mirror state WITHIN the same turn. Without it, a new prompt of the SAME
+    // type arriving before the next Render would be swallowed (the rising edge only
+    // triggers on `!promptShown_ || promptType_ != type`).
     void OnPromptDismissed() { promptShown_ = false; promptType_ = 0; }
 
-    bool promptShown_ = false; // une boîte est-elle ouverte pour le prompt courant ?
-    int  promptType_  = 0;     // dword_1822450 (type du prompt reflété)
+    bool promptShown_ = false; // is a box open for the current prompt?
+    int  promptType_  = 0;     // dword_1822450 (type of the reflected prompt)
     gfx::SpriteBatch sprite_;
     gfx::Font        font_;
     bool             inited_ = false;
 
-    // Cache GPU d'icônes PARTAGÉ entre Inventaire/Entrepôt/Enchantement/Marchand (mission
-    // « audit mémoire des caches de texture », 2026-07-14, cf. Gfx/IconTextureCache.h) :
-    // évite qu'une même icône .IMG soit décodée/uploadée en VRAM une fois par fenêtre qui
-    // l'affiche. Injecté dans les 4 fenêtres via SetIconCache() à Init() ci-dessous.
+    // GPU icon cache SHARED between Inventory/Warehouse/Enchant/Vendor ("texture
+    // cache memory audit" mission, 2026-07-14, cf. Gfx/IconTextureCache.h):
+    // avoids decoding/uploading the same .IMG icon to VRAM once per window that
+    // displays it. Injected into the 4 windows via SetIconCache() at Init() below.
     gfx::IconTextureCache sharedIconCache_;
 
-    // --- Systèmes Game/* possédés ici (pas de home naturel ailleurs) ---
+    // --- Game/* systems owned here (no natural home elsewhere) ---
     game::AutoPlaySystem  autoPlaySystem_;
     game::SkillBar        skillBar_;
-    // Table de bornes de niveau par compétence : PAS de membre local ici — liée
-    // directement à game::GetSkillLevelTable() (Game/SkillCombat.h) au Bind(),
-    // qui est la transcription fidèle et complète (350 cas) de
-    // Motion_InitFrameTable 0x4F1380, désormais disponible (2026-07-14). Un
-    // membre local vide était utilisé auparavant faute d'avoir identifié cette
-    // source ; corrigé pour ne plus afficher de niveaux requis à zéro dans
-    // SkillTreeWindow.
+    // Per-skill level-threshold table: NO local member here — bound
+    // directly to game::GetSkillLevelTable() (Game/SkillCombat.h) at Bind(),
+    // which is the faithful and complete transcription (350 cases) of
+    // Motion_InitFrameTable 0x4F1380, now available (2026-07-14). An
+    // empty local member was used previously for lack of having identified this
+    // source; fixed so SkillTreeWindow no longer shows required levels
+    // as zero.
 
-    // --- Fenêtres ---
+    // --- Windows ---
     WarehouseWindow       warehouse_;
     GuildWindow            guild_;
     QuestTrackerWindow     questTracker_;

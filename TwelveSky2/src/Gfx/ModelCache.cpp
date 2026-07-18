@@ -1,6 +1,6 @@
-// Gfx/ModelCache.cpp — implémentation. Voir ModelCache.h pour le pattern de chemin et
-// les EAs d'origine (SObject_BuildPath 0x4D89C0, Model_LoadFile 0x40E700 via
-// asset::SObject::Load, upload GPU via MeshRenderer::Upload).
+// Gfx/ModelCache.cpp — implementation. See ModelCache.h for the path pattern and
+// original EAs (SObject_BuildPath 0x4D89C0, Model_LoadFile 0x40E700 via
+// asset::SObject::Load, GPU upload via MeshRenderer::Upload).
 #include "Gfx/ModelCache.h"
 #include "Core/Log.h"
 #include <algorithm>
@@ -11,7 +11,7 @@ namespace ts2::gfx {
 
 namespace {
 
-// Même convention de jointure que Game/GameDatabase.cpp::Join (séparateur '\').
+// Same join convention as Game/GameDatabase.cpp::Join (separator '\').
 std::string JoinPath(const std::string& a, const std::string& b) {
     if (a.empty()) return b;
     const char last = a.back();
@@ -43,7 +43,7 @@ std::string BuildSObjectPath(const std::string& gameDataDir, const std::string& 
 std::string BuildMonsterStem(int kindIndex, int variant, int sub) {
     if (kindIndex < 0 || kindIndex >= 333) return {};
     if (variant < 0 || variant >= 3) return {};
-    const int subBound = (variant == 1) ? 4 : 1; // cf. bandeau ModelCache.h : variant 0/2 -> 1 seul sub.
+    const int subBound = (variant == 1) ? 4 : 1; // cf. ModelCache.h banner: variant 0/2 -> only 1 sub.
     if (sub < 0 || sub >= subBound) return {};
 
     char buf[16];
@@ -64,11 +64,11 @@ std::string BuildPlayerBodyStem(int race, int gender, int slot, int variant) {
     if (race < 0 || race >= 3) return {};
     if (gender < 0 || gender >= 2) return {};
     if (slot != 0 && slot != 1) return {};
-    const int variantBound = (slot == 0) ? 7 : 3; // cf. ModelCache.h : SLOT0=7 var., SLOT1=3 var.
+    const int variantBound = (slot == 0) ? 7 : 3; // cf. ModelCache.h: SLOT0=7 variants, SLOT1=3 variants.
     if (variant < 0 || variant >= variantBound) return {};
 
-    const int kindIndex = race + 3 * gender; // 0-based, ∈[0,6) -- formule prouvée §3ter du doc.
-    const int slotToken = (slot == 0) ? 1 : 2; // constante de catalogue, PAS une donnee reseau.
+    const int kindIndex = race + 3 * gender; // 0-based, ∈[0,6) -- formula proven in doc §3ter.
+    const int slotToken = (slot == 0) ? 1 : 2; // catalog constant, NOT network data.
 
     char buf[16];
     std::snprintf(buf, sizeof(buf), "C%03d%03d%03d", kindIndex + 1, slotToken, variant + 1);
@@ -87,7 +87,7 @@ const SkinnedModel* ModelCache::Get(const std::string& stem) {
         return found->second.loadFailed ? nullptr : &found->second.model;
     }
 
-    // Premier accès pour ce stem : résout le chemin, charge, uploade GPU.
+    // First access for this stem: resolve path, load, GPU upload.
     Entry entry;
     entry.lastUseTick = ++tick_;
 
@@ -111,7 +111,7 @@ const SkinnedModel* ModelCache::Get(const std::string& stem) {
     }
 
     auto [ins, inserted] = entries_.emplace(stem, std::move(entry));
-    (void)inserted; // toujours vrai ici (stem absent, verifie par find() ci-dessus)
+    (void)inserted; // always true here (stem absent, verified by find() above)
 
     EvictIfNeeded();
     return ins->second.loadFailed ? nullptr : &ins->second.model;
@@ -122,7 +122,7 @@ const SkinnedModel* ModelCache::GetForItem(const game::ItemInfo& item, int slot)
 
     const char* raw = item.model[slot];
     const size_t len = ::strnlen(raw, sizeof(item.model[slot]));
-    if (len == 0) return nullptr; // slot de variante inutilise pour cet item
+    if (len == 0) return nullptr; // unused variant slot for this item
 
     return Get(std::string(raw, len));
 }
@@ -152,25 +152,25 @@ PlayerBodyModel ModelCache::GetForPlayerBody(int race, int gender, int costumeSl
 }
 
 const SkinnedModel* ModelCache::GetForMonster(uint32_t monsterDefId) {
-    // RÉSOLU (Docs/TS2_MONSTER_NPC_MODEL.md §2/§4) : kindIndex = MONSTER_INFO.kindIndexP1 - 1.
-    // Preuve : Char_Draw 0x5805C0 lit `*(DWORD*)(*(this+24) + 244) - 1` et le passe tel quel à
-    // Model_GetNpcMotionSlot 0x4E5960, qui borne `a2` à [0, 0x14C]=[0,332] -- exactement les 333
-    // modèles M*.SOBJECT catalogués par AssetMgr_InitAllSlots 0x4DEB50 (preuve arithmétique
-    // d'adresse flt_FBBF3C/flt_FF67CC, §4 du doc). `this+24` == MONSTER_INFO* est prouvé par
-    // Pkt_SpawnMonster 0x467B00 (ItemDefTbl_GetRecord stocké à l'offset dword 24 de l'entité).
+    // RESOLVED (Docs/TS2_MONSTER_NPC_MODEL.md §2/§4): kindIndex = MONSTER_INFO.kindIndexP1 - 1.
+    // Proof: Char_Draw 0x5805C0 reads `*(DWORD*)(*(this+24) + 244) - 1` and passes it as-is to
+    // Model_GetNpcMotionSlot 0x4E5960, which bounds `a2` to [0, 0x14C]=[0,332] -- exactly the 333
+    // M*.SOBJECT models catalogued by AssetMgr_InitAllSlots 0x4DEB50 (address arithmetic proof
+    // flt_FBBF3C/flt_FF67CC, doc §4). `this+24` == MONSTER_INFO* is proven by
+    // Pkt_SpawnMonster 0x467B00 (ItemDefTbl_GetRecord stored at dword offset 24 of the entity).
     //
-    // CORRECTION off-by-one : le getter MONSTER 0x4C6570 est STRICTEMENT 1-based
-    // (base+944*(id-1)). Pkt_SpawnMonster 0x467B00 passe l'id reseau BRUT (1-based) -> on resout
-    // via game::GetMonsterInfo (qui applique le -1), au lieu de l'ancien table.record(id) SANS -1.
+    // OFF-BY-ONE FIX: the MONSTER getter 0x4C6570 is STRICTLY 1-based
+    // (base+944*(id-1)). Pkt_SpawnMonster 0x467B00 passes the RAW network id (1-based) -> resolve
+    // via game::GetMonsterInfo (which applies the -1), instead of the old table.record(id) WITHOUT -1.
     const game::MonsterInfo* mi = game::GetMonsterInfo(monsterDefId);
-    if (!mi) return nullptr; // table non chargee, id hors bornes, ou slot vide (id==0).
+    if (!mi) return nullptr; // table not loaded, id out of bounds, or empty slot (id==0).
 
-    const uint32_t k1 = mi->kindIndexP1; // +244, prouve par Char_Draw 0x5805C0 (*(def+244)-1)
+    const uint32_t k1 = mi->kindIndexP1; // +244, proven by Char_Draw 0x5805C0 (*(def+244)-1)
 
-    // Bornes prouvées §2 du doc : kindIndexP1 (1-based, tel que stocké dans le fichier .IMG) doit
-    // être dans [1, 333] pour désigner un modèle réel ; au-delà, Model_GetNpcMotionSlot retombe
-    // silencieusement sur le fallback générique côté binaire d'origine -- ici on renvoie nullptr
-    // (mis en cache comme un échec normal par GetForMonsterKind -> Get()).
+    // Bounds proven in doc §2: kindIndexP1 (1-based, as stored in the .IMG file) must
+    // be in [1, 333] to designate a real model; beyond that, Model_GetNpcMotionSlot silently
+    // falls back to the generic fallback on the original binary side -- here we return nullptr
+    // (cached as a normal failure by GetForMonsterKind -> Get()).
     if (k1 < 1 || k1 > 333) {
         static bool warnedOutOfRange = false;
         if (!warnedOutOfRange) {
@@ -186,43 +186,43 @@ const SkinnedModel* ModelCache::GetForMonster(uint32_t monsterDefId) {
 }
 
 const SkinnedModel* ModelCache::GetForMonsterDamaged(uint32_t monsterDefId, int hpCurrent) {
-    // Variante d'etat de degat (Char_Draw 0x5805C0) : famille "M{k+1}002{sub+1}" (variant=1,
-    // 4 sous-modeles). Gate d'origine : def[+232]==2 & g_Opt_GfxDetailShadows==1 (option graphique
-    // decidee par la couche de rendu W3 ; on porte ici la garde field232==2, universelle).
-    // sub = 3 - ftol(hpCurrent*100.0/def[+368]) / 30. hpCurrent = record monstre offset 92
-    // (body+76) = *((int*)this+23) dans Char_Draw. def[+368] = hpMax de definition.
+    // Damage-state variant (Char_Draw 0x5805C0): family "M{k+1}002{sub+1}" (variant=1,
+    // 4 sub-models). Original gate: def[+232]==2 & g_Opt_GfxDetailShadows==1 (graphics option
+    // decided by the W3 render layer; we port the universal field232==2 guard here).
+    // sub = 3 - ftol(hpCurrent*100.0/def[+368]) / 30. hpCurrent = monster record offset 92
+    // (body+76) = *((int*)this+23) in Char_Draw. def[+368] = definition hpMax.
     const game::MonsterInfo* mi = game::GetMonsterInfo(monsterDefId); // 1-based (ItemDefTbl_GetRecord 0x4C6570)
     if (!mi) return nullptr;
-    if (mi->field232 != 2) return nullptr; // Char_Draw : field232!=2 => pas d'etats de degat
+    if (mi->field232 != 2) return nullptr; // Char_Draw: field232!=2 => no damage states
     const uint32_t k1 = mi->kindIndexP1;
     if (k1 < 1 || k1 > 333) return nullptr;
-    if (mi->hpMax < 1) return nullptr;     // diviseur def[+368] (le validateur garantit >=1, garde defensive)
+    if (mi->hpMax < 1) return nullptr;     // divisor def[+368] (the validator guarantees >=1, defensive guard)
 
     const int q = static_cast<int>(static_cast<double>(hpCurrent) * 100.0 / static_cast<double>(mi->hpMax)); // Crt_ftol
     int sub = 3 - q / 30;
-    if (sub < 0) sub = 0; else if (sub > 3) sub = 3; // borne defensive (BuildMonsterStem variant1 => sub in [0,4))
+    if (sub < 0) sub = 0; else if (sub > 3) sub = 3; // defensive bound (BuildMonsterStem variant1 => sub in [0,4))
     return GetForMonsterKind(static_cast<int>(k1) - 1, 1, sub);
 }
 
 const SkinnedModel* ModelCache::GetForNpc(const game::NpcDefRecord& npc) {
-    // RESOLU 2026-07-14 (cf. ModelCache.h) : npc.fieldE (+1324) = kindIndex+1, meme champ que
-    // celui lu par Npc_DrawMesh 0x57FF00 sur l'enregistrement mNPC. Borne dure [1,66]
-    // (Model_GetNpcMeshSlot 0x4E5910, a2<=0x41) -- hors bornes -> nullptr (fallback d'origine).
+    // RESOLVED 2026-07-14 (cf. ModelCache.h): npc.fieldE (+1324) = kindIndex+1, same field
+    // read by Npc_DrawMesh 0x57FF00 on the mNPC record. Hard bound [1,66]
+    // (Model_GetNpcMeshSlot 0x4E5910, a2<=0x41) -- out of bounds -> nullptr (original fallback).
     if (npc.fieldE < 1 || npc.fieldE > 66) return nullptr;
     return GetForNpcKind(static_cast<int>(npc.fieldE) - 1, 0);
 }
 
 void ModelCache::Clear() {
-    entries_.clear(); // ~Entry -> ~SkinnedModel -> Release() (VB/IB/textures liberes)
+    entries_.clear(); // ~Entry -> ~SkinnedModel -> Release() (VB/IB/textures freed)
 }
 
 void ModelCache::EvictIfNeeded() {
-    if (maxResident_ == 0) return; // illimite, pas d'eviction
-    // Eviction LRU simple (scan lineaire, cf. mission "eviction simple") : retire
-    // l'entree de plus faible lastUseTick jusqu'a repasser sous la limite. L'entree
-    // qui vient d'etre inseree porte tick_ (le plus recent), elle n'est donc jamais
-    // choisie ici sauf si le cache entier ne contient qu'elle (maxResident_ == 0 deja
-    // exclu ci-dessus).
+    if (maxResident_ == 0) return; // unlimited, no eviction
+    // Simple LRU eviction (linear scan, cf. "simple eviction" mission): removes
+    // the entry with the lowest lastUseTick until back under the limit. The entry
+    // that was just inserted carries tick_ (the most recent), so it is never
+    // picked here unless the cache contains only it (maxResident_ == 0 already
+    // excluded above).
     while (entries_.size() > maxResident_) {
         auto worst = entries_.begin();
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {

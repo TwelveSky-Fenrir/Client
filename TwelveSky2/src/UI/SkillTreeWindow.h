@@ -1,71 +1,71 @@
-// UI/SkillTreeWindow.h — fenêtre « Arbre de compétences » du client TwelveSky2.
+// UI/SkillTreeWindow.h — "Skill Tree" window of the TwelveSky2 client.
 //
-// Vue interactive sur game::SkillBar (Game/SkillSystem.h, déjà écrit) : grille
-// 8 colonnes × 5 lignes = 40 emplacements, calquée EXACTEMENT sur
-// SkillBar::slots (40 slots {skillId, spCost}, cf. commentaire g_LearnedSkills
-// 0x16742BC). À droite, une VRAIE grille de nœuds (4x3, paginée) balayant TOUT
-// l'arbre de compétences connu (skillId 1..kMaxSkillId présent dans skillTbl,
-// cf. game::SkillLevelTable) — pas seulement les compétences immédiatement
-// apprenables : chaque nœud affiche son icône (.IMG best-effort, repli sur
-// pastille colorée, cf. NoteSkillIcon au .cpp), son niveau requis et son état
-// (Locked = niveau/branche non atteint, Available = apprenable maintenant,
-// Learned = déjà dans la barre), cf. NodeState/NodeStateOf. Interaction :
-//   1. clic sur un nœud Available de la grille « Disponibles »  -> sélectionne
-//      la compétence candidate (surlignée) ; clic sur Locked/Learned -> statut
-//      informatif seulement (pas de sélection) ;
-//   2. clic sur un emplacement VIDE de la grille avec une compétence
-//      sélectionnée -> tentative d'apprentissage (AttemptLearn) : vérifie
-//      self.skillPoints >= coût SP (SKILL_INFO +0x230, skillinfo::kOffSpCost,
-//      garde réelle UI_SkillLearn_OnLDown 0x5E1DC4) puis... N'APPLIQUE RIEN.
-//      Corrigé Passe 4 / W6 : cette étape débitait self.skillPoints et plaçait
-//      la compétence dans la barre via game::Skill_Learn — un effet local
-//      OPTIMISTE que le binaire ne fait PAS (la confirmation réelle,
-//      UI_MsgBox_OnLButtonUp case 3 @0x5C0C23, se contente d'ÉMETTRE et
-//      d'attendre le serveur), et de surcroît emprunté à un autre flux
-//      (Skill_Learn est ancrée sur le handler ENTRANT Pkt_ItemAction G0
-//      0x46A456 = apprentissage par LIVRE). L'émission qui devrait la remplacer
-//      (opcode 0x13 / sous-code 202) est BLOQUÉE : elle exige l'id du PNJ
-//      formateur, que cette fenêtre ne possède pas — cf. le TODO [ancre
-//      0x5C0C5E] détaillé au-dessus de AttemptLearn() dans le .cpp.
-// Survol d'un emplacement APPRIS : tooltip avec le coût SP réellement débité
-// à l'apprentissage (mémorisé dans le slot) ET le coût MP nominal de cast
-// (Skill_CostById 0x4CD0E0). Bandeau d'en-tête : points de compétence non
-// dépensés (self.skillPoints) + posture/stance active courante
+// Interactive view over game::SkillBar (Game/SkillSystem.h, already written): grid
+// 8 columns x 5 rows = 40 slots, mapped EXACTLY onto
+// SkillBar::slots (40 slots {skillId, spCost}, see g_LearnedSkills comment
+// 0x16742BC). On the right, a REAL node grid (4x3, paginated) scanning the ENTIRE
+// known skill tree (skillId 1..kMaxSkillId present in skillTbl,
+// see game::SkillLevelTable) — not just immediately learnable skills:
+// each node shows its icon (.IMG best-effort, falls back to a colored
+// dot, see NoteSkillIcon in the .cpp), its required level, and its state
+// (Locked = level/branch not reached, Available = learnable now,
+// Learned = already in the bar), see NodeState/NodeStateOf. Interaction:
+//   1. clicking an Available node in the "Available" grid -> selects the
+//      candidate skill (highlighted); clicking Locked/Learned -> status
+//      message only (no selection);
+//   2. clicking an EMPTY bar slot with a skill
+//      selected -> attempts to learn it (AttemptLearn): checks
+//      self.skillPoints >= SP cost (SKILL_INFO +0x230, skillinfo::kOffSpCost,
+//      real guard UI_SkillLearn_OnLDown 0x5E1DC4) then... APPLIES NOTHING.
+//      Fixed Pass 4 / W6: this step used to debit self.skillPoints and place
+//      the skill in the bar via game::Skill_Learn — an OPTIMISTIC local effect
+//      the binary does NOT perform (the real confirmation,
+//      UI_MsgBox_OnLButtonUp case 3 @0x5C0C23, only EMITS and waits for the
+//      server), and moreover borrowed from a different flow
+//      (Skill_Learn is anchored on the INBOUND handler Pkt_ItemAction G0
+//      0x46A456 = learning via a BOOK item). The emission that should
+//      replace it (opcode 0x13 / sub-code 202) is BLOCKED: it requires the
+//      trainer NPC's id, which this window does not have — see the TODO [ancre
+//      0x5C0C5E] detailed above AttemptLearn() in the .cpp.
+// Hovering a LEARNED slot: tooltip with the SP cost actually debited
+// at learn time (memoized in the slot) AND the nominal MP cast cost
+// (Skill_CostById 0x4CD0E0). Header bar: unspent skill points
+// (self.skillPoints) + current active posture/stance
 // (Skill_GetActiveStance 0x4FB210, Game/SkillCombat.h).
 //
-// Aucune action de cette fenêtre n'envoie de paquet réseau — état AUDITÉ (Passe 4 /
-// W6), et pour deux raisons de nature DIFFÉRENTE, à ne pas confondre :
-//   - Sélection d'un nœud : NE DOIT RIEN ÉMETTRE. Prouvé : UI_SkillLearn_OnLDown
-//     0x5E1C40 n'émet rien, il valide (SP / déjà apprise / place libre) puis ouvre une
-//     boîte de confirmation (UI_MsgBox_Open kind 3, 0x5E20C0). Le silence réseau au
-//     clic est donc FIDÈLE, ce n'est pas un manque.
-//   - Confirmation de l'apprentissage : DEVRAIT émettre (opcode 0x13, sous-code 202,
-//     [npcId:i32][skillId:i32]) mais reste BLOQUÉE faute d'un npcId prouvé. MISE À JOUR
-//     (Passe 4 / W6, vérif IDA) : le builder Net_SendVaultReq_202 a depuis été corrigé
-//     en (NetClient&, int32_t npcId, int32_t skillId) (Net/SendPackets.h:242) — il ne
-//     tronque plus rien et est conforme au fil. Le SEUL blocage restant est donc le
-//     npcId, que cette fenêtre (arbre générique, hotkey 'K') ne possède pas. Détail
-//     complet + layout dans le TODO [ancre 0x5C0C5E] au-dessus de AttemptLearn() (.cpp).
-// L'apprentissage n'est plus appliqué à l'état local non plus (le binaire ne le fait
-// pas) : la fenêtre reste donc une VUE de l'arbre tant que le flux PNJ n'est pas porté.
+// No action in this window sends a network packet — AUDITED state (Pass 4 /
+// W6), for two DIFFERENT reasons, not to be confused:
+//   - Selecting a node: MUST NOT EMIT ANYTHING. Proven: UI_SkillLearn_OnLDown
+//     0x5E1C40 emits nothing, it validates (SP / already learned / free slot) then opens a
+//     confirmation box (UI_MsgBox_Open kind 3, 0x5E20C0). Network silence on
+//     click is therefore FAITHFUL, not a gap.
+//   - Confirming the learn: SHOULD emit (opcode 0x13, sub-code 202,
+//     [npcId:i32][skillId:i32]) but remains BLOCKED for lack of a proven npcId. UPDATE
+//     (Pass 4 / W6, IDA re-check): the builder Net_SendVaultReq_202 has since been corrected
+//     to (NetClient&, int32_t npcId, int32_t skillId) (Net/SendPackets.h:242) — it no
+//     longer truncates anything and matches the wire. The ONLY remaining blocker is the
+//     npcId, which this window (generic tree, 'K' hotkey) does not have. Full
+//     detail + layout in the TODO [ancre 0x5C0C5E] above AttemptLearn() (.cpp).
+// Learning is also no longer applied to local state (the binary doesn't do it
+// either): the window therefore remains a VIEW of the tree until the NPC flow is ported.
 //
-// DISPOSITION — CONFIRME_FIDELE (2026-07-14, décompilation idaTs2, re-vérifiée
-// le même jour) : le binaire d'origine n'a pas de disposition d'arbre à
-// positions custom par nœud ni de lignes de connexion parent-enfant — sa
-// « vraie » disposition (UI_SkillLearn_Draw 0x5E2200, grille 3 colonnes x 8
-// lignes par PNJ-formateur, formule de pixel fixe) EST une grille simple ;
-// ce fait est confirmé, pas une limite de recherche. Cette fenêtre-ci affiche
-// une grille GÉNÉRIQUE paginée différente (pas la grille 3x8 par PNJ) par
-// choix d'architecture délibéré (backend NPC->compétences non porté +
-// contrat d'ouverture différent), documenté précisément dans le bloc de note
-// en tête du .cpp et le bloc « DISPOSITION DE L'ARBRE DE COMPETENCES —
-// CONFIRME_FIDELE » en tête de Game/SkillSystem.h. En revanche le nom,
-// l'index d'icône et les prérequis affichés par nœud sont désormais lus
-// depuis les VRAIS champs SKILL_INFO (Skill_GetName, Skill_GetIconIndex,
+// LAYOUT — CONFIRME_FIDELE (2026-07-14, idaTs2 decompilation, re-verified
+// the same day): the original binary has no tree layout with custom
+// per-node positions nor parent-child connector lines — its
+// "real" layout (UI_SkillLearn_Draw 0x5E2200, 3 columns x 8
+// rows per trainer NPC, fixed pixel formula) IS a simple grid;
+// this fact is confirmed, not a research limitation. This window shows
+// a different GENERIC paginated grid (not the per-NPC 3x8 grid) by
+// deliberate architecture choice (unported NPC->skills backend +
+// different opening contract), documented precisely in the note block
+// at the top of the .cpp and the "TREE LAYOUT —
+// CONFIRME_FIDELE" block at the top of Game/SkillSystem.h. On the other hand the name,
+// icon index, and prerequisites shown per node are now read
+// from the REAL SKILL_INFO fields (Skill_GetName, Skill_GetIconIndex,
 // kOffReqWeapon/kOffReqBranch/kOffSection).
 //
-// Règle du projet : ce fichier n'édite AUCUN header existant ; il inclut
-// UI/UIManager.h, Game/SkillSystem.h et Game/SkillCombat.h en lecture seule.
+// Project rule: this file does not edit ANY existing header; it only
+// includes UI/UIManager.h, Game/SkillSystem.h and Game/SkillCombat.h read-only.
 #pragma once
 #include "UI/UIManager.h"
 #include "Game/SkillSystem.h"
@@ -79,36 +79,36 @@
 
 namespace ts2::ui {
 
-// SkillTreeWindow — Dialog modal (tant qu'ouverte) affichant/pilotant la barre
-// de compétences apprises. Hérite de ts2::ui::Dialog (contrat UIManager, non
-// édité). Nécessite un Bind() avant tout rendu utile (aucun crash si non liée
-// : la fenêtre s'affiche vide et refuse silencieusement les actions).
+// SkillTreeWindow — modal Dialog (while open) displaying/driving the learned
+// skill bar. Inherits from ts2::ui::Dialog (UIManager contract, not
+// edited). Requires a Bind() before any useful render (no crash if not bound
+// : the window renders empty and silently refuses actions).
 class SkillTreeWindow : public Dialog {
 public:
     SkillTreeWindow();
 
-    // Lie la fenêtre aux données runtime nécessaires : table SKILL_INFO (pour
-    // Skill_GetRecord/coût SP), table ITEM_INFO (pour Skill_CostById), table de
-    // bornes de niveau (Skill_IsAvailableByLevel), la barre de compétences
-    // apprises et l'état du joueur local (skillPoints/niveau/renaissance, LUS
-    // seulement). `morph` est optionnel (posture/renaissance) — cf.
+    // Binds the window to the required runtime data: SKILL_INFO table (for
+    // Skill_GetRecord/SP cost), ITEM_INFO table (for Skill_CostById), level
+    // bound table (Skill_IsAvailableByLevel), the learned skill bar,
+    // and the local player state (skillPoints/level/rebirth, READ
+    // only). `morph` is optional (posture/rebirth) — see
     // Game/SkillCombat.h.
-    // NB (Passe 4 / W6) : `bar` et `self` ne sont plus JAMAIS écrits par cette
-    // fenêtre — l'apprentissage local (game::Skill_Learn) a été retiré, le binaire
-    // attendant le serveur (cf. AttemptLearn dans le .cpp). Les références restent
-    // non-const car le contrat de Bind() est partagé/appelé par UI/GameWindows.cpp
-    // (fichier non possédé par ce front) : le durcir en const dépasse ce périmètre.
+    // NOTE (Pass 4 / W6): `bar` and `self` are NEVER written by this
+    // window anymore — local learning (game::Skill_Learn) has been removed, the binary
+    // waits for the server (see AttemptLearn in the .cpp). The references remain
+    // non-const because Bind()'s contract is shared/called by UI/GameWindows.cpp
+    // (file not owned by this front): hardening it to const is out of scope.
     //
-    // AUCUN npcId : c'est précisément ce qui bloque l'émission du sous-code 202
-    // (cf. TODO [ancre 0x5C0C5E] au-dessus de AttemptLearn dans le .cpp). Le vrai
-    // widget d'apprentissage est ouvert PAR un PNJ formateur et tient son
-    // enregistrement (*(this+2) == dword_1822ED0) ; cette fenêtre-ci est ouverte au
-    // raccourci 'K' et n'en a aucun.
+    // NO npcId: this is precisely what blocks emission of sub-code 202
+    // (see TODO [ancre 0x5C0C5E] above AttemptLearn in the .cpp). The real
+    // learning widget is opened BY a trainer NPC and holds its
+    // record (*(this+2) == dword_1822ED0); this window is opened via the
+    // 'K' hotkey and has none.
     void Bind(const game::DataTable& skillTbl, const game::DataTable& itemTbl,
               const game::SkillLevelTable& lvlTbl, game::SkillBar& bar,
               game::SelfState& self, const game::CombatMorphState& morph = {});
 
-    void Open() override;  // Dialog::Open() + réinitialise sélection/page/statut
+    void Open() override;  // Dialog::Open() + resets selection/page/status
     void Close() override { Dialog::Close(); }
 
     bool OnMouseDown(int x, int y) override;
@@ -119,52 +119,52 @@ public:
 private:
     struct Rect { int x, y, w, h; };
 
-    // Cible actuellement « armée » (bouton/emplacement enfoncé, en attente du
-    // relâchement dessus) — même pattern que OptionsWindow/WarehouseWindow.
+    // Currently "armed" target (button/slot pressed down, awaiting
+    // release on top of it) — same pattern as OptionsWindow/WarehouseWindow.
     enum class Target { None, Close, PrevPage, NextPage, GridSlot, CandidateRow };
 
-    // État d'un nœud de l'arbre de compétences (liste « Disponibles », désormais
-    // une VRAIE grille de nœuds — pas seulement les compétences immédiatement
-    // apprenables) : Locked = niveau/branche non atteint (Skill_IsAvailableByLevel
-    // false), Available = apprenable maintenant (sélectionnable), Learned = déjà
-    // présente dans bar_ (affichée pour vue d'ensemble de l'arbre, non sélectionnable).
+    // State of a skill-tree node (the "Available" list, now
+    // a REAL node grid — not just immediately learnable skills):
+    // Locked = level/branch not reached (Skill_IsAvailableByLevel
+    // false), Available = learnable now (selectable), Learned = already
+    // present in bar_ (shown for the tree overview, not selectable).
     enum class NodeState { Locked, Available, Learned };
     NodeState NodeStateOf(int skillId) const;
 
-    // Géométrie recalculée à chaque frame à partir des dimensions écran
-    // (centrage) ; le hit-test (routé entre deux frames) s'appuie sur
-    // lastScreenW_/lastScreenH_ mémorisées au dernier Render.
+    // Geometry recomputed every frame from screen dimensions
+    // (centering); hit-testing (routed between two frames) relies on
+    // lastScreenW_/lastScreenH_ memoized from the last Render.
     void Layout(int screenW, int screenH, Rect& panel, Rect& close, Rect& grid,
                 Rect& candPanel, Rect& prevBtn, Rect& nextBtn) const;
 
     Rect SlotRect(const Rect& grid, int slotIndex) const;
-    // Cellule de la grille de nœuds « Disponibles », indexée à plat (row-major,
-    // kCandCols colonnes) — remplace l'ancienne liste de lignes texte.
+    // Cell of the "Available" node grid, flat-indexed (row-major,
+    // kCandCols columns) — replaces the old list of text lines.
     Rect CandidateCellRect(const Rect& candPanel, int cellIndex) const;
 
-    // Icône d'un nœud (paresseuse, mise en cache) : voir NoteSkillIcon dans le
-    // .cpp pour la méthodologie (repli automatique sur pastille colorée).
+    // Icon for a node (lazy, cached): see NoteSkillIcon in the
+    // .cpp for the methodology (automatic fallback to a colored dot).
     gfx::GpuTexture* GetIconTex(IDirect3DDevice9* dev, uint32_t skillId);
 
-    // Reconstruit la liste des compétences apprenables (candidates_) à partir
-    // de skillTbl_/lvlTbl_/bar_/self_. Appelée en tête de Render (les deux
-    // phases lisent le même résultat, calculé une fois par frame).
+    // Rebuilds the list of learnable skills (candidates_) from
+    // skillTbl_/lvlTbl_/bar_/self_. Called at the top of Render (both
+    // phases read the same result, computed once per frame).
     void RecomputeCandidates();
 
     void ActivateIfHit(const Rect& close, const Rect& grid, const Rect& candPanel,
                         const Rect& prevBtn, const Rect& nextBtn, int x, int y);
     void HandleGridSlotClick(int slotIndex);
     void HandleCandidateClick(int rowOnPage);
-    // Confirmation d'apprentissage — miroir de UI_MsgBox_OnLButtonUp case 3 (0x5C0C23).
-    // N'émet PAS (npcId indisponible) et n'applique AUCUN effet local, comme le binaire :
-    // cf. le TODO [ancre 0x5C0C5E] détaillé au-dessus de la définition dans le .cpp.
+    // Learn confirmation — mirrors UI_MsgBox_OnLButtonUp case 3 (0x5C0C23).
+    // Does NOT emit (npcId unavailable) and applies NO local effect, like the binary:
+    // see the TODO [ancre 0x5C0C5E] detailed above the definition in the .cpp.
     void AttemptLearn();
 
     static bool In(const Rect& r, int x, int y) {
         return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
     }
 
-    // --- Liaison données (non possédée) ---
+    // --- Data binding (not owned) ---
     const game::DataTable*       skillTbl_ = nullptr;
     const game::DataTable*       itemTbl_  = nullptr;
     const game::SkillLevelTable* lvlTbl_   = nullptr;
@@ -173,26 +173,26 @@ private:
     game::CombatMorphState       morph_{};
     bool                         bound_    = false;
 
-    // --- État interaction ---
+    // --- Interaction state ---
     Target      armedTarget_    = Target::None;
     int         armedGridSlot_  = -1;
     int         armedCandRow_   = -1;
-    uint32_t    selectedSkillId_ = 0; // compétence candidate sélectionnée (liste de droite)
-    int         page_           = 0; // page courante de la liste « Disponibles »
-    std::vector<int> candidates_;    // skillIds apprenables, recalculée chaque frame
+    uint32_t    selectedSkillId_ = 0; // selected candidate skill (right-hand list)
+    int         page_           = 0; // current page of the "Available" list
+    std::vector<int> candidates_;    // learnable skillIds, recomputed every frame
 
-    std::string statusText_;         // dernier résultat d'action, affiché en pied de fenêtre
+    std::string statusText_;         // last action result, shown in the window footer
     bool        statusIsError_ = false;
 
-    // Icônes de nœud, paresseuses + mises en cache (même pattern que
-    // InventoryWindow::iconCache_ / WarehouseWindow::iconCache_). Vidées à
-    // Shutdown implicite (durée de vie = process, comme les autres fenêtres).
+    // Node icons, lazy + cached (same pattern as
+    // InventoryWindow::iconCache_ / WarehouseWindow::iconCache_). Cleared implicitly at
+    // shutdown (lifetime = process, like the other windows).
     std::unordered_map<uint32_t, gfx::GpuTexture> iconCache_;
 
     mutable int lastScreenW_ = ts2::kRefWidth;
     mutable int lastScreenH_ = ts2::kRefHeight;
 
-    // --- Géométrie (coordonnées panneau, référence 1024x768) ---
+    // --- Geometry (panel coordinates, 1024x768 reference) ---
     static constexpr int kCols        = 8;
     static constexpr int kRows        = 5;   // 8x5 = 40 == SkillBar::slots.size()
     static constexpr int kCellSize    = 40;
@@ -204,57 +204,57 @@ private:
     static constexpr int kGridPad     = 14;
     static constexpr int kTitleH      = 26;
     static constexpr int kHeaderInfoH = 20;
-    static constexpr int kInfoBarH    = 32; // tooltip survol (2 lignes) entre grille et pied
+    static constexpr int kInfoBarH    = 32; // hover tooltip (2 lines) between grid and footer
     static constexpr int kFooterH     = 40;
     static constexpr int kCloseBtn    = 18;
 
     static constexpr int kCandPanelW  = 200;
     static constexpr int kCandHeaderH = 16;
     static constexpr int kCandBtnH    = 16;
-    // Grille de nœuds « Disponibles » : mêmes kCellSize/kCellGap/kCellPitch que
-    // la grille SkillBar (icônes de taille homogène dans toute la fenêtre).
+    // "Available" node grid: same kCellSize/kCellGap/kCellPitch as
+    // the SkillBar grid (uniform icon size across the whole window).
     static constexpr int kCandCols     = 4;
     static constexpr int kCandRows     = 3;
-    static constexpr int kItemsPerPage = kCandCols * kCandRows; // 12 nœuds/page
+    static constexpr int kItemsPerPage = kCandCols * kCandRows; // 12 nodes/page
 
     static constexpr int kPanelW = kGridPad * 2 + kGridW + kGridPad + kCandPanelW;
     static constexpr int kPanelH = kTitleH + kHeaderInfoH + kGridH + kInfoBarH + kFooterH;
 
-    // Borne haute des ids de compétence connus (SkillLevelTable, cf. SkillSystem.h : skillId 1..350).
-    // Sert aussi de borne pour la résolution d'icône (dossier 003 de l'atlas UI, 755
-    // fichiers CONTIGUS 1..755 — largement au-delà, cf. NoteSkillIcon au .cpp).
+    // Upper bound of known skill ids (SkillLevelTable, see SkillSystem.h: skillId 1..350).
+    // Also used as the bound for icon resolution (atlas UI folder 003, 755
+    // CONTIGUOUS files 1..755 — well beyond, see NoteSkillIcon in the .cpp).
     static constexpr int kMaxSkillId = 350;
 
-    // --- Palette (D3DCOLOR = 0xAARRGGBB, cf. contrat UI) ---
-    static constexpr D3DCOLOR kColBg            = 0xE0202028u; // fond panneau
-    static constexpr D3DCOLOR kColBorder        = 0xFF808080u; // cadre
-    static constexpr D3DCOLOR kColTitleBg       = 0xFF2C2C3Cu; // bandeau titre
-    static constexpr D3DCOLOR kColTitle         = 0xFFFFDD66u; // titre
-    static constexpr D3DCOLOR kColText          = 0xFFFFFFFFu; // texte
-    static constexpr D3DCOLOR kColTextDim       = 0xFFAAAAAAu; // texte atténué
-    static constexpr D3DCOLOR kColSelect        = 0xFF4060A0u; // survol/sélection
-    static constexpr D3DCOLOR kColError         = 0xFFFF6060u; // erreur
-    static constexpr D3DCOLOR kColSuccess       = 0xFF60FF60u; // succès
+    // --- Palette (D3DCOLOR = 0xAARRGGBB, per UI contract) ---
+    static constexpr D3DCOLOR kColBg            = 0xE0202028u; // panel background
+    static constexpr D3DCOLOR kColBorder        = 0xFF808080u; // frame
+    static constexpr D3DCOLOR kColTitleBg       = 0xFF2C2C3Cu; // title bar
+    static constexpr D3DCOLOR kColTitle         = 0xFFFFDD66u; // title
+    static constexpr D3DCOLOR kColText          = 0xFFFFFFFFu; // text
+    static constexpr D3DCOLOR kColTextDim       = 0xFFAAAAAAu; // dimmed text
+    static constexpr D3DCOLOR kColSelect        = 0xFF4060A0u; // hover/selection
+    static constexpr D3DCOLOR kColError         = 0xFFFF6060u; // error
+    static constexpr D3DCOLOR kColSuccess       = 0xFF60FF60u; // success
     static constexpr D3DCOLOR kColClose         = 0xFFB03A3Au;
     static constexpr D3DCOLOR kColBtnHover      = 0xFF4060A0u;
     static constexpr D3DCOLOR kColBtn           = 0xFF38384Au;
     static constexpr D3DCOLOR kColBtnOff        = 0xFF26262Au;
-    static constexpr D3DCOLOR kColCellLearned      = 0xFF34503Eu; // emplacement appris (vert sourd)
+    static constexpr D3DCOLOR kColCellLearned      = 0xFF34503Eu; // learned slot (muted green)
     static constexpr D3DCOLOR kColCellLearnedHover = 0xFF3C6048u;
-    static constexpr D3DCOLOR kColCellEmpty        = 0xFF1A1A20u; // emplacement vide
+    static constexpr D3DCOLOR kColCellEmpty        = 0xFF1A1A20u; // empty slot
     static constexpr D3DCOLOR kColCellEmptyHover   = 0xFF2A2A34u;
-    static constexpr D3DCOLOR kColRowBg         = 0xFF262630u; // fond cellule liste « Disponibles »
+    static constexpr D3DCOLOR kColRowBg         = 0xFF262630u; // "Available" list cell background
     static constexpr D3DCOLOR kColRowHover      = 0xFF32324Au;
 
-    // Pastilles de repli par état de nœud (icône .IMG indisponible/non chargée) —
-    // cf. NodeState / NoteSkillIcon (.cpp).
-    static constexpr D3DCOLOR kColPastilleLocked    = 0xFF4A4A50u; // gris terne : verrouillé
-    static constexpr D3DCOLOR kColPastilleAvailable = 0xFFC9A227u; // or : apprenable
-    static constexpr D3DCOLOR kColPastilleLearned   = 0xFF3FAE55u; // vert : déjà appris
+    // Fallback dots by node state (.IMG icon unavailable/not loaded) —
+    // see NodeState / NoteSkillIcon (.cpp).
+    static constexpr D3DCOLOR kColPastilleLocked    = 0xFF4A4A50u; // dull gray: locked
+    static constexpr D3DCOLOR kColPastilleAvailable = 0xFFC9A227u; // gold: learnable
+    static constexpr D3DCOLOR kColPastilleLearned   = 0xFF3FAE55u; // green: already learned
     static constexpr D3DCOLOR kColNodeBorderLocked    = 0xFF3A3A3Eu;
     static constexpr D3DCOLOR kColNodeBorderAvailable = 0xFFDDBB55u;
     static constexpr D3DCOLOR kColNodeBorderLearned   = 0xFF60FF60u;
-    static constexpr D3DCOLOR kColNodeDimOverlay      = 0x90101014u; // assombrit icône verrouillée
+    static constexpr D3DCOLOR kColNodeDimOverlay      = 0x90101014u; // dims a locked node's icon
 };
 
 } // namespace ts2::ui

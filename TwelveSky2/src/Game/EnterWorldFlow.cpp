@@ -1,4 +1,4 @@
-// Game/EnterWorldFlow.cpp — voir EnterWorldFlow.h pour le flux découvert et les EAs.
+// Game/EnterWorldFlow.cpp — see EnterWorldFlow.h for the discovered flow and the EAs.
 #include "Game/EnterWorldFlow.h"
 
 namespace ts2::game {
@@ -13,8 +13,8 @@ constexpr int kServerAckTimeoutFrames = 5000; // 0x1388 @0x52C203
 constexpr int kStrIdSendFailed  = 67; // @0x52C1A2
 constexpr int kStrIdAckTimeout  = 68; // @0x52C213
 
-// Un hook nul est traité comme un no-op silencieux (sûr pour des tests unitaires
-// partiels du flux sans brancher tous les callbacks).
+// A null hook is treated as a silent no-op (safe for partial unit tests of the
+// flow without wiring every callback).
 inline void Call(const std::function<void()>& f) { if (f) f(); }
 } // namespace
 
@@ -42,17 +42,17 @@ bool EnterWorldFlow_Update(EnterWorldFlowState& s, const EnterWorldFlowHost& hos
             if (s.zoneResourceIndex >= kZoneResourceCount) {
                 s.state = EnterWorldState::SendEnterRequest; // @0x52C130
             }
-            s.frameCounter = 0; // reset inconditionnel à chaque étape de 10 frames, @0x52C121
+            s.frameCounter = 0; // unconditional reset every 10-frame step, @0x52C121
         }
         return true;
 
     case EnterWorldState::SendEnterRequest: { // case 2 @0x52C14C
         ++s.frameCounter;
         if (s.frameCounter >= kSendRequestWaitFrames) {
-            // NOTE : l'original écrase ici g_SelfMorphNpcId par la zone cible (après en
-            // avoir sauvegardé l'ancienne valeur dans dword_1675A94, jamais relue dans
-            // cette fonction). Appartient au système de morph/téléport — délibérément
-            // PAS reproduit ici (hors périmètre "flux de scène pur"), cf. TODO du header.
+            // NOTE: the original here overwrites g_SelfMorphNpcId with the target zone
+            // (after saving the old value in dword_1675A94, never read again in this
+            // function). Belongs to the morph/teleport system — deliberately NOT
+            // reproduced here (out of scope for "pure scene flow"), see TODO in the header.
             bool sent = host.SendEnterWorldRequest && host.SendEnterWorldRequest(); // @0x52C18D
             if (sent) {
                 s.state = EnterWorldState::WaitServerAck; // @0x52C1D7
@@ -72,8 +72,8 @@ bool EnterWorldFlow_Update(EnterWorldFlowState& s, const EnterWorldFlowHost& hos
             s.state        = EnterWorldState::Failed; // @0x52C228
             s.frameCounter = 0;
         }
-        // Sortie normale (succès) NON observable ici : voir commentaire du header —
-        // pilotée depuis l'extérieur par Pkt_EnterWorld (réseau, opcode 12 entrant).
+        // Normal (success) exit is NOT observable here: see header comment —
+        // driven externally by Pkt_EnterWorld (network, incoming opcode 12).
         return true;
 
     case EnterWorldState::Failed: // default @0x52C232

@@ -1,4 +1,4 @@
-// Asset/FileUtil.h — utilitaires fichier.
+// Asset/FileUtil.h — file utilities.
 #pragma once
 #include <cstdint>
 #include <cstdio>
@@ -7,7 +7,7 @@
 
 namespace ts2::asset {
 
-// Lit un fichier entier en mémoire. Renvoie false si ouverture/lecture impossible.
+// Reads an entire file into memory. Returns false if open/read fails.
 inline bool ReadWholeFile(const std::string& path, std::vector<uint8_t>& out) {
     FILE* f = nullptr;
     if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) return false;

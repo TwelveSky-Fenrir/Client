@@ -1,32 +1,30 @@
-// Game/ItemSystem.cpp — implémentation fidèle au désassemblage (voir en-tête).
-// Toutes les constantes flottantes reproduisent les littéraux float32 d'origine
-// (suffixe f promu en double) pour un résultat identique après troncature.
+// Game/ItemSystem.cpp — implementation faithful to the disassembly (see header).
+// All floating-point constants reproduce the original float32 literals
+// (f suffix promoted to double) for an identical result after truncation.
 #include "Game/ItemSystem.h"
-#include "Game/ClientRuntime.h"   // g_Client.VarGet — palier de renaissance dword_16747BC
+#include "Game/ClientRuntime.h"   // g_Client.VarGet — rebirth tier dword_16747BC
 
 namespace ts2::game {
 
 namespace {
 
-// Crt_ftol 0x760810 : conversion double→int par troncature vers zéro (== cast C).
+// Crt_ftol 0x760810: double→int conversion by truncation toward zero (== C cast).
 inline int Ftol(double x) { return static_cast<int>(x); }
 
-// Cast float intermédiaire des Item_ScaleStatByType* : (float)(...) puis élargi.
+// Intermediate float cast used by Item_ScaleStatByType*: (float)(...) then widened.
 inline double Fcast(double x) { return static_cast<double>(static_cast<float>(x)); }
 
-// ---------------------------------------------------------------------
-// Item_ClassifyRecord 0x5509A0 — catégorie 0..9 d'un record ITEM_INFO.
-// Décompilation relue cette mission : a1[46]=category(+184), a1[54]=subtype(+216),
+// Item_ClassifyRecord 0x5509A0 — category 0..9 of an ITEM_INFO record.
+// Decompilation re-reviewed this mission: a1[46]=category(+184), a1[54]=subtype(+216),
 // a1[47]=typeCode(+188), *a1=itemId(+0).
-// La garde `if (!a1) return -1` @0x5509ab n'est pas portée : le paramètre est une
-// référence (jamais nulle), donc cette branche est structurellement inatteignable ici.
-// Item_MeetsEquipRequirement 0x64ECD0 — seul appelant de cette copie — ne compare jamais
-// le résultat à -1 : la neutraliser est sans effet observable.
+// The `if (!a1) return -1` guard @0x5509ab is not ported: the parameter is a
+// reference (never null), so this branch is structurally unreachable here.
+// Item_MeetsEquipRequirement 0x64ECD0 — sole caller of this copy — never compares
+// the result to -1: neutralizing it has no observable effect.
 //
-// NB : une copie à linkage interne existe déjà dans Game/StatFormulas.cpp (fichier NON
-// possédé par ce front) — pas d'ODR en jeu (les deux sont dans un namespace anonyme).
-// Dédoublonnage à arbitrer par l'orchestrateur (cf. rapport W7 item-level-db).
-// ---------------------------------------------------------------------
+// NOTE: an internal-linkage copy already exists in Game/StatFormulas.cpp (file NOT
+// owned by this front) — no ODR issue (both are in an anonymous namespace).
+// Deduplication to be arbitrated by the orchestrator (cf. W7 item-level-db report).
 int ClassifyRecord(const ItemInfo& it) {
     if (it.category == 5) {                          // a1[46] == 5 @0x5509bf
         const uint32_t st = it.subtype;              // a1[54]
@@ -53,9 +51,7 @@ int ClassifyRecord(const ItemInfo& it) {
 
 } // namespace
 
-// ---------------------------------------------------------------------
-// ItemLookup — MobDb_GetEntry 0x4C3C00 (id 1-based, rejette les slots vides).
-// ---------------------------------------------------------------------
+// ItemLookup — MobDb_GetEntry 0x4C3C00 (1-based id, rejects empty slots).
 ItemInfoView ItemLookup(const DataTable& itemTbl, uint32_t itemId) {
     if (itemId < 1 || itemId > itemTbl.count)
         return ItemInfoView(nullptr);
@@ -63,16 +59,14 @@ ItemInfoView ItemLookup(const DataTable& itemTbl, uint32_t itemId) {
     if (!p)
         return ItemInfoView(nullptr);
     uint32_t id0 = 0;
-    std::memcpy(&id0, p, 4);            // *(record) — l'id doit être non nul
+    std::memcpy(&id0, p, 4);            // *(record) — the id must be non-zero
     if (id0 == 0)
         return ItemInfoView(nullptr);
     return ItemInfoView(p);
 }
 
-// ---------------------------------------------------------------------
-// Item_GetScaledStat 0x545980 — courbe (coef, offset) selon (statIdx, type),
-// base polynomiale par paliers de niveau (45/100/113/146).
-// ---------------------------------------------------------------------
+// Item_GetScaledStat 0x545980 — curve (coef, offset) based on (statIdx, type),
+// polynomial base by level tier (45/100/113/146).
 int Item_GetScaledStat(const ItemInfoView& item, int statIdx) {
     if (!item.valid())
         return 0;
@@ -113,19 +107,17 @@ int Item_GetScaledStat(const ItemInfoView& item, int statIdx) {
             return 0;
     }
 
-    // Base par palier de niveau d'item (identique à toutes les courbes).
+    // Base by item level tier (identical across all curves).
     double base;
     if (lvl < 100)       base = static_cast<double>(lvl - 45)  * 0.1f + 0.0f;
     else if (lvl < 113)  base = static_cast<double>(lvl - 100) * 0.2f + 6.0f;
     else if (lvl < 146)  base = static_cast<double>(lvl - 113) * 0.5f + 8.0f;
-    else                 return 0;   // niveau >= 146 : hors courbe
+    else                 return 0;   // level >= 146: outside the curve
 
     return Ftol(base * coef + off);
 }
 
-// ---------------------------------------------------------------------
-// Item_SocketBonusInt 0x4CA620 — arme type 28, octet0 du mot socket.
-// ---------------------------------------------------------------------
+// Item_SocketBonusInt 0x4CA620 — type-28 weapon, byte0 of the socket word.
 int Item_SocketBonusInt(const DataTable& itemTbl, uint32_t weaponId, uint32_t socketWord, int category) {
     if (weaponId == 0xFFFFFFFFu || weaponId == 0) return 0;
     if (socketWord == 0) return 0;
@@ -152,9 +144,7 @@ int Item_SocketBonusInt(const DataTable& itemTbl, uint32_t weaponId, uint32_t so
     }
 }
 
-// ---------------------------------------------------------------------
-// Item_SocketBonusFloat 0x4CAC30 — arme type 28, octet2 du mot socket.
-// ---------------------------------------------------------------------
+// Item_SocketBonusFloat 0x4CAC30 — type-28 weapon, byte2 of the socket word.
 double Item_SocketBonusFloat(const DataTable& itemTbl, uint32_t weaponId, uint32_t socketWord, int category) {
     if (weaponId == 0xFFFFFFFFu || weaponId == 0) return 0.0;
     if (socketWord == 0) return 0.0;
@@ -176,7 +166,7 @@ double Item_SocketBonusFloat(const DataTable& itemTbl, uint32_t weaponId, uint32
         case 3: { static const double t[10] = {100,200,300,400,500,600,700,800,900,1000};       return t[digit]; }
         case 4: { static const double t[10] = {100,200,300,400,500,600,700,800,900,1000};       return t[digit]; }
         case 5: {
-            // cat5 : multiplicateurs flottants (littéraux float32 d'origine).
+            // cat5: float multipliers (original float32 literals).
             static const double t[10] = {
                 static_cast<double>(0.3f), static_cast<double>(0.3f), static_cast<double>(0.9f),
                 static_cast<double>(1.2f), static_cast<double>(1.5f), static_cast<double>(1.8f),
@@ -189,9 +179,7 @@ double Item_SocketBonusFloat(const DataTable& itemTbl, uint32_t weaponId, uint32
     }
 }
 
-// ---------------------------------------------------------------------
-// Item_GetElementalBonus 0x54F590 — arme type 29, octet1 du mot socket.
-// ---------------------------------------------------------------------
+// Item_GetElementalBonus 0x54F590 — type-29 weapon, byte1 of the socket word.
 double Item_GetElementalBonus(const DataTable& itemTbl, uint32_t weaponId, uint32_t socketWord, int key) {
     if (weaponId == 0xFFFFFFFFu || weaponId == 0) return 0.0;
     if (socketWord == 0) return 0.0;
@@ -214,9 +202,7 @@ double Item_GetElementalBonus(const DataTable& itemTbl, uint32_t weaponId, uint3
     }
 }
 
-// ---------------------------------------------------------------------
 // Item_DecodeGemBonus 0x54D390.
-// ---------------------------------------------------------------------
 double Item_DecodeGemBonus(int group, int key, int gemWord) {
     switch (group) {
         case 1: {
@@ -257,9 +243,7 @@ double Item_DecodeGemBonus(int group, int key, int gemWord) {
     }
 }
 
-// ---------------------------------------------------------------------
 // Item_GetGradeValue 0x54D750.
-// ---------------------------------------------------------------------
 int Item_GetGradeValue(int a1) {
     if (a1 <= 1303) {
         if (a1 >= 1301) return 30;
@@ -269,7 +253,7 @@ int Item_GetGradeValue(int a1) {
     }
     if (a1 > 1936) {
         if (a1 <= 19021) {
-            if (a1 < 19002) {                       // 1937..19001 : liste explicite
+            if (a1 < 19002) {                       // 1937..19001: explicit list
                 if ((a1 >= 2266 && a1 <= 2285) || a1 == 2316 || a1 == 2317 ||
                     (a1 >= 2422 && a1 <= 2441))
                     return 10;
@@ -282,12 +266,12 @@ int Item_GetGradeValue(int a1) {
         if (a1 > 19070) {
             if (a1 >= 19261 && a1 <= 19280) return 10;
         } else if (a1 >= 19051 || (a1 >= 19025 && a1 <= 19044)) {
-            return 10;                              // 19025..19044 ou 19051..19070
+            return 10;                              // 19025..19044 or 19051..19070
         }
         return 0;
     }
     if (a1 >= 1917) return 10;                       // 1917..1936
-    // 1304..1916 : grades des items spéciaux.
+    // 1304..1916: special item grades.
     if (a1 == 1304 || a1 == 1305 || a1 == 1306 || a1 == 1314 ||
         a1 == 1318 || a1 == 1321 || a1 == 1324 || a1 == 1327) return 20;
     if (a1 == 1307 || a1 == 1308 || a1 == 1309 || a1 == 1315 ||
@@ -297,9 +281,7 @@ int Item_GetGradeValue(int a1) {
     return 0;
 }
 
-// ---------------------------------------------------------------------
-// Item_GetGradeMultiplier 0x54D9A0 (littéraux float32 d'origine).
-// ---------------------------------------------------------------------
+// Item_GetGradeMultiplier 0x54D9A0 (original float32 literals).
 double Item_GetGradeMultiplier(int grade) {
     switch (grade) {
         case 1:  return static_cast<double>(1.05f);
@@ -316,15 +298,13 @@ double Item_GetGradeMultiplier(int grade) {
     }
 }
 
-// ---------------------------------------------------------------------
-// Item_GetEnchantStatDelta 0x553D50 — grande table (classe, indice de slot,
-// clé, niveau d'enchant octet3 ∈ 1..59). Transcription exacte.
-// ---------------------------------------------------------------------
+// Item_GetEnchantStatDelta 0x553D50 — large table (class, slot index,
+// key, enchant level byte3 ∈ 1..59). Exact transcription.
 int Item_GetEnchantStatDelta(int itemClass, int slot, uint32_t socketWord, int key) {
-    const int lvl = Item_GetAttribByte3(socketWord);   // octet3 = niveau enchant
+    const int lvl = Item_GetAttribByte3(socketWord);   // byte3 = enchant level
     if (lvl < 1 || lvl > 59) return 0;
 
-    // ---- Classe 8 (cas spécial, uniquement slot 1) ----
+    // ---- Class 8 (special case, slot 1 only) ----
     if (itemClass == 8) {
         if (slot != 1) return 0;
         switch (key) {
@@ -400,10 +380,10 @@ int Item_GetEnchantStatDelta(int itemClass, int slot, uint32_t socketWord, int k
         }
     }
 
-    // ---- Classes 1 et 4 uniquement ----
+    // ---- Classes 1 and 4 only ----
     if (itemClass != 1 && itemClass != 4) return 0;
 
-    // Slots d'armure {0,2,3,4,5}
+    // Armor slots {0,2,3,4,5}
     if (slot == 0 || slot == 2 || slot == 3 || slot == 4 || slot == 5) {
         switch (key) {
             case 10:
@@ -482,7 +462,7 @@ int Item_GetEnchantStatDelta(int itemClass, int slot, uint32_t socketWord, int k
         }
     }
 
-    // Slot 7 (arme)
+    // Slot 7 (weapon)
     if (slot != 7) return 0;
     switch (key) {
         case 10:
@@ -540,11 +520,9 @@ int Item_GetEnchantStatDelta(int itemClass, int slot, uint32_t socketWord, int k
     }
 }
 
-// ---------------------------------------------------------------------
-// Item_ScaleStatByType* — sélection du plafond caps[idx] par id d'arme,
-// puis mise à l'échelle (value/cap × plateau) ou plateau constant.
-// Les helpers scaleIndex* reproduisent EXACTEMENT le branchement d'origine.
-// ---------------------------------------------------------------------
+// Item_ScaleStatByType* — selects the caps[idx] cap by weapon id,
+// then scales (value/cap × plateau) or returns a constant plateau.
+// The scaleIndex* helpers reproduce EXACTLY the original branching.
 namespace {
 
 int scaleIndexA(int a2) {
@@ -600,7 +578,7 @@ int scaleIndexB(int a2) {
             if (a2 > 86819) return 2;                    // 86820
             if (a2 == 86819) return 1;                   // 86819
         }
-        return 3;                                        // repli LABEL_58
+        return 3;                                        // fallback LABEL_58
     }
     if (a2 != 2144) {
         if (a2 <= 1312) {
@@ -635,7 +613,7 @@ int scaleIndexC(int a2) {
     }
     if (a2 > 2144) {
         if (a2 >= 18026) return 2;
-        return 3;                                        // repli LABEL_42
+        return 3;                                        // fallback LABEL_42
     }
     if (a2 <= 1309) {
         switch (a2) {
@@ -643,7 +621,7 @@ int scaleIndexC(int a2) {
             case 1012: case 1014: case 1015: return 2;
             case 1016:                       return 3;
         }
-        return 3;                                        // (inatteignable pour ids valides)
+        return 3;                                        // (unreachable for valid ids)
     }
     return 3;                                            // 1310..2144
 }
@@ -656,7 +634,7 @@ int scaleIndexD(int a2) {
                 case 1013: case 1014: case 1015: return 2;
                 case 1016:                       return 3;
             }
-            return 3;                                    // (inatteignable pour ids valides)
+            return 3;                                    // (unreachable for valid ids)
         }
         return 3;                                        // 1310..2144
     }
@@ -664,7 +642,7 @@ int scaleIndexD(int a2) {
     return 3;                                            // < 1002 (546, 550)
 }
 
-// Gate d'éligibilité (listes d'ids valides des 4 variantes).
+// Eligibility gate (valid id lists for the 4 variants).
 bool eligibleA(int a2) {
     switch (a2) {
         case 1002: case 1006: case 1007: case 1008: case 1012: case 1013: case 1014:
@@ -715,7 +693,7 @@ double Item_ScaleStatByTypeA(const int32_t caps[4], int itemId, int value, int f
     if (value < 1 || flag < 1) return 0.0;
     const int idx = scaleIndexA(itemId);
     const int cap = caps[idx];
-    // Ids "×2" : plateau 2000/2200 ; sinon 1000/1100.
+    // "×2" ids: plateau 2000/2200; otherwise 1000/1100.
     if (itemId == 1312 || itemId == 550 || itemId == 2133 || itemId == 12088 ||
         itemId == 12089 || itemId == 2144 || itemId == 12058 || itemId == 2160 ||
         itemId == 18023 || itemId == 18024 || itemId == 18025) {
@@ -765,95 +743,93 @@ double Item_ScaleStatByTypeD(const int32_t caps[4], int itemId, int value) {
     return 2000.0;
 }
 
-// ---------------------------------------------------------------------
-// Item_MeetsEquipRequirement 0x64ECD0 — porte d'éligibilité équipement/usage.
-// Décompilation + disasm relus cette mission. Les 15 gardes sont évaluées dans
-// l'ORDRE EXACT du binaire : chaque `return false` correspond à un `xor eax,eax / jmp
-// loc_64EFB4` distinct. Le succès final est le `return classify != 9 || rebirth >= 12`
-// @0x64EFA9 (le binaire ne renvoie pas un 1 constant).
-// ---------------------------------------------------------------------
+// Item_MeetsEquipRequirement 0x64ECD0 — equipment/usage eligibility gate.
+// Decompilation + disasm re-reviewed this mission. The 15 guards are evaluated in
+// the EXACT ORDER of the binary: each `return false` corresponds to a distinct `xor eax,eax / jmp
+// loc_64EFB4`. The final success is `return classify != 9 || rebirth >= 12`
+// @0x64EFA9 (the binary does not return a constant 1).
 bool Item_MeetsEquipRequirement(const ItemInfo& it, int equipSlot) {
     const SelfState& self = g_World.self;
-    // dword_16747BC : palier de renaissance (lu par 12 des 15 gardes ci-dessous).
+    // dword_16747BC: rebirth tier (read by 12 of the 15 guards below).
     const int rebirth = g_Client.VarGet(0x16747BC);
-    // *a2 (+0) : les comparaisons du binaire sont signées (a2 est un int*).
+    // *a2 (+0): the binary's comparisons are signed (a2 is an int*).
     const int32_t id = static_cast<int32_t>(it.itemId);
 
-    // (1) FACTION — a2[53] = +212 @0x64ECDA-0x64ECF5 :
+    // (1) FACTION — a2[53] = +212 @0x64ECDA-0x64ECF5:
     //     `if (a2[53] != 1 && a2[53] - 2 != g_LocalElementSecondary) return 0`.
-    //     1 = passe-partout ; sinon (faction - 2) doit égaler l'élément secondaire local.
+    //     1 = master key (any faction); otherwise (faction - 2) must equal the local secondary element.
     const int32_t faction = static_cast<int32_t>(it.field212);
     if (faction != 1 && faction - 2 != self.elementSecondary)
         return false;                                            // @0x64ECF7
 
     // (2) SLOT — a2[54] = +216 vs this[54 + slot] @0x64ECFE-0x64ED20.
-    //     Gardes SIGNÉES (`jl` @0x64ed02, `jg` @0x64ed08) : ne s'applique qu'à slot ∈ [0..12] ;
-    //     equipSlot == -1 (sentinelle « pas de slot », ex. push 0FFFFFFFFh @0x64af0b) la saute
-    //     entièrement — c'est le cas de 8 des 9 appelants du binaire.
+    //     SIGNED guards (`jl` @0x64ed02, `jg` @0x64ed08): only applies to slot ∈ [0..12];
+    //     equipSlot == -1 (the "no slot" sentinel, e.g. push 0FFFFFFFFh @0x64af0b) skips it
+    //     entirely — this is the case for 8 of the binary's 9 callers.
     //
-    //     TODO [ancre 0x64ED20] : garde NON PORTÉE (preuve manquante, règle #8).
-    //     Le terme droit est `this[54 + slot]` avec this = dword_1839568 (le singleton
-    //     gestionnaire de dialogues UI — `mov ecx, offset dword_1839568` @0x5b23b9, et
-    //     this de UI_InitAllDialogs 0x5ABF50 / UI_UpdateAllDialogs 0x5AC270), soit le tableau
-    //     de 13 dwords 0x1839640[0..12] (= 0x1839568 + 0xD8 + 4*slot). Ce tableau est en .bss
-    //     (get_bytes(0x1839640, 56) = 56 octets à zéro) et son PRODUCTEUR reste non identifié :
-    //     insn_query(op_any=0x1839640) sur les 3 segments exécutables (1 053 354 instructions)
-    //     ne rend AUCUNE écriture — tous les accès passent par base+index calculés. Tant que la
-    //     sémantique de ces 13 dwords n'est pas prouvée, on ne devine pas.
-    //     Impact : nul pour equipSlot < 0 ; pour equipSlot ∈ [0..12] (seul UI_MainInventory_
-    //     OnLButtonUp @0x5b23be passe un slot réel), la garde est actuellement permissive.
+    //     TODO [anchor 0x64ED20]: guard NOT PORTED (missing proof, rule #8).
+    //     The right-hand term is `this[54 + slot]` with this = dword_1839568 (the singleton
+    //     UI dialog manager — `mov ecx, offset dword_1839568` @0x5b23b9, and
+    //     this of UI_InitAllDialogs 0x5ABF50 / UI_UpdateAllDialogs 0x5AC270), i.e. the
+    //     13-dword array 0x1839640[0..12] (= 0x1839568 + 0xD8 + 4*slot). This array is in .bss
+    //     (get_bytes(0x1839640, 56) = 56 zero bytes) and its PRODUCER remains unidentified:
+    //     insn_query(op_any=0x1839640) over the 3 executable segments (1,053,354 instructions)
+    //     returns NO write — all accesses go through computed base+index. As long as the
+    //     semantics of these 13 dwords is unproven, we do not guess.
+    //     Impact: none for equipSlot < 0; for equipSlot ∈ [0..12] (only UI_MainInventory_
+    //     OnLButtonUp @0x5b23be passes a real slot), the guard is currently permissive.
     (void)equipSlot;
 
-    // (3) NIVEAU SOMMÉ — a2[59] + a2[58] = +236 + +232 @0x64ED29-0x64ED49 :
+    // (3) SUMMED LEVEL — a2[59] + a2[58] = +236 + +232 @0x64ED29-0x64ED49:
     //     `if (a2[59] + a2[58] > g_SelfLevelBonus + g_SelfLevel) return 0`.
-    //     C'est la SEULE exigence de niveau prouvée (itemLevel +204 ne joue aucun rôle ici).
+    //     This is the ONLY proven level requirement (itemLevel +204 plays no role here).
     if (static_cast<int32_t>(it.field236) + static_cast<int32_t>(it.field232) >
         self.levelBonus + self.level)
         return false;                                            // @0x64ED4B
 
-    // (4) ids 13553/33553/53553 & renaissance < 6 @0x64ED55-0x64ED7A.
+    // (4) ids 13553/33553/53553 & rebirth < 6 @0x64ED55-0x64ED7A.
     if ((id == 13553 || id == 33553 || id == 53553) && rebirth < 6)
         return false;                                            // @0x64ED7C
 
-    // (5) ids 13554/33554/53554 & renaissance < 12 @0x64ED86-0x64EDAB.
+    // (5) ids 13554/33554/53554 & rebirth < 12 @0x64ED86-0x64EDAB.
     if ((id == 13554 || id == 33554 || id == 53554) && rebirth < 12)
         return false;                                            // @0x64EDAD
 
-    // (6) plages 87206..87213 / 87228..87235 / 87250..87257 & renaissance < 12 @0x64EDFD.
+    // (6) ranges 87206..87213 / 87228..87235 / 87250..87257 & rebirth < 12 @0x64EDFD.
     if (((id >= 87206 && id <= 87213) || (id >= 87228 && id <= 87235) ||
          (id >= 87250 && id <= 87257)) && rebirth < 12)
         return false;                                            // @0x64EDFF
 
-    // (7) ids 216/217/218 & renaissance < 7 @0x64EE2E.
+    // (7) ids 216/217/218 & rebirth < 7 @0x64EE2E.
     if ((id == 216 || id == 217 || id == 218) && rebirth < 7)
         return false;                                            // @0x64EE30
 
-    // (8) ids 86754/86756/86758 & renaissance < 6 @0x64EE5F.
+    // (8) ids 86754/86756/86758 & rebirth < 6 @0x64EE5F.
     if ((id == 86754 || id == 86756 || id == 86758) && rebirth < 6)
         return false;                                            // @0x64EE61
 
-    // (9) ids 86755/86757/86759 & renaissance < 12 @0x64EE90.
+    // (9) ids 86755/86757/86759 & rebirth < 12 @0x64EE90.
     if ((id == 86755 || id == 86757 || id == 86759) && rebirth < 12)
         return false;                                            // @0x64EE92
 
-    // (10) skillFlag — a2[71] = +284 == 3 (upgrade) & renaissance < 12 @0x64EEAC.
+    // (10) skillFlag — a2[71] = +284 == 3 (upgrade) & rebirth < 12 @0x64EEAC.
     if (static_cast<int32_t>(it.skillFlag) == 3 && rebirth < 12)
         return false;                                            // @0x64EEAE
 
-    // (11) ids 2303..2305 & renaissance < 7 @0x64EEDD.
+    // (11) ids 2303..2305 & rebirth < 7 @0x64EEDD.
     if ((id == 2303 || id == 2304 || id == 2305) && rebirth < 7)
         return false;                                            // @0x64EEDF
 
-    // (12..15) portes par CLASSE (Item_ClassifyRecord 0x5509A0). Le binaire rappelle la
-    // fonction à chaque garde (aucune mise en cache) ; elle est pure, donc un seul appel
-    // C++ est numériquement équivalent.
+    // (12..15) gates by CLASS (Item_ClassifyRecord 0x5509A0). The binary re-calls the
+    // function at each guard (no caching); it is pure, so a single C++ call is
+    // numerically equivalent.
     const int cls = ClassifyRecord(it);
     if ((cls == 1 || cls == 4) && rebirth < 12) return false;    // @0x64EF13 / @0x64EF15
     if (cls == 2 && rebirth < 12)               return false;    // @0x64EF36 / @0x64EF38
     if ((cls == 5 || cls == 6) && rebirth < 12) return false;    // @0x64EF69 / @0x64EF6B
     if (cls == 8 && rebirth < 12)               return false;    // @0x64EF89 / @0x64EF8B
 
-    // Sortie @0x64EFA9 : `return Item_ClassifyRecord(a2) != 9 || dword_16747BC >= 12;`
+    // Exit @0x64EFA9: `return Item_ClassifyRecord(a2) != 9 || dword_16747BC >= 12;`
     return cls != 9 || rebirth >= 12;
 }
 

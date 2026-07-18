@@ -1,74 +1,74 @@
-// UI/ChatWindow.h - fenetre de chat & liste de messages systeme du client TS2.
+// UI/ChatWindow.h - TS2 client chat window & system message list.
 //
-// Reecriture PRAGMATIQUE (squelette fonctionnel) du sous-systeme chat de
-// TwelveSky2, d'apres Docs/TS2_CLIENT_SHELL.md #2.5 et le desassemblage :
-//   UI_Chat_SubmitInput     0x68B330  parse prefixe (!/#/@/~) + route par canal
-//   Chat_SubmitTypedMessage 0x5C3CF0  boite " dire " simple -> Op80
-//   Msg_AppendChatLine      0x68DB50  anneau de 300 lignes de chat (+ expediteur)
-//   Msg_AppendSystemLine    0x68D9D0  anneau de 300 lignes systeme (expiration 60 s)
-//   UI_SysMsgList_Render    0x5AEC80  liste systeme + compte a rebours 60 s
-//   UI_GameHud_Render 0x67A3C0 §13    fenetre de chat & messages systeme (bas-gauche),
-//     decompilee integralement dans Docs/TS2_UI_GAMEHUD_RENDER.md :
-//       §13b (EA 0x683B71-0x684019) onglets de canal (switch this+644, 1-5) +
-//            badges "non lu" par canal (this+620..636, 5 booleens, icone commune
-//            unk_924944 aux memes x que les onglets) + previsualisation de saisie
-//            coloree par canal ;
-//       §13c (EA 0x6840AC-0x68472B) les DEUX anneaux (systeme this+672 / chat
-//            this+38488, 122 o/entree, couleur par entree) ;
-//       §13d (EA 0x684736-0x6848DB) 8 badges de notification empiles (this+128..
-//            +160, pas 4), x croissant de 23 px.
+// PRAGMATIC rewrite (functional skeleton) of TwelveSky2's chat subsystem,
+// based on Docs/TS2_CLIENT_SHELL.md #2.5 and the disassembly:
+//   UI_Chat_SubmitInput     0x68B330  parses prefix (!/#/@/~) + routes by channel
+//   Chat_SubmitTypedMessage 0x5C3CF0  simple "say" box -> Op80
+//   Msg_AppendChatLine      0x68DB50  300-line chat ring (+ sender)
+//   Msg_AppendSystemLine    0x68D9D0  300-line system ring (60s expiry)
+//   UI_SysMsgList_Render    0x5AEC80  system list + 60s countdown
+//   UI_GameHud_Render 0x67A3C0 §13    chat & system message window (bottom-left),
+//     fully decompiled in Docs/TS2_UI_GAMEHUD_RENDER.md:
+//       §13b (EA 0x683B71-0x684019) channel tabs (switch this+644, 1-5) +
+//            per-channel "unread" badges (this+620..636, 5 booleans, shared
+//            icon unk_924944 at the same x as the tabs) + per-channel
+//            colored input preview;
+//       §13c (EA 0x6840AC-0x68472B) BOTH rings (system this+672 / chat
+//            this+38488, 122 bytes/entry, per-entry color);
+//       §13d (EA 0x684736-0x6848DB) 8 stacked notification badges (this+128..
+//            +160, not 4), x increasing by 23 px.
 //
-// L'objet d'origine est le singleton g_ChatManager 0x184C3C8 (~80 Ko : deux
-// journaux en anneau, mode de canal +644, cible de chuchotement +648). Ici on ne
-// reproduit PAS la disposition octet-exacte : on garde la SEMANTIQUE (deux
-// anneaux, canaux, prefixes, filtre de mots, onglets cliquables, badges de
-// notification) avec des conteneurs C++ propres.
+// The original object is the g_ChatManager 0x184C3C8 singleton (~80 KB: two
+// ring logs, channel mode +644, whisper target +648). Here we do NOT
+// reproduce the byte-exact layout: we keep the SEMANTICS (two rings,
+// channels, prefixes, word filter, clickable tabs, notification badges) with
+// clean C++ containers.
 //
-// Deviations pragmatiques assumees :
-//   - la saisie n'utilise pas les EDIT Win32 (UI_CreateEditBoxes 0x50E460) mais un
-//     tampon interne pilote par OnKey/OnChar ;
-//   - les libelles localises (StrTable005_Get) et le filtre de mots bannis
-//     (maybe_Dict001_MatchWord 0x4C1410) sont fournis via des valeurs par defaut /
-//     un hook injectable ;
-//   - echo local des messages emis (le serveur les renvoie normalement) pour que
-//     l'UI soit visible hors-ligne ;
-//   - les 17 icones .IMG des onglets/badges (unk_91A358.., unk_924944,
-//     unk_8EA960..8EAE00) n'etant pas resolues (pas de string/skin table chargee
-//     dans cette passe), les onglets/badges sont dessines en rects pleins
-//     teintes + libelle texte (repli assume, cf. Docs/TS2_UI_GAMEHUD_RENDER.md
-//     §19) plutot que de bloquer le rendu ;
-//   - le flux game::g_Client.msg (Game/ClientRuntime.h) est optionnellement
-//     rebranche via SyncFromMessageLog() : les lignes System/Chat/Whisper/Faction
-//     deja poussees par les handlers reseau/gameplay alimentent les memes
-//     anneaux que AddLine/AddSystemLine.
+// Accepted pragmatic deviations:
+//   - input doesn't use Win32 EDIT controls (UI_CreateEditBoxes 0x50E460) but an
+//     internal buffer driven by OnKey/OnChar;
+//   - localized labels (StrTable005_Get) and the banned word filter
+//     (maybe_Dict001_MatchWord 0x4C1410) are provided via default values /
+//     an injectable hook;
+//   - local echo of sent messages (the server normally echoes them back) so
+//     the UI stays visible offline;
+//   - the 17 tab/badge .IMG icons (unk_91A358.., unk_924944,
+//     unk_8EA960..8EAE00) not being resolved (no string/skin table loaded
+//     in this pass), tabs/badges are drawn as tinted solid rects + text
+//     label (accepted fallback, cf. Docs/TS2_UI_GAMEHUD_RENDER.md
+//     §19) rather than blocking the render;
+//   - the game::g_Client.msg stream (Game/ClientRuntime.h) is optionally
+//     rewired via SyncFromMessageLog(): System/Chat/Whisper/Faction lines
+//     already pushed by network/gameplay handlers feed the same rings as
+//     AddLine/AddSystemLine.
 //
-// NOTICES FLOTTANTES (câblage 2026-07-16) : MsgKind::Floating n'est PLUS un puits.
-// Les bannieres flottantes sont un objet SEPARE dans le binaire (dword_1821D58, ni
-// g_ChatManager 0x184C3C8 ni la liste systeme dword_1822350) : elles sont donc portees
-// par un composant autonome UI/FloatingNotices.h (13 slots types, 10 s, sans fondu),
-// que ChatWindow se contente d'ALIMENTER (SyncFromMessageLog -> notices_.Show,
-// HUD_ShowFloatingMessage 0x5AEEC0) et de RENDRE (Render -> notices_.Render,
-// HUD_RenderFloatingMessages 0x5AF4C0). Ce portage tient parce que ChatWindow est le
-// seul consommateur deja cable de game::g_Client.msg (UI/GameHud.cpp L1283-1285) et
-// que l'original enchaine les deux rendus dans UI_RenderAllDialogs 0x5AE2D0 :
-// HUD_RenderFloatingMessages @0x5AE5A7 PUIS UI_SysMsgList_Render @0x5AE5B9 — ordre
-// reproduit a l'identique par Render() (notices en tete).
+// FLOATING NOTICES (wired 2026-07-16): MsgKind::Floating is NO LONGER a sink.
+// Floating banners are a SEPARATE object in the binary (dword_1821D58, neither
+// g_ChatManager 0x184C3C8 nor the system list dword_1822350): they are therefore
+// carried by a standalone component UI/FloatingNotices.h (13 typed slots, 10s,
+// no fade), which ChatWindow simply FEEDS (SyncFromMessageLog -> notices_.Show,
+// HUD_ShowFloatingMessage 0x5AEEC0) and RENDERS (Render -> notices_.Render,
+// HUD_RenderFloatingMessages 0x5AF4C0). This port works because ChatWindow is the
+// only already-wired consumer of game::g_Client.msg (UI/GameHud.cpp L1283-1285) and
+// the original chains both renders in UI_RenderAllDialogs 0x5AE2D0:
+// HUD_RenderFloatingMessages @0x5AE5A7 THEN UI_SysMsgList_Render @0x5AE5B9 — order
+// reproduced identically by Render() (notices first).
 //
-// NB inclusion : ce header n'inclut ni <d3d9.h> ni <winsock2.h> (forward decls),
-// afin que les .cpp gardent la liberte d'inclure Net/ (winsock2 en premier) avant
-// Gfx/ (windows.h) sans conflit d'ordre.
+// NB inclusion: this header includes neither <d3d9.h> nor <winsock2.h> (forward
+// decls), so .cpp files remain free to include Net/ (winsock2 first) before
+// Gfx/ (windows.h) with no ordering conflict.
 #pragma once
 #include <cstdint>
 #include <string>
 #include <deque>
 #include <array>
 
-// Notices flottantes du HUD (dword_1821D58) — header LEGER par construction (aucun
-// d3d9/d3dx9 : ses ressources GPU sont derriere un PIMPL), l'inclure ici ne rompt donc
-// pas le « NB inclusion » ci-dessus.
+// HUD floating notices (dword_1821D58) — header LIGHT by construction (no
+// d3d9/d3dx9: its GPU resources are behind a PIMPL), so including it here doesn't
+// break the "NB inclusion" note above.
 #include "UI/FloatingNotices.h"
 
-// Interface COM D3D9 (fond optionnel) : forward-declaree, jamais dereferencee ici.
+// D3D9 COM interface (optional background): forward-declared, never dereferenced here.
 struct IDirect3DTexture9;
 
 namespace ts2::gfx { class SpriteBatch; class Font; }
@@ -77,58 +77,58 @@ namespace ts2::game { class MessageLog; }
 
 namespace ts2::ui {
 
-// Couleur ARGB. Compatible D3DCOLOR (== DWORD) au site d'appel Font/SpriteBatch.
+// ARGB color. Compatible with D3DCOLOR (== DWORD) at the Font/SpriteBatch call site.
 using Color = uint32_t;
 
-// Canaux de chat. Les valeurs 0..5 correspondent au champ channelMode (this+644)
-// de cChatManager tel que lu par UI_Chat_SubmitInput 0x68B330. Normal = " dire "
-// local (Op80, Chat_SubmitTypedMessage 0x5C3CF0), sans channelMode d'origine.
+// Chat channels. Values 0..5 match the channelMode field (this+644) of
+// cChatManager as read by UI_Chat_SubmitInput 0x68B330. Normal = local "say"
+// (Op80, Chat_SubmitTypedMessage 0x5C3CF0), with no original channelMode.
 enum class ChatChannel : int {
-    Whisper  = 0, // -> Net_SendOp39(cible13, msg61)   (chuchotement)
-    Party    = 1, // -> Net_SendOp38(msg61)            (groupe)
+    Whisper  = 0, // -> Net_SendOp39(target13, msg61)   (whisper)
+    Party    = 1, // -> Net_SendOp38(msg61)            (party)
     Alliance = 2, // -> Net_SendOp68(msg61)            (alliance)
-    Guild    = 3, // -> Net_SendOp77(msg61)            (guilde)
-    Trade    = 4, // -> Net_SendOp81(msg61)            (commerce)
+    Guild    = 3, // -> Net_SendOp77(msg61)            (guild)
+    Trade    = 4, // -> Net_SendOp81(msg61)            (trade)
     Faction  = 5, // -> Net_SendOp40(msg61)            (faction)
-    Normal   = 6, // -> Net_SendOp80(msg61)            (dire local, canal par defaut)
+    Normal   = 6, // -> Net_SendOp80(msg61)            (local say, default channel)
 };
 
-// Couleurs de canal : l'original resout a l'affichage la table de 8 index
-// mFONTCOLOR (ColorTable_InitPalette 0x4C1D60 ; +184 = 0x84DFD8..0x84DFF4 =
+// Channel colors: the original resolves at display time the 8-index
+// mFONTCOLOR table (ColorTable_InitPalette 0x4C1D60; +184 = 0x84DFD8..0x84DFF4 =
 // system/whisper/party/shout/guild/faction/trade/gm) via ColorTable_GetColor
-// 0x4C1FE0. ChatWindow::ChannelColor() (voir ChatWindow.cpp) lit DESORMAIS ces
-// couleurs REELLES depuis game::g_Strings.colors (Game/StringTables.h), au lieu des
-// valeurs inventees precedentes (whisper/party/guild/faction/trade supprimees).
+// 0x4C1FE0. ChatWindow::ChannelColor() (see ChatWindow.cpp) NOW reads these
+// REAL colors from game::g_Strings.colors (Game/StringTables.h), instead of the
+// previously invented values (whisper/party/guild/faction/trade removed).
 //
-// Deux canaux N'ONT PAS d'index prouve dans la table (0x4C1D60 n'en definit que 8)
-// et gardent donc un repli LOCAL documente :
-//   - Normal : le "dire" local (Op80, Chat_SubmitTypedMessage 0x5C3CF0) n'est PAS le
-//     "cri" (Shout = idx39, Pkt_ShoutMessage 0x48F640 = opcode 0x43) -> pas d'index.
-//   - Alliance : aucun des 8 index de 0x4C1D60 ne correspond a l'alliance.
-// kColorSystem reste un repli LOCAL pour les lignes systeme purement cosmetiques de ce
-// widget (ex. "Message bloque") ; les VRAIES lignes systeme arrivent deja colorees
+// Two channels have NO proven index in the table (0x4C1D60 only defines 8)
+// and therefore keep a documented LOCAL fallback:
+//   - Normal: the local "say" (Op80, Chat_SubmitTypedMessage 0x5C3CF0) is NOT
+//     "shout" (Shout = idx39, Pkt_ShoutMessage 0x48F640 = opcode 0x43) -> no index.
+//   - Alliance: none of the 8 indices of 0x4C1D60 correspond to alliance.
+// kColorSystem remains a LOCAL fallback for this widget's purely cosmetic system
+// lines (e.g. "Message blocked"); the REAL system lines already arrive colored
 // (g_SysMsgColor 0x84DFD8 idx15) via game::g_Client.msg -> SyncFromMessageLog.
-inline constexpr Color kColorSystem   = 0xFFC8C8C8u; // repli local (lignes systeme cosmetiques du widget)
-inline constexpr Color kColorNormal   = 0xFFFFFFFFu; // repli : Op80 "dire" local, aucun index de palette prouve (0x4C1D60)
-inline constexpr Color kColorAlliance = 0xFF80FFFFu; // repli : aucun index de canal alliance prouve (0x4C1D60)
+inline constexpr Color kColorSystem   = 0xFFC8C8C8u; // local fallback (widget's cosmetic system lines)
+inline constexpr Color kColorNormal   = 0xFFFFFFFFu; // fallback: local Op80 "say", no proven palette index (0x4C1D60)
+inline constexpr Color kColorAlliance = 0xFF80FFFFu; // fallback: no proven alliance channel index (0x4C1D60)
 
 // -----------------------------------------------------------------------------
-// ChatWindow : deux journaux en anneau (chat + systeme), un canal courant, une
-// saisie, et le rendu 2D (fond via SpriteBatch, texte via Font).
+// ChatWindow: two ring logs (chat + system), a current channel, an input
+// buffer, and 2D rendering (background via SpriteBatch, text via Font).
 class ChatWindow {
 public:
-    // Capacite de chaque anneau (cChatManager : 300 lignes).
+    // Capacity of each ring (cChatManager: 300 lines).
     static constexpr int   kMaxLines     = 300;
-    // Nb de lignes de chat affichees (pageMode this+640 : 10 etendu / 5 replie).
+    // Number of chat lines shown (pageMode this+640: 10 expanded / 5 collapsed).
     static constexpr int   kVisibleLines = 10;
     static constexpr int   kCollapsedLines = 5;
-    // Limite de saisie (EM_LIMITTEXT canal chat = 0x3C).
+    // Input limit (EM_LIMITTEXT chat field = 0x3C).
     static constexpr int   kInputLimit   = 60;
-    // Corps utile d'un message reseau (payload 61 o, NUL inclus).
+    // Useful body of a network message (payload 61 bytes, NUL included).
     static constexpr int   kMsgLen       = 61;
-    // Longueur d'un nom/cible (13 o, NUL inclus).
+    // Length of a name/target (13 bytes, NUL included).
     static constexpr int   kNameLen      = 13;
-    // TTL d'affichage d'une ligne systeme hors focus (UI_SysMsgList_Render : 60 s).
+    // Display TTL of a system line out of focus (UI_SysMsgList_Render: 60s).
     static constexpr float kSysLineTtl   = 60.0f;
 
     ChatWindow();
@@ -136,72 +136,73 @@ public:
     ChatWindow(const ChatWindow&)            = delete;
     ChatWindow& operator=(const ChatWindow&) = delete;
 
-    // Cable le client reseau : tant qu'il est nul, les envois sont ignores
-    // (l'echo local reste actif pour le rendu).
+    // Wires the network client: while null, sends are ignored
+    // (local echo stays active for rendering).
     void Bind(net::NetClient* nc) { net_ = nc; }
 
-    // Fond optionnel : sprite d'UI deja uploade en texture GPU (asset::ImgFile ->
-    // gfx::GpuTexture). Blitte tel quel a (x,y) via SpriteBatch avant le texte.
+    // Optional background: UI sprite already uploaded as a GPU texture
+    // (asset::ImgFile -> gfx::GpuTexture). Blitted as-is at (x,y) via
+    // SpriteBatch before the text.
     void SetBackground(IDirect3DTexture9* tex, int x, int y) { bgTex_ = tex; bgX_ = x; bgY_ = y; }
 
-    // Dimensions ecran (pour ancrer la fenetre en bas-gauche). Defaut 1024x768.
+    // Screen dimensions (to anchor the window bottom-left). Default 1024x768.
     void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
 
-    // Met a jour l'horloge de jeu (g_GameTimeSec) pour estampiller / expirer.
+    // Updates the game clock (g_GameTimeSec) for timestamping / expiry.
     void Tick(float nowSec) { now_ = nowSec; }
 
-    // --- Ajout de lignes -----------------------------------------------------
-    // Msg_AppendChatLine 0x68DB50 : pousse une ligne dans l'anneau de chat.
+    // --- Adding lines -----------------------------------------------------
+    // Msg_AppendChatLine 0x68DB50: pushes a line into the chat ring.
     void AddLine(const std::string& text, Color color, const std::string& sender = {});
-    // Raccourci : ligne de canal (couleur du canal + expediteur).
+    // Shortcut: channel line (channel color + sender).
     void AddChannelLine(ChatChannel ch, const std::string& sender, const std::string& body);
-    // Msg_AppendSystemLine 0x68D9D0 : pousse une ligne dans l'anneau systeme.
+    // Msg_AppendSystemLine 0x68D9D0: pushes a line into the system ring.
     void AddSystemLine(const std::string& text, Color color = kColorSystem);
 
-    // --- Rendu (SpriteBatch pour le fond, Font pour le texte) ----------------
+    // --- Render (SpriteBatch for background, Font for text) ----------------
     void Render(gfx::SpriteBatch& sprites, gfx::Font& font);
 
-    // --- Souris (onglets de canal cliquables, §13b) ---------------------------
-    // Hit-test des 5 onglets de canal (Groupe/Chuchoter/Guilde/Faction/Commerce ;
-    // Alliance/Dire restent accessibles par prefixe ou Tab, cf. CycleChannel).
-    // Selectionne l'onglet et efface son badge "non lu". Renvoie true si
-    // consomme ("premier consommateur gagne", meme convention que
+    // --- Mouse (clickable channel tabs, §13b) ---------------------------
+    // Hit-test of the 5 channel tabs (Party/Whisper/Guild/Faction/Trade;
+    // Alliance/Say remain reachable via prefix or Tab, cf. CycleChannel).
+    // Selects the tab and clears its "unread" badge. Returns true if
+    // consumed ("first consumer wins" rule, same convention as
     // UI/UIManager.h::Dialog::OnMouseDown).
     bool OnMouseDown(int x, int y);
 
-    // --- Badges de notification generiques (§13d, 8 emplacements this+128..160)
-    // idx hors [0,8) ignore silencieusement. Placeholder rect (pas d'icone
-    // resolue) : cf. bandeau de tete.
+    // --- Generic notification badges (§13d, 8 slots this+128..160)
+    // idx outside [0,8) silently ignored. Placeholder rect (no icon
+    // resolved): cf. header banner.
     void SetNotificationBadge(int idx, bool on);
 
-    // --- Alimentation depuis game::g_Client.msg (Game/ClientRuntime.h) --------
-    // Republie dans les anneaux chat_/sys_ les lignes ajoutees a `log` depuis le
-    // dernier appel (suit l'identite de la derniere ligne consommee pour
-    // survivre a l'eviction FIFO cote source, kMaxLines=256). MsgKind::System ->
-    // anneau systeme ; Chat/Whisper/Faction -> anneau chat (+ badge "non lu" si
-    // le canal n'est pas l'onglet actif) ; Floating -> notices_.Show
-    // (HUD_ShowFloatingMessage 0x5AEEC0), cf. bandeau de tete.
+    // --- Feed from game::g_Client.msg (Game/ClientRuntime.h) --------
+    // Republishes into the chat_/sys_ rings the lines added to `log` since the
+    // last call (tracks the identity of the last consumed line to survive
+    // FIFO eviction on the source side, kMaxLines=256). MsgKind::System ->
+    // system ring; Chat/Whisper/Faction -> chat ring (+ "unread" badge if
+    // the channel isn't the active tab); Floating -> notices_.Show
+    // (HUD_ShowFloatingMessage 0x5AEEC0), cf. header banner.
     void SyncFromMessageLog(const game::MessageLog& log);
 
-    // --- Saisie --------------------------------------------------------------
-    // WM_KEYDOWN : Entree (focus/soumission), Echap (annule), Retour arriere,
-    // fleches (curseur/defilement), Tab (change de canal). Renvoie true si
-    // l'evenement est consomme (le monde 3D ne doit pas le recevoir).
+    // --- Input --------------------------------------------------------------
+    // WM_KEYDOWN: Enter (focus/submit), Escape (cancel), Backspace,
+    // arrows (caret/scroll), Tab (change channel). Returns true if
+    // the event is consumed (the 3D world must not receive it).
     bool OnKey(int vk);
-    // WM_CHAR : insere un caractere imprimable dans la saisie (si focus).
+    // WM_CHAR: inserts a printable character into the input (if focused).
     bool OnChar(char c);
 
-    // UI_Chat_SubmitInput 0x68B330 : parse le prefixe (!,#,@,~) puis route selon
-    // le canal courant ; filtre de mots bannis avant envoi.
+    // UI_Chat_SubmitInput 0x68B330: parses the prefix (!,#,@,~) then routes
+    // per the current channel; word filter before sending.
     void Submit();
-    // Chat_SubmitTypedMessage 0x5C3CF0 : boite " dire " simple -> Op80.
+    // Chat_SubmitTypedMessage 0x5C3CF0: simple "say" box -> Op80.
     void SubmitSay();
 
-    // --- Etat ----------------------------------------------------------------
+    // --- State ----------------------------------------------------------------
     void        SetChannel(ChatChannel ch) { channel_ = ch; }
     ChatChannel Channel() const { return channel_; }
     void        CycleChannel();
-    // UI_Chat_SetWhisperMode 0x68B260 : fixe la cible et passe en canal chuchotement.
+    // UI_Chat_SetWhisperMode 0x68B260: sets the target and switches to whisper channel.
     void        SetWhisperTarget(const std::string& name);
     const std::string& WhisperTarget() const { return whisperTarget_; }
 
@@ -210,12 +211,12 @@ public:
     void Unfocus() { focused_ = false; caret_ = 0; }
     const std::string& Input() const { return input_; }
 
-    // Etat replie/etendu du journal (pageMode this+640).
+    // Collapsed/expanded log state (pageMode this+640).
     void SetExpanded(bool v) { expanded_ = v; }
     bool Expanded() const { return expanded_; }
 
-    // Hook filtre de mots bannis (maybe_Dict001_MatchWord 0x4C1410). Renvoie true
-    // si le texte contient un mot banni -> message rejete. nullptr = pas de filtre.
+    // Banned word filter hook (maybe_Dict001_MatchWord 0x4C1410). Returns true
+    // if the text contains a banned word -> message rejected. nullptr = no filter.
     using WordFilter = bool (*)(const char* text);
     void SetWordFilter(WordFilter f) { wordFilter_ = f; }
 
@@ -230,11 +231,11 @@ private:
     static Color       ChannelColor(ChatChannel ch);
     static const char* ChannelPrefix(ChatChannel ch);
 
-    // --- Onglets de canal (§13b) : 5 emplacements, x = EA 0x683B71 (+3,+80,+157,
-    // +234,+311). Alliance/Dire n'ont pas d'onglet dedie dans le HUD d'origine
-    // (accessibles par prefixe ~ / Tab uniquement, cf. bandeau de tete doc §13b :
-    // la table de couleurs de previsualisation ne cite que Party/Whisper/Guild/
-    // Faction/Trade/Shout, pas Alliance).
+    // --- Channel tabs (§13b): 5 slots, x = EA 0x683B71 (+3,+80,+157,
+    // +234,+311). Alliance/Say have no dedicated tab in the original HUD
+    // (reachable only via ~ prefix / Tab, cf. doc §13b header banner:
+    // the preview color table only cites Party/Whisper/Guild/
+    // Faction/Trade/Shout, not Alliance).
     struct TabInfo { ChatChannel channel; const char* label; int xOffset; };
     static constexpr int kTabCount  = 5;
     static constexpr int kTabWidth  = 74;
@@ -244,9 +245,9 @@ private:
     int  TabIndexForChannel(ChatChannel ch) const;
     void SelectTab(int idx);
 
-    // Primitives rect plein (texture blanche 1x1 paresseuse, meme technique que
-    // UI/GameHud.cpp::CreateWhiteTexture, mais creee via ID3DXSprite::GetDevice
-    // pour ne pas dependre de gfx::Renderer dans ce widget).
+    // Solid-rect primitives (lazy 1x1 white texture, same technique as
+    // UI/GameHud.cpp::CreateWhiteTexture, but created via ID3DXSprite::GetDevice
+    // to avoid depending on gfx::Renderer in this widget).
     IDirect3DTexture9* EnsureWhiteTexture(gfx::SpriteBatch& sprites);
     void DrawFilledRect(gfx::SpriteBatch& sprites, int x, int y, int w, int h, Color color);
     void RenderTabPanels(gfx::SpriteBatch& sprites, int tabsY, int badgesY);
@@ -254,20 +255,20 @@ private:
 
     std::deque<ChatLine> chat_;
     std::deque<SysLine>  sys_;
-    int   scroll_ = 0;   // decalage de defilement (lignes depuis le bas)
+    int   scroll_ = 0;   // scroll offset (lines from the bottom)
 
-    // Notices flottantes du HUD (objet dword_1821D58 du binaire, DISTINCT de
-    // g_ChatManager 0x184C3C8) : alimente par SyncFromMessageLog (MsgKind::Floating)
-    // et rendu en tete de Render(). Cf. bandeau de tete.
+    // HUD floating notices (binary object dword_1821D58, DISTINCT from
+    // g_ChatManager 0x184C3C8): fed by SyncFromMessageLog (MsgKind::Floating)
+    // and rendered first in Render(). Cf. header banner.
     FloatingNotices notices_;
 
-    std::array<bool, kTabCount> unread_{};   // badges "non lu" par onglet (this+620..636)
-    std::array<bool, 8>         notif_{};    // badges de notification generiques (§13d)
+    std::array<bool, kTabCount> unread_{};   // "unread" badges per tab (this+620..636)
+    std::array<bool, 8>         notif_{};    // generic notification badges (§13d)
     IDirect3DTexture9*          whiteTex_ = nullptr;
 
-    // Identite de la derniere ligne de game::g_Client.msg deja republiee
-    // (SyncFromMessageLog) : permet de ne pousser que les lignes nouvelles sans
-    // dependre d'un compteur cumulatif absent de MessageLog.
+    // Identity of the last game::g_Client.msg line already republished
+    // (SyncFromMessageLog): allows pushing only new lines without
+    // depending on a cumulative counter absent from MessageLog.
     bool        syncedAny_  = false;
     std::string syncedText_;
     std::string syncedWho_;

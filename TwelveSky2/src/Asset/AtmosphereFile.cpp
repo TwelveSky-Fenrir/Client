@@ -1,6 +1,6 @@
-// Asset/AtmosphereFile.cpp — voir AtmosphereFile.h pour le bandeau complet (format, EA
-// sources, ce qui est fait/pas fait). Traduction C++ FIDÈLE de RE/asset_parsers/sky_atm.py
-// (parse_atm), validée EOF-exact sur les 89 fichiers .ATM réels du dépôt.
+// Asset/AtmosphereFile.cpp — see AtmosphereFile.h for the full banner (format, source EAs,
+// what is done/not done). FAITHFUL C++ port of RE/asset_parsers/sky_atm.py
+// (parse_atm), validated EOF-exact against the 89 real .ATM files in the repo.
 #include "Asset/AtmosphereFile.h"
 #include "Asset/ByteReader.h"
 #include "Asset/FileUtil.h"
@@ -12,7 +12,7 @@ namespace ts2::asset {
 
 namespace {
 
-// DateTime (37 o) : 5×i32 (20 o) + 2×f64 (16 o) + 1×u8 (1 o) = 37 o. Miroir exact de
+// DateTime (37 bytes): 5×i32 (20 B) + 2×f64 (16 B) + 1×u8 (1 B) = 37 B. Exact mirror of
 // sky_atm.py::_read_datetime.
 AtmDateTime ReadDateTime(ByteReader& r) {
     AtmDateTime dt;
@@ -27,7 +27,7 @@ AtmDateTime ReadDateTime(ByteReader& r) {
     return dt;
 }
 
-// CORPS_CÉLESTE / couche nuage (76 o quand nInner==0). Miroir exact de sky_atm.py::_read_body
+// CELESTIAL BODY / cloud layer (76 bytes when nInner==0). Exact mirror of sky_atm.py::_read_body
 // (Astro_DeserializeBody 0x6FE960 + CloudLayer_Deserialize 0x703E80).
 AtmCelestialBody ReadBody(ByteReader& r) {
     AtmCelestialBody b;
@@ -42,7 +42,7 @@ AtmCelestialBody ReadBody(ByteReader& r) {
         const double  v = r.F64();
         b.inner.emplace_back(k, v);
     }
-    for (uint8_t& t : b.tail) t = r.U8(); // queue 4 o (spécifique au type, observée vide/nInner=0)
+    for (uint8_t& t : b.tail) t = r.U8(); // 4-byte tail (type-specific, observed empty/nInner=0)
     return b;
 }
 
@@ -50,8 +50,8 @@ AtmCelestialBody ReadBody(ByteReader& r) {
 
 double AtmDateTime::HourOfDay() const {
     double h = static_cast<double>(hour) + static_cast<double>(minute) / 60.0 + second / 3600.0;
-    // Repli modulo 24 défensif : les .ATM réels observés restent dans [0,24), mais on ne
-    // suppose rien pour un futur fichier hors norme.
+    // Defensive modulo-24 fallback: real .ATM files observed stay within [0,24), but we
+    // assume nothing for a future out-of-range file.
     h = std::fmod(h, 24.0);
     if (h < 0.0) h += 24.0;
     return h;
@@ -81,8 +81,8 @@ bool AtmosphereFile::Parse(const uint8_t* data, size_t size) {
         lon_ = r.F64();
         alt_ = r.F64();
 
-        dtCurrent_   = ReadDateTime(r);                       // +0x1D, 37 o
-        dtEphemeris_ = ReadDateTime(r);                        // +0x42, 37 o
+        dtCurrent_   = ReadDateTime(r);                       // +0x1D, 37 bytes
+        dtEphemeris_ = ReadDateTime(r);                        // +0x42, 37 bytes
 
         for (double& g : globals3_) g = r.F64();               // +0x67, 3×f64
 

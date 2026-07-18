@@ -1,4 +1,4 @@
-// Game/StatBonusContributors.cpp — implémentation fidèle au désassemblage (voir en-tête .h).
+// Game/StatBonusContributors.cpp — implementation faithful to the disassembly (see .h header).
 #include "Game/StatBonusContributors.h"
 #include <cstring>
 
@@ -6,14 +6,12 @@ namespace ts2::game {
 
 namespace {
 
-// ---------------------------------------------------------------------
-// Item_GemStatBonusLookup 0x4C3D90 — table (groupe, clé, valeur) -> bonus plat.
-//   groupe 1 : clés 1,2,4,6,8 — plage de valeur -> bonus linéaire (les autres clés = 0).
-//   groupe 2 : clé 1 -> paliers de 5 (400/800/1200/1600/2000 sur deux bandes 1-25/26-50) ;
-//              clés 4 et 8 -> paliers modulo 5 (200/400/600/800/1000) sur deux bandes
-//              disjointes (1-25 / 26-50) ; clés 2 et 6 -> toujours 0.
-// Transcription exacte du désassemblage (aucune supposition sur le rôle des clés).
-// ---------------------------------------------------------------------
+// Item_GemStatBonusLookup 0x4C3D90 — table (group, key, value) -> flat bonus.
+//   group 1: keys 1,2,4,6,8 — value range -> linear bonus (other keys = 0).
+//   group 2: key 1 -> tiers of 5 (400/800/1200/1600/2000 over two bands 1-25/26-50);
+//            keys 4 and 8 -> tiers modulo 5 (200/400/600/800/1000) over two disjoint
+//            bands (1-25 / 26-50); keys 2 and 6 -> always 0.
+// Exact transcription of the disassembly (no assumption about the role of the keys).
 int Item_GemStatBonusLookup(int group, int key, int value) {
     if (group == 1) {
         switch (key) {
@@ -43,7 +41,7 @@ int Item_GemStatBonusLookup(int group, int key, int value) {
                     case 2: return 400;
                     case 3: return 600;
                     case 4: return 800;
-                    default: return (value % 5) ? 0 : 1000; // reste 0 (multiple de 5)
+                    default: return (value % 5) ? 0 : 1000; // remainder 0 (multiple of 5)
                 }
             }
             case 6: return 0;
@@ -63,12 +61,10 @@ int Item_GemStatBonusLookup(int group, int key, int value) {
     return 0;
 }
 
-// ---------------------------------------------------------------------
-// AnchorTbl_FindByKey 0x4C7630 — scan linéaire de GameDatabases::socketT (SOCKET_INFO,
-// 20 o/enreg.) cherchant key1 @+0 et key2 @+8. L'original boucle en dur sur 3500 lignes
-// (alloc fixe) ; on clampe à socketT.count par sécurité mémoire (comportement identique
-// pour toute table réellement chargée, count <= 3031 d'après le chargeur 005_00010.IMG).
-// ---------------------------------------------------------------------
+// AnchorTbl_FindByKey 0x4C7630 — linear scan of GameDatabases::socketT (SOCKET_INFO,
+// 20 bytes/record) looking for key1 @+0 and key2 @+8. The original hard-loops over 3500
+// lines (fixed alloc); clamped here to socketT.count for memory safety (identical
+// behavior for any actually loaded table, count <= 3031 per the 005_00010.IMG loader).
 const uint8_t* SocketAnchor_FindByKey(const DataTable& socketT, int key1, int key2) {
     if (key1 < 1 || key2 < 1) return nullptr;
     const uint32_t n = (socketT.count < 3500u) ? socketT.count : 3500u;
@@ -83,7 +79,7 @@ const uint8_t* SocketAnchor_FindByKey(const DataTable& socketT, int key1, int ke
     return nullptr;
 }
 
-// Lit le champ +12 (sel==1) ou +16 (sel==2) d'un enregistrement SOCKET_INFO. 0 si absent.
+// Reads field +12 (sel==1) or +16 (sel==2) of a SOCKET_INFO record. 0 if absent.
 int SocketAnchor_ReadField(const uint8_t* rec, int sel) {
     if (!rec || (sel != 1 && sel != 2)) return 0;
     int32_t v = 0;
@@ -91,15 +87,13 @@ int SocketAnchor_ReadField(const uint8_t* rec, int sel) {
     return v;
 }
 
-// ---------------------------------------------------------------------
-// SkillTree_GetNodeValue 0x54B830 — sélectionne sel∈{0,1,2} par (category,id,val) via une
-// grande table de cas (transcription exacte), puis lit SOCKET_INFO[id,val].champ(sel) via
-// AnchorTbl_FindByKey. Simplification FONCTIONNELLEMENT NEUTRE par rapport à l'original :
-// l'original fait toujours l'appel AnchorTbl_FindByKey (goto LABEL_220) même quand sel reste
-// à 0 (résultat alors forcé à 0 quoi qu'il arrive, car AnchorTbl_FindByKey est sans effet de
-// bord) ; on saute directement cet appel inutile quand sel==0 — résultat identique dans tous
-// les cas, juste sans le scan de table superflu.
-// ---------------------------------------------------------------------
+// SkillTree_GetNodeValue 0x54B830 — selects sel∈{0,1,2} by (category,id,val) via a
+// large case table (exact transcription), then reads SOCKET_INFO[id,val].field(sel) via
+// AnchorTbl_FindByKey. FUNCTIONALLY NEUTRAL simplification vs the original: the original
+// always makes the AnchorTbl_FindByKey call (goto LABEL_220) even when sel stays 0
+// (result then forced to 0 regardless, since AnchorTbl_FindByKey is side-effect-free);
+// this skips that useless call directly when sel==0 — identical result in all cases,
+// just without the superfluous table scan.
 int SkillTree_GetNodeValue(const GameDatabases& db, int category, int id, int val) {
     int sel = 0;
     switch (category) {
@@ -208,7 +202,7 @@ int SkillTree_GetNodeValue(const GameDatabases& db, int category, int id, int va
             if (id == 42 || id == 46) sel = 1;
             break;
         default:
-            break; // category 9,10, <1 ou >23 : sel reste 0 (résultat 0, cf. original).
+            break; // category 9,10, <1 or >23: sel stays 0 (result 0, cf. original).
     }
 
     if (sel == 0 || id == 0) return 0;
@@ -216,8 +210,8 @@ int SkillTree_GetNodeValue(const GameDatabases& db, int category, int id, int va
     return SocketAnchor_ReadField(rec, sel);
 }
 
-// Bonus de raffinage/gemme "plat" lu sur l'octet2 d'un mot socket (Item_GetAttribByte2
-// = catégorie socket float / nb gemmes) : 5 points par palier, +5 si le palier == 25.
+// Flat refine/gem bonus read from byte2 of a socket word (Item_GetAttribByte2
+// = socket float category / gem count): 5 points per tier, +5 if tier == 25.
 inline int gemRefineTerm(uint32_t socketWord) {
     const int cat = Item_GetAttribByte2(socketWord);
     int v = 5 * cat;
@@ -227,9 +221,7 @@ inline int gemRefineTerm(uint32_t socketWord) {
 
 } // namespace
 
-// ---------------------------------------------------------------------
 // Item_SumGemStatBonus 0x4C3CC0.
-// ---------------------------------------------------------------------
 int Item_SumGemStatBonus(int key, uint32_t socketWord) {
     if (socketWord == 0) return 0;
     const int b0 = Item_GetAttribByte0(socketWord);
@@ -244,9 +236,7 @@ int Item_SumGemStatBonus(int key, uint32_t socketWord) {
     return sum;
 }
 
-// ---------------------------------------------------------------------
 // Char_SumGemStatA/B/C/D 0x54CB00/0x54CB80/0x54CC40/0x54CC90.
-// ---------------------------------------------------------------------
 int Char_SumGemStatA(const SelfState& s) {
     return gemRefineTerm(s.equip[7].socket) + gemRefineTerm(s.equip[2].socket);
 }
@@ -260,17 +250,15 @@ int Char_SumGemStatD(const SelfState& s) {
     return gemRefineTerm(s.equip[0].socket);
 }
 
-// ---------------------------------------------------------------------
-// SkillTree_SumBonuses 0x54B700 — jusqu'à 5 paires (id,valeur) bit-packées sur 3 dwords.
-// ---------------------------------------------------------------------
+// SkillTree_SumBonuses 0x54B700 — up to 5 (id,value) pairs bit-packed across 3 dwords.
 int SkillTree_SumBonuses(int category, uint32_t block0, uint32_t block1, uint32_t block2,
                           const GameDatabases& db) {
-    // Octet1 de block0 = nombre de paires actives, char SIGNÉ dans l'original (0/négatif -> 0).
+    // Byte1 of block0 = number of active pairs, SIGNED char in the original (0/negative -> 0).
     const int count = static_cast<int>(static_cast<int8_t>((block0 >> 8) & 0xFFu));
     if (count <= 0) return 0;
-    const int n = (count < 5) ? count : 5; // borne défensive : seulement 5 paires disponibles
-                                            // (l'original n'a pas ce clamp -> lecture hors-tableau
-                                            // sur la pile si octet1 > 5, jamais observé en pratique).
+    const int n = (count < 5) ? count : 5; // defensive bound: only 5 pairs available
+                                            // (the original has no such clamp -> out-of-bounds
+                                            // stack read if byte1 > 5, never observed in practice).
 
     const int ids[5] = {
         static_cast<int8_t>((block0 >> 16) & 0xFFu),

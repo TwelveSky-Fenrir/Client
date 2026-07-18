@@ -1,17 +1,17 @@
-// Net/PacketDispatch.h — reception + dispatch des paquets entrants par opcode.
+// Net/PacketDispatch.h — receives + dispatches incoming packets by opcode.
 //
-// Fidele a :
-//   Net_RecvDispatch       0x463040  (recv -> append buffer -> boucle de drain par opcode)
-//   Net_InitPacketHandlers 0x463270  (construction des tables tailles/handlers)
+// Faithful to:
+//   Net_RecvDispatch       0x463040  (recv -> append to buffer -> per-opcode drain loop)
+//   Net_InitPacketHandlers 0x463270  (builds the size/handler tables)
 //
-// Modele memoire d'origine (client reseau = dword_8156A0) :
-//   +32     : buffer de reception (200000 o)     -> buffer_
-//   +200032 : nombre d'octets remplis            -> filled_
-//   opcode  = buffer[0] (this+32) ; payload = buffer[1] (this+33, alias unk_8156C1)
-//   dword_846408[op] = handler ; dword_846808[op] = taille TOTALE du frame fixe
+// Original memory model (network client = dword_8156A0):
+//   +32     : receive buffer (200000 bytes)      -> buffer_
+//   +200032 : number of bytes filled             -> filled_
+//   opcode  = buffer[0] (this+32); payload = buffer[1] (this+33, alias unk_8156C1)
+//   dword_846408[op] = handler; dword_846808[op] = TOTAL size of the fixed frame
 //
-// Le flux entrant n'est PAS dechiffre ici : Net_RecvDispatch lit l'opcode en clair.
-// (Le XOR mono-octet ne s'applique qu'a l'emission ; cf. builders Net_Send*.)
+// The incoming stream is NOT decrypted here: Net_RecvDispatch reads the opcode in clear.
+// (The single-byte XOR only applies on send; see Net_Send* builders.)
 #pragma once
 #include <winsock2.h>
 #include <array>
@@ -23,25 +23,25 @@
 
 namespace ts2::net {
 
-// Buffer de reception du client (this+32 .. this+200032).
+// Client receive buffer (this+32 .. this+200032).
 inline constexpr std::size_t kRecvBufferSize = 200000;
 
-// Unique opcode a longueur variable : [op:u8][len:u32][payload] (Net_OnScriptTrigger 0x63).
+// Only variable-length opcode: [op:u8][len:u32][payload] (Net_OnScriptTrigger 0x63).
 inline constexpr std::uint8_t kVariableOpcode = 0x63;
 
-// En-tete du frame variable : opcode(1) + longueur(4).
+// Variable frame header: opcode(1) + length(4).
 inline constexpr std::uint32_t kVariableHeaderSize = 5;
 
 // ---------------------------------------------------------------------------
-// Table des tailles par opcode (dword_846808). Valeur = taille TOTALE du frame
-// fixe sur le fil = [opcode:u8] + payload ; 0 = opcode inconnu (aucun handler).
-// Tous les opcodes geres ont une taille non nulle, recuperee statiquement de
-// Net_InitPacketHandlers 0x463270 (l'IDB statique lit 0 : ces globales sont
-// initialisees au runtime — la source de verite est donc le desassemblage).
-// Pour l'opcode variable 0x63 la table vaut 5 (taille minimale de l'en-tete).
+// Per-opcode size table (dword_846808). Value = TOTAL size of the fixed frame
+// on the wire = [opcode:u8] + payload; 0 = unknown opcode (no handler).
+// All handled opcodes have a non-zero size, statically recovered from
+// Net_InitPacketHandlers 0x463270 (the static IDB reads 0: these globals are
+// initialized at runtime — so the disassembly is the source of truth).
+// For the variable opcode 0x63 the table holds 5 (minimum header size).
 // ---------------------------------------------------------------------------
 constexpr std::array<std::uint32_t, 256> MakeSizeTable() {
-    std::array<std::uint32_t, 256> t{}; // tout a zero
+    std::array<std::uint32_t, 256> t{}; // all zero
     t[0x0c] = 10377; t[0x0d] = 3781; t[0x0e] = 1005; t[0x0f] = 613;
     t[0x10] = 441;   t[0x11] = 25;   t[0x12] = 93;   t[0x13] = 97;
     t[0x14] = 62;    t[0x15] = 77;   t[0x16] = 9;    t[0x17] = 109;
@@ -87,63 +87,63 @@ constexpr std::array<std::uint32_t, 256> MakeSizeTable() {
     return t;
 }
 
-// Table figee, exploitable en constexpr.
+// Frozen table, usable in constexpr.
 inline constexpr std::array<std::uint32_t, 256> kPacketSize = MakeSizeTable();
 
-// Accesseur (reference sur la table figee).
+// Accessor (reference to the frozen table).
 inline const std::array<std::uint32_t, 256>& PacketSizeTable() { return kPacketSize; }
 
-// Resultat du pompage d'un evenement socket (retour utile de Net_RecvDispatch).
+// Result of pumping a socket event (useful return of Net_RecvDispatch).
 enum class RecvResult {
-    Ok,     // donnees traitees ou rien a lire (WSAEWOULDBLOCK) — socket toujours ouvert
-    Closed, // FD_CLOSE, recv==0, ou erreur socket -> l'appelant doit fermer
+    Ok,     // data processed or nothing to read (WSAEWOULDBLOCK) — socket still open
+    Closed, // FD_CLOSE, recv==0, or socket error -> caller must close
 };
 
 // ---------------------------------------------------------------------------
-// PacketDispatcher : detient le buffer de reception, la table des tailles et la
-// table des handlers enregistrables ; reproduit la boucle de drain d'origine.
+// PacketDispatcher: owns the receive buffer, the size table, and the
+// registrable handler table; reproduces the original drain loop.
 // ---------------------------------------------------------------------------
 class PacketDispatcher {
 public:
-    // Handler d'un paquet entrant.
-    //   opcode     : l'opcode brut (buffer[0]).
-    //   payload    : premier octet apres l'en-tete (buffer+1 en fixe, buffer+5 en 0x63).
-    //   payloadLen : longueur du payload (taille[op]-1 en fixe, len en 0x63).
+    // Handler for an incoming packet.
+    //   opcode     : raw opcode (buffer[0]).
+    //   payload    : first byte after the header (buffer+1 fixed, buffer+5 for 0x63).
+    //   payloadLen : payload length (size[op]-1 fixed, len for 0x63).
     using Handler = std::function<void(std::uint8_t opcode,
                                        const std::uint8_t* payload,
                                        std::uint32_t payloadLen)>;
 
     PacketDispatcher();
 
-    // Enregistrement d'un handler (table dword_846408). Un handler vide = opcode ignore.
+    // Registers a handler (dword_846408 table). An empty handler = ignored opcode.
     void SetHandler(std::uint8_t opcode, Handler h);
     void SetHandler(Incoming opcode, Handler h) {
         SetHandler(static_cast<std::uint8_t>(opcode), std::move(h));
     }
     void ClearHandlers();
 
-    // Surcharge d'une taille (table dword_846808), au cas ou un opcode devrait etre
-    // recalibre depuis un dump runtime. Tous les opcodes connus sont deja renseignes.
+    // Overrides a size (dword_846808 table), in case an opcode needs to be
+    // recalibrated from a runtime dump. All known opcodes are already populated.
     void SetSize(std::uint8_t opcode, std::uint32_t size) { sizes_[opcode] = size; }
     std::uint32_t SizeOf(std::uint8_t opcode) const { return sizes_[opcode]; }
 
-    // Vide le buffer de reception (reset partiel type Net_CloseSocket).
+    // Clears the receive buffer (partial reset, Net_CloseSocket-style).
     void Reset() { filled_ = 0; }
     std::uint32_t Filled() const { return filled_; }
 
-    // Equivaut a Net_RecvDispatch(this, _, netEvent). netEvent = WSAGETSELECTEVENT(lParam)
-    // du message socket 0x401 (WM_USER+1). FD_READ -> un recv + drain ; FD_CLOSE -> Closed.
+    // Equivalent to Net_RecvDispatch(this, _, netEvent). netEvent = WSAGETSELECTEVENT(lParam)
+    // of the socket message 0x401 (WM_USER+1). FD_READ -> one recv + drain; FD_CLOSE -> Closed.
     RecvResult OnSocketEvent(SOCKET s, std::uint16_t netEvent);
 
-    // Draine tous les paquets complets presents dans le buffer.
+    // Drains all complete packets present in the buffer.
     void Drain();
 
-    // Injecte des octets bruts dans le buffer puis draine (tests / relecture hors socket).
-    // Renvoie false si la capacite (kRecvBufferSize) serait depassee.
+    // Injects raw bytes into the buffer then drains (tests / offline replay).
+    // Returns false if capacity (kRecvBufferSize) would be exceeded.
     bool PushBytes(const std::uint8_t* data, std::uint32_t n);
 
 private:
-    void Consume(std::uint32_t n); // memmove(buffer, buffer+n, filled-n) ; filled -= n
+    void Consume(std::uint32_t n); // memmove(buffer, buffer+n, filled-n); filled -= n
 
     std::array<std::uint32_t, 256>       sizes_;
     std::array<Handler, 256>             handlers_;

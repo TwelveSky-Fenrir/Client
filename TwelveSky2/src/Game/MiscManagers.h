@@ -1,16 +1,16 @@
-// Game/MiscManagers.h — regroupe 5 managers divers de la séquence App_Init 0x461C20 :
-// mTRANSFER, mPOINTER, mUTIL, mMYINFO, mPLAY (dans cet ordre d'appel dans le binaire).
+// Game/MiscManagers.h — groups 5 misc managers from the App_Init 0x461C20 sequence:
+// mTRANSFER, mPOINTER, mUTIL, mMYINFO, mPLAY (in this call order in the binary).
 //
-// Réécriture FIDÈLE, vérité = désassemblage de TwelveSky2.exe (imagebase 0x400000).
-// Correspondance fonction d'origine -> fonction ci-dessous :
+// FAITHFUL rewrite, ground truth = TwelveSky2.exe disassembly (imagebase 0x400000).
+// Original function -> function below mapping:
 //   sub_4B43A0              0x4B43A0  -> Transfer_InitNoOp()         (mTRANSFER)
 //   CursorSet_LoadResources 0x4C0FA0  -> CursorSet::LoadResources()  (mPOINTER)
 //   sub_53F2B0              0x53F2B0  -> Util_InitNoOp()             (mUTIL)
 //   Player_ResetAnimState   0x50F520  -> Player_ResetAnimState()     (mMYINFO)
 //   cGameData_InitPools     0x5575D0  -> GameData_InitPools()        (mPLAY)
 //
-// Séquence exacte dans App_Init (0x461f64..0x462405), un manager après l'autre,
-// chacun devant renvoyer vrai pour que l'init continue :
+// Exact sequence in App_Init (0x461f64..0x462405), one manager after another,
+// each must return true for init to continue:
 //   ... Net_InitPacketHandlers -> sub_4B43A0(&unk_846C08)
 //       -> CursorSet_LoadResources(&unk_8E714C)
 //       -> Dict001_Load / Tips002_Load / ...
@@ -19,38 +19,35 @@
 //       -> cSceneMgr_Init -> ... -> cGameData_InitPools(&g_LocalPlayerSheet)
 //       -> g_GameTimeSec = Terr...
 //
-// ---------------------------------------------------------------------------
-// CE QUE FAIT RÉELLEMENT CHAQUE MANAGER (relevé exact par décompilation)
-// ---------------------------------------------------------------------------
-// mTRANSFER (sub_4B43A0) et mUTIL (sub_53F2B0) sont des NO-OP PURS dans ce
-// build : Hex-Rays a réduit chaque fonction à `return 1;` — le paramètre
-// `this` (respectivement &unk_846C08 et &unk_1685740) n'est jamais lu ni
-// écrit. Ce sont des points d'extension présents dans la séquence d'init
-// mais jamais implémentés dans le binaire livré (ou vidés à la compilation
-// finale). Reproduits ici comme no-op documentés — PAS de logique fabriquée.
+// WHAT EACH MANAGER ACTUALLY DOES (exact findings from decompilation)
+// mTRANSFER (sub_4B43A0) and mUTIL (sub_53F2B0) are PURE NO-OPS in this
+// build: Hex-Rays reduced each function to `return 1;` — the `this`
+// parameter (&unk_846C08 and &unk_1685740 respectively) is never read or
+// written. These are extension points present in the init sequence
+// but never implemented in the shipped binary (or stripped at final
+// compilation). Reproduced here as documented no-ops — NO fabricated logic.
 //
-// mPOINTER (CursorSet_LoadResources) charge 9 curseurs Win32 EMBARQUÉS dans
-// les RESSOURCES de l'exécutable (RT_GROUP_CURSOR, PAS un fichier .cur/.ani
-// externe) via LoadCursorA(hInstance, MAKEINTRESOURCE(id)), id direct dans
-// [0x66..0x6C] puis {0x75, 0x77}. Renvoie faux si UN SEUL LoadCursorA échoue.
+// mPOINTER (CursorSet_LoadResources) loads 9 Win32 cursors EMBEDDED in
+// the executable's RESOURCES (RT_GROUP_CURSOR, NOT an external .cur/.ani
+// file) via LoadCursorA(hInstance, MAKEINTRESOURCE(id)), direct id in
+// [0x66..0x6C] then {0x75, 0x77}. Returns false if EVEN ONE LoadCursorA fails.
 //
-// mMYINFO (Player_ResetAnimState) réinitialise une poignée de champs épars
-// (PAS un memset intégral) d'un très gros bloc « contrôleur de commandes
-// joueur » (g_PlayerCmdController, 0x1669170) : horodatage courant, 6 floats
-// à 0, et un flag NaN — voir le tableau d'offsets dans le .cpp.
+// mMYINFO (Player_ResetAnimState) resets a handful of scattered fields
+// (NOT a full memset) of a very large "player command controller" block
+// (g_PlayerCmdController, 0x1669170): current timestamp, 6 floats
+// set to 0, and a NaN flag — see the offset table in the .cpp.
 //
-// mPLAY (cGameData_InitPools) fixe les CAPACITÉS FIXES de 6 pools d'entités
-// et zéro-initialise un petit nombre de champs de chaque emplacement. C'est
-// l'INITIALISATEUR D'ORIGINE des tableaux d'entités déjà modélisés (en
-// std::vector dynamique) dans Game/GameState.h : les adresses absolues des
-// 5 premiers pools correspondent EXACTEMENT aux globals déjà documentés là
-// (dword_1687234 joueurs, dword_1764D14 objets au sol, dword_1766F74
-// monstres, dword_17AB534 PNJ, dword_180EEF4 objets de zone) — vérifié par
-// calcul d'adresse (voir .cpp). Le 6e pool (E, 0x17D06F4, compteur
-// g_FxAuraCount) est le pool de PROJECTILES D'ATTAQUE déjà catalogué dans
-// Docs/TS2_FX_CATALOG.md (Fx_SpawnAttackProjectile/Fx_HomingProjectileUpdate) ;
-// intentionnellement NON dupliqué ici (voir .cpp).
-// ---------------------------------------------------------------------------
+// mPLAY (cGameData_InitPools) sets the FIXED CAPACITIES of 6 entity pools
+// and zero-initializes a small number of fields per slot. This is
+// the ORIGINAL INITIALIZER of the entity arrays already modeled (as
+// dynamic std::vector) in Game/GameState.h: the absolute addresses of
+// the first 5 pools EXACTLY match the globals already documented there
+// (dword_1687234 players, dword_1764D14 ground items, dword_1766F74
+// monsters, dword_17AB534 NPCs, dword_180EEF4 zone objects) — verified by
+// address computation (see .cpp). The 6th pool (E, 0x17D06F4, counter
+// g_FxAuraCount) is the ATTACK PROJECTILE pool already cataloged in
+// Docs/TS2_FX_CATALOG.md (Fx_SpawnAttackProjectile/Fx_HomingProjectileUpdate);
+// intentionally NOT duplicated here (see .cpp).
 #pragma once
 
 #include <windows.h>
@@ -58,130 +55,118 @@
 
 namespace ts2::game {
 
-// ===========================================================================
 // mTRANSFER — sub_4B43A0 0x4B43A0.
-// ===========================================================================
-// No-op confirmé (le binaire ne touche jamais &unk_846C08). Toujours vrai.
+// Confirmed no-op (the binary never touches &unk_846C08). Always true.
 inline bool Transfer_InitNoOp() { return true; }
 
-// ===========================================================================
 // mUTIL — sub_53F2B0 0x53F2B0.
-// ===========================================================================
-// No-op confirmé (le binaire ne touche jamais &unk_1685740). Toujours vrai.
+// Confirmed no-op (the binary never touches &unk_1685740). Always true.
 inline bool Util_InitNoOp() { return true; }
 
-// ===========================================================================
 // mPOINTER — CursorSet_LoadResources 0x4C0FA0.
-// ===========================================================================
-// Bloc d'origine : global à unk_8E714C, 10 dwords = { état(=0), 9×HCURSOR }.
-// Layout EXACT reproduit ci-dessous (this+0 .. this+9 dans le désassemblage).
+// Original block: global at unk_8E714C, 10 dwords = { state(=0), 9×HCURSOR }.
+// EXACT layout reproduced below (this+0 .. this+9 in the disassembly).
 struct CursorSet {
-    // this+0 : toujours mis à 0 par le chargeur d'origine (curseur "actif" /
-    // index courant — jamais relu dans LoadResources elle-même).
+    // this+0: always set to 0 by the original loader ("active" cursor /
+    // current index — never read back within LoadResources itself).
     int32_t state = 0;
 
-    // this+1 .. this+9 : les 9 curseurs, dans l'ORDRE EXACT du binaire.
-    // Ressources IDs = MAKEINTRESOURCE(id) sur le module .exe lui-même
-    // (RT_GROUP_CURSOR intégrées dans la section .rsrc — PAS de fichier
-    // .cur/.ani sur disque).
+    // this+1 .. this+9: the 9 cursors, in the EXACT order used by the binary.
+    // Resource IDs = MAKEINTRESOURCE(id) on the .exe module itself
+    // (RT_GROUP_CURSOR embedded in the .rsrc section — NOT a file
+    // on disk).
     //
-    // RÔLE DE CHAQUE SLOT — établi (vague W10) par le switch 8 cas de
+    // ROLE OF EACH SLOT — established (wave W10) by the 8-case switch in
     // Scene_InGameRender 0x52D0B0 (`cmp var_53C, 7 / ja def_530FC7` @0x530FB4,
-    // saut @0x530FC7) dont chaque cas pose une frame de curseur selon la
-    // catégorie renvoyée par World_PickEntityAtCursor 0x538AB0 :
+    // jump @0x530FC7), where each case sets a cursor frame based on the
+    // category returned by World_PickEntityAtCursor 0x538AB0:
     //
-    //   slot 0     (0x66) défaut — reset d'entrée de scène (Scene_EnterWorldUpdate
-    //                    @0x52C044, Scene_InGameUpdate @0x52C637 : `push 0`) ET
-    //                    tout hit-test UI réussi (cDrawWin_Draw : Sprite2D_HitTest
+    //   slot 0     (0x66) default — scene-entry reset (Scene_EnterWorldUpdate
+    //                    @0x52C044, Scene_InGameUpdate @0x52C637: `push 0`) AND
+    //                    any successful UI hit-test (cDrawWin_Draw: Sprite2D_HitTest
     //                    != 0 -> `push 0` @0x6299D8).
-    //   slots 1,2  (0x67,0x68) paire clignotante 2 Hz « interaction » : cas 1
-    //                    (joueur, +Char_DrawNameplate @0x531052), cas 4 (PNJ
+    //   slots 1,2  (0x67,0x68) 2 Hz blinking "interact" pair: case 1
+    //                    (player, +Char_DrawNameplate @0x531052), case 4 (NPC
     //                    g_NpcRenderArray stride 88, +Fx_MeleeSwingDrawMarker
-    //                    @0x531148), cas 7 (objet de zone, +Obj_DrawNameLabel
+    //                    @0x531148), case 7 (zone object, +Obj_DrawNameLabel
     //                    @0x531206).  base = +1 (@0x531022 / @0x53111B / @0x5311E2)
-    //   slots 3,4  (0x69,0x6A) paire clignotante 2 Hz « hostile » : cas 2 et 3
-    //                    (joueurs, +Char_DrawNameplate @0x5310A5 / @0x5310F8),
-    //                    cas 5 (monstre dword_1766F74 stride 280,
+    //   slots 3,4  (0x69,0x6A) 2 Hz blinking "hostile" pair: cases 2 and 3
+    //                    (players, +Char_DrawNameplate @0x5310A5 / @0x5310F8),
+    //                    case 5 (monster dword_1766F74 stride 280,
     //                    +Char_DrawOverheadName @0x531199).
     //                    base = +3 (@0x531075 / @0x5310C8 / @0x53116B)
-    //   slots 5,6  (0x6B,0x6C) paire clignotante 2 Hz : cas 6 (objet au sol ;
-    //                    aucun draw associé).  base = +5 (@0x5311B9)
-    //   slot 7     (0x75) compétence LANÇABLE — cas 0 :
+    //   slots 5,6  (0x6B,0x6C) 2 Hz blinking pair: case 6 (ground item;
+    //                    no associated draw).  base = +5 (@0x5311B9)
+    //   slot 7     (0x75) CASTABLE skill — case 0:
     //                    Skill_CanCastAtCursor(unk_1685740,…) != 0 -> `push 7`
     //                    @0x530FEA
-    //   slot 8     (0x77) compétence NON lançable — cas 0, branche zéro ->
+    //   slot 8     (0x77) NOT castable skill — case 0, zero branch ->
     //                    `push 8` @0x530FFA
     //
-    // NB : le RÔLE ci-dessus est prouvé par le contexte d'appel ; l'APPARENCE
-    // (épée/main/sablier…) ne l'est PAS — les RT_GROUP_CURSOR n'ont pas été
-    // inspectés. On ne nomme donc PAS les slots d'après un dessin supposé.
-    HCURSOR slot66 = nullptr; // id 0x66 (102) — this+1 — défaut / hover UI
-    HCURSOR slot67 = nullptr; // id 0x67 (103) — this+2 — interaction (phase A)
-    HCURSOR slot68 = nullptr; // id 0x68 (104) — this+3 — interaction (phase B)
+    // NB: the ROLE above is proven by call-site context; the APPEARANCE
+    // (sword/hand/hourglass…) is NOT — the RT_GROUP_CURSOR resources were not
+    // inspected. Slots are therefore NOT named after an assumed icon.
+    HCURSOR slot66 = nullptr; // id 0x66 (102) — this+1 — default / UI hover
+    HCURSOR slot67 = nullptr; // id 0x67 (103) — this+2 — interact (phase A)
+    HCURSOR slot68 = nullptr; // id 0x68 (104) — this+3 — interact (phase B)
     HCURSOR slot69 = nullptr; // id 0x69 (105) — this+4 — hostile (phase A)
     HCURSOR slot6A = nullptr; // id 0x6A (106) — this+5 — hostile (phase B)
-    HCURSOR slot6B = nullptr; // id 0x6B (107) — this+6 — objet au sol (phase A)
-    HCURSOR slot6C = nullptr; // id 0x6C (108) — this+7 — objet au sol (phase B)
-    HCURSOR slot75 = nullptr; // id 0x75 (117) — this+8 — compétence lançable
-    HCURSOR slot77 = nullptr; // id 0x77 (119) — this+9 — compétence bloquée
+    HCURSOR slot6B = nullptr; // id 0x6B (107) — this+6 — ground item (phase A)
+    HCURSOR slot6C = nullptr; // id 0x6C (108) — this+7 — ground item (phase B)
+    HCURSOR slot75 = nullptr; // id 0x75 (117) — this+8 — castable skill
+    HCURSOR slot77 = nullptr; // id 0x77 (119) — this+9 — blocked skill
 
-    // CursorSet_LoadResources 0x4C0FA0 : LoadCursorA(hInstance, id) pour les
-    // 9 ressources ci-dessus, DANS CET ORDRE. Renvoie faux si un seul appel
-    // échoue (HCURSOR nul) — fidèle à la boucle de contrôle du binaire.
-    // NB : échouera légitimement tant que ClientSource n'embarque pas les
-    // mêmes ressources RT_GROUP_CURSOR (ids 0x66..0x6C,0x75,0x77) dans son
-    // propre .rc — c'est le comportement honnête, pas une régression.
+    // CursorSet_LoadResources 0x4C0FA0: LoadCursorA(hInstance, id) for the
+    // 9 resources above, IN THIS ORDER. Returns false if a single call
+    // fails (null HCURSOR) — faithful to the binary's control loop.
+    // NB: will legitimately fail until ClientSource embeds the
+    // same RT_GROUP_CURSOR resources (ids 0x66..0x6C,0x75,0x77) in its
+    // own .rc — this is honest behavior, not a regression.
     bool LoadResources(HINSTANCE hInstance);
 
-    // ===========================================================================
     // mPOINTER (teardown) — CursorSet_DestroyAll 0x4C10B0 (App_Shutdown 0x462480,
-    // étape 27/33). DestroyIcon() sur les 9 curseurs chargés par LoadResources(),
-    // puis remise à zéro (state + les 9 slots) — fidèle à l'original, y compris
-    // le fait qu'un curseur obtenu par LoadCursorA (ressource PARTAGÉE) est quand
-    // même passé à DestroyIcon : comportement du binaire reproduit tel quel, sans
-    // « correction » (DestroyIcon sur un HCURSOR partagé est habituellement un
-    // no-op silencieux côté Win32, pas un crash).
-    // ===========================================================================
+    // step 27/33). DestroyIcon() on the 9 cursors loaded by LoadResources(),
+    // then reset to zero (state + the 9 slots) — faithful to the original, including
+    // the fact that a cursor obtained via LoadCursorA (a SHARED resource) still
+    // gets passed to DestroyIcon: binary behavior reproduced as-is, no
+    // "fix" applied (DestroyIcon on a shared HCURSOR is usually a
+    // silent no-op on Win32, not a crash).
     void DestroyAll();
 
-    // ===========================================================================
-    // mPOINTER (tick boucle msg) — Cursor_AnimateTick 0x4C1140, SEUL appelant :
+    // mPOINTER (msg-loop tick) — Cursor_AnimateTick 0x4C1140, ONLY caller:
     // WinMain 0x4609C0 @0x46163b (`mov ecx, offset dword_8E714C ; call
-    // Cursor_AnimateTick`). PAS une animation par sprite/timer : `state` est
-    // l'index [0..8] du curseur "voulu", écrit ailleurs (~157 sites, TOUT le
-    // rendu UI/scènes) via Util_SetClampedU8Field 0x4C1110 sur un hit-test
-    // souris (ex. cDrawWin_Draw 0x629960 : hover -> Util_SetClampedU8Field(
-    // &unk_8E714C, 0)). AnimateTick se contente de réappliquer SetCursor(
-    // slot[state]) à CHAQUE tour de la boucle de messages : la fenêtre n'a
-    // PAS de WNDCLASSEXA.hCursor enregistré, donc Windows réinitialise le
-    // curseur au curseur par défaut à chaque WM_SETCURSOR/déplacement souris
-    // au-dessus du client — le jeu réaffirme donc son curseur "voulu" à
-    // chaque itération plutôt qu'une seule fois au clic/hover.
-    // Décompilation d'origine (this = &unk_8E714C, tableau de 10 dwords) :
+    // Cursor_AnimateTick`). NOT a per-sprite/timer animation: `state` is
+    // the [0..8] index of the "desired" cursor, written elsewhere (~157 sites, ALL
+    // of UI/scene rendering) via Util_SetClampedU8Field 0x4C1110 on a mouse
+    // hit-test (e.g. cDrawWin_Draw 0x629960: hover -> Util_SetClampedU8Field(
+    // &unk_8E714C, 0)). AnimateTick just reapplies SetCursor(
+    // slot[state]) on EVERY message-loop iteration: the window has
+    // NO WNDCLASSEXA.hCursor registered, so Windows resets the
+    // cursor to the default one on every WM_SETCURSOR/mouse move
+    // over the client area — the game therefore reasserts its "desired" cursor
+    // every iteration rather than just once on click/hover.
+    // Original decompilation (this = &unk_8E714C, 10-dword array):
     //   return SetCursor(*(this + *this + 1));   // this[ state + 1 ]
-    // SetActiveSlot() ci-dessous est l'équivalent client de
+    // SetActiveSlot() below is the client-side equivalent of
     // Util_SetClampedU8Field(&unk_8E714C, idx) 0x4C1110.
     //
-    // CIBLE UNIQUE — prouvé par COMPTAGE (vague W10), pas par échantillon :
-    // xrefs_to(0x8E714C) = 161 refs data = les 157 sites Util_SetClampedU8Field
-    // + exactement 4 autres (WinMain @0x461636 AnimateTick, App_Init @0x461F8B
+    // SOLE TARGET — proven by COUNTING (wave W10), not sampling:
+    // xrefs_to(0x8E714C) = 161 data refs = the 157 Util_SetClampedU8Field sites
+    // + exactly 4 others (WinMain @0x461636 AnimateTick, App_Init @0x461F8B
     // LoadResources, App_Shutdown @0x462587 DestroyAll, CrtInit_CursorSetThunk
-    // @0x7A51F3). 157 + 4 = 161 => CHAQUE site du setter vise bien ce global,
-    // sans exception.
-    // ===========================================================================
+    // @0x7A51F3). 157 + 4 = 161 => EVERY setter site does target this global,
+    // without exception.
     HCURSOR AnimateTick() const;
 
-    // Équivalent de Util_SetClampedU8Field(&unk_8E714C, idx) 0x4C1110 : fixe le
-    // slot actif [0..8], sans effet si hors bornes (fidèle : l'original ne
-    // touche pas *this quand a2 > 8). Retourne vrai si la valeur a été acceptée.
+    // Equivalent of Util_SetClampedU8Field(&unk_8E714C, idx) 0x4C1110: sets the
+    // active slot [0..8], no effect if out of bounds (faithful: the original does
+    // not touch *this when a2 > 8). Returns true if the value was accepted.
     bool SetActiveSlot(uint32_t idx);
 };
 
-// ===========================================================================
-// Slots de curseur nommés — constantes prouvées (cf. tableau de rôles ci-dessus).
-// À passer à CursorSet::SetActiveSlot(). Les trois bases « paire clignotante »
-// s'emploient via CursorBlinkSlot() (2 Hz).
-// ===========================================================================
+// Named cursor slots — proven constants (see role table above).
+// Pass to CursorSet::SetActiveSlot(). The three "blinking pair" bases
+// are used via CursorBlinkSlot() (2 Hz).
 constexpr uint32_t kCursorDefault      = 0; // @0x52C044 / @0x52C637 / @0x6299D8
 constexpr uint32_t kCursorInteractBase = 1; // @0x531022 / @0x53111B / @0x5311E2
 constexpr uint32_t kCursorHostileBase  = 3; // @0x531075 / @0x5310C8 / @0x53116B
@@ -189,85 +174,76 @@ constexpr uint32_t kCursorPickupBase   = 5; // @0x5311B9
 constexpr uint32_t kCursorCastOk       = 7; // @0x530FEA (Skill_CanCastAtCursor != 0)
 constexpr uint32_t kCursorCastBlocked  = 8; // @0x530FF8
 
-// ===========================================================================
-// Clignotement 2 Hz des paires {1,2} / {3,4} / {5,6} — transcription EXACTE du
-// motif répété aux 7 cas de Scene_InGameRender 0x52D0B0 (ancre : cas 1
-// @0x531009..0x531022) :
-//     fld ds:g_GameTimeSec        // temps de jeu
-//     fadd st, st                 // x + x  (PAS une multiplication par 2.0)
-//     call Crt_ftol               // troncature vers zéro -> int
+// 2 Hz blinking for pairs {1,2} / {3,4} / {5,6} — EXACT transcription of the
+// pattern repeated across the 7 cases of Scene_InGameRender 0x52D0B0 (anchor: case 1
+// @0x531009..0x531022):
+//     fld ds:g_GameTimeSec        // game time
+//     fadd st, st                 // x + x  (NOT a multiply by 2.0)
+//     call Crt_ftol               // truncate toward zero -> int
 //     and  eax, 80000001h         //  ┐
-//     jns  short L                //  │ idiome MSVC de MODULO SIGNÉ % 2
-//     dec  eax                    //  │ (et NON un simple `& 1` : le fixup de
-//     or   eax, 0FFFFFFFEh        //  │  signe rend -3 % 2 == -1)
+//     jns  short L                //  │ MSVC SIGNED MODULO % 2 idiom
+//     dec  eax                    //  │ (and NOT a plain `& 1`: the sign
+//     or   eax, 0FFFFFFFEh        //  │  fixup makes -3 % 2 == -1)
 //     inc  eax                    //  ┘
-//   L: add  eax, <base>           // 1, 3 ou 5 selon la catégorie
+//   L: add  eax, <base>           // 1, 3, or 5 depending on the category
 //
-// Le résultat est passé tel quel à Util_SetClampedU8Field (paramètre NON
-// signé) : un `base` + résultat négatif deviendrait un unsigned énorme, donc
-// rejeté par le clamp `a2 <= 8` — comportement déjà reproduit par
-// SetActiveSlot(uint32_t). On garde donc le type signé ici pour rester fidèle
-// (en pratique g_GameTimeSec >= 0, le résultat vaut base ou base+1).
+// The result is passed as-is to Util_SetClampedU8Field (UNSIGNED
+// parameter): a `base` + negative result would become a huge unsigned value, so
+// rejected by the `a2 <= 8` clamp — behavior already reproduced by
+// SetActiveSlot(uint32_t). We keep the signed type here to stay faithful
+// (in practice g_GameTimeSec >= 0, the result is base or base+1).
 inline int CursorBlinkSlot(int base, float gameTimeSec) {
     return static_cast<int>(gameTimeSec + gameTimeSec) % 2 + base;
 }
 
-// ===========================================================================
-// Cursors() — instance UNIQUE du jeu de curseurs, miroir de dword_8E714C
-// (0x8E714C), qui est un GLOBAL dans le binaire et non un membre d'objet.
-// ===========================================================================
-// Les 161 références à 0x8E714C (cf. « CIBLE UNIQUE » ci-dessus) proviennent de
-// WinMain, App_Init, App_Shutdown ET de tout le rendu UI/scènes : aucun de ces
-// sites ne possède l'objet, tous adressent le même global. Exposer l'instance
-// ici est donc la transcription FIDÈLE — pas un contournement d'encapsulation.
+// Cursors() — the SINGLE instance of the cursor set, mirror of dword_8E714C
+// (0x8E714C), which is a GLOBAL in the binary, not an object member.
+// The 161 references to 0x8E714C (see "SOLE TARGET" above) come from
+// WinMain, App_Init, App_Shutdown AND all of UI/scene rendering: none of these
+// sites owns the object, all address the same global. Exposing the instance
+// here is thus the FAITHFUL transcription — not an encapsulation workaround.
 //
-// ⚠️ ATTENTION (câblage indissociable, cf. rapport W10) : tant qu'App conserve
-// son membre privé `cursors_` (App/App.h:43), il existerait DEUX CursorSet —
-// les scènes/UI écriraient dans ce singleton pendant qu'App ticke le membre,
-// et le curseur resterait figé alors même que le code PARAÎT complet.
-// App.h:43 / App.cpp:320/406/741 doivent basculer sur Cursors() DANS LE MÊME
-// changement (fichiers non possédés par W10 -> wiringTodoForOrchestrator).
+// ⚠️ WARNING (inseparable wiring, see W10 report): as long as App keeps
+// its private member `cursors_` (App/App.h:43), there would be TWO CursorSet
+// instances — scenes/UI would write to this singleton while App ticks its member,
+// and the cursor would stay stuck even though the code LOOKS complete.
+// App.h:43 / App.cpp:320/406/741 must switch to Cursors() IN THE SAME
+// change (files not owned by W10 -> wiringTodoForOrchestrator).
 CursorSet& Cursors();
 
-// ===========================================================================
 // mMYINFO — Player_ResetAnimState 0x50F520.
-// ===========================================================================
-// Opère sur g_PlayerCmdController (0x1669170 dans le binaire), un très gros
-// bloc non encore porté dans ClientSource. Reproduit ici comme fonction sur
-// pointeur brut (float*), fidèle offset par offset ; à brancher sur le futur
-// struct « contrôleur de commandes joueur » une fois celui-ci modélisé.
-// `gameTimeSec` = valeur courante de g_GameTimeSec (0x815180) à l'appel.
+// Operates on g_PlayerCmdController (0x1669170 in the binary), a very large
+// block not yet ported to ClientSource. Reproduced here as a function on a
+// raw pointer (float*), faithful offset by offset; to be wired to the future
+// "player command controller" struct once it's modeled.
+// `gameTimeSec` = current value of g_GameTimeSec (0x815180) at call time.
 void Player_ResetAnimState(float* playerCmdController, float gameTimeSec);
 
-// ===========================================================================
 // mPLAY — cGameData_InitPools 0x5575D0.
-// ===========================================================================
-// Fixe les capacités des pools d'entités (déjà modélisés en std::vector dans
-// Game/GameState.h : g_World.players/monsters/npcs/groundItems) à leurs
-// tailles fixes d'origine, et les pré-remplit d'emplacements par défaut
-// (équivalent des petits constructeurs sub_55D6F0/57FE50/580530/583370
-// appelés en boucle par le binaire). Toujours vrai (fidèle : le binaire ne
-// peut pas échouer ici — pas d'allocation dynamique testée).
+// Sets the capacities of the entity pools (already modeled as std::vector in
+// Game/GameState.h: g_World.players/monsters/npcs/groundItems) to their
+// original fixed sizes, and pre-fills them with default slots
+// (equivalent of the small constructors sub_55D6F0/57FE50/580530/583370
+// called in a loop by the binary). Always true (faithful: the binary
+// cannot fail here — no dynamic allocation is tested).
 bool GameData_InitPools();
 
-// ===========================================================================
 // mPLAY (teardown) — cGameData_DestroyPools 0x557780 (App_Shutdown 0x462480,
-// étape 1/33 — TOUT PREMIER appel, image miroir de GameData_InitPools qui est
-// le TOUT DERNIER manager d'App_Init).
-// ===========================================================================
-// L'original parcourt CHAQUE pool actif (bornes = compteurs this+1717..1721 +
-// g_ZoneObjectCount) et appelle un petit destructeur par emplacement
+// step 1/33 — VERY FIRST call, mirror image of GameData_InitPools, which is
+// the VERY LAST manager in App_Init).
+// The original walks EVERY active pool (bounds = counters this+1717..1721 +
+// g_ZoneObjectCount) and calls a small per-slot destructor
 // (Fx_AttachSlotClear / maybe_cGameData_NpcListItemDtor / Char_RespawnAfterKnockback /
 // maybe_cGameData_ListField1ItemDtor / PlayerArray_SlotDestruct /
-// maybe_cGameData_ZoneObjListItemDtor) — même schéma en 1-4 champs par slot
-// que les petits constructeurs de GameData_InitPools (pas un teardown profond,
-// pas de libération mémoire : les pools sont des tableaux FIXES en .bss dans
-// le binaire d'origine, jamais réellement "libérés").
-// Ici, les pools sont des std::vector dynamiques (Game/GameState.h) : l'effet
-// net équivalent (capacité rendue à zéro / slots réinitialisés) est obtenu en
-// vidant les 5 vecteurs modélisés (mêmes 5 pools que GameData_InitPools ;
-// pool E "projectiles" 0x17D06F4/g_FxAuraCount non modélisé ici non plus, cf.
-// commentaire de GameData_InitPools).
+// maybe_cGameData_ZoneObjListItemDtor) — same 1-4-field-per-slot pattern
+// as GameData_InitPools's small constructors (not a deep teardown,
+// no memory freeing: the pools are FIXED arrays in .bss in
+// the original binary, never actually "freed").
+// Here, the pools are dynamic std::vector (Game/GameState.h): the equivalent
+// net effect (capacity reduced to zero / slots reset) is obtained by
+// clearing the 5 modeled vectors (same 5 pools as GameData_InitPools;
+// pool E "projectiles" 0x17D06F4/g_FxAuraCount also not modeled here, see
+// GameData_InitPools comment).
 bool GameData_DestroyPools();
 
 } // namespace ts2::game

@@ -1,47 +1,47 @@
-// Game/EntityManager.cpp — implementation du gestionnaire d'entites.
+// Game/EntityManager.cpp — implementation of the entity manager.
 //
-// Offsets confirmes par decompilation Hex-Rays (MCP idaTs2). Tous les offsets
-// ci-dessous sont RELATIFS au debut du corps (body) copie dans chaque slot, pas
-// au debut du record. Rappels de mappage :
-//   JOUEUR   record 908 o (g_EntityArray 0x1687234) : active@+0, idHi@+4, idLo@+8,
-//            timestamp@+0xC, body@+0x18. body+216 = bloc move-state (72 o) =
+// Offsets confirmed by Hex-Rays decompilation (MCP idaTs2). All offsets below
+// are RELATIVE to the start of the body copied into each slot, not to the
+// start of the record. Mapping recap:
+//   PLAYER   record 908 bytes (g_EntityArray 0x1687234): active@+0, idHi@+4, idLo@+8,
+//            timestamp@+0xC, body@+0x18. body+216 = move-state block (72 bytes) =
 //            {moveVal@+0, actionState@+4, animFrame@+8, posX@+12, posY@+16,
-//             posZ@+20, ... heading@+36}. => position monde = body+228/232/236
-//            (flt_1687330/34/38, lu par le rendu Fx_HomingProjectileUpdate 0x5862d0).
-//            body+252 = heading (cap horizontal, degrés) — mission ROTATION/ORIENTATION
-//            2026-07-14, CONFIRMÉ par convergence CharAnimState::facingCurrentDeg
-//            (entity+276 = body+252, Char_UpdateAnimationFrame 0x571880) ET Char_Draw
-//            0x5805C0 (voir le pendant monstre ci-dessous et GameState.h::
-//            PlayerEntity::heading pour le détail complet) ; cf. Docs/
+//             posZ@+20, ... heading@+36}. => world position = body+228/232/236
+//            (flt_1687330/34/38, read by Fx_HomingProjectileUpdate 0x5862d0's rendering).
+//            body+252 = heading (horizontal heading, degrees) — ROTATION/ORIENTATION
+//            mission 2026-07-14, CONFIRMED by convergence of CharAnimState::facingCurrentDeg
+//            (entity+276 = body+252, Char_UpdateAnimationFrame 0x571880) AND Char_Draw
+//            0x5805C0 (see the monster counterpart below and GameState.h::
+//            PlayerEntity::heading for the full detail); see Docs/
 //            TS2_ENTITY_ARRAY_DUALITY_CHECK.md.
-//            body+48 = nom du personnage (char[], NUL-terminé, mission NAMEPLATES
-//            2026-07-14) — confirmé par Char_DrawNameplate 0x56EF40 (this+72 = body+48,
-//            `Crt_Vsnprintf(v115, "%s", this+72)`) ; cf. GameState.h::PlayerEntity::name.
-//   MONSTRE  record 280 o (dword_1766F74 0x1766F74) : active@+0, idHi@+4, idLo@+8,
-//            timestamp@+0xC, body@+0x10. body+4 = move-state (72 o) ; position monde
-//            = body+16/20/24 (unk_1766F94/98/9C) ; def@record+0x60 ; rayon@record+0x64 ;
-//            body+40 = heading (move-state+36, degrés) — CONFIRMÉ DIRECTEMENT par
-//            décompilation de Char_Draw 0x5805C0 : `this` = &dword_1766F74[i] (aucun
-//            tableau de rendu intermédiaire, cf. Docs/TS2_ENTITY_ARRAY_DUALITY_CHECK.md
-//            §1), `*((float*)this+14)` (= record+56 = body+40) injecté comme composante
-//            Y du vecteur de rotation {0,heading,0} passé à SObject_DrawEx ->
-//            Model_Render 0x40EBB0 (« compose la matrice monde S*Rz*Ry*Rx*T », rôle IDB) ;
-//            le vecteur d'échelle correspondant est câblé en DUR à {1,1,1} dans
-//            SObject_DrawEx — donc CE champ est une rotation, jamais une échelle.
-//   NPC      record 152 o (dword_17AB534 0x17AB534) : body@+0x10 (84 o) ; def@record+0x64.
-//            position monde = body+16/20/24 — confirmé par décompilation Hex-Rays
-//            de Char_SelectAuraEffect 0x5835B0 (appelée en fin de Pkt_SpawnNpc
-//            0x467EC0, juste après la copie du body) : this+8/9/10 (this = base
+//            body+48 = character name (char[], NUL-terminated, NAMEPLATES mission
+//            2026-07-14) — confirmed by Char_DrawNameplate 0x56EF40 (this+72 = body+48,
+//            `Crt_Vsnprintf(v115, "%s", this+72)`); see GameState.h::PlayerEntity::name.
+//   MONSTER  record 280 bytes (dword_1766F74 0x1766F74): active@+0, idHi@+4, idLo@+8,
+//            timestamp@+0xC, body@+0x10. body+4 = move-state (72 bytes); world position
+//            = body+16/20/24 (unk_1766F94/98/9C); def@record+0x60; radius@record+0x64;
+//            body+40 = heading (move-state+36, degrees) — DIRECTLY CONFIRMED by
+//            decompiling Char_Draw 0x5805C0: `this` = &dword_1766F74[i] (no intermediate
+//            render array, see Docs/TS2_ENTITY_ARRAY_DUALITY_CHECK.md §1),
+//            `*((float*)this+14)` (= record+56 = body+40) injected as the Y component
+//            of the rotation vector {0,heading,0} passed to SObject_DrawEx ->
+//            Model_Render 0x40EBB0 ("composes the world matrix S*Rz*Ry*Rx*T", IDB role);
+//            the corresponding scale vector is HARDCODED to {1,1,1} in SObject_DrawEx —
+//            so THIS field is a rotation, never a scale.
+//   NPC      record 152 bytes (dword_17AB534 0x17AB534): body@+0x10 (84 bytes); def@record+0x64.
+//            world position = body+16/20/24 — confirmed by Hex-Rays decompilation
+//            of Char_SelectAuraEffect 0x5835B0 (called at the end of Pkt_SpawnNpc
+//            0x467EC0, right after the body copy): this+8/9/10 (this = base
 //            record &dword_17AB534[38*i]) == record+32/36/40 == body+16/20/24,
-//            même convention que le monstre (body+16/20/24). Valeur déjà présente
-//            dans le payload réseau copié tel quel dans NpcEntity::body ; aucune
-//            rotation confirmée pour ce record (pas ajoutée, pour ne pas inventer).
+//            same convention as the monster (body+16/20/24). Value already present
+//            in the network payload, copied as-is into NpcEntity::body; no rotation
+//            confirmed for this record (not added, to avoid inventing one).
 #include "Game/EntityManager.h"
-#include "Game/GameDatabase.h"        // GetMonsterInfo / MonsterInfo (resolution 1-based)
+#include "Game/GameDatabase.h"        // GetMonsterInfo / MonsterInfo (1-based resolution)
 #include "Game/StaticNpcLoader.h"
-#include "Game/EntityLifecycleTick.h" // ResetMonsterTickExt/ResetNpcTickExt (cf. TODO ci-dessous)
-#include "Game/PlayerCmdController.h" // g_PlayerCmd : Player_ResetCombatState 0x50F6A0 (@0x4648f2)
-#include "Game/ClientRuntime.h"       // g_Client : miroirs self (dword_1675884/1675B00) + longue traine Var/VarF
+#include "Game/EntityLifecycleTick.h" // ResetMonsterTickExt/ResetNpcTickExt (see TODO below)
+#include "Game/PlayerCmdController.h" // g_PlayerCmd: Player_ResetCombatState 0x50F6A0 (@0x4648f2)
+#include "Game/ClientRuntime.h"       // g_Client: self mirrors (dword_1675884/1675B00) + long tail of Var/VarF
 #include "Net/SendPackets.h"          // Net_SendVaultReq_207/Op23 + GlobalNetClient (Pkt_EnterWorld @0x4643d1..)
 #include "Gfx/FxSetters.h"            // FxPool_* (pool dword_17D06F4) + Fx_AttachDashTrail (Char_SetupAuraFlags 0x5814F0)
 
@@ -51,7 +51,7 @@
 namespace ts2::game {
 namespace {
 
-// ---- helpers de lecture/ecriture bornee sur un buffer d'octets (LE, sans UB d'aliasing).
+// ---- bounds-checked read/write helpers on a byte buffer (LE, no aliasing UB).
 inline uint32_t RdU32(const uint8_t* b, size_t o) { uint32_t v; std::memcpy(&v, b + o, 4); return v; }
 inline int32_t  RdI32(const uint8_t* b, size_t o) { int32_t  v; std::memcpy(&v, b + o, 4); return v; }
 inline float    RdF32(const uint8_t* b, size_t o) { float    v; std::memcpy(&v, b + o, 4); return v; }
@@ -59,67 +59,66 @@ inline void     WrU32(uint8_t* b, size_t o, uint32_t v) { std::memcpy(b + o, &v,
 inline void     WrI32(uint8_t* b, size_t o, int32_t  v) { std::memcpy(b + o, &v, 4); }
 inline void     WrF32(uint8_t* b, size_t o, float    v) { std::memcpy(b + o, &v, 4); }
 
-// ---- offsets JOUEUR (relatifs au body de 600 o).
-// NB : kPMoveState / kPMoveStateLen ont DEMENAGE dans Game/EntityManager.h (ils sont
-// desormais partages avec Game/PlayerCmdController.*, qui lit/ecrit le meme bloc =
-// g_SelfMoveStateBlock 0x1687324). Ne pas les redeclarer ici : le nom du header serait
-// masque et les deux definitions deviendraient ambigues.
-constexpr size_t kPActionState = 220;  // move-state+4 — ex-VeryOldClient: aType (ACTION_INFO ; aType/aSort permutable, Rosetta §7)
+// ---- PLAYER offsets (relative to the 600-byte body).
+// NB: kPMoveState / kPMoveStateLen have MOVED to Game/EntityManager.h (they are
+// now shared with Game/PlayerCmdController.*, which reads/writes the same block =
+// g_SelfMoveStateBlock 0x1687324). Do not redeclare them here: the header's name
+// would be shadowed and the two definitions would become ambiguous.
+constexpr size_t kPActionState = 220;  // move-state+4 — ex-VeryOldClient: aType (ACTION_INFO; aType/aSort interchangeable, Rosetta §7)
 constexpr size_t kPAnimFrame   = 224;  // move-state+8 — ex-VeryOldClient: aFrame
-constexpr size_t kPPosX        = 228;  // move-state+12 -> flt_1687330 — ex-VeryOldClient: aLocation[0] (Y/Z suivent)
+constexpr size_t kPPosX        = 228;  // move-state+12 -> flt_1687330 — ex-VeryOldClient: aLocation[0] (Y/Z follow)
 constexpr size_t kPPosY        = 232;  // flt_1687334
 constexpr size_t kPPosZ        = 236;  // flt_1687338
-constexpr size_t kPHeading     = 252;  // move-state+36 -> cap horizontal (degrés), cf.
-                                        // GameState.h::PlayerEntity::heading pour la
-                                        // preuve de décompilation complète (mission
-                                        // ROTATION/ORIENTATION, 2026-07-14). MÊME champ
-                                        // que CharAnimState::facingCurrentDeg
+constexpr size_t kPHeading     = 252;  // move-state+36 -> horizontal heading (degrees), see
+                                        // GameState.h::PlayerEntity::heading for the full
+                                        // decompilation proof (ROTATION/ORIENTATION mission,
+                                        // 2026-07-14). SAME field as CharAnimState::facingCurrentDeg
                                         // (entity+276 = body+252).
                                         // ex-VeryOldClient: aFront (ACTION_INFO) [CONFIRMED, Rosetta §2]
-constexpr size_t kPLevelCtr    = 84;   // dword_16872A0 (compteur de niveau par entite)
-constexpr size_t kPHp          = 292;  // dword_1687370 (barre de combat AR-min courant)
-constexpr size_t kPMp          = 300;  // dword_1687378 (barre de combat AR-max courant)
-constexpr size_t kPAnimId      = 272;  // id d'anim/stun issu du spawn
-constexpr size_t kPStateArr    = 304;  // dword_168737C : 36 ints d'etat/statut
+constexpr size_t kPLevelCtr    = 84;   // dword_16872A0 (per-entity level counter)
+constexpr size_t kPHp          = 292;  // dword_1687370 (current combat-bar AR-min)
+constexpr size_t kPMp          = 300;  // dword_1687378 (current combat-bar AR-max)
+constexpr size_t kPAnimId      = 272;  // anim/stun id from spawn
+constexpr size_t kPStateArr    = 304;  // dword_168737C: 36 state/status ints
 constexpr size_t kPStateCount  = 36;
 constexpr size_t kPPartyGridX  = 556;  // dword_1687478 (op 0x91)
 constexpr size_t kPPartyGridY  = 560;  // dword_168747C
-constexpr size_t kPPartyPos    = 564;  // unk_1687480 : 3 floats (op 0x91)
+constexpr size_t kPPartyPos    = 564;  // unk_1687480: 3 floats (op 0x91)
 constexpr size_t kPPartyPosPad = 576;  // unk_168748C = 0.0f
 constexpr size_t kPStunDur     = 592;  // dword_168749C
-constexpr size_t kPName        = 48;   // nom du personnage (char[], NUL-terminé) — cf.
-                                        // GameState.h::PlayerEntity::name pour la preuve
-                                        // de décompilation (Char_DrawNameplate 0x56EF40,
-                                        // this+72 = body+48) et la note sur la longueur.
-                                        // ex-VeryOldClient: aName [CONFLICT §7 C1 résolu, name@+72].
-constexpr size_t kPNameBufLen  = 16;   // borne de lecture (cf. commentaire ci-dessus)
+constexpr size_t kPName        = 48;   // character name (char[], NUL-terminated) — see
+                                        // GameState.h::PlayerEntity::name for the
+                                        // decompilation proof (Char_DrawNameplate 0x56EF40,
+                                        // this+72 = body+48) and the note on the length.
+                                        // ex-VeryOldClient: aName [CONFLICT §7 C1 resolved, name@+72].
+constexpr size_t kPNameBufLen  = 16;   // read bound (see comment above)
 
-// ---- offsets MONSTRE (relatifs au body de 80 o).
-constexpr size_t kMMoveState   = 4;    // move-state (72 o)
+// ---- MONSTER offsets (relative to the 80-byte body).
+constexpr size_t kMMoveState   = 4;    // move-state (72 bytes)
 constexpr size_t kMMoveStateLen = 72;
 constexpr size_t kMPosX        = 16;   // unk_1766F94 — ex-VeryOldClient: mAction.aLocation[0]
 constexpr size_t kMPosY        = 20;   // unk_1766F98
 constexpr size_t kMPosZ        = 24;   // unk_1766F9C
-constexpr size_t kMHeading     = 40;   // move-state[4]+36 -> cap horizontal (degrés),
-                                        // cf. GameState.h::MonsterEntity::heading pour
-                                        // la preuve de décompilation directe (Char_Draw
-                                        // 0x5805C0, mission ROTATION/ORIENTATION,
+constexpr size_t kMHeading     = 40;   // move-state[4]+36 -> horizontal heading (degrees),
+                                        // see GameState.h::MonsterEntity::heading for the
+                                        // direct decompilation proof (Char_Draw
+                                        // 0x5805C0, ROTATION/ORIENTATION mission,
                                         // 2026-07-14).
                                         // ex-VeryOldClient: mAction.aFront [CONFIRMED, Rosetta §4]
 
-// ---- offsets NPC (relatifs au body de 84 o) — cf. bandeau de tête de fichier.
+// ---- NPC offsets (relative to the 84-byte body) — see file header banner.
 constexpr size_t kNPosX        = 16;
 constexpr size_t kNPosY        = 20;
 constexpr size_t kNPosZ        = 24;
 
-// ---- offsets dans un record de definition MONSTER_INFO (pour le rayon de collision).
-// Desormais portes par MonsterInfo::collDim[0]/[2] (Game/GameDatabase.h) ; conserves ici
-// comme ancre documentaire (Pkt_SpawnMonster 0x467B00 : def[+248]=collDim[0], def[+256]=collDim[2]).
+// ---- offsets in a MONSTER_INFO definition record (for the collision radius).
+// Now carried by MonsterInfo::collDim[0]/[2] (Game/GameDatabase.h); kept here as
+// a documentary anchor (Pkt_SpawnMonster 0x467B00: def[+248]=collDim[0], def[+256]=collDim[2]).
 [[maybe_unused]] constexpr size_t kDefDimA = 248;
 [[maybe_unused]] constexpr size_t kDefDimB = 256;
 
-// Recherche SEULE (sans allocation) — les handlers d'etat n'agissent que si l'entite
-// existe deja (contrairement aux handlers de spawn qui allouent via FindOrAdd*).
+// Lookup ONLY (no allocation) — the state handlers only act if the entity
+// already exists (unlike the spawn handlers, which allocate via FindOrAdd*).
 PlayerEntity* FindPlayer(EntityId id) {
     for (auto& e : g_World.players)
         if (e.active && e.id == id) return &e;
@@ -136,39 +135,42 @@ NpcEntity* FindNpc(EntityId id) {
     return nullptr;
 }
 
-// Resolution d'une definition de MONSTRE via ItemDefTbl_GetRecord (nom IDB trompeur :
-// charge MONSTER_INFO, cf. Gfx/ModelCache.h) -> g_World.db.monster. Renvoie nullptr si la
-// base est chargee mais l'id hors plage (=> rejet du spawn, comme l'original) ; nullptr
-// silencieux si base non chargee. RESERVE aux monstres (OnSpawnMonster) : les PNJ reseau
-// utilisent ResolveNpcDef ci-dessous (table DIFFERENTE), cf. Pkt_SpawnNpc 0x467EC0.
+// Resolves a MONSTER definition via ItemDefTbl_GetRecord (misleading IDB name:
+// loads MONSTER_INFO, see Gfx/ModelCache.h) -> g_World.db.monster. Returns nullptr
+// if the base is loaded but the id is out of range (=> spawn rejected, as in the
+// original); silent nullptr if the base isn't loaded. RESERVED for monsters
+// (OnSpawnMonster): network NPCs use ResolveNpcDef below (DIFFERENT table), see
+// Pkt_SpawnNpc 0x467EC0.
 const uint8_t* ResolveMobDef(uint32_t id, bool& tableLoaded) {
     const DataTable& t = g_World.db.monster;
     tableLoaded = (t.count != 0);
     if (!tableLoaded) return nullptr;
-    // CORRECTION off-by-one : le getter MONSTER 0x4C6570 est STRICTEMENT 1-based
-    // (base+944*(id-1), rejet id<1||id>count, garde 1er dword!=0). Pkt_SpawnMonster 0x467B00
-    // passe l'id reseau BRUT (1-based, body[0]) -> GetMonsterInfo applique le -1. Table chargee
-    // + id invalide => nullptr => OnSpawnMonster rejette le spawn (fidele a `Record==0` de 0x467B00).
+    // OFF-BY-ONE FIX: the MONSTER getter 0x4C6570 is STRICTLY 1-based
+    // (base+944*(id-1), rejects id<1||id>count, guards 1st dword!=0). Pkt_SpawnMonster
+    // 0x467B00 passes the RAW network id (1-based, body[0]) -> GetMonsterInfo applies the
+    // -1. Table loaded + invalid id => nullptr => OnSpawnMonster rejects the spawn
+    // (faithful to `Record==0` in 0x467B00).
     return reinterpret_cast<const uint8_t*>(GetMonsterInfo(id));
 }
 
-// Resolution d'une definition de PNJ RESEAU (dword_17AB534) -- transcription EXACTE de
-// Pkt_SpawnNpc 0x467EC0 : `MobDb_GetEntry(mITEM, body[0])` -> table ITEM_INFO
-// (g_World.db.item), PAS MONSTER_INFO. MobDb_GetEntry 0x4C3C00 est 1-based (record(id-1),
-// rejet si id<1 || id>count || slot vide itemId==0) -- MEME semantique que GetItemInfo.
-// C'est bien un record ITEM_INFO que lisent tous les consommateurs de NpcEntity::def
-// (Game/NpcInteraction.cpp : +184 faction, +188 kind, +232/+236 quete, +352 aggro ;
-// Game/AutoPlaySystem.cpp : +0 nom via +4, +184/+188) -- offsets tous DANS le record
-// ITEM_INFO de 436 o et conformes a son layout (Game/GameDatabase.h::ItemInfo).
+// Resolves a NETWORK NPC definition (dword_17AB534) -- EXACT transcription of
+// Pkt_SpawnNpc 0x467EC0: `MobDb_GetEntry(mITEM, body[0])` -> ITEM_INFO table
+// (g_World.db.item), NOT MONSTER_INFO. MobDb_GetEntry 0x4C3C00 is 1-based
+// (record(id-1), rejects id<1 || id>count || empty slot itemId==0) -- SAME
+// semantics as GetItemInfo. All consumers of NpcEntity::def genuinely read an
+// ITEM_INFO record (Game/NpcInteraction.cpp: +184 faction, +188 kind, +232/+236
+// quest, +352 aggro; Game/AutoPlaySystem.cpp: +0 name via +4, +184/+188) --
+// offsets all WITHIN the 436-byte ITEM_INFO record and consistent with its
+// layout (Game/GameDatabase.h::ItemInfo).
 const uint8_t* ResolveNpcDef(uint32_t id, bool& tableLoaded) {
     const DataTable& t = g_World.db.item;
     tableLoaded = (t.count != 0);
     if (!tableLoaded || id < 1 || id > t.count) return nullptr;
-    const uint8_t* rec = t.record(id - 1); // 1-based (cf. MobDb_GetEntry 0x4C3C00)
+    const uint8_t* rec = t.record(id - 1); // 1-based (see MobDb_GetEntry 0x4C3C00)
     if (rec) {
         uint32_t itemId = 0;
         std::memcpy(&itemId, rec, 4);
-        if (itemId == 0) return nullptr; // slot vide, comme MobDb_GetEntry
+        if (itemId == 0) return nullptr; // empty slot, like MobDb_GetEntry
     }
     return rec;
 }
@@ -178,12 +180,12 @@ void ReadPlayerPos(PlayerEntity& e) {
     e.x = RdF32(b, kPPosX);
     e.y = RdF32(b, kPPosY);
     e.z = RdF32(b, kPPosZ);
-    e.heading = RdF32(b, kPHeading); // cf. PlayerEntity::heading (move-state+36)
+    e.heading = RdF32(b, kPHeading); // see PlayerEntity::heading (move-state+36)
 }
-// Nom du personnage (body+48, cf. GameState.h::PlayerEntity::name) : lecture C-string
-// bornee a kPNameBufLen octets (aucun octet garanti hors bornes si le serveur envoie
-// un buffer non NUL-termine dans les kPNameBufLen o -> pas d'overrun, juste un nom
-// tronque a la longueur max plutot qu'invente).
+// Character name (body+48, see GameState.h::PlayerEntity::name): C-string read
+// bounded to kPNameBufLen bytes (no guaranteed out-of-bounds byte if the server
+// sends a non-NUL-terminated buffer within the kPNameBufLen bytes -> no overrun,
+// just a name truncated to the max length rather than invented).
 void ReadPlayerName(PlayerEntity& e) {
     const uint8_t* b = e.body.data() + kPName;
     size_t len = 0;
@@ -195,7 +197,7 @@ void ReadMonsterPos(MonsterEntity& m) {
     m.x = RdF32(b, kMPosX);
     m.y = RdF32(b, kMPosY);
     m.z = RdF32(b, kMPosZ);
-    m.heading = RdF32(b, kMHeading); // cf. MonsterEntity::heading (move-state+36)
+    m.heading = RdF32(b, kMHeading); // see MonsterEntity::heading (move-state+36)
 }
 void ReadNpcPos(NpcEntity& e) {
     const uint8_t* b = e.body.data();
@@ -204,19 +206,19 @@ void ReadNpcPos(NpcEntity& e) {
     e.z = RdF32(b, kNPosZ);
 }
 
-// Char_SetActionAnimParams 0x570E70 (switch @0x570ED5 sur a1[61] = entity+244 = anim.state) :
-// pose hitCheckActive/hitUsesSkillTable/actionKind/actionSubKind/hitFired (idx156-160).
-// SOUS-ENSEMBLE MODELISE de la fonction d'origine (le reste = Fx_Attach*/muzzle idx183-184/
-// bloc UI if(!a3) 0x571635 non modelises, cf. commentaire au site d'appel). Table transcrite
-// bit-a-bit du binaire (decompilation idaTs2 verifiee). // 0x570E70
+// Char_SetActionAnimParams 0x570E70 (switch @0x570ED5 on a1[61] = entity+244 = anim.state):
+// sets hitCheckActive/hitUsesSkillTable/actionKind/actionSubKind/hitFired (idx156-160).
+// MODELED SUBSET of the original function (the rest = Fx_Attach*/muzzle idx183-184/
+// UI block if(!a3) 0x571635 not modeled, see comment at the call site). Table transcribed
+// bit-for-bit from the binary (verified idaTs2 decompilation). // 0x570E70
 //
-// NOTE FIDELITE idx157 (hitUsesSkillTable, bool) : le binaire ecrit a1[157]=1 (case 5/6/7)
-// ou a1[157]=2 (cas competence) ; le SEUL lecteur (Char_UpdateAnimationFrame 0x571880 ->
-// Game/ActionStateMachine.cpp) le teste en booleen (`if (hitUsesSkillTable)`, 0x571936/57194D),
-// donc 1 et 2 sont tous deux "true" a la lecture. hitUsesSkillTable=true dans TOUTES les
-// branches non-default (perte 1-vs-2 sans consequence observable).
+// FIDELITY NOTE idx157 (hitUsesSkillTable, bool): the binary writes a1[157]=1 (case 5/6/7)
+// or a1[157]=2 (skill case); the SOLE reader (Char_UpdateAnimationFrame 0x571880 ->
+// Game/ActionStateMachine.cpp) tests it as a boolean (`if (hitUsesSkillTable)`,
+// 0x571936/57194D), so 1 and 2 both read as "true". hitUsesSkillTable=true in ALL
+// non-default branches (1-vs-2 distinction lost with no observable consequence).
 void Char_ApplyActionAnimParams(CharAnimState& a) {
-    // a1[156]=0 (@0x570E95) — pose inconditionnelle avant le switch.
+    // a1[156]=0 (@0x570E95) — unconditionally set before the switch.
     a.hitCheckActive = false;
     switch (a.state) {
     case 5: case 6: case 7:                                     // @0x570EDF (157=1)
@@ -238,42 +240,42 @@ void Char_ApplyActionAnimParams(CharAnimState& a) {
         // 156=1, 157=2, 158=2, 159=1, 160=0
         a.hitCheckActive = true; a.hitUsesSkillTable = true;
         a.actionKind = 2; a.actionSubKind = 1; a.hitFired = false; break;
-    default:                                                    // @0x570ED5 default : 156=0, reste inchange
+    default:                                                    // @0x570ED5 default: 156=0, rest unchanged
         break;
     }
 }
 
-// ---- helpers op 0x10 (Pkt_CharStateUpdate 0x464c10) : miroirs SELF + resets de combo.
+// ---- op 0x10 helpers (Pkt_CharStateUpdate 0x464c10): SELF mirrors + combo resets.
 //
-// Le bloc dword_16758D8 (288 o) est modelise par g_World.self.zoneState. Le binaire l'adresse
-// toujours (tableau BSS de 288 o) ; on garantit donc la taille avant ecriture (EnterWorld le
-// remplit normalement d'abord). dword_16758D8[2*i] = zoneState[8*i], dword_16758DC[2*i] =
+// The dword_16758D8 block (288 bytes) is modeled by g_World.self.zoneState. The binary
+// always addresses it (288-byte BSS array); so we guarantee the size before writing
+// (EnterWorld normally fills it first). dword_16758D8[2*i] = zoneState[8*i], dword_16758DC[2*i] =
 // zoneState[8*i+4]. // 0x46530c / 0x465326
 inline void WrZoneU32(size_t off, uint32_t v) {
     auto& zs = g_World.self.zoneState;
-    if (zs.size() < off + 4) zs.resize(288, 0); // dword_16758D8 = 0x120 o dans le binaire
+    if (zs.size() < off + 4) zs.resize(288, 0); // dword_16758D8 = 0x120 bytes in the binary
     std::memcpy(zs.data() + off, &v, 4);
 }
 
-// Slots « compteurs de combo » = indices 9 et 29..34 du tableau d'etat dword_168737C
-// (dword_16873A0 = 168737C+4*9 ; dword_16873F0..1687404 = 168737C+4*29..+4*34), cf. la
-// decouverte transverse : ce ne sont PAS des globales distinctes mais des slots du meme tableau.
+// "Combo counter" slots = indices 9 and 29..34 of the dword_168737C state array
+// (dword_16873A0 = 168737C+4*9; dword_16873F0..1687404 = 168737C+4*29..+4*34), see the
+// cross-cutting finding: these are NOT separate globals but slots of the same array.
 constexpr int kComboSlots[7] = { 9, 29, 30, 31, 32, 33, 34 };
 
-// NON-SELF : remet a zero le seul slot d'etat (dword_168737C[227*v7+j]).
+// NON-SELF: zeroes only the state slot (dword_168737C[227*v7+j]).
 inline void ZeroStateSlot(uint8_t* b, int j) {
     WrU32(b, kPStateArr + 4 * j, 0);
 }
-// SELF (branche v7==0) : zeroe AUSSI la paire miroir dword_16758D8[2*j]/DC[2*j] (zoneState
-// 8*j / 8*j+4) et l'horodatage flt_16759F8[j] (VarF 0x16759F8+4*j), cf. branche @0x465469..
+// SELF (branch v7==0): ALSO zeroes the mirror pair dword_16758D8[2*j]/DC[2*j] (zoneState
+// 8*j / 8*j+4) and the timestamp flt_16759F8[j] (VarF 0x16759F8+4*j), see branch @0x465469..
 inline void ZeroSelfSlot(uint8_t* b, int j) {
     WrZoneU32(8 * j, 0);                       // dword_16758D8[2*j]=0
     WrZoneU32(8 * j + 4, 0);                   // dword_16758DC[2*j]=0
     g_Client.VarF(0x16759F8 + 4 * j) = 0.0f;   // flt_16759F8[j]=0.0
     WrU32(b, kPStateArr + 4 * j, 0);           // dword_168737C[227*v7+j]=0
 }
-// Reinitialise tous les slots de kComboSlots SAUF skipA/skipB (cas 9/29..34). self=true
-// reproduit la branche self (@0x465469..) avec miroir+horodatage, sinon l'etat seul (@0x464eb0..).
+// Resets all kComboSlots slots EXCEPT skipA/skipB (cases 9/29..34). self=true
+// reproduces the self branch (@0x465469..) with mirror+timestamp, otherwise state only (@0x464eb0..).
 inline void ResetComboSlots(uint8_t* b, bool self, int skipA, int skipB) {
     for (int j : kComboSlots) {
         if (j == skipA || j == skipB) continue;
@@ -282,26 +284,26 @@ inline void ResetComboSlots(uint8_t* b, bool self, int skipA, int skipB) {
     }
 }
 
-// ---- Traînée de dash de MONSTRE — Char_SetupAuraFlags 0x5814F0 (sous-chemin dash-trail SEUL).
-// Unique appelant : Pkt_SpawnMonster 0x467B00 @0x467DA6, sur le NOUVEAU slot uniquement (apres
-// resolution de la def + rayon). Le binaire teste la CLASSE de modele (def+244 =
-// MonsterInfo::kindIndexP1) via un switch, puis, si l'etat de vitesse (def+236 =
-// MonsterInfo::field236) est dans [2,6], attache une trainee PARTICULAIRE (type 5) au 1er slot
-// libre du pool dword_17D06F4 (< g_FxAuraCount). Deux groupes de classes :
+// ---- MONSTER dash trail — Char_SetupAuraFlags 0x5814F0 (dash-trail sub-path ONLY).
+// Sole caller: Pkt_SpawnMonster 0x467B00 @0x467DA6, on the NEW slot only (after
+// def + radius resolution). The binary tests the model CLASS (def+244 =
+// MonsterInfo::kindIndexP1) via a switch, then, if the speed state (def+236 =
+// MonsterInfo::field236) is in [2,6], attaches a PARTICLE trail (type 5) to the 1st
+// free slot of the dword_17D06F4 pool (< g_FxAuraCount). Two class groups:
 //   {42,44,46,59,61,64,65,67,74,75,76,85,89} -> side 1 (def 18)   @0x5815e1
 //   {48,53,62,66,72,81}                       -> side 2 (def 19)   @0x581652
-// PRODUCTEUR SEUL : le tick + le rendu des slots type 5 existent deja (SceneManager / FxRenderer,
-// Vague D) ; on ne touche donc ni l'un ni l'autre. Cf. Gfx/FxSetters.cpp::Fx_AttachDashTrail et
+// PRODUCER ONLY: the tick + render of type-5 slots already exist (SceneManager / FxRenderer,
+// Wave D); so neither is touched here. See Gfx/FxSetters.cpp::Fx_AttachDashTrail and
 // Docs/TS2_SWEEP_ENTITY_FX.md §4.
 //
-// NB fidelite : Char_SetupAuraFlags remet aussi a 0 des champs d'aura du record monstre
-// (this+27/53/64/66/68 = record+108/212/256/264/272), TOUS au-dela du body de 80 o modelise
-// (def@+96, rayon@+100) et sans consommateur dans ClientSource -> NON reproduits (regle
-// « non prouve / non lu = absent »).
+// FIDELITY NOTE: Char_SetupAuraFlags also zeroes aura fields of the monster record
+// (this+27/53/64/66/68 = record+108/212/256/264/272), ALL beyond the modeled 80-byte body
+// (def@+96, radius@+100) and with no consumer in ClientSource -> NOT reproduced (rule
+// "unproven / unread = absent").
 
-// FxEntitySource depuis un monstre : seuls idHi/idLo sont lus par le chemin particule
-// (a3[1]/a3[2]) ; l'ancre modele (a3[24]+244) n'est PAS lue (cf. Fx_AttachDashTrail, d[30]=0).
-// Equivalent local du SourceFromMonster de Net/CombatResultApply.cpp (namespace anonyme non partage).
+// FxEntitySource from a monster: only idHi/idLo are read by the particle path
+// (a3[1]/a3[2]); the model anchor (a3[24]+244) is NOT read (see Fx_AttachDashTrail, d[30]=0).
+// Local equivalent of SourceFromMonster in Net/CombatResultApply.cpp (anonymous namespace, not shared).
 gfx::FxEntitySource FxSourceFromMonster(const MonsterEntity& m) {
     gfx::FxEntitySource s;
     s.idHi = m.id.hi;   // a3[1]  record+4
@@ -309,7 +311,7 @@ gfx::FxEntitySource FxSourceFromMonster(const MonsterEntity& m) {
     return s;
 }
 
-// Cote de trainee (1/2) pour une classe de modele, ou 0 si aucune (switch @0x581570 sur def+244).
+// Trail side (1/2) for a model class, or 0 if none (switch @0x581570 on def+244).
 int MonsterDashTrailSide(int32_t modelClass) {
     switch (modelClass) {
         case 42: case 44: case 46: case 59: case 61: case 64: case 65:
@@ -318,60 +320,58 @@ int MonsterDashTrailSide(int32_t modelClass) {
         case 48: case 53: case 62: case 66: case 72: case 81:
             return 2;                                          // def 19 (@0x581652)
         default:
-            return 0;                                          // default : aucune trainee (@0x581657)
+            return 0;                                          // default: no trail (@0x581657)
     }
 }
 
-// Char_SetupAuraFlags 0x5814F0 (sous-chemin dash-trail) : attache la trainee au monstre `m`
-// fraichement spawne, si sa classe le prevoit ET si l'etat de vitesse est dans [2,6].
+// Char_SetupAuraFlags 0x5814F0 (dash-trail sub-path): attaches the trail to the
+// freshly spawned monster `m`, if its class provides for it AND the speed state is in [2,6].
 void AttachMonsterDashTrail(const MonsterEntity& m) {
-    if (!m.def) return;                                        // gate `*(this+24)` (def resolu)
+    if (!m.def) return;                                        // gate `*(this+24)` (def resolved)
     const auto* mi = reinterpret_cast<const MonsterInfo*>(m.def);
-    const int side = MonsterDashTrailSide(mi->kindIndexP1);    // *(def+244) — switch de classe @0x58154a
+    const int side = MonsterDashTrailSide(mi->kindIndexP1);    // *(def+244) — class switch @0x58154a
     if (side == 0) return;
-    const int32_t speed = mi->field236;                        // *(def+236) — etat de vitesse
+    const int32_t speed = mi->field236;                        // *(def+236) — speed state
     if (speed < 2 || speed > 6) return;                        // gate @0x581590 (grp1) / @0x581601 (grp2)
     const int j = gfx::FxPool_FindFreeSlot();                  // for i<g_FxAuraCount && dword_17D06F4[64*i]
-    if (j < 0) return;                                         // pool plein (i==g_FxAuraCount) -> aucun attach
+    if (j < 0) return;                                         // pool full (i==g_FxAuraCount) -> no attach
     gfx::Fx_AttachDashTrail(&gfx::FxPool_Slots()[j], FxSourceFromMonster(m), side); // @0x5815e1 / @0x581652
 }
 
-} // namespace (anonyme)
+} // namespace (anonymous)
 
-// ---------------------------------------------------------------------------
-// op 0x0c — Pkt_EnterWorld : reset des tableaux d'entites + copie des blocs.
-// ---------------------------------------------------------------------------
+// op 0x0c — Pkt_EnterWorld: entity array reset + block copy.
 void EntityManager::OnEnterWorld(const net::EnterWorld& p) {
-    // RESET de tous les tableaux d'entites (l'original despawn slot par slot ;
-    // vider les vecteurs est l'equivalent propre — index 0 = self sera repeuple
-    // par le prochain Pkt_SpawnCharacter).
+    // RESET of all entity arrays (the original despawns slot by slot; clearing
+    // the vectors is the clean equivalent — index 0 = self will be repopulated
+    // by the next Pkt_SpawnCharacter).
     g_World.players.clear();
     g_World.monsters.clear();
     g_World.npcs.clear();
     g_World.groundItems.clear();
     groundPickup_.clear();
 
-    // Copie des deux blocs memoire portes par le payload :
-    //   selfCharInvBlock (10088 o) -> g_SelfCharInvBlock (perso local + inventaire)
-    //   zoneStateBlock   (288 o)   -> dword_16758D8 (etat de zone)
+    // Copy of the two memory blocks carried by the payload:
+    //   selfCharInvBlock (10088 bytes) -> g_SelfCharInvBlock (local character + inventory)
+    //   zoneStateBlock   (288 bytes)   -> dword_16758D8 (zone state)
     g_World.self.charInvBlock.assign(p.selfCharInvBlock, p.selfCharInvBlock + sizeof(p.selfCharInvBlock));
     g_World.self.zoneState.assign(p.zoneStateBlock, p.zoneStateBlock + sizeof(p.zoneStateBlock));
 
-    // Arme la bascule de scene EnterWorld -> InGame : fidele a dword_1676180=6 ecrit
-    // DIRECTEMENT par Pkt_EnterWorld dans le binaire (PAS une transition normale de la
-    // machine d'etat EnterWorldFlow, qui ne detecte qu'un timeout de secours). Consomme
-    // par SceneManager::Update() (case Scene::EnterWorld), cf. GameState.h::GameWorld::
-    // sceneEnterWorldPending et Docs/TS2_ENTERWORLD_WIRING_TODO.md.
+    // Arms the EnterWorld -> InGame scene switch: faithful to dword_1676180=6, written
+    // DIRECTLY by Pkt_EnterWorld in the binary (NOT a normal transition of the
+    // EnterWorldFlow state machine, which only detects a fallback timeout). Consumed
+    // by SceneManager::Update() (case Scene::EnterWorld), see GameState.h::GameWorld::
+    // sceneEnterWorldPending and Docs/TS2_ENTERWORLD_WIRING_TODO.md.
     g_World.sceneEnterWorldPending = true;
 
-    // TODO(scene) ancre : Pkt_EnterWorld pose aussi g_SceneSubState=0 (@0x46430e) et
-    // dword_1676188=0 (@0x464318). g_SceneSubState est prive dans SceneManager (Scene/*, non
-    // possede par ce front) -> laisse au proprietaire (cf. App/PlayerInputController.cpp:21). // 0x464160
+    // TODO(scene) anchor: Pkt_EnterWorld also sets g_SceneSubState=0 (@0x46430e) and
+    // dword_1676188=0 (@0x464318). g_SceneSubState is private to SceneManager (Scene/*, not
+    // owned by this front) -> left to its owner (see App/PlayerInputController.cpp:21). // 0x464160
 
-    // Palier de croissance dword_1675D90 = f(g_GrowthIndex) @0x464329-0x464394. L'ENTREE
-    // g_GrowthIndex 0x1674774 est modelisee par g_World.self.growthIndex (GameState.h:396 ;
-    // la cle Var 0x1674774 est MORTE, cf. Net/GameHandlers_Misc.cpp:422). Le palier derive a
-    // des consommateurs reels (UI_WishA_Open 0x600059, Pkt_ItemActionDispatch 0x477abc). // 0x464160
+    // Growth tier dword_1675D90 = f(g_GrowthIndex) @0x464329-0x464394. The INPUT
+    // g_GrowthIndex 0x1674774 is modeled by g_World.self.growthIndex (GameState.h:396;
+    // the Var key 0x1674774 is DEAD, see Net/GameHandlers_Misc.cpp:422). The derived tier
+    // has real consumers (UI_WishA_Open 0x600059, Pkt_ItemActionDispatch 0x477abc). // 0x464160
     {
         const int gi = g_World.self.growthIndex;
         int32_t tier;
@@ -384,16 +384,16 @@ void EntityManager::OnEnterWorld(const net::EnterWorld& p) {
         g_Client.Var(0x1675D90) = tier;
     }
 
-    // Resets @0x46439e/0x4643a8/0x4643b8 (consommateurs reels : Pkt_SetGameVar,
-    // Char_CalcExternalAttack, famille UI_ShareBox_*).
+    // Resets @0x46439e/0x4643a8/0x4643b8 (real consumers: Pkt_SetGameVar,
+    // Char_CalcExternalAttack, UI_ShareBox_* family).
     g_Client.Var(0x16760D8) = 0;                          // dword_16760D8 @0x46439e
     g_Client.Var(0x16760DC) = 0;                          // dword_16760DC @0x4643a8
     g_Client.Var(0x16760E0) = g_Client.VarGet(0x1675800); // dword_16760E0 = dword_1675800 @0x4643b8
 
-    // Requetes de suivi emises par Pkt_EnterWorld selon dword_1675A8C (@0x4643d1/0x4643da/
-    // 0x4644ad). Le binaire adresse g_NetClient en GLOBAL -> emission via le singleton, meme
-    // motif que MapWarp/ArmFullWarp. Builders (code mort jusqu'ici) : Net_SendVaultReq_207
-    // 0x590480, Net_SendPacket_Op23 0x4b5490. Verrou anti-spam g_GmCmdCooldownLatch 0x1675B08.
+    // Follow-up requests emitted by Pkt_EnterWorld based on dword_1675A8C (@0x4643d1/0x4643da/
+    // 0x4644ad). The binary addresses g_NetClient GLOBALLY -> emission via the singleton, same
+    // pattern as MapWarp/ArmFullWarp. Builders (dead code until now): Net_SendVaultReq_207
+    // 0x590480, Net_SendPacket_Op23 0x4b5490. Anti-spam lock g_GmCmdCooldownLatch 0x1675B08.
     if (auto* c = ts2::net::GlobalNetClient()) {
         const int32_t warpMode = g_Client.VarGet(0x1675A8C);        // dword_1675A8C
         if (warpMode == 5) {                                        // @0x4643d1
@@ -418,85 +418,84 @@ void EntityManager::OnEnterWorld(const net::EnterWorld& p) {
         }
     }
 
-    // TODO(state) ancre : le binaire finit par Player_CheckStateDigit(&g_PlayerCmdController)
-    // @0x4644ea (valeur de retour du handler). g_PlayerCmdController (module PlayerCmdController)
-    // n'est ni modelise ni possede par ce front -> non porte. // 0x464160
+    // TODO(state) anchor: the binary ends with Player_CheckStateDigit(&g_PlayerCmdController)
+    // @0x4644ea (handler return value). g_PlayerCmdController (PlayerCmdController module)
+    // is neither modeled nor owned by this front -> not ported. // 0x464160
 }
 
-// ---------------------------------------------------------------------------
-// op 0x0f — Pkt_SpawnCharacter : creation/mise a jour d'un personnage.
-// ---------------------------------------------------------------------------
+// op 0x0f — Pkt_SpawnCharacter: character creation/update.
 PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
     const EntityId id{ p.idHi, p.idLo };
     PlayerEntity* existing = FindPlayer(id);
 
     if (!existing) {
-        // --- NOUVEAU slot : init complete (le corps porte deja position + etats).
+        // --- NEW slot: full init (the body already carries position + states).
         PlayerEntity* e = g_World.FindOrAddPlayer(id);
         e->timestamp = g_World.gameTimeSec;
         std::memcpy(e->body.data(), p.body, e->body.size());
         ReadPlayerPos(*e);
         ReadPlayerName(*e);
-        // Sequence spawn-anim de Pkt_SpawnCharacter 0x4646C0 (tout nouveau slot) :
-        //   Char_RefreshStatusEffectVisuals 0x570890 (@0x4648bc) puis Char_SetActionAnimParams
-        //   0x570E70 (@0x4648da). Sous-ensemble MODELISE sur CharAnimState (idx156-160/221) ;
-        //   Fx_Attach*/muzzle/UI restent TODO ancre (pool g_FxPool/dword_17D06F4 non attache,
-        //   aucune aura active a ce spawn -> boucles Fx_Attach* = no-op fidele).
+        // Spawn-anim sequence of Pkt_SpawnCharacter 0x4646C0 (brand-new slot):
+        //   Char_RefreshStatusEffectVisuals 0x570890 (@0x4648bc) then Char_SetActionAnimParams
+        //   0x570E70 (@0x4648da). MODELED subset on CharAnimState (idx156-160/221);
+        //   Fx_Attach*/muzzle/UI remain TODO anchor (pool g_FxPool/dword_17D06F4 not attached,
+        //   no active aura at this spawn -> Fx_Attach* loops = faithful no-op).
         e->anim.state = RdI32(e->body.data(), kPActionState); // a1[61]=entity+244=body+220 (0x570ED5)
-        // Sélecteur de CLIP d'anim = 2*weaponClass (move-state+0 = body+216 = entity+240). Arg4 de
+        // Anim CLIP selector = 2*weaponClass (move-state+0 = body+216 = entity+240). Arg4 of
         // Char_TickMoveState 0x574830 @0x5748e0 -> PcModel_ResolveEquipSlot 0x4E46A0 (base+19968*animSlot).
-        // Sans lui (weaponType=0 figé), un joueur ARMÉ jouait le clip DÉSARMÉ (gap G5, DEEP IDA render).
+        // Without it (weaponType=0 stuck), an ARMED player played the UNARMED clip (gap G5, DEEP IDA render).
         e->anim.animSlot = RdI32(e->body.data(), static_cast<int>(kPMoveState)); // entity+240 = body+216
-        // (Vague G — traîne d'arme) Gate maître de Char_DrawWeaponEffectVariantB 0x56BF90 (@0x56c01b :
+        // (Wave G — weapon trail) Master gate of Char_DrawWeaponEffectVariantB 0x56BF90 (@0x56c01b:
         // weaponAnimSlot(this+55=entity+220=body+196) != 0 && !altWeaponSet(this+144=entity+576=body+552)).
-        // Alimentés au spawn comme anim.state ci-dessus -> sinon resolveWeaponTrail échoue au gate =
-        // aucune traîne (dégradation propre). TODO(ancre) : recopier depuis les paquets d'action/skill
-        // qui changent l'anim active (Pkt_ItemActionDispatch/skill) pour refléter les casts en cours de jeu.
+        // Fed at spawn like anim.state above -> otherwise resolveWeaponTrail fails the gate =
+        // no trail (clean degradation). TODO(anchor): copy from the action/skill packets that
+        // change the active anim (Pkt_ItemActionDispatch/skill) to reflect in-progress casts.
         e->anim.weaponAnimSlot = RdI32(e->body.data(), 196);      // entity+220 = body+196 (idx55)
         e->anim.altWeaponSet   = RdI32(e->body.data(), 552) != 0; // entity+576 = body+552 (idx144)
         e->anim.fxAuraAttachedLatch = false; // a1[221]=0 (Char_RefreshStatusEffectVisuals 0x570936)
-        Char_ApplyActionAnimParams(e->anim); // switch 0x570ED5 (pose 156=0 puis idx156-160)
-        // TODO ancre : Fx_Attach* (0x570890/0x570E70), Char_UpdateWeaponGlowState 0x55D740,
-        //   muzzle idx183/184 (case 0xC @0x570F25), bloc UI if(!a3) (0x571635) — non modelises.
-        // Si index 0 (self) : l'original relance le combat local + les effets de map
-        // et met g_SceneSubState=3 ; effets de scene hors perimetre entite.
+        Char_ApplyActionAnimParams(e->anim); // switch 0x570ED5 (sets 156=0 then idx156-160)
+        // TODO anchor: Fx_Attach* (0x570890/0x570E70), Char_UpdateWeaponGlowState 0x55D740,
+        //   muzzle idx183/184 (case 0xC @0x570F25), UI block if(!a3) (0x571635) — not modeled.
+        // If index 0 (self): the original restarts local combat + map effects and
+        // sets g_SceneSubState=3; scene effects are outside the entity scope.
         if (IsSelf(e)) {
-            // Player_ResetCombatState 0x50F6A0 (@0x4648f2, self uniquement) : reset du bloc
-            // combat/action de g_PlayerCmdController. Ses effets VISIBLES restent couverts
-            // ailleurs (play BGM gate g_BgmEnabled 0x50F76E -> SceneManager::LoadZoneBgm ;
+            // Player_ResetCombatState 0x50F6A0 (@0x4648f2, self only): resets the
+            // combat/action block of g_PlayerCmdController. Its VISIBLE effects remain
+            // covered elsewhere (play-BGM gate g_BgmEnabled 0x50F76E -> SceneManager::LoadZoneBgm;
             // Net_SendOp64 poll 0x50F746 -> host.SendPendingTargetPoll InGameTickFlow).
             //
-            // Le latch « commande en vol » (+51600 = dword_1675B00) A DESORMAIS un
-            // consommateur : la couche d'intention Game/PlayerCmdController.* le pose en
-            // emettant l'op 0x0F. L'ancien commentaire « le reset interne n'a aucun
-            // consommateur ClientSource » est donc PERIME. Ce reset-ci couvre l'ENTREE
-            // DANS LE MONDE (gate `var_2B0 == 0` @0x4648df, branche nouveau slot) ;
-            // l'acquittement PAR PAQUET du jeu courant, lui, est le `mode 3 + self` plus
-            // bas dans cette meme fonction (@0x464BF0, ligne ~492) — les deux ecrivent le
-            // MEME slot (g_Client.Var(0x1675B00)), conformement au binaire qui n'a qu'un
-            // stockage. xrefs_to(0x50F6A0) = 1 SEUL appelant, exactement ici (@0x4648f2).
+            // The "command in flight" latch (+51600 = dword_1675B00) NOW HAS a
+            // consumer: the intent layer Game/PlayerCmdController.* sets it when
+            // emitting op 0x0F. The old comment "the internal reset has no ClientSource
+            // consumer" is therefore STALE. This reset covers WORLD ENTRY
+            // (gate `var_2B0 == 0` @0x4648df, new-slot branch); the PER-PACKET
+            // acknowledgment of the current game, meanwhile, is the `mode 3 + self`
+            // case further down in this same function (@0x464BF0, line ~492) — both
+            // write the SAME slot (g_Client.Var(0x1675B00)), consistent with the binary
+            // having only one storage location. xrefs_to(0x50F6A0) = 1 SOLE caller,
+            // exactly here (@0x4648f2).
             g_PlayerCmd.ResetCombatState();
-            // EQUIVALENT de l'appel cGameData_LoadZoneNpcInfo(g_LocalPlayerSheet) @0x4648fc
-            // (garde `if (!i)` de Pkt_SpawnCharacter 0x4646C0) : repeuple les PNJ de decor
-            // statiques de la zone courante. Cf. Game/StaticNpcLoader.h pour le detail ; le
-            // suivi de g_World.zoneId au warp est desormais assure par SceneManager::ReloadZone
-            // (Passe 3 W2-F1), donc LoadZoneNpcs voit la bonne zone au (re)spawn self.
+            // EQUIVALENT of the cGameData_LoadZoneNpcInfo(g_LocalPlayerSheet) call @0x4648fc
+            // (guard `if (!i)` of Pkt_SpawnCharacter 0x4646C0): repopulates the current
+            // zone's static decor NPCs. See Game/StaticNpcLoader.h for detail; tracking of
+            // g_World.zoneId on warp is now handled by SceneManager::ReloadZone
+            // (Passe 3 W2-F1), so LoadZoneNpcs sees the correct zone on self (re)spawn.
             LoadZoneNpcs(g_World.zoneId);
         }
         return e;
     }
 
-    // --- slot EXISTANT : rafraichissement + logique de mode.
+    // --- EXISTING slot: refresh + mode logic.
     PlayerEntity* e = existing;
     e->timestamp = g_World.gameTimeSec;
     uint8_t* b = e->body.data();
 
-    // Sauvegarde de l'ancien move-state AVANT ecrasement (par defaut on le conserve).
+    // Save the old move-state BEFORE overwrite (kept by default).
     uint8_t oldMove[kPMoveStateLen];
     std::memcpy(oldMove, b + kPMoveState, kPMoveStateLen);
     const int oldActionState = RdI32(oldMove, 4); // action-state = move-state+4
 
-    // Copie du nouveau corps complet, puis restauration de l'ancien move-state.
+    // Copy the full new body, then restore the old move-state.
     std::memcpy(b, p.body, e->body.size());
     std::memcpy(b + kPMoveState, oldMove, kPMoveStateLen);
 
@@ -504,7 +503,7 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
     const int newAnimId      = RdI32(p.body, kPAnimId);
 
     if (p.mode == 1) {
-        // Garde : ne pas interrompre certains etats d'action en cours.
+        // Guard: do not interrupt certain in-progress action states.
         bool skip = false;
         if (oldActionState == 11) {
             if (newActionState != 1 && newActionState != 12) skip = true;
@@ -512,10 +511,10 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
             skip = true;
         }
         if (!skip) {
-            // Applique le nouveau move-state (donc nouvelle position + anim).
+            // Apply the new move-state (i.e. new position + anim).
             std::memcpy(b + kPMoveState, p.body + kPMoveState, kPMoveStateLen);
 
-            // Cas action-state==2 : preserve la frame d'anim si le mouvement n'a pas change.
+            // Case action-state==2: preserve the anim frame if the movement hasn't changed.
             if (newActionState == 2) {
                 if (!IsSelf(e)) {
                     const int newMove0 = RdI32(p.body, kPMoveState);
@@ -526,22 +525,22 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
                         std::memcpy(b + kPAnimFrame, &oldFrame, 4);
                     }
                 } else {
-                    // self : restaure entierement l'ancien move-state.
+                    // self: fully restores the old move-state.
                     std::memcpy(b + kPMoveState, oldMove, kPMoveStateLen);
                 }
             }
 
-            // Char_SetActionAnimParams 0x570E70 REJOUE sur le slot EXISTANT (mode==1) — @0x464b15,
-            // apres l'application du nouveau move-state et du bloc actionState==2, juste avant le
-            // switch de stun. Lit l'action-state COURANT du body (a1[61]=body+220) : pour
-            // self+actionState==2 le move-state a ete restaure a l'ancien ci-dessus, donc l'ancien
-            // action-state — fidele au binaire. Miroir de la sequence du slot neuf (lignes 299-301,
-            // sans Char_RefreshStatusEffectVisuals qui n'est PAS appele sur cette branche).
+            // Char_SetActionAnimParams 0x570E70 REPLAYS on the EXISTING slot (mode==1) — @0x464b15,
+            // after applying the new move-state and the actionState==2 block, right before the
+            // stun switch. Reads the CURRENT action-state from the body (a1[61]=body+220): for
+            // self+actionState==2 the move-state was restored to the old one above, so it reads the
+            // old action-state — faithful to the binary. Mirrors the new-slot sequence (lines 299-301,
+            // without Char_RefreshStatusEffectVisuals, which is NOT called on this branch).
             e->anim.state = RdI32(b, kPActionState);
             Char_ApplyActionAnimParams(e->anim);
 
-            // Duree de stun selon l'id d'anim (body+272), DOUBLEE du miroir self dword_1675884
-            // (@0x464b69/0x464ba0/0x464bd7) — lu par UI_GameHud_Render 0x67a3c0 (3 sites).
+            // Stun duration based on the anim id (body+272), MIRRORED to self dword_1675884
+            // (@0x464b69/0x464ba0/0x464bd7) — read by UI_GameHud_Render 0x67a3c0 (3 sites).
             if ((newAnimId >= 139 && newAnimId <= 145) || (newAnimId >= 147 && newAnimId <= 149)) {
                 WrI32(b, kPStunDur, 90);
                 if (IsSelf(e)) g_Client.Var(0x1675884) = 90; // dword_1675884 @0x464b69
@@ -554,33 +553,31 @@ PlayerEntity* EntityManager::OnSpawnCharacter(const net::SpawnCharacter& p) {
             }
         }
     } else if (p.mode == 3 && IsSelf(e)) {
-        // self, spawn local : dword_1675B00=0 @0x464bf0 (latch consomme par ~20 sites —
-        // Scene_InGameUpdate/UI_GameHud_ProcNet/Player_CastSkill…). Meme motif que
+        // self, local spawn: dword_1675B00=0 @0x464bf0 (latch consumed by ~20 sites —
+        // Scene_InGameUpdate/UI_GameHud_ProcNet/Player_CastSkill…). Same pattern as
         // Net/GameHandlers_Entity.cpp:48 (opcode 0x15).
         //
-        // C'EST L'ACQUITTEMENT PAR PAQUET DE L'OP 0x0F (chemin nominal) : dword_1675B00
-        // == g_PlayerCmdController+51600 (0x1669170+0xC990) == le latch pose par les
-        // builders d'intention de Game/PlayerCmdController.* — c.-a-d. le MEME slot que
-        // g_PlayerCmd.Busy(), pas un miroir. Cette ecriture etait jusqu'ici SANS LECTEUR ;
-        // elle est ce qui debloque le joueur apres chaque attaque/competence.
+        // THIS IS THE PER-PACKET ACKNOWLEDGMENT OF OP 0x0F (nominal path): dword_1675B00
+        // == g_PlayerCmdController+51600 (0x1669170+0xC990) == the latch set by the intent
+        // builders of Game/PlayerCmdController.* — i.e. the SAME slot as g_PlayerCmd.Busy(),
+        // not a mirror. This write previously had NO READER; it is what unblocks the player
+        // after each attack/skill.
         g_Client.Var(0x1675B00) = 0;
     }
-    // mode==2 : aucun effet sur le slot existant (fidele au handler d'origine).
+    // mode==2: no effect on the existing slot (faithful to the original handler).
 
-    ReadPlayerPos(*e);  // rafraichit x/y/z depuis le move-state courant.
-    ReadPlayerName(*e); // le nom fait partie du body recopie en entier ci-dessus (ligne 175).
+    ReadPlayerPos(*e);  // refreshes x/y/z from the current move-state.
+    ReadPlayerName(*e); // the name is part of the body copied in full above (line 175).
     return e;
 }
 
-// ---------------------------------------------------------------------------
-// op 0x12 — Pkt_SpawnMonster : creation/mise a jour d'un monstre.
-// ---------------------------------------------------------------------------
+// op 0x12 — Pkt_SpawnMonster: monster creation/update.
 MonsterEntity* EntityManager::OnSpawnMonster(const net::SpawnMonster& p) {
     const EntityId id{ p.idHi, p.idLo };
     MonsterEntity* existing = FindMonster(id);
 
     if (existing) {
-        // Rafraichissement : conserve l'ancien move-state sauf si updateFlag==1.
+        // Refresh: keeps the old move-state unless updateFlag==1.
         MonsterEntity* m = existing;
         m->timestamp = g_World.gameTimeSec;
         uint8_t* b = m->body.data();
@@ -594,29 +591,29 @@ MonsterEntity* EntityManager::OnSpawnMonster(const net::SpawnMonster& p) {
         return m;
     }
 
-    // Nouveau : resolution de la definition AVANT allocation (rejet si id invalide).
+    // New: definition resolution BEFORE allocation (rejected if id invalid).
     const uint32_t defId = RdU32(p.body, 0);
     bool tableLoaded = false;
     const uint8_t* def = ResolveMobDef(defId, tableLoaded);
     if (tableLoaded && !def)
-        return nullptr; // id de modele inconnu -> pas de spawn (fidele a l'original).
+        return nullptr; // unknown model id -> no spawn (faithful to the original).
 
     MonsterEntity* m = g_World.FindOrAddMonster(id);
     m->timestamp = g_World.gameTimeSec;
     std::memcpy(m->body.data(), p.body, m->body.size());
     m->def = def;
 
-    // Le slot d'index (m - monsters.data()) peut avoir ete recycle depuis un AUTRE
-    // monstre (slot libre reutilise par FindOrAdd, cf. GameState.cpp) : on purge son
-    // extension de tick (Game/EntityLifecycleTick.h) pour eviter qu'un vieux
-    // fallOffset/etat d'aura ne "fuite" sur cette nouvelle entite -- ferme le TODO
-    // precis laisse en tete d'EntityLifecycleTick.h ("a accrocher dans
+    // The index slot (m - monsters.data()) may have been recycled from ANOTHER
+    // monster (free slot reused by FindOrAdd, see GameState.cpp): its tick
+    // extension is purged (Game/EntityLifecycleTick.h) to prevent a stale
+    // fallOffset/aura state from "leaking" onto this new entity -- closes the
+    // precise TODO left at the top of EntityLifecycleTick.h ("to hook into
     // EntityManager::OnSpawnMonster/OnSpawnNpc").
     ResetMonsterTickExt(static_cast<int>(m - g_World.monsters.data()));
 
-    // Rayon de collision : Pkt_SpawnMonster 0x467B00 calcule
-    // sqrt(def[+256]^2 + def[+248]^2)*0.5 (= collDim[2], collDim[0]). `def` est desormais
-    // garanti = MonsterInfo* (resolu par GetMonsterInfo) -> acces type.
+    // Collision radius: Pkt_SpawnMonster 0x467B00 computes
+    // sqrt(def[+256]^2 + def[+248]^2)*0.5 (= collDim[2], collDim[0]). `def` is now
+    // guaranteed = MonsterInfo* (resolved by GetMonsterInfo) -> typed access.
     if (def) {
         const auto* mi = reinterpret_cast<const MonsterInfo*>(def);
         const double s = static_cast<double>(mi->collDim[0]) * mi->collDim[0]
@@ -624,31 +621,29 @@ MonsterEntity* EntityManager::OnSpawnMonster(const net::SpawnMonster& p) {
         m->radius = static_cast<float>(std::sqrt(s) * 0.5);
     }
 
-    // Char_SetupAuraFlags 0x5814F0 (@0x467da6, apres le rayon de collision) : trainee de dash
-    // particulaire selon la classe de modele (def+244) + l'etat de vitesse (def+236 in [2,6]).
-    // PRODUCTEUR SEUL — le tick/rendu des slots type 5 sont deja cables (SceneManager/FxRenderer).
-    // (Char_UpdateMotionState 0x5816a0, appele juste apres @0x467dc4, releve du move-state : non
-    // porte ici — non touche par ce front.)
+    // Char_SetupAuraFlags 0x5814F0 (@0x467da6, after the collision radius): particle dash
+    // trail based on model class (def+244) + speed state (def+236 in [2,6]).
+    // PRODUCER ONLY — tick/render of type-5 slots are already wired (SceneManager/FxRenderer).
+    // (Char_UpdateMotionState 0x5816a0, called right after @0x467dc4, belongs to move-state:
+    // not ported here — untouched by this front.)
     AttachMonsterDashTrail(*m);
 
     ReadMonsterPos(*m);
     return m;
 }
 
-// ---------------------------------------------------------------------------
-// op 0x13 — Pkt_SpawnNpc : creation / rafraichissement / despawn (action==3).
-// ---------------------------------------------------------------------------
+// op 0x13 — Pkt_SpawnNpc: creation / refresh / despawn (action==3).
 NpcEntity* EntityManager::OnSpawnNpc(const net::SpawnNpc& p) {
     const EntityId id{ p.idHi, p.idLo };
     NpcEntity* existing = FindNpc(id);
 
     if (existing) {
         if (p.action == 3) {
-            // Despawn : libere le slot (sub_583390).
+            // Despawn: frees the slot (sub_583390).
             *existing = NpcEntity{};
             return nullptr;
         }
-        // Rafraichissement.
+        // Refresh.
         existing->timestamp = g_World.gameTimeSec;
         std::memcpy(existing->body.data(), p.body, existing->body.size());
         bool loaded = false;
@@ -659,11 +654,11 @@ NpcEntity* EntityManager::OnSpawnNpc(const net::SpawnNpc& p) {
     }
 
     if (p.action == 3)
-        return nullptr; // despawn d'un NPC inconnu -> rien.
+        return nullptr; // despawn of an unknown NPC -> nothing.
 
-    // Nouveau : resolution de la definition avant allocation (rejet si id invalide).
-    // ITEM_INFO (ResolveNpcDef = MobDb_GetEntry(mITEM), cf. Pkt_SpawnNpc 0x467EC0), PAS
-    // la table monstre.
+    // New: definition resolution before allocation (rejected if id invalid).
+    // ITEM_INFO (ResolveNpcDef = MobDb_GetEntry(mITEM), see Pkt_SpawnNpc 0x467EC0), NOT
+    // the monster table.
     bool tableLoaded = false;
     const uint8_t* def = ResolveNpcDef(RdU32(p.body, 0), tableLoaded);
     if (tableLoaded && !def)
@@ -676,24 +671,22 @@ NpcEntity* EntityManager::OnSpawnNpc(const net::SpawnNpc& p) {
     e->action = p.action;
     ReadNpcPos(*e);
 
-    // Meme purge que OnSpawnMonster ci-dessus (slot potentiellement recycle) --
-    // ferme le TODO precis d'EntityLifecycleTick.h pour la branche NPC.
+    // Same purge as OnSpawnMonster above (potentially recycled slot) --
+    // closes the precise TODO in EntityLifecycleTick.h for the NPC branch.
     ResetNpcTickExt(static_cast<int>(e - g_World.npcs.data()));
 
     return e;
 }
 
-// ---------------------------------------------------------------------------
-// op 0x10 — Pkt_CharStateUpdate : pose/efface 36 bitfields d'etat d'un personnage.
-// ---------------------------------------------------------------------------
+// op 0x10 — Pkt_CharStateUpdate: sets/clears 36 state bitfields of a character.
 void EntityManager::OnCharStateUpdate(const net::CharStateUpdate& p) {
     // Pkt_CharStateUpdate 0x464c10. Layout: [op][idHi@8156C1][idLo@8156C5]
-    //   [stateValues 288o = 36 paires @8156C9][stateFlags 144o = 36 @8157E9] = 441 o.
+    //   [stateValues 288 bytes = 36 pairs @8156C9][stateFlags 144 bytes = 36 @8157E9] = 441 bytes.
     PlayerEntity* e = FindPlayer({ p.entityIdHi, p.entityIdLo });
-    if (!e) return; // v7 == -1 : le binaire ne fait rien si l'entite n'existe pas.
+    if (!e) return; // v7 == -1: the binary does nothing if the entity doesn't exist.
 
     uint8_t* b = e->body.data();
-    const bool self = IsSelf(e); // branchement if(v7)/else @0x464d1a : v7==0 => SELF.
+    const bool self = IsSelf(e); // if(v7)/else branch @0x464d1a: v7==0 => SELF.
 
     for (int i = 0; i < static_cast<int>(kPStateCount); ++i) {
         const uint32_t flag  = p.stateFlags[i];          // v8[i]
@@ -702,49 +695,49 @@ void EntityManager::OnCharStateUpdate(const net::CharStateUpdate& p) {
 
         if (flag == 1) {
             if (self) {
-                // Branche SELF @0x46529e : miroir dword_16758D8/DC + horodatage AVANT le switch.
+                // SELF branch @0x46529e: mirror dword_16758D8/DC + timestamp BEFORE the switch.
                 WrZoneU32(8 * i, val);                                   // dword_16758D8[2*i] @0x46530c
                 WrZoneU32(8 * i + 4, extra);                             // dword_16758DC[2*i] @0x465326
                 g_Client.VarF(0x16759F8 + 4 * i) = g_World.gameTimeSec;  // flt_16759F8[i]     @0x465339
                 WrU32(b, kPStateArr + 4 * i, val);                       // dword_168737C[i]   @0x46535f
                 switch (i) {
-                    // Cas 15/16/17/18 : le binaire joue un son (Snd3D_PlayScaledVolume, dernier
-                    //   arg=1 en self @0x46537a/0x4653c2/0x46540a/0x465452) et pose des drapeaux/
-                    //   timers d'effet (dword_1687598 @0x46538b, unk_168759C @0x4653a3,
+                    // Cases 15/16/17/18: the binary plays a sound (Snd3D_PlayScaledVolume, last
+                    //   arg=1 in self @0x46537a/0x4653c2/0x46540a/0x465452) and sets effect
+                    //   flags/timers (dword_1687598 @0x46538b, unk_168759C @0x4653a3,
                     //   dword_16875AC @0x4653e1, unk_16875B0 @0x4653f9, dword_16875B4 @0x465429,
-                    //   flt_16875B8 @0x465441). Ces drapeaux sont ECRITURE SEULE (xrefs_to = 2 refs,
-                    //   toutes dans Pkt_CharStateUpdate ; unk_168759C = 0 ref) et vivent a
-                    //   record+868..900, HORS du body de 600 o modelise -> non portables sans effet
-                    //   observable ; audio non branche ici. TODO ancre (0x464c10).
+                    //   flt_16875B8 @0x465441). These flags are WRITE-ONLY (xrefs_to = 2 refs,
+                    //   both in Pkt_CharStateUpdate; unk_168759C = 0 refs) and live at
+                    //   record+868..900, OUTSIDE the modeled 600-byte body -> not portable
+                    //   without observable effect; audio not wired here. TODO anchor (0x464c10).
                     case 15: case 16: case 17: case 18: break;
                     case 9:  ResetComboSlots(b, true, 9, -1);  break; // @0x465469 (skip slot 9)
                     case 29: ResetComboSlots(b, true, 29, -1); break; // @0x4655a7
                     case 30: ResetComboSlots(b, true, 30, -1); break; // @0x4656e5
                     case 31: ResetComboSlots(b, true, 31, -1); break; // @0x465823
                     case 32: ResetComboSlots(b, true, 32, -1); break; // @0x465961
-                    case 33: ResetComboSlots(b, true, 33, -1); break; // @0x465a9f (self: saute 33 seul, 6 resets)
-                    case 34: ResetComboSlots(b, true, 34, -1); break; // @0x465bdd (self: saute 34 seul, 6 resets)
-                    case 35: ZeroSelfSlot(b, 35);              break; // @0x465d14 (auto-annulant : ecrit puis efface)
+                    case 33: ResetComboSlots(b, true, 33, -1); break; // @0x465a9f (self: skips only 33, 6 resets)
+                    case 34: ResetComboSlots(b, true, 34, -1); break; // @0x465bdd (self: skips only 34, 6 resets)
+                    case 35: ZeroSelfSlot(b, 35);              break; // @0x465d14 (self-canceling: writes then clears)
                     default: break;
                 }
             } else {
-                // Branche NON-SELF @0x464d1a.
+                // NON-SELF branch @0x464d1a.
                 WrU32(b, kPStateArr + 4 * i, val); // dword_168737C[227*v7+i] @0x464d9a
                 switch (i) {
-                    // Sons @0x464db5/0x464dfd/0x464e1b/0x464e63 (arg=0) + memes drapeaux morts —
-                    //   voir la branche SELF ci-dessus (non portes, TODO ancre 0x464c10).
+                    // Sounds @0x464db5/0x464dfd/0x464e1b/0x464e63 (arg=0) + same dead flags —
+                    //   see the SELF branch above (not ported, TODO anchor 0x464c10).
                     case 15: case 16: case 17: case 18: break;
                     case 9:  ResetComboSlots(b, false, 9, -1);  break; // @0x464eb0 (skip slot 9)
                     case 29: ResetComboSlots(b, false, 29, -1); break; // @0x464f46
                     case 30: ResetComboSlots(b, false, 30, -1); break; // @0x464fdc
                     case 31: ResetComboSlots(b, false, 31, -1); break; // @0x465072
                     case 32: ResetComboSlots(b, false, 32, -1); break; // @0x465108
-                    // ASYMETRIE PROUVEE (bug d'origine reproduit) : en NON-SELF les cas 33 et 34
-                    //   sautent A LA FOIS 33 ET 34 (5 resets @0x46519a / @0x465213), alors que la
-                    //   branche SELF saute seulement le slot propre (6 resets). Ne PAS corriger.
+                    // PROVEN ASYMMETRY (original bug reproduced): in NON-SELF, cases 33 and 34
+                    //   skip BOTH 33 AND 34 (5 resets @0x46519a / @0x465213), whereas the SELF
+                    //   branch skips only its own slot (6 resets). Do NOT fix.
                     case 33: ResetComboSlots(b, false, 33, 34); break; // @0x46519a
                     case 34: ResetComboSlots(b, false, 33, 34); break; // @0x465213
-                    default: break; // pas de cas 35 en non-self.
+                    default: break; // no case 35 in non-self.
                 }
             }
         } else if (flag == 2) {
@@ -759,9 +752,7 @@ void EntityManager::OnCharStateUpdate(const net::CharStateUpdate& p) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// op 0x11 — Pkt_CharStatDelta : deltas PV/PM/niveau (sous-ensemble entite du 36-cas).
-// ---------------------------------------------------------------------------
+// op 0x11 — Pkt_CharStatDelta: HP/MP/level deltas (entity subset of the 36-case).
 void EntityManager::OnCharStatDelta(const net::CharStatDelta& p) {
     PlayerEntity* e = FindPlayer({ p.idHi, p.idLo });
     if (!e) return;
@@ -770,51 +761,49 @@ void EntityManager::OnCharStatDelta(const net::CharStatDelta& p) {
     const bool self = IsSelf(e);
 
     switch (p.subOp) {
-        case 1: // gain de niveau : compteur d'entite + niveau self.
+        case 1: // level gain: entity counter + self level.
             WrI32(b, kPLevelCtr, RdI32(b, kPLevelCtr) + static_cast<int32_t>(p.valA));
             if (self) g_World.self.level += static_cast<int>(p.valA);
             break;
-        case 4: { // degats PV : AR-min courant -= (valA+valB), plancher 0.
+        case 4: { // HP damage: current AR-min -= (valA+valB), floor 0.
             int32_t hp = RdI32(b, kPHp) - static_cast<int32_t>(p.valA) - static_cast<int32_t>(p.valB);
             if (hp < 1) hp = 0;
             WrI32(b, kPHp, hp);
             break;
         }
-        case 8: // soin PV.
+        case 8: // HP heal.
             WrI32(b, kPHp, RdI32(b, kPHp) + static_cast<int32_t>(p.valA));
             break;
-        case 9: // soin PM (AR-max courant).
+        case 9: // MP heal (current AR-max).
             WrI32(b, kPMp, RdI32(b, kPMp) + static_cast<int32_t>(p.valA));
             break;
-        case 23: // PM = 0.
+        case 23: // MP = 0.
             WrI32(b, kPMp, 0);
             break;
-        case 24: // fixe PV.
+        case 24: // set HP.
             WrI32(b, kPHp, static_cast<int32_t>(p.valA));
             break;
-        case 25: // fixe PM.
+        case 25: // set MP.
             WrI32(b, kPMp, static_cast<int32_t>(p.valA));
             break;
         default:
-            // Autres cas (attributs, argent, buffs, compteurs de combo, montures/skills,
-            // reset multi-champ du cas 22...) : relevent du StatEngine / systemes dedies.
+            // Other cases (attributes, money, buffs, combo counters, mounts/skills,
+            // multi-field reset of case 22...): handled by StatEngine / dedicated systems.
             break;
     }
 
-    // Reflet des barres de combat dans les champs clairs de l'entite.
+    // Reflects the combat bars into the entity's plain fields.
     e->hp = RdI32(b, kPHp);
     e->mp = RdI32(b, kPMp);
 }
 
-// ---------------------------------------------------------------------------
-// op 0x91 — Net_OnPartyMemberPosition : position monde d'un membre de groupe.
-// ---------------------------------------------------------------------------
+// op 0x91 — Net_OnPartyMemberPosition: world position of a party member.
 void EntityManager::OnPartyMemberPosition(const net::PartyMemberPosition& p) {
     PlayerEntity* e = FindPlayer({ p.idHi, p.idLo });
     if (!e) return;
 
     uint8_t* b = e->body.data();
-    // Snapshot party (dword_1687478/47C + unk_1687480/84/88, unk_168748C=0).
+    // Party snapshot (dword_1687478/47C + unk_1687480/84/88, unk_168748C=0).
     WrU32(b, kPPartyGridX, p.gridX);
     WrU32(b, kPPartyGridY, p.gridY);
     WrF32(b, kPPartyPos + 0, p.pos[0]);
@@ -822,40 +811,38 @@ void EntityManager::OnPartyMemberPosition(const net::PartyMemberPosition& p) {
     WrF32(b, kPPartyPos + 8, p.pos[2]);
     WrF32(b, kPPartyPosPad, 0.0f);
 
-    // Reflet dans les champs de position clairs (position monde a jour du membre).
+    // Reflected into the plain position fields (member's up-to-date world position).
     e->x = p.pos[0];
     e->y = p.pos[1];
     e->z = p.pos[2];
 }
 
-// ---------------------------------------------------------------------------
-// op 0x19 — Pkt_GroundItemRemove : decrement/retrait d'une pile de ramassage.
-// ---------------------------------------------------------------------------
+// op 0x19 — Pkt_GroundItemRemove: decrement/removal of a pickup stack.
 void EntityManager::OnGroundItemRemove(const net::GroundItemRemove& p) {
-    // Pkt_GroundItemRemove 0x46a200. Le verrou anti-spam GM g_GmCmdCooldownLatch 0x1675B08 est
-    // libere pour status 0 (@0x46a25a) ET status 1 (@0x46a30c) ; status>=2 = no-op total.
+    // Pkt_GroundItemRemove 0x46a200. The GM anti-spam lock g_GmCmdCooldownLatch 0x1675B08 is
+    // released for status 0 (@0x46a25a) AND status 1 (@0x46a30c); status>=2 = total no-op.
     if (p.status == 0 || p.status == 1)
         g_Client.Var(0x1675B08) = 0;
 
     if (p.status != 0)
-        return; // status>=1 : pas de retrait de grille (le latch a deja ete traite ci-dessus).
+        return; // status>=1: no grid removal (the latch was already handled above).
 
-    // status==0 : le binaire joue aussi un son (Snd3D_PlayScaledVolume flt_14891BC @0x46a26f,
-    // audio non branche ici -> TODO ancre), puis decremente/purge la pile.
+    // status==0: the binary also plays a sound (Snd3D_PlayScaledVolume flt_14891BC @0x46a26f,
+    // audio not wired here -> TODO anchor), then decrements/purges the stack.
     GroundPickupSlot* s = PickupSlot(p.containerIndex, p.slotIndex);
     if (!s) return;
 
-    // --dword_1674400[...] @0x46a29c : la garde count>0 est OBLIGATOIRE (count unsigned cote
-    // C++, int signe cote binaire -> meme etat final 0 sans underflow, via le clamp <1 ci-dessous).
+    // --dword_1674400[...] @0x46a29c: the count>0 guard is MANDATORY (count unsigned on the
+    // C++ side, signed int on the binary side -> same final state 0 with no underflow, via
+    // the <1 clamp below).
     if (s->count > 0) --s->count;
-    if (s->count < 1) { // pile epuisee -> vide la cellule (@0x46a2cb/e5/ff).
+    if (s->count < 1) { // stack exhausted -> clears the cell (@0x46a2cb/e5/ff).
         s->itemId = 0;
         s->count  = 0;
         s->aux    = 0;
     }
 }
 
-// ---------------------------------------------------------------------------
 GroundPickupSlot* EntityManager::PickupSlot(uint32_t containerIndex, uint32_t slotIndex) {
     if (containerIndex >= kMaxContainers || slotIndex >= kSlotsPerContainer)
         return nullptr;

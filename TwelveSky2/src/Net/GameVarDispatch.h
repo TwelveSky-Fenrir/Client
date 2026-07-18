@@ -1,26 +1,26 @@
-// Net/GameVarDispatch.h — méga-dispatcher Pkt_SetGameVar (opcode 0x16).
+// Net/GameVarDispatch.h — Pkt_SetGameVar mega-dispatcher (opcode 0x16).
 //
-// Traduction fidèle de Pkt_SetGameVar (EA 0x468370, taille 0x165A, ~130 sélecteurs
-// distincts sur la plage 1..158). C'est le dispatcher central des VARIABLES DE JEU
-// et stats du JOUEUR LOCAL (self) : le serveur pousse une paire [selecteur:u32]
-// [valeur:i32] et le client route chaque sélecteur vers le global correspondant
-// (monnaie, poids d'inventaire, points d'attributs non dépensés, jauges d'auto-hunt,
-// maîtrise d'élément, longue traîne de flags…), avec parfois une ligne système, un
-// son, un recalcul de rating d'attaque ou un déclenchement de warp.
+// Faithful translation of Pkt_SetGameVar (EA 0x468370, size 0x165A, ~130 distinct
+// selectors over range 1..158). This is the central dispatcher for LOCAL PLAYER
+// (self) GAME VARIABLES and stats: the server pushes a [selector:u32]
+// [value:i32] pair and the client routes each selector to the matching global
+// (currency, inventory weight, unspent attribute points, auto-hunt fuel gauges,
+// element mastery, a long tail of flags...), sometimes with a system line, a
+// sound, an attack-rating recalc, or a warp trigger.
 //
-// Modèle de données : g_World.self / g_Client (inv, msg) de Game/GameState.h et
-// Game/ClientRuntime.h ; les globals non modélisés passent par g_Client.Var(adresse
-// d'origine) — fidèle à la « longue traîne » du binaire.
+// Data model: g_World.self / g_Client (inv, msg) from Game/GameState.h and
+// Game/ClientRuntime.h; unmodeled globals go through g_Client.Var(original
+// address) — faithful to the binary's "long tail".
 //
-// RÈGLE : ce module N'ÉDITE PAS l'état partagé — il l'inclut et l'utilise.
+// RULE: this module does NOT own the shared state — it includes and uses it.
 #pragma once
 #include <cstdint>
 
 namespace ts2::game {
 
-// Applique un paquet SetGameVar (opcode 0x16). `payload` pointe sur les octets
-// APRÈS l'opcode (= unk_8156C1 du binaire) : payload[0..3] = sélecteur (u32 LE),
-// payload[4..7] = valeur (i32 LE). `len` = taille du payload (>= 8 attendu).
+// Applies a SetGameVar packet (opcode 0x16). `payload` points to the bytes
+// AFTER the opcode (= binary's unk_8156C1): payload[0..3] = selector (u32 LE),
+// payload[4..7] = value (i32 LE). `len` = payload size (>= 8 expected).
 void ApplySetGameVar(const uint8_t* payload, uint32_t len);
 
 } // namespace ts2::game

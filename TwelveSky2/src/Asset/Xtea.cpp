@@ -1,18 +1,18 @@
-// Asset/Xtea.cpp — traduction fidèle du parseur validé (RE/asset_parsers/npk.py).
+// Asset/Xtea.cpp — faithful translation of the validated parser (RE/asset_parsers/npk.py).
 #include "Asset/Xtea.h"
 #include <cstring>
 
 namespace ts2::asset {
 
-// Somme initiale du déchiffrement = delta*32 ; DELTA_INV = -0x9E3779B9 mod 2^32.
+// Initial decryption sum = delta*32; DELTA_INV = -0x9E3779B9 mod 2^32.
 static constexpr uint32_t kSum0     = 0xC6EF3720u;
 static constexpr uint32_t kDeltaInv = 0x61C88647u;
 
-// Clés texte des octets de queue (Xtea_XorTailByte 0x708E4B / 0x708F86).
+// Text keys for the tail bytes (Xtea_XorTailByte 0x708E4B / 0x708F86).
 static const char kTailStd[8] = "XtEaNpK";
 static const char kTailVar[8] = "NpK!TeA";
 
-// Bloc standard (0x708DC0). L'arithmétique uint32_t enveloppe mod 2^32 (== & 0xFFFFFFFF).
+// Standard block (0x708DC0). uint32_t arithmetic wraps mod 2^32 (== & 0xFFFFFFFF).
 static void BlockStd(uint32_t& v0, uint32_t& v1, const uint32_t k[4]) {
     uint32_t s = kSum0;
     for (int i = 0; i < 32; ++i) {
@@ -24,7 +24,7 @@ static void BlockStd(uint32_t& v0, uint32_t& v1, const uint32_t k[4]) {
     }
 }
 
-// Bloc variante (0x708EFF) — formulation à triple-XOR.
+// Variant block (0x708EFF) — triple-XOR formulation.
 static void BlockVar(uint32_t& v0, uint32_t& v1, const uint32_t k[4]) {
     uint32_t s = kSum0;
     for (int i = 0; i < 32; ++i) {
@@ -51,7 +51,7 @@ void XteaDecryptBuffer(uint8_t* buf, size_t n, const XteaKey& key,
 
     if (rem && tailFlag) {
         const char* tail = variant ? kTailVar : kTailStd;
-        size_t idx = rem; // idx = --v4 : part de rem-1 et décroît
+        size_t idx = rem; // idx = --v4: starts at rem-1 and decreases
         for (size_t p = aligned; p < n; ++p) {
             --idx;
             const uint8_t ks = static_cast<uint8_t>(k[idx % 4] % 255u);

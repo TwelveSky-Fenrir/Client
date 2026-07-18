@@ -1,75 +1,65 @@
-// Game/StaticNpcLoader.h — chargeur de PNJ statiques de DECOR (marchands, gardes,
-// donneurs de quete...) place par la carte, EQUIVALENT client-source de
-// `cGameData_LoadZoneNpcInfo` 0x5578E0 (renomme dans l'IDB, ex-`cGameData_LoadMapEffects`).
+// Game/StaticNpcLoader.h — loader for DECOR static NPCs (merchants, guards,
+// quest givers...) placed by the map, client-source EQUIVALENT of
+// `cGameData_LoadZoneNpcInfo` 0x5578E0 (renamed in the IDB, ex-`cGameData_LoadMapEffects`).
 //
-// Contexte complet, preuve et decompilation : Docs/TS2_NPC_ZONE_LOADER_TRIGGER.md.
-// Resume :
-//   - Le client d'origine peuple un tableau `g_NpcRenderArray` (0x1764D14, stride 88 o,
-//     100 slots) DEPUIS UNE TABLE STATIQUE PAR-ZONE `mZONENPCINFO` chargee UNE FOIS au
-//     demarrage (G02_GINFO\002.BIN, deja cable cote ClientSource, cf. MotionPools.h
-//     §3 "mZONENPCINFO" + ZoneNpcCount/ZoneNpcKindId/ZoneNpcPosition/ZoneNpcAngle).
-//   - Ce tableau est REPEUPLE INTEGRALEMENT (jamais fusionne/patche) a CHAQUE fois que
-//     le paquet `Pkt_SpawnCharacter` (opcode 0x0F) cree l'entree i==0 (= joueur local)
-//     du tableau d'entites — c'est-a-dire a CHAQUE cycle EnterWorld+SpawnCharacter(self),
-//     donc au login initial ET a chaque (re)chargement de zone/warp/teleport (le serveur
-//     renvoie systematiquement un EnterWorld+SpawnCharacter(self) a chaque changement de
-//     zone, cf. Docs/TS2_PROTOCOL_SPEC.md). Preuve : decompilation integrale de
-//     Pkt_SpawnCharacter 0x4646C0 (cf. doc), garde `if (!i)` juste apres la creation du
-//     slot, AVANT tout traitement specifique aux entites deja existantes.
-//   - C'est un mecanisme ENTIEREMENT LOCAL (aucun paquet reseau dedie aux PNJ de decor :
-//     l'unique opcode PNJ reseau, 0x13 Pkt_SpawnNpc, alimente un tableau GAMEPLAY
-//     disjoint `dword_17AB534`/`game::NpcEntity`/`g_World.npcs`, utilise UNIQUEMENT pour
-//     l'interaction/ciblage — jamais pour le rendu du maillage, cf. Docs/
-//     TS2_NPC_MESH_DRAW.md §"tableaux gameplay vs rendu"). Les deux tableaux se
-//     recouvrent conceptuellement (memes PNJ) mais ne sont PAS synchronises entre eux
-//     cote binaire d'origine : le rendu du maillage PNJ (Npc_DrawMesh 0x57FF00) ne lit
-//     QUE `g_NpcRenderArray`, jamais `dword_17AB534`.
+// Full context, proof, and decompilation: Docs/TS2_NPC_ZONE_LOADER_TRIGGER.md.
+// Summary:
+//   - The original client fills a `g_NpcRenderArray` array (0x1764D14, stride 88 bytes,
+//     100 slots) FROM A PER-ZONE STATIC TABLE `mZONENPCINFO` loaded ONCE at startup
+//     (G02_GINFO\002.BIN, already wired client-side, cf. MotionPools.h §3
+//     "mZONENPCINFO" + ZoneNpcCount/ZoneNpcKindId/ZoneNpcPosition/ZoneNpcAngle).
+//   - This array is FULLY REPOPULATED (never merged/patched) EVERY TIME the
+//     `Pkt_SpawnCharacter` packet (opcode 0x0F) creates entry i==0 (= local player) of
+//     the entity array — i.e. on EVERY EnterWorld+SpawnCharacter(self) cycle, so at
+//     initial login AND on every zone (re)load/warp/teleport (the server systematically
+//     sends an EnterWorld+SpawnCharacter(self) on every zone change, cf.
+//     Docs/TS2_PROTOCOL_SPEC.md). Proof: full decompilation of Pkt_SpawnCharacter 0x4646C0
+//     (cf. doc), `if (!i)` guard right after slot creation, BEFORE any logic specific to
+//     already-existing entities.
+//   - This is an ENTIRELY LOCAL mechanism (no network packet dedicated to decor NPCs:
+//     the only network NPC opcode, 0x13 Pkt_SpawnNpc, feeds a DISJOINT GAMEPLAY array
+//     `dword_17AB534`/`game::NpcEntity`/`g_World.npcs`, used ONLY for interaction/
+//     targeting — never for mesh rendering, cf. Docs/TS2_NPC_MESH_DRAW.md §"gameplay vs
+//     render arrays"). The two arrays conceptually overlap (same NPCs) but are NOT
+//     synchronized with each other on the original binary side: NPC mesh rendering
+//     (Npc_DrawMesh 0x57FF00) reads ONLY `g_NpcRenderArray`, never `dword_17AB534`.
 //
-// Declenchement cable : Game/EntityManager.cpp::OnSpawnCharacter, branche "nouveau slot",
-// quand `IsSelf(e)` est vrai (equivalent exact du garde `if (!i)` d'origine, @0x4648E6) —
-// appelle `LoadZoneNpcs(g_World.zoneId)`. Ce chemin est REELLEMENT ATTEINT au runtime
-// (verifie W7 : EntityManager.cpp:318), c'est la garantie anti-code-mort de ce module.
+// Wired trigger: Game/EntityManager.cpp::OnSpawnCharacter, "new slot" branch, when
+// `IsSelf(e)` is true (exact equivalent of the original `if (!i)` guard, @0x4648E6) —
+// calls `LoadZoneNpcs(g_World.zoneId)`. This path is ACTUALLY REACHED at runtime
+// (verified W7: EntityManager.cpp:318), which is this module's anti-dead-code guarantee.
 //
-// VERIFIE 2026-07-14 (mission dediee "fidelite positions PNJ decor") : le mapping
-// zoneId1Based -> ligne mZONENPCINFO (row = zoneId1Based - 1, MotionPools::AttachTableRow)
-// est DIRECT, SANS TABLE DE CORRESPONDANCE INTERMEDIAIRE cote binaire d'origine — confirme
-// par decompilation de cGameData_LoadZoneNpcInfo 0x5578E0 (`mZONENPCINFO[501 *
-// g_SelfMorphNpcId - 501]`, formule affine pure). Le seul point subtil est la SOURCE du
-// zoneId d'origine : le binaire reutilise deliberement le global g_SelfMorphNpcId (0x1675A98,
-// "Id de forme courante"/morph) comme porteur temporaire du zoneId cible, reprime a CHAQUE
-// passage par Scene_EnterWorldUpdate (login ET tout warp/teleport/respawn — 41 sites
-// d'ecriture releves sur dword_1675A9C, cf. Docs/TS2_NPC_RENDER_ARRAY_WRITER.md §7 pour la
-// preuve desassemblage complete). Ceci confirme et resout un point precedemment ouvert (§7,
-// "hypothese 2" retenue) et valide que la formule d'indexation deja implementee ici
-// (zoneId1Based - 1, aucun LUT) est fidele a l'original.
+// VERIFIED 2026-07-14 ("decor NPC position fidelity" dedicated mission): the mapping
+// zoneId1Based -> mZONENPCINFO row (row = zoneId1Based - 1, MotionPools::AttachTableRow)
+// is DIRECT, WITH NO INTERMEDIATE LOOKUP TABLE on the original binary side — confirmed
+// by decompiling cGameData_LoadZoneNpcInfo 0x5578E0 (`mZONENPCINFO[501 *
+// g_SelfMorphNpcId - 501]`, pure affine formula). The only subtle point is the SOURCE
+// of the original zoneId: the binary deliberately reuses the global g_SelfMorphNpcId
+// (0x1675A98, "current form/morph id") as a temporary carrier for the target zoneId,
+// reset on EVERY pass through Scene_EnterWorldUpdate (login AND every warp/teleport/
+// respawn — 41 write sites found on dword_1675A9C, cf.
+// Docs/TS2_NPC_RENDER_ARRAY_WRITER.md §7 for the full disassembly proof). This confirms
+// and resolves a previously open point (§7, "hypothesis 2" adopted) and validates that
+// the indexing formula already implemented here (zoneId1Based - 1, no LUT) is faithful
+// to the original.
 //
-// ============================================================================================
-// MISE A JOUR Passe 4 / vague W7 — front "npc-array-unify" (fusion des DEUX representations)
-// ============================================================================================
-// AVANT W7, ce module portait son PROPRE `std::vector<StaticNpcSlot> g_zoneNpcs` (statique de
-// fichier), tandis que Game/GameState.h portait un SECOND modele du MEME tableau d'origine
-// (`GameWorld::groundItems`, nom errone, JAMAIS peuple). Resultat : deux representations du
-// pool g_NpcRenderArray 0x1764D14 dont les consommateurs s'ignoraient — rendu/minimap lisaient
-// celle-ci, clic/tick/ciblage lisaient l'autre (donc du code MORT).
-//
-// Desormais : representation UNIQUE = `GameWorld::npcRenderEntries` (Game/GameState.h, struct
-// NpcRenderEntry — layout PROUVE, 100 slots FIXES). Ce module en est l'ECRIVAIN (equivalent de
-// cGameData_LoadZoneNpcInfo 0x5578E0, ecrivain unique cote binaire) ; `ZoneNpcs()` n'est plus
-// qu'un ACCESSEUR mince sur ce pool, conserve pour ne pas casser ses lecteurs existants.
-//
-// DEUX ECARTS DE FIDELITE CORRIGES PAR W7 (l'ancien vecteur prive les portait) :
-//  1. PERTE D'INDEX (visible sur le RESEAU). L'ancien code faisait `push_back` -> il COMPACTAIT
-//     la liste : un kindId sans record decalait tous les index suivants. Le binaire, lui, garde
-//     le slot `i` aligne sur `mZONENPCINFO[i]` (il laisse un TROU inactif). Or cet index part
-//     sur le reseau : `Net_QueueRunTo(..., 4, a1, ...)` @0x539E78, ou `a1` est l'index de slot
-//     resolu par World_PickEntityAtCursor (`*a4 = j` @0x538E8F). Compacter = designer une AUTRE
-//     cible au serveur. Le pool a 100 slots fixes corrige donc un ECART RESEAU, pas seulement
-//     un doublon de modelisation.
-//  2. CLEAR PARASITE. Le binaire n'efface RIEN dans ce chargeur (aucun `else` sur la garde
-//     @0x557956, aucune remise a zero des slots >= count) : le nettoyage appartient
-//     EXCLUSIVEMENT a Pkt_EnterWorld (boucle `for i<g_NpcCount: dtor(slot)` @0x464237, dtor
-//     0x57FE70 qui ne remet QUE +4=0). L'ancien `g_zoneNpcs.clear()` etait donc infidele.
-// ============================================================================================
+// MISE A JOUR — Pass 4 / wave W7, front "npc-array-unify": merged the TWO duplicate
+// representations of pool g_NpcRenderArray 0x1764D14 (this module's private
+// `std::vector<StaticNpcSlot> g_zoneNpcs` vs. Game/GameState.h's unused
+// `GameWorld::groundItems`) into a SINGLE `GameWorld::npcRenderEntries` (NpcRenderEntry,
+// proven layout, 100 FIXED slots). This module is its SOLE WRITER (equivalent to
+// cGameData_LoadZoneNpcInfo 0x5578E0); `ZoneNpcs()` is now a thin accessor kept for
+// existing readers.
+// Two fidelity gaps fixed by W7 (the old private vector had both):
+//  1. INDEX LOSS (network-visible): the old `push_back` COMPACTED the list, but the binary
+//     keeps slot `i` aligned to `mZONENPCINFO[i]` (leaves an inactive HOLE) — this index is
+//     sent over the network (`Net_QueueRunTo(..., 4, a1, ...)` @0x539E78, a1 resolved by
+//     World_PickEntityAtCursor `*a4 = j` @0x538E8F); compacting would target the wrong
+//     entity server-side.
+//  2. SPURIOUS CLEAR: the binary clears NOTHING in this loader (no `else` on the @0x557956
+//     guard, no zeroing of slots >= count) — cleanup belongs SOLELY to Pkt_EnterWorld
+//     (`for i<g_NpcCount: dtor(slot)` @0x464237, dtor 0x57FE70 resets only +4=0); the old
+//     `g_zoneNpcs.clear()` was therefore unfaithful.
 #pragma once
 #include "Game/ExtraDatabases.h"
 #include "Game/GameState.h" // NpcRenderEntry / GameWorld::npcRenderEntries / kNpcRenderPoolCapacity
@@ -78,47 +68,49 @@
 
 namespace ts2::game {
 
-// Alias CONSERVE du nom historique de ce module : le "slot de PNJ statique" EST une entree du
-// pool unique g_NpcRenderArray (Game/GameState.h::NpcRenderEntry — layout prouve : def(+0),
+// Alias KEPT from this module's historical name: the "static NPC slot" IS an entry of the
+// single g_NpcRenderArray pool (Game/GameState.h::NpcRenderEntry — proven layout: def(+0),
 // active(+4), mode(+12), frameAcc(+16), x/y/z(+20/24/28), angle(+44), angleBase(+80)).
-// Maintenu pour que les lecteurs existants (Scene/WorldRenderer.cpp, UI/MinimapWidget.cpp)
-// continuent de compiler sans changement de type.
+// Kept so existing readers (Scene/WorldRenderer.cpp, UI/MinimapWidget.cpp) keep compiling
+// without a type change.
 //
-// NOTE : le champ `kindId` de l'ancien StaticNpcSlot a DISPARU — il n'existe PAS dans les 88 o
-// du binaire (le chargeur consomme le kindId a la volee pour resoudre `def` et ne le stocke
-// jamais ; les lecteurs relisent le kind via `def` : Npc_RenderSlotTick_Loop @0x580429 lit
-// def+1324, UI_NpcWin_Open 0x5DB530 @0x5dc03a lit `*(*a2)` == def+0 == NpcDefRecord::id).
-// CORRECTION W7 (re-verifie par Grep) : contrairement a la 1re redaction, UN lecteur C++ le
-// reference ENCORE — Game/AnimationTick.cpp:923 (ZoneNpc_OnDialogueOpen, portage de 0x5DB530)
-// fait `slot.def ? slot.def->id : slot.kindId` en repli. Ce repli est MORT cote binaire
-// (0x5DB530 lit def+0 sur un slot ACTIF, donc def non-nul) mais casse la COMPILATION depuis la
-// fusion (NpcRenderEntry n'a pas de membre kindId). kindId reste HORS layout (fidelite aux 88 o
-// prouvee) : c'est AnimationTick.cpp:923 qui doit etre adapte par l'orchestrateur (`: slot.kindId`
-// -> `: 0`, fichier hors perimetre de ce front). Seule occurrence de membre `.kindId` dans src/.
+// NOTE: the `kindId` field of the old StaticNpcSlot has DISAPPEARED — it doesn't exist in
+// the binary's 88 bytes (the loader consumes kindId on the fly to resolve `def` and never
+// stores it; readers re-derive the kind via `def`: Npc_RenderSlotTick_Loop @0x580429 reads
+// def+1324, UI_NpcWin_Open 0x5DB530 @0x5dc03a reads `*(*a2)` == def+0 == NpcDefRecord::id).
+// W7 CORRECTION (re-verified by grep): contrary to the first draft, ONE C++ reader STILL
+// references it — Game/AnimationTick.cpp:923 (ZoneNpc_OnDialogueOpen, port of 0x5DB530)
+// does `slot.def ? slot.def->id : slot.kindId` as a fallback. This fallback is DEAD on the
+// binary side (0x5DB530 reads def+0 on an ACTIVE slot, so def is nonzero) but breaks
+// COMPILATION since the merge (NpcRenderEntry has no kindId member). kindId stays OUT of
+// the layout (fidelity to the proven 88 bytes): it's AnimationTick.cpp:923 that the
+// orchestrator must adapt (`: slot.kindId` -> `: 0`, file out of scope for this front).
+// Only occurrence of a `.kindId` member in src/.
 using StaticNpcSlot = NpcRenderEntry;
 
-// Repeuple le pool g_NpcRenderArray pour `zoneId1Based` (1..350) — equivalent client-source de
-// cGameData_LoadZoneNpcInfo 0x5578E0. Necessite que MotionPools::LoadGInfo002Bin() ET
-// ExtraDatabases::LoadExtraDatabases() aient deja ete appeles (App_Init), ET que
-// GameData_InitPools() ait dimensionne le pool (== cGameData_InitPools 0x5575D0, proprietaire
-// UNIQUE de la capacite) ; sinon renvoie false sans rien ecrire.
+// Repopulates the g_NpcRenderArray pool for `zoneId1Based` (1..350) — client-source
+// equivalent of cGameData_LoadZoneNpcInfo 0x5578E0. Requires that
+// MotionPools::LoadGInfo002Bin() AND ExtraDatabases::LoadExtraDatabases() have already
+// been called (App_Init), AND that GameData_InitPools() has sized the pool (==
+// cGameData_InitPools 0x5575D0, SOLE owner of the capacity); otherwise returns false
+// without writing anything.
 //
-// N'EFFACE RIEN (cf. ecart #2 du bandeau) : ecrit les slots [0, count) EN PLACE, index par
-// index. Pour chaque i : `def` = GetNpcDefRecord(ZoneNpcKindId(...)) est ecrit
-// INCONDITIONNELLEMENT (@0x557946) ; si `def == nullptr`, la garde @0x557956 (sans `else`)
-// laisse `active` TEL QUEL et le slot i reste un TROU — l'index i n'est jamais reattribue
-// (cf. ecart #1). Les slots >= count conservent leur etat : la sequence d'origine est
-// EnterWorld (desactive les 100 slots @0x464237) -> SpawnCharacter(self) -> ce chargeur.
+// CLEARS NOTHING (cf. gap #2 in the banner above): writes slots [0, count) IN PLACE, index
+// by index. For each i: `def` = GetNpcDefRecord(ZoneNpcKindId(...)) is written
+// UNCONDITIONALLY (@0x557946); if `def == nullptr`, the @0x557956 guard (no `else`) leaves
+// `active` AS-IS and slot i remains a HOLE — index i is never reassigned (cf. gap #1).
+// Slots >= count keep their state: the original sequence is EnterWorld (disables the 100
+// slots @0x464237) -> SpawnCharacter(self) -> this loader.
 bool LoadZoneNpcs(int zoneId1Based);
 
-// Accesseur (mince) sur le pool unique `g_World.npcRenderEntries`.
+// Thin accessor over the single `g_World.npcRenderEntries` pool.
 //
-// /!\ CONTRAT CHANGE PAR W7 : renvoie desormais les 100 SLOTS FIXES du pool, et NON une liste
-// compactee de slots occupes. Tout lecteur DOIT tester `n.active` avant usage, sous peine de
-// traiter des slots vides (def == nullptr, position 0,0,0).
+// /!\ CONTRACT CHANGED BY W7: now returns the pool's 100 FIXED SLOTS, NOT a compacted
+// list of occupied slots. Every reader MUST test `n.active` before use, or risk handling
+// empty slots (def == nullptr, position 0,0,0).
 const std::vector<NpcRenderEntry>& ZoneNpcs();
 
-// zoneId1Based utilise par le dernier LoadZoneNpcs() reussi (0 si aucun).
+// zoneId1Based used by the last successful LoadZoneNpcs() (0 if none).
 int CurrentZoneNpcZoneId();
 
 } // namespace ts2::game

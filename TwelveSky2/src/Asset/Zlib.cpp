@@ -1,4 +1,4 @@
-// Asset/Zlib.cpp — backend GXDCompress.dll (zlib 1.2.3).
+// Asset/Zlib.cpp — GXDCompress.dll backend (zlib 1.2.3).
 #include "Asset/Zlib.h"
 #include "Asset/ByteReader.h"
 #include "Core/Log.h"
@@ -13,7 +13,7 @@ Zlib& Zlib::Instance() {
 }
 
 Zlib::Zlib() {
-    // Fidèle a GXD_DeviceCreate : LoadLibrary("GXDCompress.dll") + GetProcAddress.
+    // Faithful to GXD_DeviceCreate: LoadLibrary("GXDCompress.dll") + GetProcAddress.
     HMODULE h = LoadLibraryA("GXDCompress.dll");
     dll_ = h;
     if (!h) {

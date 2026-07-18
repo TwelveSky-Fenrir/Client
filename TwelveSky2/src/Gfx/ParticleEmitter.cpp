@@ -1,36 +1,36 @@
-// Gfx/ParticleEmitter.cpp — implémentation FIDÈLE du conteneur cEmitter/cEffect.
+// Gfx/ParticleEmitter.cpp — FAITHFUL implementation of the cEmitter/cEffect container.
 //
-// Vérité IDA : TwelveSky2.exe (imagebase 0x400000). Chaque bloc cite son ancre
-// (nom + 0xADDR). Voir ParticleEmitter.h pour la carte des structures et
+// IDA ground truth: TwelveSky2.exe (imagebase 0x400000). Each block cites its anchor
+// (name + 0xADDR). See ParticleEmitter.h for the structure map and
 // Docs/TS2_DEEP_PARTICLE.md §3.6–§3.8.
 #include "ParticleEmitter.h"
 #include <new>       // std::nothrow
-#include <cstring>   // (utilitaires C)
+#include <cstring>   // (C utilities)
 
 namespace ts2::gfx {
 
 // ---------------------------------------------------------------------------
-// Hooks des sous-types opaques (FxObj/Mesh) — sous-système mesh HORS cluster.
+// Opaque subtype hooks (FxObj/Mesh) — mesh subsystem OUTSIDE this cluster.
 static EmitterSubtypeHooks s_subHooks;
 
 void SetEmitterSubtypeHooks(const EmitterSubtypeHooks& hooks) { s_subHooks = hooks; }
 const EmitterSubtypeHooks& EmitterSubtypeHooksGet()          { return s_subHooks; }
 
 // ---------------------------------------------------------------------------
-// Lit `size` octets dans `dst` ; renvoie true si TOUT est lu. Mimique chaque
-// étape gardée `NumberOfBytesRead == size` d'Emitter_ReadFile 0x424D30.
+// Reads `size` bytes into `dst`; returns true if ALL of it was read. Mimics each
+// `NumberOfBytesRead == size` guarded step of Emitter_ReadFile 0x424D30.
 static bool Emit_ReadExact(HANDLE hFile, void* dst, DWORD size) {
     DWORD got = 0;
     return ReadFile(hFile, dst, size, &got, nullptr) && got == size;
 }
 
 // ---------------------------------------------------------------------------
-// Allocation/libération d'un nœud PtclPool (60 o) de la timeline.
+// Allocation/release of a 60-byte PtclPool node in the timeline.
 //
 // Emit_NewPool — Crt_OperatorNew(60) + init (scale=1, initialized=0, def=0,
-// particles=0) ; motif répété @0x4250B6 / 0x42517A / 0x429C5C.
+// particles=0); repeated pattern @0x4250B6 / 0x42517A / 0x429C5C.
 static PtclPool* Emit_NewPool() {
-    PtclPool* p = new (std::nothrow) PtclPool();   // value-init : tout à 0
+    PtclPool* p = new (std::nothrow) PtclPool();   // value-init: everything to 0
     if (!p) return nullptr;
     p->scale[0] = p->scale[1] = p->scale[2] = 1.0f;
     p->initialized = 0;
@@ -39,9 +39,9 @@ static PtclPool* Emit_NewPool() {
     return p;
 }
 
-// Emit_FreePoolNode — PtclDef_FreeNode 0x429380 : libère le tableau de particules
-// (HeapFree), remet init/def à 0 et scale=1, PUIS détruit l'objet pool lui-même
-// (Crt_FreeBase). Utilisé à la destruction et par RebuildInstances.
+// Emit_FreePoolNode — PtclDef_FreeNode 0x429380: releases the particle array
+// (HeapFree), resets init/def to 0 and scale=1, THEN destroys the pool object itself
+// (Crt_FreeBase). Used at destruction and by RebuildInstances.
 static void Emit_FreePoolNode(PtclPool* p) {
     if (!p) return;
     if (p->particles) {                                        // a1[14]=+56 @0x429380
@@ -58,22 +58,22 @@ static void Emit_FreePoolNode(PtclPool* p) {
 // Emitter (cEmitter)
 // ===========================================================================
 
-// Emitter_Construct 0x424A10 — pose la vtable, initialise les membres STL, met
-// les scalaires à 0 (field224=1, flag230=1) et appelle ResetRuntime. Ici les
-// membres STL/scalaires sont initialisés par la liste d'init de la classe ; il
-// ne reste que le reset runtime (tailPool nul à ce stade → sans effet).
+// Emitter_Construct 0x424A10 — sets the vtable, initializes STL members, sets
+// scalars to 0 (field224=1, flag230=1) and calls ResetRuntime. Here the
+// STL members/scalars are initialized by the class's init list; only the
+// runtime reset remains (tailPool null at this stage → no effect).
 Emitter::Emitter() {
-    ResetRuntime();   // @0x424AE8 (net : flag230 repasse à 0)
+    ResetRuntime();   // @0x424AE8 (net effect: flag230 goes back to 0)
 }
 
 Emitter::~Emitter() {
     FreeSubObjects();
 }
 
-// Libère PtclDef/FxObj/Mesh + tous les pools possédés. La destruction exacte du
-// binaire passe par la vtable off_7ED548 (dtor NON tracé) ; on libère ici tout
-// ce que Construct/ReadFile ont alloué, d'après la possession prouvée.
-// TODO(ancre) : tracer le destructeur virtuel off_7ED548 si un écart apparaît.
+// Releases PtclDef/FxObj/Mesh + all owned pools. The binary's exact destruction goes
+// through the vtable off_7ED548 (dtor NOT traced); here we release everything
+// Construct/ReadFile allocated, based on proven ownership.
+// TODO(anchor): trace the virtual destructor off_7ED548 if a discrepancy appears.
 void Emitter::FreeSubObjects() {
     for (auto& kf : keyframes)
         if (kf.pool) { Emit_FreePoolNode(kf.pool); kf.pool = nullptr; }
@@ -88,7 +88,7 @@ void Emitter::FreeSubObjects() {
 }
 
 // ---------------------------------------------------------------------------
-// Emitter_ReadKeyframe 0x4257F0 — 2 dwords lus + reste zéro-initialisé.
+// Emitter_ReadKeyframe 0x4257F0 — 2 dwords read + the rest zero-initialized.
 bool Emitter_ReadKeyframe(HANDLE hFile, EmitterNode* kf) {
     if (!Emit_ReadExact(hFile, &kf->value, 4)) return false;   // a2+0 @0x42580B
     if (!Emit_ReadExact(hFile, &kf->time,  4)) return false;   // a2+4 @0x425827
@@ -100,7 +100,7 @@ bool Emitter_ReadKeyframe(HANDLE hFile, EmitterNode* kf) {
 }
 
 // ---------------------------------------------------------------------------
-// Emitter_ReadFile 0x424D30 — parseur binaire de l'émetteur.
+// Emitter_ReadFile 0x424D30 — binary parser for the emitter.
 bool Emitter::ReadFile(int emitterType, HANDLE hFile, int a4, int a5) {
     type = emitterType;                                         // +4 @0x424D52
 
@@ -116,7 +116,7 @@ bool Emitter::ReadFile(int emitterType, HANDLE hFile, int a4, int a5) {
     if (!Emit_ReadExact(hFile, &subtype, 4)) return false;      // v37 @0x424E1B
 
     if (subtype == 1) {                                         // @0x424E2B
-        // Sous-type 1 : PtclDef 236 o (leaf Object B — ParticleSystem.h).
+        // Subtype 1: 236-byte PtclDef (leaf Object B — ParticleSystem.h).
         PtclDef* d = new PtclDef();                             // Crt_OperatorNew(236) @0x424E32
         PtclDef_Init(d);                                        // @0x424E3E
         ptclDef = d;                                            // +48 @0x424E47
@@ -124,30 +124,30 @@ bool Emitter::ReadFile(int emitterType, HANDLE hFile, int a4, int a5) {
         if (!PtclDef_ReadFile(ptclDef, hFile, a4, a5))          // @0x424E5C
             return false;
     } else if (subtype == 2) {                                  // @0x424E76
-        // Sous-type 2 : FxObj (type==1) ou Mesh — BLOCS OPAQUES via hook.
+        // Subtype 2: FxObj (type==1) or Mesh — OPAQUE blocks via hook.
         const EmitterSubtypeHooks& h = s_subHooks;
         if (type == 1) {                                        // *(a2+4)==1 @0x424E7C
-            if (!h.fxObjRead) return false;    // sans hook : on n'invente pas le format FxObj
+            if (!h.fxObjRead) return false;    // no hook: we do not invent the FxObj format
             fxObj = h.fxObjRead(hFile, a4, a5);                 // FxObj_ReadStream 0x4327E0 @0x424ECE
             if (!fxObj) return false;
         } else {
-            if (!h.meshLoad) return false;     // sans hook : on n'invente pas le format Mesh
+            if (!h.meshLoad) return false;     // no hook: we do not invent the Mesh format
             mesh = h.meshLoad(hFile);                           // Mesh_LoadMOBJECT2 0x4318C0 @0x4250F5
             if (!mesh) return false;
         }
-        // Canaux alpha (stride 8) — lus UNIQUEMENT pour le sous-type 2.
+        // Alpha channels (stride 8) — read ONLY for subtype 2.
         uint32_t chCount = 0;
         if (!Emit_ReadExact(hFile, &chCount, 4)) return false;  // v38 @0x424EED
         channels.assign(static_cast<size_t>(chCount), EmitterChannel{}); // StlVec_Resize8Zero @0x424F0D
-        for (uint32_t i = 0; i < chCount; ++i) {                // boucle @0x424F55
-            // 8 o : {temps:float@+0, octet@+4 (+3 padding)} — lecture directe.
+        for (uint32_t i = 0; i < chCount; ++i) {                // loop @0x424F55
+            // 8 bytes: {time:float@+0, byte@+4 (+3 padding)} — direct read.
             if (!Emit_ReadExact(hFile, &channels[i], 8)) return false;
         }
     } else {
-        return false;                                           // sous-type inconnu @0x424E76
+        return false;                                           // unknown subtype @0x424E76
     }
 
-    // --- Queue commune aux deux sous-types : nom + keyframes ---
+    // --- Tail common to both subtypes: name + keyframes ---
     uint32_t nameLen = 0;
     if (!Emit_ReadExact(hFile, &nameLen, 4)) return false;      // @0x424FB6
     std::vector<char> nameBuf(static_cast<size_t>(nameLen) + 1, 0); // Crt_OperatorNewThunk(len+1) @0x424FD5
@@ -158,7 +158,7 @@ bool Emitter::ReadFile(int emitterType, HANDLE hFile, int a4, int a5) {
     uint32_t kfCount = 0;
     if (!Emit_ReadExact(hFile, &kfCount, 4)) return false;      // v39 @0x42502A
     keyframes.assign(static_cast<size_t>(kfCount), EmitterNode{}); // StlVec_Resize24 @0x425044
-    for (uint32_t i = 0; i < kfCount; ++i) {                    // boucle @0x425084
+    for (uint32_t i = 0; i < kfCount; ++i) {                    // loop @0x425084
         if (!Emitter_ReadKeyframe(hFile, &keyframes[i]))        // @0x42508E
             return false;
         if (ptclDef) {                                          // if (a2+48) @0x42509D
@@ -168,14 +168,14 @@ bool Emitter::ReadFile(int emitterType, HANDLE hFile, int a4, int a5) {
         }
     }
 
-    // Pool « queue » (si PtclDef) : alloué ET dimensionné (PtclDef_AllocPool).
+    // "Tail" pool (if PtclDef): allocated AND sized (PtclDef_AllocPool).
     if (ptclDef) {                                              // if (a2+48) @0x425165
         tailPool = Emit_NewPool();                              // Crt_OperatorNew(60) @0x42516C
         if (!tailPool) return false;
         PtclDef_AllocPool(ptclDef, tailPool);                  // @0x4251AF
     }
 
-    // Post-traitement timeline (dans l'ordre exact du binaire).
+    // Timeline post-processing (in the binary's exact order).
     if (fxObj || mesh)          BuildAlphaLUT();                // @0x4251C0
     if (mode[0] == 1)           RebuildInstances();             // @0x4251CC
     if (mode[0] == 2 && mode[1] == 0) ComputeDuration();        // @0x4251DE
@@ -183,12 +183,12 @@ bool Emitter::ReadFile(int emitterType, HANDLE hFile, int a4, int a5) {
 }
 
 // ---------------------------------------------------------------------------
-// Emitter_BuildAlphaLUT 0x425C10 — interpole les canaux alpha (float temps, octet
-// valeur) en une LUT d'octets d'UNE valeur par frame du sous-objet FxObj/Mesh.
+// Emitter_BuildAlphaLUT 0x425C10 — interpolates the alpha channels (float time, byte
+// value) into a byte LUT with ONE value per frame of the FxObj/Mesh sub-object.
 void Emitter::BuildAlphaLUT() {
     const EmitterSubtypeHooks& h = s_subHooks;
 
-    // Longueur de la LUT = nb de frames du sous-objet (OPAQUE → hook).
+    // LUT length = sub-object frame count (OPAQUE → hook).
     int len;
     if (type == 1)                                             // a1[1]==1 @0x425C17
         len = (fxObj && h.fxObjFrames) ? h.fxObjFrames(fxObj) : 0; // *(*(FxObj+24)+264) @0x425C1F
@@ -198,43 +198,43 @@ void Emitter::BuildAlphaLUT() {
 
     alphaLUT.assign(static_cast<size_t>(len), 0);             // StlVec_ResizeByteImpl @0x425C3C
 
-    // Garde : sans canal, le binaire déréférencerait un enregistrement absent
-    // (la LUT reste alors à 0). On évite l'UB sans changer le résultat.
+    // Guard: without a channel, the binary would dereference a missing record
+    // (the LUT then stays at 0). We avoid UB without changing the result.
     const int chCount = static_cast<int>(channels.size());
     if (len <= 0 || chCount <= 0) return;
 
-    int ci = 0;                                               // v2 : index de canal courant
+    int ci = 0;                                               // v2: current channel index
     for (float frame = 0.0f; frame < static_cast<float>(len); frame += 1.0f) { // @0x425C5C..0x425EC0
         const int idx = static_cast<int>(frame);
         if (channels[ci].time == frame) {                     // @0x425C91
             alphaLUT[idx] = channels[ci].value;               // @0x425CF8
         } else if (ci + 1 < chCount) {
-            // Interpolation linéaire canal ci → ci+1 (@0x425D75 / 0x425E59).
+            // Linear interpolation channel ci → ci+1 (@0x425D75 / 0x425E59).
             const float denom = channels[ci + 1].time - channels[ci].time;
             const float w     = (frame - channels[ci].time) / denom;
             const int   a     = channels[ci].value;
             const int   b     = channels[ci + 1].value;
-            // (int)((double)(b-a)·w + (double)a) puis octet de poids faible (@0x425E59).
+            // (int)((double)(b-a)·w + (double)a) then low byte (@0x425E59).
             alphaLUT[idx] = static_cast<uint8_t>(static_cast<int>(
                 static_cast<double>(b - a) * static_cast<double>(w) + static_cast<double>(a)));
         } else {
-            // Au-delà du dernier canal : maintien de la dernière valeur (garde).
+            // Past the last channel: hold the last value (guard).
             alphaLUT[idx] = channels[ci].value;
         }
-        // Avance l'index quand la frame suivante dépasse le temps du canal suivant.
+        // Advance the index once the next frame passes the next channel's time.
         if (ci < chCount - 1 && channels[ci + 1].time <= frame + 1.0f) // @0x425E6F / 0x425EA1
             ++ci;
     }
 }
 
 // ---------------------------------------------------------------------------
-// Emitter_ComputeDuration 0x429EB0 — durée = somme des temps de keyframes (hors
-// premier). Si mode==2 (durée) et que la durée est < field19 du PtclDef, la
-// clampe dans field19 et réinitialise les instances.
+// Emitter_ComputeDuration 0x429EB0 — duration = sum of keyframe times (excluding
+// the first). If mode==2 (duration) and the duration is < the PtclDef's field19,
+// clamps it to field19 and reinitializes the instances.
 void Emitter::ComputeDuration() {
     duration = 0.0f;                                          // +232 @0x429EB3
     for (size_t i = 0; i < keyframes.size(); ++i) {
-        if (i != 0)                                           // saute le premier (v2 != begin)
+        if (i != 0)                                           // skips the first (v2 != begin)
             duration += keyframes[i].time;                   // += *(float*)(v2+4) @0x429F30
     }
     if (ptclDef && mode[0] == 2 && mode[1] == 0
@@ -245,30 +245,30 @@ void Emitter::ComputeDuration() {
 }
 
 // ---------------------------------------------------------------------------
-// Emitter_RebuildInstances 0x429A90 — pour un émetteur mode==1 à EXACTEMENT 2
-// keyframes : (re)construit `f32` instances, chacune {flag=0, échelle=1, pool}.
+// Emitter_RebuildInstances 0x429A90 — for a mode==1 emitter with EXACTLY 2
+// keyframes: (re)builds `f32` instances, each {flag=0, scale=1, pool}.
 bool Emitter::RebuildInstances() {
-    if (mode[0] != 1 || keyframes.size() != 2 || f32 < 0)    // garde @0x429AC9
+    if (mode[0] != 1 || keyframes.size() != 2 || f32 < 0)    // guard @0x429AC9
         return true;
 
-    // 1. Libère les pools des instances existantes (FreeNode = free + delete).
+    // 1. Releases the pools of existing instances (FreeNode = free + delete).
     for (auto& inst : instances)
         if (inst.pool) { Emit_FreePoolNode(inst.pool); inst.pool = nullptr; }
 
-    // 2. Vide puis redimensionne à f32 (StlVec_EraseRange24 + StlVec_Resize24).
+    // 2. Clears then resizes to f32 (StlVec_EraseRange24 + StlVec_Resize24).
     instances.clear();                                        // @0x429C0C
     instances.assign(static_cast<size_t>(f32), EmitterNode{}); // @0x429C16
 
-    // 3. Initialise chaque instance.
+    // 3. Initializes each instance.
     for (int i = 0; i < f32; ++i) {                           // @0x429C28
         EmitterNode& inst = instances[i];
         inst.value = 0;                                       // elem[0]=0 @0x429CCD
         inst.time  = 1.0f;                                    // elem[4]=1.0 (v36) @0x429CD3
         inst.f8 = inst.f12 = inst.f16 = 0.0f;                 // elem[8/12/16]=0 (v17) @0x429CDA
         PtclPool* pool = nullptr;
-        if (tailPool) {                                       // if (*(a1+236)) @0x429C40 : émetteur à PtclDef
+        if (tailPool) {                                       // if (*(a1+236)) @0x429C40 : PtclDef emitter
             pool = Emit_NewPool();                            // Crt_OperatorNew(60) @0x429C4C
-            if (!pool) {                                      // chemin d'échec d'alloc @0x429D11
+            if (!pool) {                                      // alloc failure path @0x429D11
                 for (int j = 0; j < i; ++j)
                     if (instances[j].pool) { Emit_FreePoolNode(instances[j].pool); instances[j].pool = nullptr; }
                 return false;                                 // @0x429D01
@@ -281,17 +281,17 @@ bool Emitter::RebuildInstances() {
 }
 
 // ---------------------------------------------------------------------------
-// Emitter_ClearInstances 0x429F90 — pour chaque nœud (keyframe puis instance)
-// portant un pool : libère ses particules + le remet à zéro puis le réalloue
-// (PtclDef_FreePool suivi de PtclDef_AllocPool — l'objet pool est CONSERVÉ).
+// Emitter_ClearInstances 0x429F90 — for each node (keyframes then instances)
+// carrying a pool: releases its particles + resets it then reallocates it
+// (PtclDef_FreePool followed by PtclDef_AllocPool — the pool object is KEPT).
 void Emitter::ClearInstances() {
-    for (auto& kf : keyframes) {                              // boucle keyframes +88 @0x429FB0
+    for (auto& kf : keyframes) {                              // keyframes loop +88 @0x429FB0
         if (kf.pool) {
-            PtclDef_FreePool(kf.pool);                        // free particules + reset (init=0/def=0/scale=1)
+            PtclDef_FreePool(kf.pool);                        // free particles + reset (init=0/def=0/scale=1)
             PtclDef_AllocPool(ptclDef, kf.pool);             // @0x42A08E
         }
     }
-    for (auto& inst : instances) {                           // boucle instances +240 @0x42A0F0
+    for (auto& inst : instances) {                           // instances loop +240 @0x42A0F0
         if (inst.pool) {
             PtclDef_FreePool(inst.pool);
             PtclDef_AllocPool(ptclDef, inst.pool);           // @0x42A1D3
@@ -300,8 +300,8 @@ void Emitter::ClearInstances() {
 }
 
 // ---------------------------------------------------------------------------
-// Emitter_ResetRuntime 0x42A220 — remet timers/fanions à 0 et, si le pool queue
-// existe, libère ses particules puis le réalloue et vide les instances.
+// Emitter_ResetRuntime 0x42A220 — resets timers/flags to 0 and, if the tail pool
+// exists, releases its particles then reallocates it and clears the instances.
 void Emitter::ResetRuntime() {
     timer212     = 0.0f;                                      // +212 @0x42A225
     timer216     = 0.0f;                                      // +216 @0x42A22C
@@ -331,8 +331,8 @@ Effect::~Effect() {
     ClearEmitters();
 }
 
-// Effect_ClearEmitters 0x42A7F0 — détruit tous les émetteurs, vide le vecteur,
-// puis remet loaded=false (*(this+8)=0 @0x42a906) avant de renvoyer 1.
+// Effect_ClearEmitters 0x42A7F0 — destroys all emitters, clears the vector,
+// then resets loaded=false (*(this+8)=0 @0x42a906) before returning 1.
 void Effect::ClearEmitters() {
     for (Emitter* e : emitters)
         delete e;
@@ -340,10 +340,10 @@ void Effect::ClearEmitters() {
     loaded = false;                                         // *(this+8)=0 @0x42a906
 }
 
-// Effect_ResetAllEmitters 0x42B230 — reset runtime de CHAQUE émetteur : la boucle
-// (0x42b251) n'appelle QUE Emitter_ResetRuntime (0x42b2a1). Contrairement à la
-// boucle de lecture de ReadStream, elle NE remet NI flag230 NI runtime140 (flag230
-// est déjà remis à 0 par ResetRuntime @0x42A23E ; runtime140 reste inchangé).
+// Effect_ResetAllEmitters 0x42B230 — runtime reset of EACH emitter: the loop
+// (0x42b251) calls ONLY Emitter_ResetRuntime (0x42b2a1). Unlike ReadStream's
+// read loop, it resets NEITHER flag230 NOR runtime140 (flag230
+// is already reset to 0 by ResetRuntime @0x42A23E; runtime140 stays unchanged).
 void Effect::ResetAllEmitters() {
     for (Emitter* e : emitters) {
         if (!e) continue;
@@ -351,8 +351,8 @@ void Effect::ResetAllEmitters() {
     }
 }
 
-// Effect_ReadStream 0x42A990 — vérifie le magic id, alloue `count` émetteurs, les
-// construit + reset + lit. false si le magic ou une lecture échoue.
+// Effect_ReadStream 0x42A990 — checks the magic id, allocates `count` emitters,
+// constructs + resets + reads them. false if the magic or a read fails.
 bool Effect::ReadStream(int effType, HANDLE hFile, int a4, int a5) {
     type = effType;                                          // +4 @0x42A9C0
     ClearEmitters();                                         // @0x42A9C3
@@ -367,14 +367,14 @@ bool Effect::ReadStream(int effType, HANDLE hFile, int a4, int a5) {
     if (!Emit_ReadExact(hFile, &count, 4)) return false;     // @0x42AA2C
     emitters.reserve(count);                                 // StlVec_Resize4Impl @0x42AA41
 
-    for (uint32_t i = 0; i < count; ++i) {                   // boucle @0x42AA60
+    for (uint32_t i = 0; i < count; ++i) {                   // loop @0x42AA60
         Emitter* e = new Emitter();                          // Crt_OperatorNew(288)+Construct @0x42AA93/AAAF
         e->flag230    = 0;                                   // +230=0 @0x42AAF1
         e->ResetRuntime();                                   // @0x42AAF8
         e->runtime140 = 0;                                   // +140=0 @0x42AAFD
-        emitters.push_back(e);                               // *v9 = émetteur (vecteur +272)
+        emitters.push_back(e);                               // *v9 = emitter (vector +272)
         if (!e->ReadFile(type, hFile, a4, a5))               // @0x42AB35
-            return false;                                    // (émetteur possédé par le vecteur → libéré au dtor)
+            return false;                                    // (emitter owned by the vector → released at dtor)
     }
 
     ResetAllEmitters();                                      // @0x42AB73
@@ -382,7 +382,7 @@ bool Effect::ReadStream(int effType, HANDLE hFile, int a4, int a5) {
     return true;
 }
 
-// Effect_LoadFile 0x42A920 — ouvre `path` puis ReadStream, referme le handle.
+// Effect_LoadFile 0x42A920 — opens `path` then ReadStream, closes the handle.
 bool Effect::LoadFile(const char* path, int effType, int a4, int a5) {
     lstrcpynA(filename, path ? path : "", static_cast<int>(sizeof(filename))); // Crt_StrcpyS(+9,256,name) @0x42A92D
     HANDLE h = CreateFileA(path, GENERIC_READ, 0, nullptr,

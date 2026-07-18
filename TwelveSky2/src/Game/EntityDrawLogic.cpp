@@ -1,5 +1,5 @@
-// Game/EntityDrawLogic.cpp — implémentation des fonctions pures déclarées dans
-// EntityDrawLogic.h. Voir le header pour les EAs d'origine et les écarts.
+// Game/EntityDrawLogic.cpp — implementation of the pure functions declared in
+// EntityDrawLogic.h. See the header for original EAs and known gaps.
 #include "Game/EntityDrawLogic.h"
 
 #include <cmath>
@@ -12,13 +12,13 @@ float SquaredLen(float dx, float dy, float dz) {
 }
 } // namespace
 
-// Math_Dist3D 0x53FAA0 : (a1[2]-a2[2])^2 + (a1[1]-a2[1])^2 + (a1[0]-a2[0])^2, sqrt.
+// Math_Dist3D 0x53FAA0: (a1[2]-a2[2])^2 + (a1[1]-a2[1])^2 + (a1[0]-a2[0])^2, sqrt.
 float Distance3D(const Vec3& a, const Vec3& b) {
     return std::sqrt(SquaredLen(a.x - b.x, a.y - b.y, a.z - b.z));
 }
 
-// Target_IsBeyondClickRange 0x5410D0 : distance caméra -> (pos décalée en Y de
-// radius*0.5) >= 10.0. Réutilisée telle quelle comme garde de rendu "près caméra".
+// Target_IsBeyondClickRange 0x5410D0: camera distance -> (pos offset in Y by
+// radius*0.5) >= 10.0. Reused as-is as the "near camera" render guard.
 bool IsBeyondCameraNearCull(const Vec3& pos, float radius, const Vec3& cameraPos) {
     const float dx = cameraPos.x - pos.x;
     const float dy = cameraPos.y - (pos.y + radius * 0.5f);
@@ -31,25 +31,25 @@ EntityDrawFlags ComputeEntityDrawFlags(const EntityRenderState& state,
                                         int drawPass) {
     EntityDrawFlags flags{};
     if (!state.active) {
-        return flags; // this[0] == 0 -> aucune passe ne dessine rien (garde commune)
+        return flags; // this[0] == 0 -> no pass draws anything (common guard)
     }
 
     const float radius = state.info ? static_cast<float>(state.info->drawSize) : 0.0f;
     const bool nearCullOk = IsBeyondCameraNearCull(state.pos, radius, cull.cameraPos);
 
-    // Char_Draw 0x5805C0 : a2 < 1 ou a2 > 2 -> return immédiat, puis garde near-cull.
+    // Char_Draw 0x5805C0: a2 < 1 or a2 > 2 -> immediate return, then near-cull guard.
     flags.showBody = (drawPass >= 1 && drawPass <= 2) && nearCullOk;
 
-    // Char_DrawShadow 0x580CE0 / Char_DrawReflection 0x581090 : distance au joueur
-    // local <= 300 UNITÉS, PUIS garde near-cull (même formule que showBody).
+    // Char_DrawShadow 0x580CE0 / Char_DrawReflection 0x581090: distance to the local
+    // player <= 300 UNITS, THEN near-cull guard (same formula as showBody).
     const bool withinSelfRange = Distance3D(state.pos, cull.localPlayerPos) <= kSelfProximityDrawDistance;
     flags.showShadow     = withinSelfRange && nearCullOk;
     flags.showReflection = withinSelfRange && nearCullOk;
 
-    // Char_DrawOverheadName 0x581440 : garde near-cull seule (pas de cull 300).
+    // Char_DrawOverheadName 0x581440: near-cull guard only (no 300 cull).
     flags.showOverheadName = nearCullOk;
 
-    // showNameTag reste false : objet distinct, voir ComputeNameTagContent.
+    // showNameTag stays false: separate object, see ComputeNameTagContent.
     return flags;
 }
 
@@ -62,8 +62,8 @@ OverheadNameContent ComputeOverheadNameContent(const EntityRenderState& state, c
 
     out.visible = true;
     out.worldPos.x = state.pos.x;
-    // Somme ENTIÈRE drawSize + nameplateExtraOffset + 1, puis ajout à pos.y en double
-    // (fidèle à `(double)(dword+dword+1) + float`, cf. 0x5814ae).
+    // FULL INTEGER sum drawSize + nameplateExtraOffset + 1, then added to pos.y as
+    // double (faithful to `(double)(dword+dword+1) + float`, cf. 0x5814ae).
     const int heightSum = (state.info ? (state.info->drawSize + state.info->nameplateExtraOffset) : 0) + 1;
     out.worldPos.y = static_cast<float>(static_cast<double>(heightSum) + state.pos.y);
     out.worldPos.z = state.pos.z;
@@ -82,9 +82,9 @@ NameTagContent ComputeNameTagContent(const NameTagRenderState& tag, const Vec3& 
     return out;
 }
 
-// Fx_MeleeSwingDrawMarker 0x5802C0 — libellé de nom des PNJ (g_NpcRenderArray). Voir le
-// bandeau de EntityDrawLogic.h pour la décompilation intégrale et les 2 sites d'appel
-// (@0x52FC72 mort / @0x531148 vivant, catégorie 4 du survol).
+// Fx_MeleeSwingDrawMarker 0x5802C0 — NPC name label (g_NpcRenderArray). See the
+// banner in EntityDrawLogic.h for the full decompilation and the 2 call sites
+// (@0x52FC72 dead / @0x531148 live, hover category 4).
 ZoneNpcLabelContent ComputeZoneNpcLabelContent(const ZoneNpcLabelRenderState& npc,
                                                 int drawMode,
                                                 bool optShowHitMarkers,
@@ -92,14 +92,14 @@ ZoneNpcLabelContent ComputeZoneNpcLabelContent(const ZoneNpcLabelRenderState& np
     ZoneNpcLabelContent out{};
     if (!npc.active) return out; // `if (*((_DWORD*)this + 1))` @0x5802CC
 
-    // v5 = (float)*(int*)(def + 1332) @0x5802E3, puis
-    // Target_IsBeyondClickRange(this + 5 /* = pos */, v5) @0x5802F2 — MÊME primitive que
-    // le near-cull caméra de Char_Draw (cf. IsBeyondCameraNearCull ci-dessus).
+    // v5 = (float)*(int*)(def + 1332) @0x5802E3, then
+    // Target_IsBeyondClickRange(this + 5 /* = pos */, v5) @0x5802F2 — SAME primitive as
+    // the camera near-cull in Char_Draw (see IsBeyondCameraNearCull above).
     const float radius = static_cast<float>(npc.clickRange);
     if (!IsBeyondCameraNearCull(npc.pos, radius, cull.cameraPos)) return out;
 
     // `if (a2 != 1 || g_Opt_ShowHitMarkers && Math_Dist3D(this+5, flt_1687330) <= 300.0)`
-    // @0x580332. Au seul site VIVANT (@0x531148) a2 vaut 2 -> court-circuit sur `a2 != 1`.
+    // @0x580332. At the sole LIVE call site (@0x531148) a2 is 2 -> short-circuits on `a2 != 1`.
     const bool showLabel = (drawMode != 1) ||
         (optShowHitMarkers &&
          Distance3D(npc.pos, cull.localPlayerPos) <= kSelfProximityDrawDistance);
@@ -107,9 +107,9 @@ ZoneNpcLabelContent ComputeZoneNpcLabelContent(const ZoneNpcLabelRenderState& np
 
     out.visible    = true;
     out.worldPos.x = npc.pos.x; // @0x58033C
-    // Somme ENTIÈRE `def[1332] + 1` PUIS ajout à pos.y en double (fidèle à
-    // `(double)(*(_DWORD*)(def + 1332) + 1) + *(this + 6)` @0x580359) — pas d'addition
-    // flottante des deux termes séparément.
+    // FULL INTEGER sum `def[1332] + 1` THEN added to pos.y as double (faithful to
+    // `(double)(*(_DWORD*)(def + 1332) + 1) + *(this + 6)` @0x580359) — not a
+    // separate float addition of the two terms.
     out.worldPos.y = static_cast<float>(static_cast<double>(npc.clickRange + 1) + npc.pos.y);
     out.worldPos.z = npc.pos.z; // @0x580362
     out.colorCode  = Quest_GetMarkerSpriteBase(npc.markerDefId); // @0x580372 -> 10 (stub)
@@ -152,12 +152,12 @@ WeaponOverlayDecision ComputeWeaponOverlayVariant(const EntityRenderState& state
         return d;
     }
 
-    // Palier = 3 - trunc(hp*100/maxHp)/30 ; 100% PV -> palier 0 (pristine),
-    // 0% PV -> palier 3 (pire état). Division entière fidèle à l'original
-    // (Crt_ftol suivi d'une division entière /30, cf. 0x580879).
-    // TODO(fidélité) : l'original ne garde AUCUNE protection contre maxHp == 0
-    // (division par zéro FPU) ; on neutralise ici en traitant maxHp<=0 comme
-    // ratio 0 plutôt que de reproduire le crash.
+    // Stage = 3 - trunc(hp*100/maxHp)/30; 100% HP -> stage 0 (pristine),
+    // 0% HP -> stage 3 (worst state). Integer division faithful to the original
+    // (Crt_ftol followed by integer division /30, cf. 0x580879).
+    // TODO(fidelity): the original keeps NO protection against maxHp == 0
+    // (FPU division by zero); here we neutralize by treating maxHp<=0 as
+    // ratio 0 instead of reproducing the crash.
     const int maxHp = state.info->maxHp;
     const int ratioPct = (maxHp > 0) ? static_cast<int>((static_cast<double>(state.hp) * 100.0) / static_cast<double>(maxHp)) : 0;
     d.kind = WeaponOverlayDecision::Kind::kWearStage;
@@ -172,7 +172,7 @@ TribeMorphOverlayDecision ComputeTribeMorphOverlay(const EntityRenderState& stat
     const int modelId = state.info ? state.info->modelCategoryId : 0;
     d.inMorphIdRange = (modelId >= 589 && modelId <= 600);
     if (!d.inMorphIdRange) return d;
-    if (selfMorphSkillIndex == -1) return d; // pas morphé -> pas de branchement (dessin normal)
+    if (selfMorphSkillIndex == -1) return d; // not morphed -> branch not taken (normal draw)
 
     d.active = true;
     d.itemVariant  = morphTableValue % 100;
@@ -183,12 +183,12 @@ TribeMorphOverlayDecision ComputeTribeMorphOverlay(const EntityRenderState& stat
 
     if (upgradeLevelIsOdd) {
         d.overlay = TribeMorphOverlayDecision::Overlay::kUpgradeIcon;
-        d.skipNormalBodyDraw = true; // return inconditionnel dans l'original, icône valide ou non
+        d.skipNormalBodyDraw = true; // unconditional return in the original, whether the icon is valid or not
         return d;
     }
     if (d.itemVariant == 3) {
         d.overlay = TribeMorphOverlayDecision::Overlay::kClassOverlay;
-        // PAS de skip : l'original enchaîne sur le dessin normal du corps.
+        // NO skip: the original falls through to the normal body draw.
     }
     return d;
 }

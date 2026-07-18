@@ -1,4 +1,4 @@
-// Gfx/IconTextureCache.cpp — voir Gfx/IconTextureCache.h pour le contexte complet.
+// Gfx/IconTextureCache.cpp — see Gfx/IconTextureCache.h for the full context.
 #include "Gfx/IconTextureCache.h"
 #include "Asset/ImgFile.h"
 
@@ -17,7 +17,7 @@ GpuTexture* IconTextureCache::GetOrLoad(IDirect3DDevice9* dev, const std::string
         if (img.Load(path))
             tex.CreateFromImgFile(dev, img);
     }
-    // Met aussi en cache l'échec (texture invalide) pour ne pas ré-essayer chaque frame.
+    // Also caches failure (invalid texture) to avoid retrying every frame.
     auto res = entries_.emplace(path, std::move(tex));
     return res.first->second.Valid() ? &res.first->second : nullptr;
 }

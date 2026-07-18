@@ -1,14 +1,14 @@
-// Game/QuestSystem.h — Systeme de quetes du client TwelveSky2 (ts2::game).
+// Game/QuestSystem.h — Quest system for the TwelveSky2 client (ts2::game).
 //
-// Reecriture PROPRE (pas byte-exact, sauf QuestInfo qui est un overlay memoire) de la
-// logique de quetes relevee dans le desassemblage de TwelveSky2.exe (imagebase 0x400000).
-// Verite = le DESASM (MCP idaTs2). Comble le TODO(state) laisse par
-// Net/GameHandlers_Misc.cpp sur le paquet 0x27 (QuestInteractResult, alias
-// Pkt_SmithUpgradeResult 0x48E7D0 — mal nomme dans l'IDB d'origine) en fournissant les
-// briques manquantes : table de definitions de quete, record d'etape courant
-// (equivalent de g_pCurQuestStepRecord / dword_18231B4) et evaluation d'objectif.
+// CLEAN rewrite (not byte-exact, except QuestInfo which is a memory overlay) of the
+// quest logic found in the TwelveSky2.exe disassembly (imagebase 0x400000).
+// Truth = the DISASSEMBLY (MCP idaTs2). Fills the TODO(state) left by
+// Net/GameHandlers_Misc.cpp for packet 0x27 (QuestInteractResult, alias
+// Pkt_SmithUpgradeResult 0x48E7D0 — misnamed in the original IDB) by providing the
+// missing pieces: quest definition table, current step record
+// (equivalent to g_pCurQuestStepRecord / dword_18231B4), and objective evaluation.
 //
-// Fonctions d'origine reproduites ici (verite = decompilation reelle, une par une) :
+// Original functions reproduced here (truth = actual decompilation, one by one):
 //   QuestTbl_ValidateRecord      0x4C84C0 -> QuestTbl_ValidateRecord
 //   QuestTbl_LoadImg             0x4C8630 -> LoadQuestTable
 //   QuestTbl_GetRecord           0x4C88B0 -> QuestTbl_GetRecord
@@ -26,49 +26,48 @@
 //   Quest_GetRewardItemId        0x510A10 -> Quest_GetRewardItemId
 //   Quest_IsRewardItemActive     0x510A90 -> Quest_IsRewardItemActive
 //   Quest_IsItemAllowed          0x54F0B0 -> Quest_IsItemAllowed
-// Fonctions de soutien decompilees pour completer fidelement le paquet 0x27 (callees
-// directes de Pkt_SmithUpgradeResult, memes offsets de struct que Quest_CheckObjectiveState) :
+// Supporting functions decompiled to faithfully complete packet 0x27 (direct callees
+// of Pkt_SmithUpgradeResult, same struct offsets as Quest_CheckObjectiveState):
 //   Inventory_RemoveItem         0x510C40 -> Quest_RemoveTrackedItem
 //   Inventory_ReplaceItem        0x510B40 -> Quest_ReplaceTrackedItem
 //   Util_SumExceeds2Billion      0x53F660 -> Quest_SumExceeds2Billion
-//   Pkt_SmithUpgradeResult       0x48E7D0 -> ApplyQuestInteractResultState (partie ETAT
-//                                             uniquement — la partie MESSAGE est deja
-//                                             geree par Net/GameHandlers_Misc.cpp)
+//   Pkt_SmithUpgradeResult       0x48E7D0 -> ApplyQuestInteractResultState (STATE part
+//                                             only — the MESSAGE part is already
+//                                             handled by Net/GameHandlers_Misc.cpp)
 //
-// ---------------------------------------------------------------------------------
-// DEUX sources de donnees "quete" DISTINCTES existent dans le binaire :
+// TWO DISTINCT "quest" data sources exist in the binary:
 //
-//  (A) QuestTbl — 999 x 84 o, fichier G03_GDATA\D01_GIMAGE2D\005\005_00007.IMG (pas de
-//      XOR sur le compteur, pas de nom de table embarque — a la difference des 5 tables
-//      de GameDatabase.cpp). Table de PROGRESSION scenaristique (groupe/etape/valeur),
-//      consultee par l'UI d'aide (mHELP -> UI_CharListWnd_*, xrefs verifiees). C'est la
-//      QUEST_INFO deduite/chargee ici (struct QuestInfo, DataTable g_QuestTable).
+//  (A) QuestTbl — 999 x 84 bytes, file G03_GDATA\D01_GIMAGE2D\005\005_00007.IMG (no
+//      XOR on the count, no embedded table name — unlike the 5 tables
+//      in GameDatabase.cpp). Story PROGRESSION table (group/stage/value),
+//      queried by the help UI (mHELP -> UI_CharListWnd_*, xrefs verified). This is the
+//      QUEST_INFO deduced/loaded here (struct QuestInfo, DataTable g_QuestTable).
 //
-//  (B) Table mQUEST — 1000 lignes x 8444 o (005_00006.IMG). Quest_CheckObjectiveState/
-//      IsObjectiveComplete/GetObjectiveResult/GetRewardItemId/IsRewardItemActive ET
-//      g_pCurQuestStepRecord (dword_18231B4) operent TOUS sur CE type d'enregistrement
-//      (offsets +64/+72/+92/+96/+116/+120/+124/+136..+156 confirmes par decompilation
-//      croisee des 5 fonctions + de Pkt_SmithUpgradeResult). Modelise ici via
-//      QuestStepRecord — une VUE PROPRE limitee aux seuls champs consommes (pas un overlay
-//      memoire des 8444 o), projetee depuis game::QuestDefRecord (Game/ExtraDatabases.h).
+//  (B) Table mQUEST — 1000 rows x 8444 bytes (005_00006.IMG). Quest_CheckObjectiveState/
+//      IsObjectiveComplete/GetObjectiveResult/GetRewardItemId/IsRewardItemActive AND
+//      g_pCurQuestStepRecord (dword_18231B4) ALL operate on THIS record type
+//      (offsets +64/+72/+92/+96/+116/+120/+124/+136..+156 confirmed by cross-decompilation
+//      of the 5 functions + Pkt_SmithUpgradeResult). Modeled here via
+//      QuestStepRecord — a CLEAN VIEW limited to the fields actually consumed (not an
+//      8444-byte memory overlay), projected from game::QuestDefRecord (Game/ExtraDatabases.h).
 //
-//      L'ancien bandeau « HORS PERIMETRE — aucun loader assigne » etait PERIME : mQUEST
-//      0x8E71E4 EST chargee, par `call NpcTbl_LoadImg 0x4C8090` a l'EA 0x4621A0 dans
-//      App_Init (echec => MessageBoxA "[Error::mQUEST.Init()]" + App_Init renvoie 0). Cote
-//      C++ elle l'est aussi, dans g_ExtraDb.quest (Game/ExtraDatabases.cpp:47).
+//      The old "OUT OF SCOPE — no loader assigned" banner was STALE: mQUEST
+//      0x8E71E4 IS loaded, via `call NpcTbl_LoadImg 0x4C8090` at EA 0x4621A0 in
+//      App_Init (failure => MessageBoxA "[Error::mQUEST.Init()]" + App_Init returns 0). On
+//      the C++ side it is too, in g_ExtraDb.quest (Game/ExtraDatabases.cpp:47).
 //
-//      RESOLUTION — le binaire n'a AUCUNE indirection : il appelle en dur
+//      RESOLUTION — the binary has NO indirection: it hard-calls
 //      `NpcTbl_FindByTypeAndId(mQUEST, element0, questId)` 0x4C8340 (EA 0x50FF65, 0x50FFCA,
-//      0x510A37, 0x510AB7, 0x664A67, 0x510E40, 0x510ECC). LookupQuestStep() resout donc EN
-//      DIRECT sur g_ExtraDb.quest. Le pointeur de fonction QuestStepLookup (ci-dessous) est
-//      une invention de la reecriture, datant de l'epoque ou la table n'etait pas modelisee ;
-//      il n'a JAMAIS eu d'implementeur -> toute l'evaluation d'objectif etait morte (le
-//      lookup renvoyait nullptr a vie). Il est conserve UNIQUEMENT comme override de test.
+//      0x510A37, 0x510AB7, 0x664A67, 0x510E40, 0x510ECC). LookupQuestStep() therefore
+//      resolves DIRECTLY against g_ExtraDb.quest. The QuestStepLookup function pointer
+//      (below) is a rewrite invention, from when the table wasn't modeled yet; it NEVER had
+//      an implementer -> objective evaluation was entirely dead code (the lookup returned
+//      nullptr forever). It is kept ONLY as a test override.
 //
-// RÈGLE : ce fichier n'édite AUCUN header existant. Il inclut Game/GameState.h (DataTable,
-// SelfState non utilisé), Game/GameDatabase.h (ItemInfo/GetItemInfo pour
-// Quest_IsRewardItemActive) et Game/ClientRuntime.h (g_Client.Var/VarF pour la longue
-// traîne de globals scalaires + InventoryState pour la grille d'inventaire).
+// RULE: this file does NOT edit any existing header. It includes Game/GameState.h (DataTable,
+// SelfState unused), Game/GameDatabase.h (ItemInfo/GetItemInfo for
+// Quest_IsRewardItemActive), and Game/ClientRuntime.h (g_Client.Var/VarF for the long
+// tail of scalar globals + InventoryState for the inventory grid).
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -80,25 +79,23 @@
 
 namespace ts2::game {
 
-// ===========================================================================
-// (A) QUEST_INFO — table de progression scenaristique (005_00007.IMG).
-// ===========================================================================
+// (A) QUEST_INFO — story progression table (005_00007.IMG).
 #pragma pack(push, 1)
 
-// QuestInfo — 84 o. Layout deduit de QuestTbl_ValidateRecord 0x4C84C0 :
-//   +0  id     (1-based, DOIT valoir index+1 ; 0 = slot vide -> ligne valide mais inerte)
-//   +4  name[5][13]  5 candidats de nom (chaine C, terminateur NUL DANS les 13 o -> 12
-//                    caracteres utiles max ; validate echoue si aucun NUL trouve)
-//   +72 group  1..4   (les fonctions QuestTbl_Find* comparent "group-1 == group0")
-//   +76 stage  1..145 (etape au sein du groupe)
-//   +80 value  1..999 (parametre libre — jamais interprete par les QuestTbl_* eux-memes)
-// (69 -> 72 : 3 o de bourrage naturel pour realigner l'int32 suivant, comme le compilateur
-//  d'origine — pas de #pragma pack necessaire ici, mais on le fixe explicitement pour
-//  garantir sizeof==84 sur toute cible.)
+// QuestInfo — 84 bytes. Layout deduced from QuestTbl_ValidateRecord 0x4C84C0:
+//   +0  id     (1-based, MUST equal index+1; 0 = empty slot -> valid but inert row)
+//   +4  name[5][13]  5 candidate names (C string, NUL terminator WITHIN the 13 bytes -> 12
+//                    usable chars max; validate fails if no NUL is found)
+//   +72 group  1..4   (the QuestTbl_Find* functions compare "group-1 == group0")
+//   +76 stage  1..145 (stage within the group)
+//   +80 value  1..999 (free parameter — never interpreted by the QuestTbl_* functions themselves)
+// (69 -> 72: 3 bytes of natural padding to realign the next int32, same as the original
+//  compiler — no #pragma pack needed here, but set explicitly to
+//  guarantee sizeof==84 on any target.)
 struct QuestInfo {
     uint32_t id;             // +0
-    char     name[5][13];    // +4  (65 o)
-    uint8_t  _pad69[3];      // +69 bourrage d'alignement (jamais lu)
+    char     name[5][13];    // +4  (65 bytes)
+    uint8_t  _pad69[3];      // +69 alignment padding (never read)
     uint32_t group;          // +72
     uint32_t stage;          // +76
     uint32_t value;           // +80
@@ -107,271 +104,265 @@ static_assert(sizeof(QuestInfo) == 84, "QuestInfo doit faire 84 o (cf. QuestTbl_
 
 #pragma pack(pop)
 
-// Table de definitions de quete (999 lignes x 84 o), separee de GameDatabases (non
-// editable) — chargee par LoadQuestTable() ci-dessous.
+// Quest definition table (999 rows x 84 bytes), separate from GameDatabases (not
+// editable) — loaded by LoadQuestTable() below.
 inline DataTable g_QuestTable;
 
-// Acces 0-based brut a une ligne (nullptr hors bornes) — utilitaire interne exposé pour
-// les tests.
+// Raw 0-based access to a row (nullptr if out of bounds) — internal utility exposed for
+// tests.
 inline const QuestInfo* QuestRecordAt(const DataTable& table, uint32_t row0) {
     const uint8_t* r = table.record(row0);
     return reinterpret_cast<const QuestInfo*>(r);
 }
 
-// QuestTbl_ValidateRecord 0x4C84C0 — valide la ligne 0-based `row0` de `table`.
-// Une ligne vide (id==0) est VALIDE (slot libre). Bornes/coherence id, NUL des 5 noms,
-// group/stage/value. `row0` doit etre < table.count (comme l'appelant d'origine, qui ne
-// boucle que sur [0,count)) ; hors bornes -> false.
+// QuestTbl_ValidateRecord 0x4C84C0 — validates 0-based row `row0` of `table`.
+// An empty row (id==0) is VALID (free slot). Checks id bounds/consistency, NUL of the 5
+// names, group/stage/value. `row0` must be < table.count (like the original caller, which
+// only loops over [0,count)); out of bounds -> false.
 bool QuestTbl_ValidateRecord(const DataTable& table, int row0);
 
-// QuestTbl_LoadImg 0x4C8630 — charge G03_GDATA\D01_GIMAGE2D\005\005_00007.IMG dans
-// `g_QuestTable` (enveloppe [rawSize][packedSize][zlib] -> [count:u32][999*84 o], SANS
-// XOR sur le compteur ni nom de table embarque, a la difference des tables de
-// GameDatabase.cpp). Exige count==999 (garde d'integrite en dur). Valide chaque ligne via
-// QuestTbl_ValidateRecord ; renvoie false (table quand meme peuplee) des la premiere ligne
-// invalide, comme l'original. `gameDataDir` = racine "GameData" (meme convention que
+// QuestTbl_LoadImg 0x4C8630 — loads G03_GDATA\D01_GIMAGE2D\005\005_00007.IMG into
+// `g_QuestTable` (envelope [rawSize][packedSize][zlib] -> [count:u32][999*84 bytes], WITHOUT
+// XOR on the count or embedded table name, unlike the GameDatabase.cpp tables).
+// Requires count==999 (hard integrity guard). Validates each row via
+// QuestTbl_ValidateRecord; returns false (table still populated) at the first invalid
+// row, like the original. `gameDataDir` = "GameData" root (same convention as
 // LoadGameDatabases).
 bool LoadQuestTable(const std::string& gameDataDir);
 
-// QuestTbl_GetRecord 0x4C88B0 — acces 1-based ; nullptr si id hors [1,count] ou slot vide.
+// QuestTbl_GetRecord 0x4C88B0 — 1-based access; nullptr if id is out of [1,count] or slot
+// is empty.
 const QuestInfo* QuestTbl_GetRecord(const DataTable& table, int id1based);
 
-// QuestTbl_FindByGroupAndName 0x4C8900 — recherche par (group0, nom) parmi les 5 noms de
-// chaque ligne du groupe (comparaison insensible a la casse, Crt_Stricmp 0x76668B).
-// `group0` = group-1 (convention commune a TOUTES les fonctions QuestTbl_Find* ci-dessous :
-// le binaire compare toujours `field72 - 1 == a2`). Renvoie un POINTEUR sur la ligne
-// (contrairement aux fonctions suivantes qui renvoient un ID — fidele au binaire, qui
-// deref/ne-deref pas selon la fonction).
+// QuestTbl_FindByGroupAndName 0x4C8900 — searches by (group0, name) among the 5 names of
+// each row in the group (case-insensitive comparison, Crt_Stricmp 0x76668B).
+// `group0` = group-1 (convention common to ALL the QuestTbl_Find* functions below:
+// the binary always compares `field72 - 1 == a2`). Returns a POINTER to the row
+// (unlike the following functions which return an ID — faithful to the binary, which
+// derefs or not depending on the function).
 const QuestInfo* QuestTbl_FindByGroupAndName(const DataTable& table, int group0, const char* name);
 
-// QuestTbl_FindFirstByGroup 0x4C89C0 — ne fait rien si !(flagA3==1 && flagA4==0) (garde
-// d'origine, sens exact inconnu — parametres bruts a2/a3 du binaire). Sinon, renvoie l'ID
-// (1-based, == index+1) de la premiere ligne du groupe avec stage==1, ou 0 si absente.
+// QuestTbl_FindFirstByGroup 0x4C89C0 — does nothing if !(flagA3==1 && flagA4==0) (original
+// guard, exact meaning unknown — raw a2/a3 parameters from the binary). Otherwise, returns
+// the ID (1-based, == index+1) of the first row in the group with stage==1, or 0 if none.
 int QuestTbl_FindFirstByGroup(const DataTable& table, int group0, int flagA3, int flagA4);
 
-// QuestTbl_FindByGroupAndStage 0x4C8A60 — renvoie l'ID (1-based) de la ligne
-// (group0, stage) exacte, ou 0 si absente. C'est la fonction dont le resultat alimente
-// classiquement g_pCurQuestStepRecord-like caches cote UI (via QuestTbl_GetRecord ensuite).
+// QuestTbl_FindByGroupAndStage 0x4C8A60 — returns the ID (1-based) of the exact
+// (group0, stage) row, or 0 if none. This is the function whose result classically feeds
+// g_pCurQuestStepRecord-like caches on the UI side (via QuestTbl_GetRecord afterward).
 int QuestTbl_FindByGroupAndStage(const DataTable& table, int group0, int stage);
 
-// QuestTbl_CountByGroup 0x4C8AF0 — nombre de lignes non-vides du groupe.
+// QuestTbl_CountByGroup 0x4C8AF0 — number of non-empty rows in the group.
 int QuestTbl_CountByGroup(const DataTable& table, int group0);
 
-// QuestTbl_CountByGroupUpTo 0x4C8B60 — idem, restreint aux `rowLimit` premieres lignes
-// (0-based, PAS borne a table.count — fidele au binaire).
+// QuestTbl_CountByGroupUpTo 0x4C8B60 — same, restricted to the first `rowLimit` rows
+// (0-based, NOT bounded by table.count — faithful to the binary).
 int QuestTbl_CountByGroupUpTo(const DataTable& table, int group0, int rowLimit);
 
-// QuestTbl_FindFirstOfGroup 0x4C8BD0 — ID (1-based) de la premiere ligne du groupe, 0 si
-// absente.
+// QuestTbl_FindFirstOfGroup 0x4C8BD0 — ID (1-based) of the first row of the group, 0 if
+// none.
 int QuestTbl_FindFirstOfGroup(const DataTable& table, int group0);
 
-// QuestTbl_FindPrevOfGroup 0x4C8C40 — scanne EN ARRIERE a partir de la ligne 0-based
-// (fromId1based - 2) pour trouver la ligne precedente du groupe ; renvoie son ID, ou
-// `fromId1based` INCHANGE si aucune trouvee (fidele : le binaire renvoie l'argument tel
-// quel en cas d'echec, PAS 0).
+// QuestTbl_FindPrevOfGroup 0x4C8C40 — scans BACKWARD starting from 0-based row
+// (fromId1based - 2) to find the previous row of the group; returns its ID, or
+// `fromId1based` UNCHANGED if none found (faithful: the binary returns the argument
+// as-is on failure, NOT 0).
 int QuestTbl_FindPrevOfGroup(const DataTable& table, int group0, int fromId1based);
 
-// QuestTbl_FindNextOfGroup 0x4C8CC0 — symetrique, scanne EN AVANT a partir de la ligne
-// 0-based fromId1based ; renvoie `fromId1based` inchange si aucune trouvee.
+// QuestTbl_FindNextOfGroup 0x4C8CC0 — symmetric, scans FORWARD starting from 0-based row
+// fromId1based; returns `fromId1based` unchanged if none found.
 int QuestTbl_FindNextOfGroup(const DataTable& table, int group0, int fromId1based);
 
-// ===========================================================================
-// (B) Etape de quete courante — vue sur la table NPC type mQUEST (HORS PERIMETRE,
-//     cf. bandeau en tete de fichier). Champs = union de ceux consommes par
-//     Quest_CheckObjectiveState/GetObjectiveResult/GetRewardItemId/IsRewardItemActive et
-//     par Pkt_SmithUpgradeResult (0x48E7D0, alias QuestInteractResult op 0x27).
-// ===========================================================================
+// (B) Current quest step — view over the mQUEST-type NPC table (OUT OF SCOPE,
+//     see banner at top of file). Fields = union of those consumed by
+//     Quest_CheckObjectiveState/GetObjectiveResult/GetRewardItemId/IsRewardItemActive and
+//     by Pkt_SmithUpgradeResult (0x48E7D0, alias QuestInteractResult op 0x27).
 struct QuestStepRecord {
-    uint32_t field64  = 0; // +64  levelReq : porte de NIVEAU de la branche "implicite"
-                            //      (Quest_CheckObjectiveState @0x50FF86 : `cmp g_SelfLevel,
-                            //      [rec+0x40]` puis `jge` -> 1). Donnees intro : 1,1,1,1,2,4,
-                            //      6,8,10,12 = une echelle de niveau.
-    uint32_t category = 0; // +72  1..8 : type d'objectif — selecteur du switch a 8 cas de
-                            //      Quest_CheckObjectiveState @0x50FFFC, et source de
+    uint32_t field64  = 0; // +64  levelReq: LEVEL gate for the "implicit" branch
+                            //      (Quest_CheckObjectiveState @0x50FF86: `cmp g_SelfLevel,
+                            //      [rec+0x40]` then `jge` -> 1). Intro data: 1,1,1,1,2,4,
+                            //      6,8,10,12 = a level scale.
+    uint32_t category = 0; // +72  1..8: objective type — selector for the 8-case switch
+                            //      in Quest_CheckObjectiveState @0x50FFFC, and source of
                             //      g_QuestObjType 0x16745FC (Pkt_SmithUpgradeResult @0x48E929
-                            //      lit `[rec+0x48]`). Le commentaire "1..6" etait FAUX : le
-                            //      validateur borne 1..8 et les donnees couvrent 1..8
+                            //      reads `[rec+0x48]`). The "1..6" comment was WRONG: the
+                            //      validator bounds it to 1..8 and the data covers 1..8
                             //      ({1:227,2:57,3:38,4:69,5:127,6:7,7:88,8:75}).
-    uint32_t field92  = 0; // +92  v10[23] : id/valeur "resultat" (variante A)
-    uint32_t field96  = 0; // +96  v10[24] : id/valeur "resultat" (variante B, case 4/6.1)
-    uint32_t field116 = 0; // +116 v10[29] : id/valeur "resultat" si objectif rempli
-    uint32_t targetId = 0; // +120 v10[30] : id cible de l'objectif courant (mob/item/pnj)
-    uint32_t required = 0; // +124 v10[31] : quantite/valeur requise
+    uint32_t field92  = 0; // +92  v10[23]: "result" id/value (variant A)
+    uint32_t field96  = 0; // +96  v10[24]: "result" id/value (variant B, case 4/6.1)
+    uint32_t field116 = 0; // +116 v10[29]: "result" id/value if objective fulfilled
+    uint32_t targetId = 0; // +120 v10[30]: target id of the current objective (mob/item/npc)
+    uint32_t required = 0; // +124 v10[31]: required quantity/value
     struct { uint32_t type = 0; uint32_t value = 0; } reward[3]; // +136/+140,+144/+148,
-                                                                  // +152/+156 : jusqu'a 3
-                                                                  // recompenses (type==6
-                                                                  // => value = id d'item,
+                                                                  // +152/+156: up to 3
+                                                                  // rewards (type==6
+                                                                  // => value = item id,
                                                                   // cf Quest_GetRewardItemId)
 };
 
-// LookupQuestStep — resolution DIRECTE sur g_ExtraDb.quest via
-// FindQuestDefByElementAndId (= NpcTbl_FindByTypeAndId 0x4C8340), projetee en
-// QuestStepRecord. Fidele : le binaire appelle le resolveur en dur, sans indirection.
-// `zoneId` est un NOM HISTORIQUE TROMPEUR conserve pour les appelants hors perimetre
-// (Game/ComboPickupTick.cpp:179/188, UI/GameHud.cpp:971, UI/QuestTrackerWindow.cpp) : ce
-// parametre est en realite l'ELEMENT LOCAL 0-based (g_LocalElement 0x1673194 ==
-// game::g_World.self.element), PAS une zone/map. Preuve : Quest_GetRewardItemId 0x510A10
-// lit `[this+0xA024]` avec this = g_PlayerCmdController 0x1669170 (@0x5E01C5) et
-// 0x1669170+0xA024 = 0x1673194 = g_LocalElement ; UI_EventNoticeWnd_Open 0x6649F0 @0x664A67
-// appelle litteralement NpcTbl_FindByTypeAndId(mQUEST, g_LocalElement, g_CurQuestId).
-// -> Les appelants qui l'affichent comme un nom de zone (StrTable003/zoneNames) sont dans
-//    l'erreur ; signale a l'orchestrateur, hors de ce fichier.
+// LookupQuestStep — DIRECT resolution against g_ExtraDb.quest via
+// FindQuestDefByElementAndId (= NpcTbl_FindByTypeAndId 0x4C8340), projected into
+// QuestStepRecord. Faithful: the binary calls the resolver hard-coded, with no indirection.
+// `zoneId` is a MISLEADING LEGACY NAME kept for out-of-scope callers
+// (Game/ComboPickupTick.cpp:179/188, UI/GameHud.cpp:971, UI/QuestTrackerWindow.cpp): this
+// parameter is actually the 0-based LOCAL ELEMENT (g_LocalElement 0x1673194 ==
+// game::g_World.self.element), NOT a zone/map. Proof: Quest_GetRewardItemId 0x510A10
+// reads `[this+0xA024]` with this = g_PlayerCmdController 0x1669170 (@0x5E01C5) and
+// 0x1669170+0xA024 = 0x1673194 = g_LocalElement; UI_EventNoticeWnd_Open 0x6649F0 @0x664A67
+// literally calls NpcTbl_FindByTypeAndId(mQUEST, g_LocalElement, g_CurQuestId).
+// -> Callers that display it as a zone name (StrTable003/zoneNames) are in
+//    error; flagged to the orchestrator, out of scope for this file.
 const QuestStepRecord* LookupQuestStep(int zoneId, int npcQuestId);
 
-// Override de test UNIQUEMENT (le binaire n'a pas cette indirection — cf. bandeau (B)).
-// nullptr (defaut) => LookupQuestStep resout sur la vraie table.
+// Test override ONLY (the binary has no such indirection — see banner (B)).
+// nullptr (default) => LookupQuestStep resolves against the real table.
 using QuestStepLookup = const QuestStepRecord* (*)(int zoneId, int npcQuestId);
 void SetQuestStepLookup(QuestStepLookup fn);
 
-// Accesseur equivalent a g_pCurQuestStepRecord (dword_18231B4) = record de l'etape de quete
-// COURANTE. RESOLU EN DIRECT (corps dans QuestSystem.cpp).
+// Accessor equivalent to g_pCurQuestStepRecord (dword_18231B4) = record of the
+// CURRENT quest step. Resolved DIRECTLY (body in QuestSystem.cpp).
 //
-// FAIT VERIFIE DANS IDA (2026-07-16) : g_pCurQuestStepRecord 0x18231B4 n'est ECRIT NULLE PART
-// dans le binaire — les 20 references a cette adresse sont TOUTES dans Pkt_SmithUpgradeResult
-// 0x48E7D0 et TOUTES des LECTURES (aucun store ; xrefs re-verifiees). Mais le binaire est un jeu
-// qui TOURNE : ce pointeur ne peut PAS valoir NULL a l'execution quand les case 1/2/3/4 le
-// deferencent, sa valeur runtime est forcement le record de l'etape courante. Equivalence prouvee
-// g_pCurQuestStepRecord == NpcTbl_FindByTypeAndId(mQUEST, g_LocalElement, g_CurQuestId) : dans le
-// case 2, la boucle de recompenses lit g_pCurQuestStepRecord+8*i+136 (@0x48EB0E) et
-// Quest_GetRewardItemId 0x510A10 relit Find(element, g_CurQuestId) @0x510A37 pour la MEME
-// recompense -> meme record.
-// => CurrentQuestStepRecord() resout donc EN DIRECT via LookupQuestStep (comme les 7 autres
-//    consommateurs) au lieu de renvoyer un g_curStepRecord qu'AUCUN code n'ecrit. L'ancienne
-//    version renvoyait nullptr a vie -> l'etat des case 1/2/3/4 d'ApplyQuestInteractResultState
-//    ET la garde de visibilite du QuestTracker (UI/QuestTrackerWindow.cpp:48, fichier voisin)
-//    etaient du CODE MORT. Ce n'est PAS fabriquer un ecrivain a g_curStepRecord (aucun store
-//    fabrique) : c'est une resolution a la demande, fidele a la lecture d'un pointeur qui, en jeu,
-//    vaut ce record. Les gardes `if (npc)` d'ApplyQuestInteractResultState restent (LookupQuestStep
-//    peut rendre nullptr si la table n'est pas chargee ou npcQuestId==0) = seul comportement non-UB.
-// => SetCurrentQuestStepRecord subsiste comme OVERRIDE DE TEST (prioritaire) ; g_curStepRecord
-//    reste nullptr en production.
-// NB CABLAGE (hors de ce module) : la resolution depend de g_QuestProgress.npcQuestId (== g_CurQuestId
-// 0x16745F4) et g_World.self.element (== g_LocalElement 0x1673194), alimentes par le RESEAU. Tant que
-// le front reseau ne les peuple pas, la resolution rend nullptr (gating correct : aucune quete active).
+// VERIFIED IN IDA (2026-07-16): g_pCurQuestStepRecord 0x18231B4 is NEVER WRITTEN
+// anywhere in the binary — all 20 references to this address are in Pkt_SmithUpgradeResult
+// 0x48E7D0 and are ALL READS (no store; xrefs re-verified). But the binary is a running
+// game: this pointer cannot be NULL at runtime when case 1/2/3/4 dereference it, so its
+// runtime value must be the current step record. Proven equivalence:
+// g_pCurQuestStepRecord == NpcTbl_FindByTypeAndId(mQUEST, g_LocalElement, g_CurQuestId) — in
+// case 2, the reward loop reads g_pCurQuestStepRecord+8*i+136 (@0x48EB0E) and
+// Quest_GetRewardItemId 0x510A10 re-reads Find(element, g_CurQuestId) @0x510A37 for the SAME
+// reward -> same record.
+// => CurrentQuestStepRecord() therefore resolves DIRECTLY via LookupQuestStep (like the
+//    other 7 consumers) instead of returning a g_curStepRecord that NO code writes. The old
+//    version returned nullptr forever -> the case 1/2/3/4 state of
+//    ApplyQuestInteractResultState AND the QuestTracker visibility guard
+//    (UI/QuestTrackerWindow.cpp:48, sibling file) were DEAD CODE. This does NOT fabricate a
+//    writer for g_curStepRecord (no invented store): it is an on-demand resolution,
+//    faithful to reading a pointer that, in game, holds this record. The `if (npc)` guards
+//    in ApplyQuestInteractResultState remain (LookupQuestStep can return nullptr if the
+//    table isn't loaded or npcQuestId==0) = the only non-UB behavior.
+// => SetCurrentQuestStepRecord remains as a TEST OVERRIDE (takes priority); g_curStepRecord
+//    stays nullptr in production.
+// WIRING NOTE (outside this module): resolution depends on g_QuestProgress.npcQuestId (==
+// g_CurQuestId 0x16745F4) and g_World.self.element (== g_LocalElement 0x1673194), populated
+// by the NETWORK. Until the network front-end populates them, resolution returns nullptr
+// (correct gating: no active quest).
 const QuestStepRecord* CurrentQuestStepRecord();
 void SetCurrentQuestStepRecord(const QuestStepRecord* record);
 
-// ---------------------------------------------------------------------------------
-// Etat de progression du joueur — miroir des champs du gros struct joueur
-// g_PlayerCmdController 0x1669170 consommes par Quest_CheckObjectiveState & consorts.
-// ATTENTION : les indices Hex-Rays (+10249, +11553, ...) sont SCALES `int*`, pas des
-// offsets octets. Offsets octets reels = indice*4, verifies au desassemblage.
+// Player progress state — mirrors fields of the large player struct
+// g_PlayerCmdController 0x1669170 consumed by Quest_CheckObjectiveState & friends.
+// WARNING: the Hex-Rays indices (+10249, +11553, ...) are `int*`-SCALED, not byte
+// offsets. Actual byte offsets = index*4, verified against the disassembly.
 //
-// DEUX champs de l'ancienne version ont ete SUPPRIMES car ils dupliquaient un etat qui
-// existe deja ailleurs (et que PERSONNE n'ecrivait -> evaluation morte) :
-//   * `totalKillCount` (+10254 -> octet 0xA038 -> 0x1669170+0xA038 = 0x16731A8 =
-//     g_SelfLevel) n'etait PAS un compteur de kills mais le NIVEAU du joueur. La branche
-//     "implicite" est une porte de niveau : @0x50FF80 `mov ecx,[edx+0xA038]` puis @0x50FF86
-//     `cmp ecx,[eax+0x40]` / `jge` -> 1. Lu desormais depuis g_World.self.level
-//     (GameState.h::SelfState, le miroir etabli de g_SelfLevel, ecrit par le reseau :
-//     Net/CharStatDeltaDispatch.cpp:239, Game/EntityManager.cpp:523).
-//   * `killTrack` (2x64 slots de 6 dwords, "+10320") etait un doublon fantome de la GRILLE
-//     D'INVENTAIRE, toujours nul donc jamais satisfait. Octet 10320*4 = 0xA140 ->
-//     0x1669170+0xA140 = 0x16732B0 = g_InvMain (nom IDA), et l'indexation `384*i + 6*j` du
-//     binaire est exactement `0x600*row + 0x18*col`, celle deja modelisee par
-//     ClientRuntime.h::InventoryState. Les fonctions IDA `Inventory_RemoveItem 0x510C40` /
-//     `Inventory_ReplaceItem 0x510B40` sont donc BIEN NOMMEES (l'ancien commentaire qui les
-//     disait mal nommees etait faux) : elles operent sur g_Client.inv.
-// ---------------------------------------------------------------------------------
+// TWO fields from the old version were REMOVED because they duplicated state that
+// already exists elsewhere (and that NOBODY wrote -> dead evaluation):
+//   * `totalKillCount` (+10254 -> byte 0xA038 -> 0x1669170+0xA038 = 0x16731A8 =
+//     g_SelfLevel) was NOT a kill counter but the player's LEVEL. The "implicit"
+//     branch is a level gate: @0x50FF80 `mov ecx,[edx+0xA038]` then @0x50FF86
+//     `cmp ecx,[eax+0x40]` / `jge` -> 1. Now read from g_World.self.level
+//     (GameState.h::SelfState, the established mirror of g_SelfLevel, written by the
+//     network: Net/CharStatDeltaDispatch.cpp:239, Game/EntityManager.cpp:523).
+//   * `killTrack` (2x64 slots of 6 dwords, "+10320") was a phantom duplicate of the
+//     INVENTORY GRID, always zero and therefore never satisfied. Byte 10320*4 = 0xA140 ->
+//     0x1669170+0xA140 = 0x16732B0 = g_InvMain (IDA name), and the binary's `384*i + 6*j`
+//     indexing is exactly `0x600*row + 0x18*col`, already modeled by
+//     ClientRuntime.h::InventoryState. The IDA functions `Inventory_RemoveItem 0x510C40` /
+//     `Inventory_ReplaceItem 0x510B40` are therefore CORRECTLY NAMED (the old comment
+//     claiming they were misnamed was wrong): they operate on g_Client.inv.
 struct QuestProgressState {
-    // +10249 -> octet 0xA024 -> 0x1669170+0xA024 = 0x1673194 = g_LocalElement.
-    // NOM TROMPEUR conserve (appelants hors perimetre) : c'est l'ELEMENT local 0-based,
-    // PAS une zone. Cf. LookupQuestStep ci-dessus. Doit valoir g_World.self.element.
+    // +10249 -> byte 0xA024 -> 0x1669170+0xA024 = 0x1673194 = g_LocalElement.
+    // MISLEADING NAME kept (out-of-scope callers): this is the 0-based local ELEMENT,
+    // NOT a zone. See LookupQuestStep above. Must equal g_World.self.element.
     int zoneId           = 0;
     int npcQuestId        = 0; // +11553 -> 0xB484 = g_CurQuestId 0x16745F4
-    int objectiveMode     = 0; // +11554 -> 0xB488 = g_QuestObjMode 0x16745F8 (0 = porte de niveau, 1 = objectif actif)
+    int objectiveMode     = 0; // +11554 -> 0xB488 = g_QuestObjMode 0x16745F8 (0 = level gate, 1 = active objective)
     int objectiveType     = 0; // +11555 -> 0xB48C = g_QuestObjType 0x16745FC (1..8)
-    int objectiveTarget   = 0; // +11556 -> 0xB490 = g_QuestObjParam1 0x1674600 (id cible / phase du type 6)
-    int objectiveProgress = 0; // +11557 -> 0xB494 = g_QuestObjParam2 0x1674604 (compteur de progression)
+    int objectiveTarget   = 0; // +11556 -> 0xB490 = g_QuestObjParam1 0x1674600 (target id / type-6 phase)
+    int objectiveProgress = 0; // +11557 -> 0xB494 = g_QuestObjParam2 0x1674604 (progress counter)
 };
 
-// ===========================================================================
-// Evaluation d'objectif — traduction fidele (branches/seuils/ordre inchanges).
-// ===========================================================================
+// Objective evaluation — faithful translation (branches/thresholds/order unchanged).
 
-// Quest_CheckObjectiveState 0x50FF10 — etat de l'objectif courant :
-//   branche "implicite" (mode/type/cible/progression tous a 0) -> 0 ou 1 (bool)
-//   branche "active" (mode==1) -> 0 (invalide/non trouve), 2 (en cours), 3 (rempli, cases
-//   1-5/8), 4 (case 6.2 non rempli) ou 5 (case 6.2 rempli)
+// Quest_CheckObjectiveState 0x50FF10 — state of the current objective:
+//   "implicit" branch (mode/type/target/progress all 0) -> 0 or 1 (bool)
+//   "active" branch (mode==1) -> 0 (invalid/not found), 2 (in progress), 3 (fulfilled, cases
+//   1-5/8), 4 (case 6.2 not fulfilled), or 5 (case 6.2 fulfilled)
 int Quest_CheckObjectiveState(const QuestProgressState& s);
 
-// Quest_IsObjectiveComplete 0x5103F0 — mappe Quest_CheckObjectiveState sur un bool selon
-// objectiveType (==3 pour 1/2/3/4/5/8, ==5 pour 6, ==2 pour 7 ; sinon false).
+// Quest_IsObjectiveComplete 0x5103F0 — maps Quest_CheckObjectiveState to a bool based on
+// objectiveType (==3 for 1/2/3/4/5/8, ==5 for 6, ==2 for 7; otherwise false).
 bool Quest_IsObjectiveComplete(const QuestProgressState& s);
 
-// Quest_GetObjectiveResult 0x510520 — memes branches que CheckObjectiveState mais renvoie
-// un champ de QuestStepRecord (field92/96/116) au lieu d'un code d'etat.
+// Quest_GetObjectiveResult 0x510520 — same branches as CheckObjectiveState but returns
+// a QuestStepRecord field (field92/96/116) instead of a state code.
 int Quest_GetObjectiveResult(const QuestProgressState& s);
 
-// Quest_GetRewardItemId 0x510A10 — id d'item de la premiere recompense de type==6 (0 si
-// aucune ou record introuvable).
+// Quest_GetRewardItemId 0x510A10 — item id of the first type==6 reward (0 if
+// none or record not found).
 int Quest_GetRewardItemId(const QuestProgressState& s);
 
-// Quest_IsRewardItemActive 0x510A90 — vrai si la recompense de type==6 existe ET que
-// ITEM_INFO(itemId).typeCode == 2 (mirroir MobDb_GetEntry 0x4C3C00 + comparaison +188==2).
+// Quest_IsRewardItemActive 0x510A90 — true if the type==6 reward exists AND
+// ITEM_INFO(itemId).typeCode == 2 (mirrors MobDb_GetEntry 0x4C3C00 + comparison +188==2).
 bool Quest_IsRewardItemActive(const QuestProgressState& s);
 
-// Quest_IsItemAllowed 0x54F0B0 — item `itemId` present dans la liste blanche (14 slots)
-// du conteneur `containerIndex` (globals dword_1675808[14*a1+i] / dword_1687494[0] —
-// longue traine non modelisee, adressee via g_Client.Var()). containerIndex==1 exige en
-// plus g_Client.VarGet(0x1687494)==1 (garde d'origine).
+// Quest_IsItemAllowed 0x54F0B0 — item `itemId` is present in the whitelist (14 slots)
+// of container `containerIndex` (globals dword_1675808[14*a1+i] / dword_1687494[0] —
+// long tail not modeled, addressed via g_Client.Var()). containerIndex==1 additionally
+// requires g_Client.VarGet(0x1687494)==1 (original guard).
 bool Quest_IsItemAllowed(int containerIndex, int itemId);
 
-// ===========================================================================
-// Callees directes de Pkt_SmithUpgradeResult (op 0x27) operant sur QuestProgressState.
-// ===========================================================================
+// Direct callees of Pkt_SmithUpgradeResult (op 0x27) operating on QuestProgressState.
 
-// Inventory_RemoveItem 0x510C40 — cherche `itemId` dans les lignes 0..1 de la GRILLE
-// D'INVENTAIRE (g_InvMain 0x16732B0, `384*i + 6*j + 10320` == `0x600*row + 0x18*col`), remet
-// les 6 dwords de la cellule a zero (EA 0x510CBF..0x510D63) et renvoie l'indice de ligne
-// (0/1), ou -1 si absent (@0x510D7D). Le nom IDA `Inventory_*` est CORRECT : c'est bien
-// l'inventaire (row 0 = sac principal, row 1 = page bonus).
+// Inventory_RemoveItem 0x510C40 — searches for `itemId` in rows 0..1 of the INVENTORY
+// GRID (g_InvMain 0x16732B0, `384*i + 6*j + 10320` == `0x600*row + 0x18*col`), zeroes
+// the cell's 6 dwords (EA 0x510CBF..0x510D63), and returns the row index
+// (0/1), or -1 if absent (@0x510D7D). The IDA name `Inventory_*` is CORRECT: it really
+// is the inventory (row 0 = main bag, row 1 = bonus page).
 int Quest_RemoveTrackedItem(InventoryState& inv, uint32_t itemId);
 
-// Inventory_ReplaceItem 0x510B40 — cherche `oldItemId` dans les lignes 0..1 de la grille,
-// remplace l'id (+0 @0x510BC2) puis remet a zero flag/color/durability (+12/+16/+20 =
+// Inventory_ReplaceItem 0x510B40 — searches for `oldItemId` in rows 0..1 of the grid,
+// replaces the id (+0 @0x510BC2), then zeroes flag/color/durability (+12/+16/+20 =
 // dwords 10323/10324/10325, EA 0x510BDE/0x510BFF/0x510C20). gridX/gridY (+4/+8 = 10321/
-// 10322) sont INCHANGES — fidele : l'original n'ecrit que +0/+12/+16/+20. Renvoie l'indice
-// de ligne, ou -1 si absent.
+// 10322) are UNCHANGED — faithful: the original only writes +0/+12/+16/+20. Returns the
+// row index, or -1 if absent.
 int Quest_ReplaceTrackedItem(InventoryState& inv, uint32_t oldItemId, uint32_t newItemId);
 
-// Util_SumExceeds2Billion 0x53F660 — (a+b) > 2 000 000 000 en arithmetique 64 bits.
+// Util_SumExceeds2Billion 0x53F660 — (a+b) > 2,000,000,000 in 64-bit arithmetic.
 inline bool Quest_SumExceeds2Billion(int64_t a, int64_t b) { return (a + b) > 2000000000LL; }
 
-// ===========================================================================
-// Paquet 0x27 QuestInteractResult (alias Pkt_SmithUpgradeResult 0x48E7D0). Struct propre
-// (pas de dependance sur Net/RecvPackets.h) : [resultCode][invRow][invSlot][gridX][gridY].
-// ===========================================================================
+// Packet 0x27 QuestInteractResult (alias Pkt_SmithUpgradeResult 0x48E7D0). Clean struct
+// (no dependency on Net/RecvPackets.h): [resultCode][invRow][invSlot][gridX][gridY].
 struct QuestInteractResultPacket {
     uint32_t resultCode = 0; // 1..9
-    int32_t  invRow      = -1; // -1 = pas d'ecriture inventaire (comparaison signee fidele)
+    int32_t  invRow      = -1; // -1 = no inventory write (faithful signed comparison)
     uint32_t invSlot     = 0;
     uint32_t gridX       = 0;
     uint32_t gridY       = 0;
 };
 
-// ApplyQuestInteractResultState — PARTIE ETAT de Pkt_SmithUpgradeResult 0x48E7D0
-// (resultCode 1..9). La partie MESSAGE (StrTable005_Get + Msg_AppendSystemLine des codes
-// 109/432..439) est DEJA geree par Net/GameHandlers_Misc.cpp (0x27) ; cette fonction NE LA
-// DUPLIQUE PAS, sauf pour les messages 427..431 de la boucle de recompenses du case 2 (str
-// 427=type6, 428=type2/poids, 429=type3/monnaie, 430=type4, 431=type5), qui ne sont PAS
-// couverts par le TODO de GameHandlers_Misc.cpp (celui-ci ne traite que le message de
-// premier niveau selon resultCode, pas la boucle interne des 3 slots de recompense).
-// Utilise CurrentQuestStepRecord() pour TOUS les acces au record d'etape ; cet accesseur
-// resout desormais EN DIRECT via LookupQuestStep(g_World.self.element, g_QuestProgress.npcQuestId),
-// exactement la cle que le binaire relit via NpcTbl_FindByTypeAndId(mQUEST, element, g_CurQuestId)
-// dans Quest_GetRewardItemId/IsRewardItemActive (@0x510A37) — d'ou l'equivalence avec le global
-// cache g_pCurQuestStepRecord 0x18231B4 (cf. le bloc de doc de CurrentQuestStepRecord ci-dessus).
-// TODO PRECIS (hors perimetre — audio/UI, pas de logique d'etat) :
+// ApplyQuestInteractResultState — STATE PART of Pkt_SmithUpgradeResult 0x48E7D0
+// (resultCode 1..9). The MESSAGE part (StrTable005_Get + Msg_AppendSystemLine for codes
+// 109/432..439) is ALREADY handled by Net/GameHandlers_Misc.cpp (0x27); this function does
+// NOT DUPLICATE it, except for messages 427..431 of the case-2 reward loop (str
+// 427=type6, 428=type2/weight, 429=type3/currency, 430=type4, 431=type5), which are NOT
+// covered by the TODO in GameHandlers_Misc.cpp (that file only handles the top-level
+// message based on resultCode, not the inner loop over the 3 reward slots).
+// Uses CurrentQuestStepRecord() for ALL step-record accesses; this accessor now resolves
+// DIRECTLY via LookupQuestStep(g_World.self.element, g_QuestProgress.npcQuestId),
+// exactly the key the binary re-reads via NpcTbl_FindByTypeAndId(mQUEST, element, g_CurQuestId)
+// in Quest_GetRewardItemId/IsRewardItemActive (@0x510A37) — hence the equivalence with the
+// cached global g_pCurQuestStepRecord 0x18231B4 (see the doc block on CurrentQuestStepRecord
+// above).
+// PRECISE TODO (out of scope — audio/UI, not state logic):
 //   Snd3D_PlayScaledVolume 0x4DA380, UI_EventNoticeWnd_Open 0x6649F0 (cases 1/2/5),
 //   cGameHud_ResetUiState 0x62AFB0 (cases 2/3/4).
 void ApplyQuestInteractResultState(const QuestInteractResultPacket& p,
                                     QuestProgressState& progress,
                                     InventoryState& inv);
 
-// Instance globale unique (miroir propre de l'état de progression de quête, à
-// l'image de g_Guild/g_Warehouse). Utilisée par GameHandlers_Core (écrit via
-// ApplyQuestInteractResultState) et par QuestTrackerWindow (lu pour l'affichage).
+// Single global instance (clean mirror of quest progress state, similar
+// to g_Guild/g_Warehouse). Used by GameHandlers_Core (written via
+// ApplyQuestInteractResultState) and by QuestTrackerWindow (read for display).
 inline QuestProgressState g_QuestProgress;
 
 } // namespace ts2::game

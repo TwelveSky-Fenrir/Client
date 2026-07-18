@@ -1,4 +1,4 @@
-// World/WorldIntegration.cpp — implémentation des hooks WorldLoadHooks.
+// World/WorldIntegration.cpp — implementation of the WorldLoadHooks hooks.
 #include "World/WorldIntegration.h"
 #include "Asset/WorldChunk.h"
 #include "Asset/Texture.h"
@@ -6,7 +6,7 @@
 #include "Asset/FileUtil.h"
 #include "Audio/Sound3D.h"
 #include "Audio/AudioSystem.h"
-#include "Gfx/GpuTexture.h" // BEW-01 : upload GPU des minimaps (type complet requis ici : ~WorldAssets)
+#include "Gfx/GpuTexture.h" // BEW-01 : GPU upload of minimaps (full type required here : ~WorldAssets)
 #include "Core/Log.h"
 
 #include <algorithm>
@@ -131,7 +131,7 @@ WorldLoadHooks WorldAssets::MakeHooks() {
     h.loadWorldSound       = &LoadWorldSound;
     h.loadWorldBgm         = &LoadWorldBgm;
     h.loadDataFile         = &LoadDataFile;
-    h.queryCollisionMesh   = &QueryCollisionMesh; // Gap G02 : relie la maille décodée à WorldMap
+    h.queryCollisionMesh   = &QueryCollisionMesh; // Gap G02 : links the decoded mesh to WorldMap
     return h;
 }
 
@@ -144,14 +144,12 @@ const asset::WorldChunk* WorldAssets::Collision(CollisionSlot slot) const {
     return nullptr;
 }
 
-// ---------------------------------------------------------------------------
-// Requêtes de sol / collision terrain (Gaps G02/G03/G04). La maille décodée (Gap G01) d'une
-// couche .WM est exposée à WorldMap via le hook queryCollisionMesh, et directement ici via
-// des méthodes qui délèguent au moteur ts2::world::collision:: (portage byte-fidèle des
-// MapColl_*, cf. World/WorldMap.cpp). Toutes build-safe (false si la couche .WM est absente).
-// ---------------------------------------------------------------------------
-// Maille de collision décodée d'une couche .WM/.WJ/.WM2 (AsCollision). Les .WG = AsFace (cf.
-// TerrainMesh). Source unique — MainCollisionMesh/QueryCollisionMesh y délèguent.
+// Ground / terrain collision queries (Gaps G02/G03/G04). The decoded mesh (Gap G01) of a
+// .WM layer is exposed to WorldMap via the queryCollisionMesh hook, and directly here via
+// methods that delegate to the ts2::world::collision:: engine (byte-faithful port of the
+// MapColl_*, cf. World/WorldMap.cpp). All build-safe (false if the .WM layer is absent).
+// Decoded collision mesh of a .WM/.WJ/.WM2 layer (AsCollision). The .WG are AsFace (cf.
+// TerrainMesh). Single source — MainCollisionMesh/QueryCollisionMesh delegate to it.
 const asset::CollisionMesh* WorldAssets::CollisionMeshOf(CollisionSlot slot) const {
     const asset::WorldChunk* c = Collision(slot);
     if (!c) return nullptr;
@@ -159,9 +157,9 @@ const asset::CollisionMesh* WorldAssets::CollisionMeshOf(CollisionSlot slot) con
     return mc ? &mc->mesh : nullptr;
 }
 const asset::CollisionMesh* WorldAssets::MainCollisionMesh() const {
-    return CollisionMeshOf(CollisionSlot::Main); // wm_ (.WM = collision pure)
+    return CollisionMeshOf(CollisionSlot::Main); // wm_ (.WM = pure collision)
 }
-// Hook WorldLoadHooks::queryCollisionMesh — appelé par WorldMap après un loadFaces réussi.
+// Hook WorldLoadHooks::queryCollisionMesh — called by WorldMap after a successful loadFaces.
 const asset::CollisionMesh* WorldAssets::QueryCollisionMesh(void* user, CollisionSlot slot) {
     return static_cast<WorldAssets*>(user)->CollisionMeshOf(slot);
 }
@@ -169,13 +167,13 @@ const asset::CollisionMesh* WorldAssets::QueryCollisionMesh(void* user, Collisio
 bool WorldAssets::GetGroundHeight(float x, float z, float probeCeilingY, float& outGroundY) const {
     const asset::CollisionMesh* m = MainCollisionMesh();
     if (!m) return false;
-    // MapColl_GetGroundHeight 0x697130 forme consommateur (a5=1, a6=probeCeilingY, a7=0, a8=1).
+    // MapColl_GetGroundHeight 0x697130 consumer shape (a5=1, a6=probeCeilingY, a7=0, a8=1).
     return collision::GetGroundHeight(*m, x, z, outGroundY, true, probeCeilingY, false, true);
 }
 bool WorldAssets::HasGroundAt(float x, float z) const {
     const asset::CollisionMesh* m = MainCollisionMesh();
     if (!m) return false;
-    float out = 0.0f; // IsGroundBlocked-shape : plafond défaut (racine bboxMax.y), a8=1
+    float out = 0.0f; // IsGroundBlocked-shape : default ceiling (root bboxMax.y), a8=1
     return collision::GetGroundHeight(*m, x, z, out, false, 0.0f, false, true);
 }
 bool WorldAssets::IsPointOnGround(float x, float y, float z) const {
@@ -201,9 +199,9 @@ bool WorldAssets::SlideMoveGround(const float from[3], const float to[3], float 
     return collision::SlideMoveGround(*m, from, to, speed, dt, outPos); // 0x697330
 }
 
-// Vague B4 — plan-sol pour l'ombre planaire (F_ENTITY3D). Model_RenderPlanarShadow 0x40f720 pick
-// la couche marchable filtrée materialIndex==1 (SegNodeNearestA @0x421128) : côté ClientSource =
-// la maille décodée de la couche Main (.WM). Voir rapport de front pour Main vs .WG.
+// Wave B4 — ground plane for the planar shadow (F_ENTITY3D). Model_RenderPlanarShadow 0x40f720 picks
+// the walkable layer filtered by materialIndex==1 (SegNodeNearestA @0x421128) : ClientSource side =
+// the decoded mesh of the Main layer (.WM). See front report for Main vs .WG.
 bool WorldAssets::GetGroundPlaneForShadow(const float modelPos[3], float modelHeight,
                                           const float lightDir[3], float maxDist,
                                           collision::GroundPlane& out) const {
@@ -214,19 +212,17 @@ bool WorldAssets::GetGroundPlaneForShadow(const float modelPos[3], float modelHe
 bool WorldAssets::GetGroundPlaneUnder(float x, float z, collision::GroundPlane& out) const {
     const asset::CollisionMesh* m = MainCollisionMesh();
     if (!m) { out.valid = false; return false; }
-    return collision::GetGroundPlaneUnder(*m, x, z, out); // 0x697130 (descente + plan-sol vertical)
+    return collision::GetGroundPlaneUnder(*m, x, z, out); // 0x697130 (descent + vertical ground plane)
 }
 
-// ---------------------------------------------------------------------------
-// WG-02 — Collision CAMÉRA (Camera_UpdateCollision 0x538580). Chaque oracle vise un slot
-// DIFFÉRENT (prouvé) : sweep terrain = .WG (slot 0 = g_GameWorld @0x5387b9) ; point bloqué =
-// Main+WJ (0x540da0) ; sol (HasGroundAt ci-dessus) = Main (@0x5388f4). Consommé par l'oracle
-// Gfx/CameraThirdPersonBridge::WorldCameraCollision (game::ICameraCollisionQueries).
-// ---------------------------------------------------------------------------
+// WG-02 — CAMERA collision (Camera_UpdateCollision 0x538580). Each oracle targets a
+// DIFFERENT slot (proven): terrain sweep = .WG (slot 0 = g_GameWorld @0x5387b9) ; blocked point =
+// Main+WJ (0x540da0) ; ground (HasGroundAt above) = Main (@0x5388f4). Consumed by the
+// Gfx/CameraThirdPersonBridge::WorldCameraCollision oracle (game::ICameraCollisionQueries).
 const asset::CollisionMesh* WorldAssets::TerrainMesh() const {
-    // .WG = slot 0 (g_GameWorld lui-même). Sa maille est un MapFaceChunk (AsFace), PAS un
-    // MapCollisionChunk. Ancre : Camera_UpdateCollision @0x5387b9 (mov ecx, offset g_GameWorld)
-    // -> Terrain_SweepSphereSegment 0x69a1f0 sur this[35]=quadtree du .WG (dword_14A88C8).
+    // .WG = slot 0 (g_GameWorld itself). Its mesh is a MapFaceChunk (AsFace), NOT a
+    // MapCollisionChunk. Anchor: Camera_UpdateCollision @0x5387b9 (mov ecx, offset g_GameWorld)
+    // -> Terrain_SweepSphereSegment 0x69a1f0 on this[35]=quadtree of the .WG (dword_14A88C8).
     if (!wg_) return nullptr;
     const asset::MapFaceChunk* fc = wg_->AsFace();
     return fc ? &fc->mesh : nullptr;
@@ -239,26 +235,24 @@ bool WorldAssets::SweepCameraSegment(const float from[3], const float to[3], flo
 }
 bool WorldAssets::IsPointBlocked(const float p[3]) const {
     const asset::CollisionMesh* main = CollisionMeshOf(CollisionSlot::Main); // &dword_14A88E4
-    if (!main) return true; // 0x540de1 : pas de maille Main -> pas de sol -> bloqué (fidèle)
+    if (!main) return true; // 0x540de1 : no Main mesh -> no ground -> blocked (faithful)
     const asset::CollisionMesh* wj = CollisionMeshOf(CollisionSlot::WJ);     // &dword_14A898C
     return collision::IsPointBlocked(*main, wj, p); // 0x540da0
 }
 bool WorldAssets::LineOfSightBlockedByObjects(const float /*from*/[3], const float /*to*/[3]) const {
-    // MapColl_LineOfSightObjects 0x696fc0 — NON porté cette vague (blocage PROUVÉ) : le test réel
-    // intersecte le segment avec l'OBB PAR FRAME de chaque objet .WO placé (Model_TransformVertsPick
-    // 0x6a3e00 : table d'OBB @part+284, blocs 64o indexés par frame). Cette table vit dans le blob
-    // géométrie GXD non décodé (asset::WorldMeshPart::geo, Asset/WorldChunk.h:149-157) et l'index de
-    // frame (rec+28 = Math_RandRangeFloat @0x69835d) est runtime-only, absent d'AuxRecord
-    // (Asset/WorldChunk.h:193-198). Fichiers Asset NON possédés par ce front.
+    // MapColl_LineOfSightObjects 0x696fc0 — NOT ported this wave (PROVEN blocker): the real test
+    // intersects the segment with the PER-FRAME OBB of each placed .WO object (Model_TransformVertsPick
+    // 0x6a3e00 : OBB table @part+284, 64-byte blocks indexed by frame). That table lives in the
+    // undecoded GXD geometry blob (asset::WorldMeshPart::geo, Asset/WorldChunk.h:149-157) and the
+    // frame index (rec+28 = Math_RandRangeFloat @0x69835d) is runtime-only, absent from AuxRecord
+    // (Asset/WorldChunk.h:193-198). Asset files not owned by this front.
     // TODO [MapColl_LineOfSightObjects 0x696fc0 / Model_TransformVertsPick 0x6a3e00].
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// WG-03 — Picking écran->terrain (Terrain_PickRayScreen 0x699a80). Délègue à la couche
-// demandée (Main @0x536715 / WJ @0x540fc4). L'implémenteur de game::ITerrainPicker
-// (Game/SkillCombat.h:238, hors périmètre) dérive le ScreenPickCamera de gfx::Camera.
-// ---------------------------------------------------------------------------
+// WG-03 — Screen->terrain picking (Terrain_PickRayScreen 0x699a80). Delegates to the
+// requested layer (Main @0x536715 / WJ @0x540fc4). The game::ITerrainPicker implementer
+// (Game/SkillCombat.h:238, out of scope) derives the ScreenPickCamera from gfx::Camera.
 bool WorldAssets::PickRayScreen(CollisionSlot slot, const collision::ScreenPickCamera& cam,
                                 int sx, int sy, uint32_t& outFaceIndex, float outHit[3],
                                 bool twoSide) const {
@@ -267,26 +261,24 @@ bool WorldAssets::PickRayScreen(CollisionSlot slot, const collision::ScreenPickC
     return collision::PickRayScreen(*m, cam, sx, sy, outFaceIndex, outHit, twoSide); // 0x699a80
 }
 
-// ---------------------------------------------------------------------------
-// GX-ICON-01 — Minimap de zone : exposition des 3 textures + bornes monde. Les textures sont
-// chargées par LoadMinimap (case 8/9/10) mais n'étaient jamais exposées (membre privé sans
-// accesseur) -> mini-carte sans fond. La production côté UI reste hors périmètre.
-// ---------------------------------------------------------------------------
+// GX-ICON-01 — Zone minimap : exposure of the 3 textures + world bounds. The textures are
+// loaded by LoadMinimap (case 8/9/10) but were never exposed (private member, no
+// accessor) -> minimap with no background. UI-side production remains out of scope.
 const asset::Texture* WorldAssets::Minimap(int index) const {
     if (index < 0 || index > 2) return nullptr; // 0=_MINIMAP01/1=_MINIMAP02/2=_MINIMAP03
     return minimaps_[static_cast<size_t>(index)].get(); // world+2092/+2132/+2172, stride 40 @0x681aab
 }
-// BEW-01 : surface D3D9 de la minimap `index` = champ +36 de l'objet cible (Tex_LoadCompressedDDS
-// 0x6A2E80 @0x6A3040 : D3DXCreateTextureFromFileInMemoryEx(..., this+9)). D3DPOOL_MANAGED côté
-// gfx::GpuTexture -> survit à un device reset, aucune recréation à câbler.
+// BEW-01 : D3D9 surface of minimap `index` = field +36 of the target object (Tex_LoadCompressedDDS
+// 0x6A2E80 @0x6A3040 : D3DXCreateTextureFromFileInMemoryEx(..., this+9)). D3DPOOL_MANAGED on the
+// gfx::GpuTexture side -> survives a device reset, no recreation to wire up.
 IDirect3DTexture9* WorldAssets::MinimapTexture(int index) const {
     if (index < 0 || index > 2) return nullptr;
     const gfx::GpuTexture* t = minimapGpu_[static_cast<size_t>(index)].get();
     return (t && t->Valid()) ? t->Handle() : nullptr;
 }
-// BEW-01 : var_868/var_864 de UI_GameHud_Render (@0x681560/@0x68157B) = champs +4/+8 de l'objet
-// texture d'index `mode` = en-tête GXD +0/+4 (`qmemcpy(this+1, header, 0x1C)` @0x6A2FFE) = dims
-// LOGIQUES. NE PAS utiliser asset::Texture::width/height (= surface DDS physique NextPow2).
+// BEW-01 : var_868/var_864 of UI_GameHud_Render (@0x681560/@0x68157B) = fields +4/+8 of the
+// texture object of index `mode` = GXD header +0/+4 (`qmemcpy(this+1, header, 0x1C)` @0x6A2FFE) =
+// LOGICAL dims. DO NOT use asset::Texture::width/height (= physical DDS surface, NextPow2).
 bool WorldAssets::MinimapLogicalSize(int index, int& outW, int& outH) const {
     const asset::Texture* t = Minimap(index);
     if (!t || t->imgLogicalWidth == 0 || t->imgLogicalHeight == 0) return false;
@@ -296,7 +288,7 @@ bool WorldAssets::MinimapLogicalSize(int index, int& outW, int& outH) const {
 }
 WorldAssets::MinimapBounds WorldAssets::MinimapWorldBounds() const {
     MinimapBounds b{0.0f, 0.0f, 0.0f, 0.0f, false};
-    const asset::CollisionMesh* m = TerrainMesh(); // dword_14A88C8 = quadtree .WG (g_GameWorld+140)
+    const asset::CollisionMesh* m = TerrainMesh(); // dword_14A88C8 = .WG quadtree (g_GameWorld+140)
     if (!m || m->nodes.empty()) return b;
     const asset::CollisionQuadNode& root = m->nodes[0]; // UI_GameHud_Render @0x681513..@0x68154b
     b.minX    =  root.bboxMin[0]; // @0x681519 (+0)
@@ -307,25 +299,23 @@ WorldAssets::MinimapBounds WorldAssets::MinimapWorldBounds() const {
     return b;
 }
 
-// ---------------------------------------------------------------------------
-// Atmosphère / météo — SilverLining NON lié à ce projet (SilverLiningDirectX9-MT.dll
-// hors périmètre de ClientSource). On échoue PROPREMENT plutôt que de simuler un
-// succès : allocAtmosphere renvoie nullptr (=> atmosphere_ reste nul), et
-// atmosphereInitialize renvoie 0 (= "pas d'échec bloquant") pour laisser le reste
-// du chargement de zone (collision/objets/fx, la partie gameplay) se poursuivre
-// sans ciel/météo rendus. Documenté ici plutôt que passé sous silence.
-// ---------------------------------------------------------------------------
+// Atmosphere / weather — SilverLining is NOT linked into this project (SilverLiningDirectX9-MT.dll
+// out of scope for ClientSource). We fail CLEANLY rather than simulate a
+// success: allocAtmosphere returns nullptr (=> atmosphere_ stays null), and
+// atmosphereInitialize returns 0 (= "no blocking failure") so the rest
+// of zone loading (collision/objects/fx, the gameplay part) can proceed
+// without a rendered sky/weather. Documented here rather than left silent.
 void* WorldAssets::AllocAtmosphere(void* /*user*/, unsigned /*size*/) {
-    return nullptr; // SilverLining non lié -> pas d'objet atmosphère.
+    return nullptr; // SilverLining not linked -> no atmosphere object.
 }
 void* WorldAssets::ConstructAtmosphere(void* /*user*/, void* /*mem*/, const char*, const char*) {
-    return nullptr; // jamais appelé tant qu'AllocAtmosphere renvoie nullptr.
+    return nullptr; // never called as long as AllocAtmosphere returns nullptr.
 }
 void WorldAssets::DeviceBeginMap(void* /*user*/, void* /*device*/) {}
 void WorldAssets::DeviceEndMap(void* /*user*/, void* /*device*/) {}
 int  WorldAssets::AtmosphereInitialize(void* /*user*/, void* /*atmosphere*/,
                                        const char* /*mapName*/, void* /*device*/) {
-    return 0; // "pas d'échec" -> WorldMap::LoadMap continue (valid_=true, sans ciel).
+    return 0; // "no failure" -> WorldMap::LoadMap continues (valid_=true, without sky).
 }
 bool WorldAssets::LoadWeatherDat(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
@@ -344,61 +334,59 @@ void WorldAssets::FinishLoad(void* /*user*/) {
     TS2_LOG("World : chargement atmosphere termine (Atmosphere.DAT present).");
 }
 
-// ---------------------------------------------------------------------------
-// Géométrie de zone — chargeurs RÉELS (Asset/WorldChunk, validés 455/455 fichiers).
-// ---------------------------------------------------------------------------
+// Zone geometry — REAL loaders (Asset/WorldChunk, validated 455/455 files).
 bool WorldAssets::FreeZoneSound(void* user) {
     auto* self = static_cast<WorldAssets*>(user);
     if (self->soundBank_) self->soundBank_.reset();
     return true;
 }
-// CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWG. Ancre IDA : MapColl_LoadMapFile 0x697b30.
-// RÉELLEMENT rendu (FRONT W3-F3) : Faces() est consommé par Gfx/WorldGeometryRenderer::buildTerrain()
-// (chemin FF FVF 530, Terrain_Render 0x698670, 2x/frame depuis Scene_InGameRender 0x52d0b0). La
-// catégorie/eau vient de textures[m].trailer[0/1] (Tex_LoadCompressedFromHandle 0x6a9cf0).
+// CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWG. IDA anchor: MapColl_LoadMapFile 0x697b30.
+// ACTUALLY rendered (FRONT W3-F3): Faces() is consumed by Gfx/WorldGeometryRenderer::buildTerrain()
+// (FF FVF 530 path, Terrain_Render 0x698670, 2x/frame from Scene_InGameRender 0x52d0b0). The
+// terrain/water category comes from textures[m].trailer[0/1] (Tex_LoadCompressedFromHandle 0x6a9cf0).
 bool WorldAssets::LoadMapFileWG(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wg_ = std::make_unique<asset::WorldChunk>();
     return self->wg_->Load(self->gameDataDir_ + "\\" + path);
 }
-// CONFIRMED ex-VeryOldClient: LoadWO (mMObject). Ancre IDA : MapColl_LoadObjectsA 0x6980d0.
-// Réellement rendu par Gfx/WorldGeometryRenderer (gabarits + auxRecords/placement).
+// CONFIRMED ex-VeryOldClient: LoadWO (mMObject). IDA anchor: MapColl_LoadObjectsA 0x6980d0.
+// Actually rendered by Gfx/WorldGeometryRenderer (templates + auxRecords/placement).
 bool WorldAssets::LoadObjectsWO(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wo_ = std::make_unique<asset::WorldChunk>();
     return self->wo_->Load(self->gameDataDir_ + "\\" + path);
 }
-// CONFIRMED ex-VeryOldClient: LoadWP (mPSystem). Ancre IDA : MapColl_LoadObjectsB 0x6983b0.
-// RÉELLEMENT rendu (FRONT W3-F3) : FxNodes() est consommé par Gfx/WorldGeometryRenderer::buildFx()
-// + RenderFxBillboards(). Le point d'entrée de rendu .WP EST Terrain_Render a5=2 @0x698c6d
-// (Gfx_BeginUnlitPass 0x69e470 -> Particle_RenderBillboards 0x6a70b0) — l'« X01 non identifié » était FAUX.
+// CONFIRMED ex-VeryOldClient: LoadWP (mPSystem). IDA anchor: MapColl_LoadObjectsB 0x6983b0.
+// ACTUALLY rendered (FRONT W3-F3): FxNodes() is consumed by Gfx/WorldGeometryRenderer::buildFx()
+// + RenderFxBillboards(). The .WP render entry point IS Terrain_Render a5=2 @0x698c6d
+// (Gfx_BeginUnlitPass 0x69e470 -> Particle_RenderBillboards 0x6a70b0) — the "unidentified X01" was WRONG.
 bool WorldAssets::LoadObjectsWP(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wp_ = std::make_unique<asset::WorldChunk>();
     return self->wp_->Load(self->gameDataDir_ + "\\" + path);
 }
-// CONFIRMED ex-VeryOldClient: mShadowTexture (dispatch case 5). Ancre IDA : Tex_LoadFromFile 0x6a9910.
-// PLAUSIBLE (VeryOldClient) — non prouvé IDA : décodage = DDS plain (loader distinct de
-// Tex_LoadCompressedDDS 0x6a2e80 des minimaps ; interne de 0x6a9910 non décompilé cette passe).
-// DÉSORMAIS APPLIQUÉE (FRONT W3-F3) : la lightmap est liée au stage 1 (uv1, MODULATE) par le chemin
-// FF de Gfx/WorldGeometryRenderer (Terrain_Render @0x698f54/@0x698f68). On conserve ici les octets
-// DDS bruts (shadowBytes_) pour que le renderer crée la texture GPU sans inclure Asset/Texture.h.
+// CONFIRMED ex-VeryOldClient: mShadowTexture (dispatch case 5). IDA anchor: Tex_LoadFromFile 0x6a9910.
+// PLAUSIBLE (VeryOldClient) — not IDA-proven: decoding = plain DDS (loader distinct from
+// Tex_LoadCompressedDDS 0x6a2e80 of the minimaps ; internals of 0x6a9910 not decompiled this pass).
+// NOW APPLIED (FRONT W3-F3): the lightmap is bound to stage 1 (uv1, MODULATE) by the FF
+// path of Gfx/WorldGeometryRenderer (Terrain_Render @0x698f54/@0x698f68). Raw DDS bytes are kept
+// here (shadowBytes_) so the renderer can create the GPU texture without including Asset/Texture.h.
 bool WorldAssets::LoadShadowTexture(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     const std::string full = self->gameDataDir_ + "\\" + path;
     self->shadow_ = std::make_unique<asset::Texture>();
     self->shadowBytes_.clear();
-    asset::ReadWholeFile(full, self->shadowBytes_); // octets DDS bruts pour le renderer (best-effort)
+    asset::ReadWholeFile(full, self->shadowBytes_); // raw DDS bytes for the renderer (best-effort)
     return self->shadow_->LoadDDS(full);
 }
-// CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (WM1/2/3 -> mRANGE1/2/3). Ancre IDA :
-// MapColl_LoadFaces 0x694510. RÉSOLU (Gaps G01/G02/G04, campagne collision) — l'ancien commentaire
-// « raw jamais décodé -> sol nul partout » est PÉRIMÉ : le chunk .WM est désormais DÉCODÉ TYPÉ par
-// asset::WorldChunk::ParseCollisionMesh (WorldChunk.cpp, CollisionTri 156o [matIndex@0, plan@124..136]
-// + QuadNode 48o) et REQUÊTÉ par les MapColl_* portés (MapColl_GetGroundHeight 0x697130 = descente
-// quadtree XZ + plane-solve y=(d - x*a - z*c)/b + barycentrique MapColl_RayHitTriangle 0x695ae0, dans
-// World/WorldMap.cpp ; SegPick pour l'ombre planaire Collision_SegPickA 0x420D60 dans World/CollisionMesh.cpp).
-// MainCollisionMesh() renvoie cette maille décodée, consommée par GetGroundPlaneForShadow / GetGroundHeight.
+// CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (WM1/2/3 -> mRANGE1/2/3). IDA anchor:
+// MapColl_LoadFaces 0x694510. RESOLVED (Gaps G01/G02/G04, collision campaign) — the old comment
+// "raw, never decoded -> ground null everywhere" is OUTDATED : the .WM chunk is now DECODED, TYPED, by
+// asset::WorldChunk::ParseCollisionMesh (WorldChunk.cpp, CollisionTri 156B [matIndex@0, plane@124..136]
+// + QuadNode 48B) and QUERIED by the ported MapColl_* (MapColl_GetGroundHeight 0x697130 = XZ quadtree
+// descent + plane-solve y=(d - x*a - z*c)/b + barycentric MapColl_RayHitTriangle 0x695ae0, in
+// World/WorldMap.cpp ; SegPick for the planar shadow Collision_SegPickA 0x420D60 in World/CollisionMesh.cpp).
+// MainCollisionMesh() returns this decoded mesh, consumed by GetGroundPlaneForShadow / GetGroundHeight.
 bool WorldAssets::LoadFaces(void* user, CollisionSlot slot, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     auto chunk = std::make_unique<asset::WorldChunk>();
@@ -424,33 +412,33 @@ bool WorldAssets::LoadMinimap(void* user, int index, const char* path) {
     const size_t i = static_cast<size_t>(index - 1);
     auto& slot = self->minimaps_[i];
     slot = std::make_unique<asset::Texture>();
-    self->minimapGpu_[i].reset(); // recharge de zone : l'ancienne surface tombe (world+2092+40*i écrasé)
-    // Enveloppe GXD .IMG famille T : Texture::LoadFile MATÉRIALISE les pixels (blocs DXT) via
-    // ImgFile + LoadFromImgFile — format PROUVÉ identique à Tex_LoadCompressedDDS 0x6A2E80
-    // (en-tête GXD 36 o + DDS embarqué, cf. @0x6A2FFE `qmemcpy(this+1, header, 0x1C)` / @0x6A3040
+    self->minimapGpu_[i].reset(); // zone reload : the old surface is dropped (world+2092+40*i overwritten)
+    // GXD .IMG family T wrapper: Texture::LoadFile MATERIALIZES the pixels (DXT blocks) via
+    // ImgFile + LoadFromImgFile — format PROVEN identical to Tex_LoadCompressedDDS 0x6A2E80
+    // (36-byte GXD header + embedded DDS, cf. @0x6A2FFE `qmemcpy(this+1, header, 0x1C)` / @0x6A3040
     // D3DXCreateTextureFromFileInMemoryEx).
     if (!slot->LoadFile(self->gameDataDir_ + "\\" + path)) return false;
 
-    // BEW-01 : le binaire ne s'arrête PAS au décodage — @0x6A3040 il crée la texture D3D9 et la
-    // range dans l'objet (+36), objet que UI_GameHud_Render blitte ensuite @0x681AB1. On reproduit
-    // cet upload ici : la texture appartient au MONDE (world+2092+40*index), pas au HUD. Sans
-    // device (SetDevice non appelé), on reste CPU-only et la mini-carte dégrade proprement sur son
-    // aplat — jamais de crash.
+    // BEW-01 : the binary does NOT stop at decoding — @0x6A3040 it creates the D3D9 texture and
+    // stores it in the object (+36), an object that UI_GameHud_Render then blits @0x681AB1. We
+    // reproduce that upload here: the texture belongs to the WORLD (world+2092+40*index), not the HUD.
+    // Without a device (SetDevice not called), we stay CPU-only and the minimap degrades cleanly
+    // to its flat color — never a crash.
     if (!self->device_) {
         TS2_WARN("World : minimap %d decodee mais device absent (SetDevice non appele) "
                  "-> mini-carte sans fond.", index);
-        return true; // le décodage a réussi : case 8/9/10 renvoie bien 1 (fidèle @0x4DD2xx)
+        return true; // decoding succeeded : case 8/9/10 does return 1 (faithful @0x4DD2xx)
     }
-    // CreateFromTexture (CreateTexture + LockRect sur les blocs déjà décodés) plutôt que
-    // CreateFromImgFile (réplique D3DX exacte) : `slot` porte déjà les blocs, inutile de relire le
-    // fichier. Écart bénin assumé : la cible passe mipLevels=1 à D3DXCreateTextureFromFileInMemoryEx
-    // (@0x6A3040) là où CreateFromTexture téléverse tous les niveaux du DDS — ID3DXSprite ne lit que
-    // le niveau 0, le blit @0x681AB1 est identique.
+    // CreateFromTexture (CreateTexture + LockRect on the already-decoded blocks) rather than
+    // CreateFromImgFile (exact D3DX replica) : `slot` already carries the blocks, no need to reread
+    // the file. Benign accepted gap: the target passes mipLevels=1 to D3DXCreateTextureFromFileInMemoryEx
+    // (@0x6A3040) whereas CreateFromTexture uploads all DDS levels — ID3DXSprite only reads
+    // level 0, the blit @0x681AB1 is identical.
     auto gpu = std::make_unique<gfx::GpuTexture>();
     if (!gpu->CreateFromTexture(self->device_, *slot)) {
         TS2_WARN("World : upload GPU de la minimap %d echoue (format %d non supporte).",
                  index, static_cast<int>(slot->format));
-        return true; // idem : l'échec d'upload ne fait pas échouer le chargement de zone
+        return true; // same : an upload failure does not fail the zone load
     }
     self->minimapGpu_[i] = std::move(gpu);
     TS2_LOG("World : minimap %d prete (logique %ux%u, surface %ux%u).", index,
@@ -458,15 +446,14 @@ bool WorldAssets::LoadMinimap(void* user, int index, const char* path) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Audio de zone — conteneur .WSOUND parsé (byte-exact) PUIS réellement décodé.
-// NOTE (AUD-05) : le bandeau précédent affirmait « décodage Ogg indisponible / décodeur Ogg
-// absent, échec propre attendu ». C'est PÉRIMÉ : Audio/OggVorbisDecoder.cpp existe et
-// AudioSystem::Init le branche (AudioSystem.cpp:300-301 `if (!HasLoadCallback())
-// SetLoadCallback(&OggVorbisLoadCallback);`), libvorbis étant réellement liée. Le PCM est donc
-// bien produit — d'où la gravité de l'ancien LoadWorldBgm : il décodait TOUT puis jetait.
-// Le repli « muet sans crash » demeure si DirectSound est indisponible ou le fichier absent.
-// ---------------------------------------------------------------------------
+// Zone audio — .WSOUND container parsed (byte-exact) AND now actually decoded.
+// NOTE (AUD-05) : the previous banner claimed "Ogg decoding unavailable / Ogg decoder
+// absent, clean failure expected". That is OUTDATED : Audio/OggVorbisDecoder.cpp exists and
+// AudioSystem::Init wires it in (AudioSystem.cpp:300-301 `if (!HasLoadCallback())
+// SetLoadCallback(&OggVorbisLoadCallback);`), libvorbis being actually linked. PCM is therefore
+// genuinely produced — hence the severity of the old LoadWorldBgm bug: it decoded EVERYTHING then
+// discarded it. The "silent, no crash" fallback remains if DirectSound is unavailable or the file is
+// missing.
 bool WorldAssets::LoadWorldSound(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->wsound_ = std::make_unique<asset::WSound>();
@@ -483,63 +470,63 @@ bool WorldAssets::LoadWorldSound(void* user, const char* path) {
         emitters.push_back({ e.soundIndex, { e.x, e.y, e.z }, e.radius });
 
     self->soundBank_ = std::make_unique<audio::SoundBank>();
-    // Ne fait PAS échouer LoadZoneResource si un son ne peut être ouvert : le conteneur
-    // (métadonnées + émetteurs) est correctement chargé quoi qu'il arrive.
+    // Does NOT fail LoadZoneResource if a sound can't be opened: the container
+    // (metadata + emitters) is loaded correctly regardless.
     self->soundBank_->Load(soundPaths, emitters);
-    // AUD-03 : cette banque est le pendant de dword_14A90E0. Elle reste MUETTE tant que
-    // WSndBank_UpdatePositional 0x4DAC30 n'est pas appelé par frame (@0x5321EC, en tête de
-    // Player_UpdateLocalAnim 0x5321D0) — tick porté dans Game/AnimationTick.*, HORS de ce front.
-    // Fournisseur exposé ici : WorldAssets::SoundBank() (cf. .h). Câblage : voir rapport de front.
+    // AUD-03 : this bank is the counterpart of dword_14A90E0. It stays MUTE as long as
+    // WSndBank_UpdatePositional 0x4DAC30 is not called per frame (@0x5321EC, at the head of
+    // Player_UpdateLocalAnim 0x5321D0) — tick ported in Game/AnimationTick.*, OUTSIDE this front.
+    // Provider exposed here : WorldAssets::SoundBank() (cf. .h). Wiring : see front report.
     return true;
 }
 // AUD-05 — World_LoadZoneResource 0x4DCB60 case 12 @0x4DD43E :
 //   Snd_LoadOggToBuffers(ecx = g_GameWorld + 0x8BC, "G03_GDATA\D10_WORLDBGM\Z%03d.BGM", 1, 1, 1)
-// avec g_GameWorld = 0x14A883C -> ecx = 0x14A90F8 = le slot PERSISTANT du monde. Deux corrections
-// prouvées par rapport à l'état précédent :
-//   1. le SoundBuffer était AUTOMATIQUE (pile) -> ~SoundBuffer() au `return` détruisait les
-//      IDirectSoundBuffer à peine décodés. Il est désormais membre (`worldBgm_`), pendant exact
-//      de g_GameWorld+2236 : le slot survit, comme dans la cible.
-//   2. le mode était PlayMode::Loop (=kind 2) alors que les pushes @0x4DD425-0x4DD429 donnent
-//      a3 = kind = 1 = ONE-SHOT single (cf. commentaire IDA de Snd_LoadOggToBuffers 0x6A8120 :
-//      « 1=one-shot single, 2=loop single, 3=pool »). PlayMode::OneShot (Audio/AudioSystem.h:85).
-// La case 12 CHARGE seulement : le play est un site distinct (PlayWorldBgm, cf. .h).
+// with g_GameWorld = 0x14A883C -> ecx = 0x14A90F8 = the world's PERSISTENT slot. Two fixes
+// proven against the previous state:
+//   1. the SoundBuffer was AUTOMATIC (stack) -> ~SoundBuffer() on `return` destroyed the
+//      just-decoded IDirectSoundBuffer. It is now a member (`worldBgm_`), the exact counterpart
+//      of g_GameWorld+2236 : the slot survives, as in the target.
+//   2. the mode was PlayMode::Loop (=kind 2) whereas the pushes @0x4DD425-0x4DD429 give
+//      a3 = kind = 1 = ONE-SHOT single (cf. the IDA comment on Snd_LoadOggToBuffers 0x6A8120 :
+//      "1=one-shot single, 2=loop single, 3=pool"). PlayMode::OneShot (Audio/AudioSystem.h:85).
+// Case 12 only LOADS: playback is a separate site (PlayWorldBgm, cf. .h).
 bool WorldAssets::LoadWorldBgm(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     self->worldBgm_ = std::make_unique<audio::SoundBuffer>(); // slot g_GameWorld+2236 (0x14A90F8)
     const bool ok = self->worldBgm_->LoadFromPath(self->gameDataDir_ + "\\" + path,
                                                   audio::PlayMode::OneShot, 1); // kind=1 @0x4DD429
     if (!ok) {
-        // .BGM absent / DirectSound indisponible -> muet, jamais de crash (le binaire non plus
-        // n'échoue pas la zone : la case 12 retombe sur def_4DCBA4 @0x4DD443).
+        // .BGM absent / DirectSound unavailable -> silent, never a crash (the binary doesn't
+        // fail the zone either: case 12 falls back to def_4DCBA4 @0x4DD443).
         TS2_WARN("World : BGM \"%s\" indisponible (fichier absent ou audio non initialise).", path);
         self->worldBgm_.reset();
     }
     return ok;
 }
 // Player_ResetCombatState : @0x50F75A `cmp ds:g_BgmEnabled, 1` / @0x50F761 `jnz` ->
-// @0x50F769 `mov ecx, offset dword_14A90F8` (= g_GameWorld+0x8BC, le slot chargé ci-dessus) ->
-// @0x50F76E `call Snd_Play3D` avec les pushes 0 / 0x64 / 0 = (pan=0, vol=100, a2=0).
+// @0x50F769 `mov ecx, offset dword_14A90F8` (= g_GameWorld+0x8BC, the slot loaded above) ->
+// @0x50F76E `call Snd_Play3D` with pushes 0 / 0x64 / 0 = (pan=0, vol=100, a2=0).
 void WorldAssets::PlayWorldBgm(bool bgmEnabled) {
     if (!bgmEnabled) return;   // gate g_BgmEnabled 0x84DEF0 @0x50F75A
-    if (!worldBgm_) return;    // slot non chargé -> no-op (Snd_Play3D sort sur !loaded)
+    if (!worldBgm_) return;    // slot not loaded -> no-op (Snd_Play3D exits on !loaded)
     worldBgm_->Play(100, 0);   // vol = 0x64 @0x50F765, pan = 0 @0x50F763
 }
-// Snd_ReleaseBuffers 0x6A80D0 sur le slot monde.
+// Snd_ReleaseBuffers 0x6A80D0 on the world slot.
 void WorldAssets::ReleaseWorldBgm() {
     if (worldBgm_) worldBgm_->Release();
     worldBgm_.reset();
 }
 
-// .ATM par zone (World_LoadZoneResource case 7, seul appelant de ce hook — cf. World/
-// WorldMap.cpp::LoadZoneResource, ResourceKind::Atmosphere, chemin "Z%03d.ATM" avec le
-// zoneId BRUT). Contrairement à AVANT (2026-07-14), le contenu est RÉELLEMENT parsé (cf.
-// Asset/AtmosphereFile.h, byte-exact, validé 89/89 fichiers réels) plutôt que juste vérifié
-// non-vide : c'est la donnée RÉELLE consommée ensuite par Gfx/SkyRenderer.h pour dériver le
-// gradient jour/nuit de l'heure/position géo réelles de la zone active.
+// Per-zone .ATM (World_LoadZoneResource case 7, sole caller of this hook — cf. World/
+// WorldMap.cpp::LoadZoneResource, ResourceKind::Atmosphere, "Z%03d.ATM" path with the
+// RAW zoneId). Unlike BEFORE (2026-07-14), the content is ACTUALLY parsed (cf.
+// Asset/AtmosphereFile.h, byte-exact, validated 89/89 real files) rather than just checked
+// non-empty: it is the REAL data then consumed by Gfx/SkyRenderer.h to derive the
+// day/night gradient from the real hour/geo position of the active zone.
 bool WorldAssets::LoadDataFile(void* user, const char* path) {
     auto* self = static_cast<WorldAssets*>(user);
     if (self->atmosphere_.Load(self->gameDataDir_ + "\\" + path)) return true;
-    return self->atmosphere_.Load(path); // repli : path déjà complet (même politique qu'avant)
+    return self->atmosphere_.Load(path); // fallback : path already complete (same policy as before)
 }
 
 } // namespace ts2::world

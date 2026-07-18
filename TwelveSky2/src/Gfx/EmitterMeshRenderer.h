@@ -1,32 +1,32 @@
-// Gfx/EmitterMeshRenderer.h — upload GPU + dessin d'un mesh d'effet .MOBJECT2 (mesh d'emitter).
+// Gfx/EmitterMeshRenderer.h — GPU upload + drawing of a .MOBJECT2 effect mesh (emitter mesh).
 //
-// Consomme asset::Mobject2 (FLOTTE A, déjà committé : Asset/Mobject2.h) et reproduit le rendu
-// d'origine `Mesh_DrawAnimatedFrame 0x430BE0` (flipbook animé, timer QPC, glow/UV/billboard/alpha).
-// MODULE AUTONOME : aucune écriture dans la boucle de rendu, aucun hook. Le device D3D9 et la
-// matrice monde sont fournis PAR L'APPELANT (FLOTTE C câblera). VB/IB/textures en D3DPOOL_MANAGED
-// → survivent à un Reset() : OnDeviceLost/OnDeviceReset sont des no-op (comme WorldGeometryRenderer
+// Consumes asset::Mobject2 (FLEET A, already committed: Asset/Mobject2.h) and reproduces the
+// original render `Mesh_DrawAnimatedFrame 0x430BE0` (animated flipbook, QPC timer, glow/UV/billboard/alpha).
+// STANDALONE MODULE: no writes into the render loop, no hooks. The D3D9 device and world
+// matrix are supplied BY THE CALLER (FLEET C will wire it). VB/IB/textures in D3DPOOL_MANAGED
+// -> survive a Reset(): OnDeviceLost/OnDeviceReset are no-ops (like WorldGeometryRenderer
 // / ModelObjectRenderer / MeshRenderer).
 //
-// ============================ ANCRES IDA (seule vérité, imagebase 0x400000) ===================
-//   Mesh_DrawAnimatedFrame 0x430BE0  — CŒUR du rendu (décompilé/désassemblé le 2026-07-17) :
+// ============================ IDA ANCHORS (sole source of truth, imagebase 0x400000) ===================
+//   Mesh_DrawAnimatedFrame 0x430BE0  — render CORE (decompiled/disassembled on 2026-07-17):
 //       __userpurge(alpha@eax, overrideTexHolder@ecx, mesh@a3, pass@a4, frame@a5, lod@a6, phase@a7)
-//   Mesh_DrawInstancesLOD  0x431A90  — appelant (frustum-cull + LOD distance + matrice Rz·Ry·Rx·T·S ;
-//       pose g_WorldMatrix 0x18C52D4 puis appelle Mesh_DrawAnimatedFrame par instance).
-//   GXD_SetDirectionalLight 0x403980 — helper glow (D3DLIGHT9 : Ambient=couleur, Type=DIRECTIONAL).
+//   Mesh_DrawInstancesLOD  0x431A90  — caller (frustum-cull + LOD distance + Rz·Ry·Rx·T·S matrix;
+//       sets g_WorldMatrix 0x18C52D4 then calls Mesh_DrawAnimatedFrame per instance).
+//   GXD_SetDirectionalLight 0x403980 — glow helper (D3DLIGHT9: Ambient=color, Type=DIRECTIONAL).
 //   Mesh_ReadFile 0x430470 / Mesh_LoadMOBJECT2 0x4318C0 — loader (VB 20·N·vc FVF 258 @0x430897,
-//       IB 6·fc INDEX16 @0x430A03, tex SOBJECT 56 o @0x430A80) — déjà porté (asset::Mobject2).
-//   Vec3_TransformCoord 0x6BB612 (= D3DXVec3TransformCoord) ; timer QPC dbl_18C4F80/88 (freq/start).
+//       IB 6·fc INDEX16 @0x430A03, tex SOBJECT 56 o @0x430A80) — already ported (asset::Mobject2).
+//   Vec3_TransformCoord 0x6BB612 (= D3DXVec3TransformCoord) ; QPC timer dbl_18C4F80/88 (freq/start).
 //
-// ============================ RÉSOLUTION D'UN RÉSIDU DE LA FLOTTE A ============================
-//   Docs/TS2_DEEP_MOBJECT.md §3.3/§T5 et Asset/Mobject2.h marquaient le multiplicateur `20·N`
-//   (N = a1[21]) comme « sémantique NON PROUVÉE ». `Mesh_DrawAnimatedFrame` la PROUVE :
-//     - décalage de flux VB par frame = `20 * frame * vertexCount[i]`  (@0x431520 GXD / @0x4314BE CPU)
-//     - décalage du bloc bbox/ancre    = `40 * frame`                   (@0x431207)
-//   → N EST le NOMBRE DE FRAMES du flipbook (chaque frame = un bloc contigu de `vertexCount` sommets
-//     de 20 o). La VB tient N frames ; la sélection de frame = offset de SetStreamSource, JAMAIS de
-//     skinning. Le repli « N==1 » n'est donc plus nécessaire — on gère N frames fidèlement (et N==1
-//     dégénère naturellement en mesh statique). Sémantique inchangée pour les autres tables (boneTable
-//     40·N = 1 enregistrement bbox+ancre PAR FRAME, header2 80 o = gabarit de quad billboard).
+// ============================ RESOLUTION OF A FLEET-A RESIDUAL ============================
+//   Docs/TS2_DEEP_MOBJECT.md §3.3/§T5 and Asset/Mobject2.h flagged the `20·N` multiplier
+//   (N = a1[21]) as "UNPROVEN semantics". `Mesh_DrawAnimatedFrame` PROVES it:
+//     - per-frame VB stream offset = `20 * frame * vertexCount[i]`  (@0x431520 GXD / @0x4314BE CPU)
+//     - bbox/anchor block offset   = `40 * frame`                   (@0x431207)
+//   -> N IS the flipbook's FRAME COUNT (each frame = a contiguous block of `vertexCount` 20-byte
+//     vertices). The VB holds N frames; frame selection = SetStreamSource offset, NEVER
+//     skinning. The "N==1" fallback is thus no longer needed — we handle N frames faithfully (and
+//     N==1 naturally degenerates to a static mesh). Semantics unchanged for the other tables (boneTable
+//     40·N = 1 bbox+anchor record PER FRAME, header2 80 o = billboard quad template).
 #pragma once
 #include <d3d9.h>
 #include <d3dx9.h>
@@ -35,21 +35,19 @@
 #include <unordered_map>
 #include <vector>
 
-#include "Asset/Mobject2.h" // asset::Mobject2 / Mobject2Mesh / Mobject2Subset / SObjectTexture (FLOTTE A)
-#include "Gfx/GpuTexture.h"  // gfx::GpuTexture (pont DDS -> IDirect3DTexture9, D3DPOOL_MANAGED)
+#include "Asset/Mobject2.h" // asset::Mobject2 / Mobject2Mesh / Mobject2Subset / SObjectTexture (FLEET A)
+#include "Gfx/GpuTexture.h"  // gfx::GpuTexture (DDS -> IDirect3DTexture9 bridge, D3DPOOL_MANAGED)
 
 namespace ts2::gfx {
 
-// ---------------------------------------------------------------------------------------------
-//  Représentation GPU (cache) d'un mesh MOBJECT2. Move-only (possède VB/IB/textures).
-// ---------------------------------------------------------------------------------------------
+//  GPU (cache) representation of a MOBJECT2 mesh. Move-only (owns VB/IB/textures).
 
-// Un holder de texture = 1 texture GPU + son mode de fondu (holder+44 = SObjectTexture::alphaMode).
-// Dans le binaire, Mesh_DrawAnimatedFrame lit `*(v43+44)` (blendMode 0/1/2) et `*(v43+52)` (texture
-// D3D) sur le holder sélectionné (mainTex si non animé, extraTex[idx] si header1[0]==1).
+// A texture holder = 1 GPU texture + its blend mode (holder+44 = SObjectTexture::alphaMode).
+// In the binary, Mesh_DrawAnimatedFrame reads `*(v43+44)` (blendMode 0/1/2) and `*(v43+52)` (D3D
+// texture) on the selected holder (mainTex if not animated, extraTex[idx] if header1[0]==1).
 struct EmitterTexHolder {
-    GpuTexture tex;              // texture GPU (vide si absente) — a1[51]/a1[66] via Tex_ReadPacked
-    uint32_t   blendMode = 0;    // holder+44 : 0=opaque, 1=alpha-test+blend, 2=additif
+    GpuTexture tex;              // GPU texture (empty if absent) — a1[51]/a1[66] via Tex_ReadPacked
+    uint32_t   blendMode = 0;    // holder+44 : 0=opaque, 1=alpha-test+blend, 2=additive
     bool       present   = false;
 
     EmitterTexHolder() = default;
@@ -59,13 +57,13 @@ struct EmitterTexHolder {
     EmitterTexHolder& operator=(const EmitterTexHolder&) = delete;
 };
 
-// Un subset de rendu (= un niveau de LOD dans Mesh_DrawAnimatedFrame : l'appelant en sélectionne
-// UN SEUL par le facteur de LOD a6 — cf. boucle @0x430DAC). Chaque VB tient les N frames.
-// Move-only, PROPRIÉTAIRE de ses VB/IB (libérés au destructeur → clear()/Reset propres, zéro fuite).
+// A render subset (= a LOD level in Mesh_DrawAnimatedFrame: the caller selects
+// ONLY ONE via the LOD factor a6 — cf. loop @0x430DAC). Each VB holds N frames.
+// Move-only, OWNS its VB/IB (released in the destructor -> clean clear()/Reset, zero leak).
 struct EmitterGpuSubset {
     IDirect3DVertexBuffer9* vb          = nullptr; // 20·N·vertexCount o, FVF 258, MANAGED (a1[47] @0x430897)
     IDirect3DIndexBuffer9*  ib          = nullptr; // 6·faceCount o, INDEX16, MANAGED (a1[50] @0x430A03)
-    uint32_t                vertexCount = 0;        // sommets PAR FRAME (a1[45][i])
+    uint32_t                vertexCount = 0;        // vertices PER FRAME (a1[45][i])
     uint32_t                faceCount   = 0;        // triangles = primCount (a1[48][i])
 
     EmitterGpuSubset() = default;
@@ -87,40 +85,40 @@ struct EmitterGpuSubset {
     }
 };
 
-// Un mesh du conteneur (miroir GPU de asset::Mobject2Mesh, 268 o d'origine).
+// A mesh of the container (GPU mirror of asset::Mobject2Mesh, originally 268 o).
 struct EmitterGpuMesh {
-    bool     valid      = false; // faux si mesh vide (type==0)
-    uint32_t frameCount = 1;     // N = a1[21] (RÉSOLU : nb de frames — cf. bandeau .h)
+    bool     valid      = false; // false if empty mesh (type==0)
+    uint32_t frameCount = 1;     // N = a1[21] (RESOLVED: frame count — cf. .h banner)
 
-    // --- header1 décodé (76 o, a1[2..20]) — flags lus par Mesh_DrawAnimatedFrame ---
-    uint32_t animatedTex       = 0; // header1[0]  (mesh+8)  : ==1 ⇒ texture prise dans extraTex[] (flipbook)
-    int32_t  animTexSpeed      = 0; // header1[1]  (mesh+12) : vitesse (×0.01) de la sélection temporelle
-    int32_t  texMinFrame       = 0; // header1[2]  (mesh+16) : <1 ⇒ index temporel ; >=1 ⇒ mappé sur [min,max]
+    // --- decoded header1 (76 o, a1[2..20]) — flags read by Mesh_DrawAnimatedFrame ---
+    uint32_t animatedTex       = 0; // header1[0]  (mesh+8)  : ==1 => texture taken from extraTex[] (flipbook)
+    int32_t  animTexSpeed      = 0; // header1[1]  (mesh+12) : speed (×0.01) of temporal selection
+    int32_t  texMinFrame       = 0; // header1[2]  (mesh+16) : <1 => temporal index ; >=1 => mapped onto [min,max]
     int32_t  texMaxFrame       = 0; // header1[3]  (mesh+20)
-    uint32_t glowEnable        = 0; // header1[4]  (mesh+24) : ==1 ⇒ lumière glow animée (GXD_SetDirectionalLight)
-    int32_t  glowSpeed         = 0; // header1[5]  (mesh+28) : phase glow (×0.01)
-    int32_t  glowFrom[3]       = {};// header1[6..8]  (mesh+32/36/40) : couleur « from » (×0.01)
-    int32_t  glowTo[3]         = {};// header1[10..12](mesh+48/52/56) : couleur « to »  (×0.01)   (header1[9] inutilisé)
-    uint32_t uvEnable          = 0; // header1[14] (mesh+64) : ==1 ⇒ défilement de matrice de texture
+    uint32_t glowEnable        = 0; // header1[4]  (mesh+24) : ==1 => animated glow light (GXD_SetDirectionalLight)
+    int32_t  glowSpeed         = 0; // header1[5]  (mesh+28) : glow phase (×0.01)
+    int32_t  glowFrom[3]       = {};// header1[6..8]  (mesh+32/36/40) : "from" color (×0.01)
+    int32_t  glowTo[3]         = {};// header1[10..12](mesh+48/52/56) : "to" color  (×0.01)   (header1[9] unused)
+    uint32_t uvEnable          = 0; // header1[14] (mesh+64) : ==1 => texture matrix scroll
     uint32_t uvMode            = 0; // header1[15] (mesh+68) : 1=U, 2=V, 3=UV, else=U/-V
-    int32_t  uvSpeed           = 0; // header1[16] (mesh+72) : vitesse (×0.01)
-    uint32_t billboardEnable   = 0; // header1[17] (mesh+76) : ==1 ⇒ quad face-caméra (DrawPrimitiveUP)
-    uint32_t billboardAxisMode = 0; // header1[18] (mesh+80) : ==1 ⇒ carré symétrique (largeur=hauteur)
+    int32_t  uvSpeed           = 0; // header1[16] (mesh+72) : speed (×0.01)
+    uint32_t billboardEnable   = 0; // header1[17] (mesh+76) : ==1 => camera-facing quad (DrawPrimitiveUP)
+    uint32_t billboardAxisMode = 0; // header1[18] (mesh+80) : ==1 => symmetric square (width=height)
 
     std::vector<EmitterGpuSubset> subsets;
 
-    // Bloc bbox/ancre PAR FRAME (40·N o, a1[22] / mesh+88). Par frame : min.xyz(12) max.xyz(12)
-    // centre.xyz(12) rayon(4). Le billboard lit centre (offset+24) + extents pour dimensionner le quad.
+    // bbox/anchor block PER FRAME (40·N o, a1[22] / mesh+88). Per frame: min.xyz(12) max.xyz(12)
+    // center.xyz(12) radius(4). The billboard reads center (offset+24) + extents to size the quad.
     std::vector<uint8_t> frameBbox;
-    // Table parallèle 4·N (a1[23] / mesh+92) : 1 float PAR FRAME. Lu UNIQUEMENT en passe additive
-    // (a4!=1, blendMode 2) pour moduler l'alpha : v7 = frameScale[frame] * (255 - alpha)  @0x430D20.
+    // parallel table 4·N (a1[23] / mesh+92): 1 float PER FRAME. Read ONLY in the additive pass
+    // (a4!=1, blendMode 2) to modulate alpha: v7 = frameScale[frame] * (255 - alpha)  @0x430D20.
     std::vector<uint8_t> frameScale;
-    // header2 (80 o, a1[24..43] / mesh+96..176) : SERT DE GABARIT au quad billboard — les UV y sont
-    // bakées ; seules les positions xyz des 4 coins sont réécrites par frame (@0x431286..0x431378).
+    // header2 (80 o, a1[24..43] / mesh+96..176): USED AS TEMPLATE for the billboard quad — the UVs are
+    // baked in; only the xyz positions of the 4 corners are rewritten per frame (@0x431286..0x431378).
     std::vector<uint8_t> billboardTemplate;
 
-    EmitterTexHolder              mainTex;   // a1[51] (mesh+204) : texture par défaut (cas non animé)
-    std::vector<EmitterTexHolder> extraTex;  // a1[66] (mesh+264) : 56·extraTexCount (cas animé)
+    EmitterTexHolder              mainTex;   // a1[51] (mesh+204) : default texture (non-animated case)
+    std::vector<EmitterTexHolder> extraTex;  // a1[66] (mesh+264) : 56·extraTexCount (animated case)
 
     EmitterGpuMesh() = default;
     EmitterGpuMesh(EmitterGpuMesh&&) noexcept = default;
@@ -129,7 +127,7 @@ struct EmitterGpuMesh {
     EmitterGpuMesh& operator=(const EmitterGpuMesh&) = delete;
 };
 
-// Représentation GPU d'un conteneur .MOBJECT2 entier (array de meshes).
+// GPU representation of an entire .MOBJECT2 container (array of meshes).
 struct EmitterGpuObject {
     std::vector<EmitterGpuMesh> meshes;
     bool ok = false;
@@ -141,37 +139,33 @@ struct EmitterGpuObject {
     EmitterGpuObject& operator=(const EmitterGpuObject&) = delete;
 };
 
-// ---------------------------------------------------------------------------------------------
-//  Paramètres de dessin — miroir EXACT des arguments de Mesh_DrawAnimatedFrame 0x430BE0.
-// ---------------------------------------------------------------------------------------------
+//  Draw parameters — EXACT mirror of Mesh_DrawAnimatedFrame 0x430BE0's arguments.
 struct EmitterMeshDrawArgs {
-    // Matrice monde (g_WorldMatrix 0x18C52D4). L'appelant la construit (Mesh_DrawInstancesLOD :
-    // Rz(z°)·Ry(y°)·Rx(x°)·T(pos)·S). Posée par SetTransform(D3DTS_WORLD) et utilisée pour l'ancre billboard.
+    // World matrix (g_WorldMatrix 0x18C52D4). Built by the caller (Mesh_DrawInstancesLOD:
+    // Rz(z°)·Ry(y°)·Rx(x°)·T(pos)·S). Set by SetTransform(D3DTS_WORLD) and used for the billboard anchor.
     D3DXMATRIX world;
 
-    float   frame     = 0.0f; // a5 : index de frame (tronqué par ftol → v51)
-    int     pass      = 1;    // a4 : ==1 ⇒ blendMode 0/1 ; !=1 ⇒ blendMode 2 (2 passes : opaque puis additif)
-    float   lodFactor = 1.0f; // a6 : >=1.0 ⇒ LOD max (subset 0) ; sinon sélection par nb de faces
-    float   timePhase = 0.0f; // a7 : phase ajoutée au timer (v50 = tempsÉcoulé + a7)
-    uint8_t alpha     = 255;  // eax : octet d'alpha (v7) — module TEXTUREFACTOR / alpha additif
+    float   frame     = 0.0f; // a5 : frame index (truncated by ftol -> v51)
+    int     pass      = 1;    // a4 : ==1 => blendMode 0/1 ; !=1 => blendMode 2 (2 passes: opaque then additive)
+    float   lodFactor = 1.0f; // a6 : >=1.0 => max LOD (subset 0) ; else selection by face count
+    float   timePhase = 0.0f; // a7 : phase added to the timer (v50 = elapsedTime + a7)
+    uint8_t alpha     = 255;  // eax : alpha byte (v7) — modulates TEXTUREFACTOR / additive alpha
 
-    // ecx (a2) : holder de texture d'override. nullptr ⇒ utilise la texture du mesh (mainTex/extraTex).
+    // ecx (a2): override texture holder. nullptr => uses the mesh's texture (mainTex/extraTex).
     const EmitterTexHolder* overrideTex = nullptr;
 
-    // Base caméra du billboard (flt_18C5264 pour axisMode==1, unk_18C52BC sinon) : right.xyz + up.xyz.
-    // Autonome : l'appelant fournit ces axes depuis sa caméra. Repli identité (right=X, up=Y) =
-    // quad aligné-monde (visible mais non face-caméra) — documenté, jamais inventé.
+    // Billboard camera basis (flt_18C5264 for axisMode==1, unk_18C52BC otherwise): right.xyz + up.xyz.
+    // Standalone: the caller supplies these axes from its camera. Identity fallback (right=X, up=Y) =
+    // world-aligned quad (visible but not camera-facing) — documented, never invented.
     float billboardBasisAxis1[6] = {1.f, 0.f, 0.f,  0.f, 1.f, 0.f};
     float billboardBasisOther[6] = {1.f, 0.f, 0.f,  0.f, 1.f, 0.f};
 
-    // Ambient de scène pour le chemin glow « reset » (GXD_SetDirectionalLight mode 1, source
-    // a1+1124.. du singleton GXD absent en autonome). Repli blanc. N'affecte que glowEnable!=1.
+    // Scene ambient for the "reset" glow path (GXD_SetDirectionalLight mode 1, source
+    // a1+1124.. of the GXD singleton, absent standalone). White fallback. Only affects glowEnable!=1.
     float sceneAmbient[3] = {1.f, 1.f, 1.f};
 };
 
-// ---------------------------------------------------------------------------------------------
-//  EmitterMeshRenderer — cache + dessin. Autonome (device fourni par l'appelant).
-// ---------------------------------------------------------------------------------------------
+//  EmitterMeshRenderer — cache + drawing. Standalone (device supplied by the caller).
 class EmitterMeshRenderer {
 public:
     EmitterMeshRenderer() = default;
@@ -179,42 +173,42 @@ public:
     EmitterMeshRenderer(const EmitterMeshRenderer&) = delete;
     EmitterMeshRenderer& operator=(const EmitterMeshRenderer&) = delete;
 
-    // Upload d'un conteneur .MOBJECT2 déjà parsé (asset::Mobject2) vers un objet GPU autonome.
-    // VB/IB (MANAGED) + textures (GpuTexture, MANAGED). Renvoie false si `dev` nul (out.ok=false).
-    // Un mesh vide (type==0) est conservé mais marqué invalid (non dessiné) — parité avec le binaire.
+    // Uploads an already-parsed .MOBJECT2 container (asset::Mobject2) to a standalone GPU object.
+    // VB/IB (MANAGED) + textures (GpuTexture, MANAGED). Returns false if `dev` is null (out.ok=false).
+    // An empty mesh (type==0) is kept but marked invalid (not drawn) — parity with the binary.
     bool Upload(IDirect3DDevice9* dev, const asset::Mobject2& src, EmitterGpuObject& out) const;
 
-    // Cache paresseux par chemin : parse (asset::Mobject2::Load) + Upload au 1er accès.
-    // Renvoie nullptr si device nul, parse échoué (mémorisé), ou upload échoué. Propriété = ce cache.
+    // Lazy cache by path: parse (asset::Mobject2::Load) + Upload on first access.
+    // Returns nullptr if device null, parse failed (memoized), or upload failed. Owned by this cache.
     EmitterGpuObject* GetOrLoad(IDirect3DDevice9* dev, const std::string& path);
     void ReleaseCache();
     size_t ResidentCount() const { return cache_.size(); }
 
-    // D3DPOOL_MANAGED : rien à recréer après Reset(). No-op documenté (symétrie avec les autres renderers).
+    // D3DPOOL_MANAGED: nothing to recreate after Reset(). Documented no-op (symmetric with the other renderers).
     void OnDeviceLost()  {}
     void OnDeviceReset() {}
 
-    // Dessine UN mesh (miroir byte-exact de Mesh_DrawAnimatedFrame 0x430BE0). `dev` = device courant.
+    // Draws ONE mesh (byte-exact mirror of Mesh_DrawAnimatedFrame 0x430BE0). `dev` = current device.
     void DrawMesh(IDirect3DDevice9* dev, const EmitterGpuMesh& mesh, const EmitterMeshDrawArgs& args);
 
-    // Dessine tous les meshes valides d'un objet (mêmes args). Les meshes vides sont ignorés.
+    // Draws all valid meshes of an object (same args). Empty meshes are skipped.
     void DrawObject(IDirect3DDevice9* dev, const EmitterGpuObject& obj, const EmitterMeshDrawArgs& args);
 
 private:
-    // Timer QPC (dbl_18C4F80 freq / dbl_18C4F88 start). Initialisé paresseusement au 1er dessin.
-    // v50 = (compteur - start)/freq + phase  (= secondes écoulées + phase).
+    // QPC timer (dbl_18C4F80 freq / dbl_18C4F88 start). Lazily initialized on the first draw.
+    // v50 = (count - start)/freq + phase  (= elapsed seconds + phase).
     double ElapsedSeconds() const;
 
-    // Upload d'un seul mesh (helper de Upload). `dev` non nul garanti par l'appelant.
+    // Uploads a single mesh (helper for Upload). `dev` non-null guaranteed by the caller.
     bool uploadMesh(IDirect3DDevice9* dev, const asset::Mobject2Mesh& src, EmitterGpuMesh& out) const;
     static bool uploadTexture(IDirect3DDevice9* dev, const asset::SObjectTexture& src, EmitterTexHolder& out);
 
     mutable bool           timerInit_  = false;
     mutable long long      freq_       = 0; // QueryPerformanceFrequency
-    mutable long long      startCount_ = 0; // QueryPerformanceCounter au 1er dessin
+    mutable long long      startCount_ = 0; // QueryPerformanceCounter on the first draw
 
-    std::unordered_map<std::string, EmitterGpuObject> cache_;      // clé = chemin
-    std::unordered_map<std::string, bool>             loadFailed_; // parse/upload échoués (ne pas retenter)
+    std::unordered_map<std::string, EmitterGpuObject> cache_;      // key = path
+    std::unordered_map<std::string, bool>             loadFailed_; // failed parse/upload (do not retry)
 };
 
 } // namespace ts2::gfx

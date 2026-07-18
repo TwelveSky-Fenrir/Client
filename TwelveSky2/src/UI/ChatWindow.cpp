@@ -1,22 +1,22 @@
-// UI/ChatWindow.cpp - implementation du chat & de la liste systeme.
+// UI/ChatWindow.cpp - implementation of chat & the system message list.
 //
-// Ordre d'inclusion : Net/ EN PREMIER (NetClient.h tire <winsock2.h> avant
-// <windows.h>), puis Gfx/ (qui tire <windows.h>/<d3d9.h>/<d3dx9.h>), enfin le
-// header du module. Respecte la convention Winsock du projet.
-#include "Net/SendPackets.h"   // -> Net/NetClient.h : winsock2 puis windows (ordre sur)
+// Include order: Net/ FIRST (NetClient.h pulls <winsock2.h> before
+// <windows.h>), then Gfx/ (which pulls <windows.h>/<d3d9.h>/<d3dx9.h>), finally
+// the module header. Follows the project's Winsock convention.
+#include "Net/SendPackets.h"   // -> Net/NetClient.h: winsock2 then windows (safe order)
 #include "Net/NetClient.h"
 #include "Gfx/SpriteBatch.h"
 #include "Gfx/Font.h"
 #include "UI/ChatWindow.h"
-#include "Game/ClientRuntime.h"   // game::MessageLog/MsgKind (SyncFromMessageLog) : pas de windows.h, inclusion sure ici
-#include "Game/StringTables.h"    // game::g_Strings.colors (palette mFONTCOLOR) : std lib seulement, sur apres Net/
+#include "Game/ClientRuntime.h"   // game::MessageLog/MsgKind (SyncFromMessageLog): no windows.h, safe to include here
+#include "Game/StringTables.h"    // game::g_Strings.colors (mFONTCOLOR palette): std lib only, safe after Net/
 
 #include <algorithm>
 #include <cstring>
 
 namespace ts2::ui {
 
-// Onglets de canal (§13b, EA 0x683B71) : x = +3,+80,+157,+234,+311.
+// Channel tabs (§13b, EA 0x683B71): x = +3,+80,+157,+234,+311.
 const ChatWindow::TabInfo ChatWindow::kTabs[ChatWindow::kTabCount] = {
     { ChatChannel::Party,   "Groupe",    3   },
     { ChatChannel::Whisper, "Chuchoter", 80  },
@@ -32,21 +32,22 @@ ChatWindow::~ChatWindow() {
 }
 
 // -----------------------------------------------------------------------------
-// Correspondances canal -> couleur. Lit la palette REELLE mFONTCOLOR
-// (ColorTable_InitPalette 0x4C1D60) via game::g_Strings.colors : le binaire stocke
-// l'index de canal dans la ligne de chat (Msg_AppendChatLine 0x68DB50) et le resout
-// au DESSIN via ColorTable_GetColor 0x4C1FE0 ; on resout ici a l'emission (meme pixel).
-// Normal/Alliance n'ont aucun index prouve dans 0x4C1D60 -> repli local documente.
+// Channel -> color mapping. Reads the REAL mFONTCOLOR palette
+// (ColorTable_InitPalette 0x4C1D60) via game::g_Strings.colors: the binary stores
+// the channel index in the chat line (Msg_AppendChatLine 0x68DB50) and resolves it
+// at DRAW time via ColorTable_GetColor 0x4C1FE0; here we resolve it at emission time
+// (same pixel result). Normal/Alliance have no proven index in 0x4C1D60 -> documented
+// local fallback.
 Color ChatWindow::ChannelColor(ChatChannel ch) {
-    const game::ColorPalette& pal = game::g_Strings.colors; // instance mFONTCOLOR 0x84DF20
+    const game::ColorPalette& pal = game::g_Strings.colors; // mFONTCOLOR instance 0x84DF20
     switch (ch) {
         case ChatChannel::Whisper:  return pal.WhisperColor(); // g_ChatColor_Whisper 0x84DFDC idx1  (0x4C1FE0)
         case ChatChannel::Party:    return pal.PartyColor();   // g_ChatColor_Party   0x84DFE0 idx40 (0x4C1FE0)
         case ChatChannel::Guild:    return pal.GuildColor();   // g_ChatColor_Guild   0x84DFE8 idx36 (0x4C1FE0)
         case ChatChannel::Faction:  return pal.FactionColor(); // g_ChatColor_Faction 0x84DFEC idx37 (0x4C1FE0)
         case ChatChannel::Trade:    return pal.TradeColor();   // g_ChatColor_Trade   0x84DFF0 idx38 (0x4C1FE0)
-        case ChatChannel::Alliance: return kColorAlliance;     // repli : aucun index prouve (0x4C1D60)
-        case ChatChannel::Normal:   return kColorNormal;       // repli : Op80 "dire" local sans index (0x4C1D60)
+        case ChatChannel::Alliance: return kColorAlliance;     // fallback: no proven index (0x4C1D60)
+        case ChatChannel::Normal:   return kColorNormal;       // fallback: local Op80 "say" with no index (0x4C1D60)
     }
     return kColorNormal;
 }
@@ -65,7 +66,7 @@ const char* ChatWindow::ChannelPrefix(ChatChannel ch) {
 }
 
 // -----------------------------------------------------------------------------
-// Anneaux (Msg_AppendChatLine / Msg_AppendSystemLine : capacite 300, purge FIFO).
+// Rings (Msg_AppendChatLine / Msg_AppendSystemLine: capacity 300, FIFO eviction).
 void ChatWindow::PushChat(ChatLine&& l) {
     chat_.push_back(std::move(l));
     if (static_cast<int>(chat_.size()) > kMaxLines) chat_.pop_front();
@@ -82,8 +83,8 @@ void ChatWindow::AddLine(const std::string& text, Color color, const std::string
 
 void ChatWindow::AddChannelLine(ChatChannel ch, const std::string& sender, const std::string& body) {
     AddLine(body, ChannelColor(ch), sender);
-    // §13b : badge "non lu" (this+620..636) si le message arrive sur un onglet
-    // qui n'est pas l'onglet actif courant.
+    // §13b: "unread" badge (this+620..636) if the message arrives on a tab
+    // that isn't the currently active one.
     const int idx = TabIndexForChannel(ch);
     if (idx >= 0 && ch != channel_) unread_[static_cast<size_t>(idx)] = true;
 }
@@ -93,7 +94,7 @@ void ChatWindow::AddSystemLine(const std::string& text, Color color) {
 }
 
 // -----------------------------------------------------------------------------
-// Onglets de canal (§13b) : correspondance canal -> index d'onglet, selection.
+// Channel tabs (§13b): channel -> tab index mapping, selection.
 int ChatWindow::TabIndexForChannel(ChatChannel ch) const {
     for (int i = 0; i < kTabCount; ++i) {
         if (kTabs[i].channel == ch) return i;
@@ -108,7 +109,7 @@ void ChatWindow::SelectTab(int idx) {
 }
 
 bool ChatWindow::OnMouseDown(int x, int y) {
-    const int tabsY = screenH_ - 40; // doit rester en phase avec Render()
+    const int tabsY = screenH_ - 40; // must stay in sync with Render()
     for (int i = 0; i < kTabCount; ++i) {
         const int tx = originX_ + kTabs[i].xOffset;
         if (x >= tx && x < tx + kTabWidth && y >= tabsY && y < tabsY + kTabHeight) {
@@ -119,19 +120,19 @@ bool ChatWindow::OnMouseDown(int x, int y) {
     return false;
 }
 
-// §13d : 8 badges de notification generiques (this+128..+160, pas 4).
+// §13d: 8 generic notification badges (this+128..+160, not 4).
 void ChatWindow::SetNotificationBadge(int idx, bool on) {
     if (idx < 0 || idx >= static_cast<int>(notif_.size())) return;
     notif_[static_cast<size_t>(idx)] = on;
 }
 
 // -----------------------------------------------------------------------------
-// Alimentation depuis game::g_Client.msg (Msg_AppendSystemLine/Msg_AppendChatLine
-// reels, deja pousses par les handlers reseau/gameplay -- cf. Game/ClientRuntime.h
-// et SceneManager.cpp::AppendKeepAliveFailedMessage). Ne republie que les lignes
-// ajoutees depuis le dernier appel : recherche la derniere ligne deja consommee
-// en repartant de la fin (survit a l'eviction FIFO cote source, kMaxLines=256,
-// qui peut differer du kMaxLines=300 local).
+// Feed from game::g_Client.msg (real Msg_AppendSystemLine/Msg_AppendChatLine,
+// already pushed by network/gameplay handlers -- cf. Game/ClientRuntime.h
+// and SceneManager.cpp::AppendKeepAliveFailedMessage). Only republishes lines
+// added since the last call: searches for the last already-consumed line
+// starting from the end (survives FIFO eviction on the source side, kMaxLines=256,
+// which may differ from the local kMaxLines=300).
 void ChatWindow::SyncFromMessageLog(const game::MessageLog& log) {
     const auto& lines = log.Lines();
     if (lines.empty()) return;
@@ -148,7 +149,7 @@ void ChatWindow::SyncFromMessageLog(const game::MessageLog& log) {
                 break;
             }
         }
-        if (!found) startIdx = 0; // ligne reperee evincee -> republie tout (best effort)
+        if (!found) startIdx = 0; // tracked line evicted -> republish everything (best effort)
     }
 
     for (size_t i = startIdx; i < lines.size(); ++i) {
@@ -175,20 +176,20 @@ void ChatWindow::SyncFromMessageLog(const game::MessageLog& log) {
                 }
                 break;
             case game::MsgKind::Floating:
-                // HUD_ShowFloatingMessage 0x5AEEC0 : arme le slot `floatType` (0..12 ;
-                // garde signee @0x5AEECD/@0x5AEED3 rejouee par Show, donc une valeur hors
-                // bornes est ignoree silencieusement comme dans l'original @0x5AEED5).
-                // Les producteurs vivants emettent 0,1,2,3,5,10 (Net/WorldEntityDispatch.cpp,
+                // HUD_ShowFloatingMessage 0x5AEEC0: arms the `floatType` slot (0..12;
+                // signed guard @0x5AEECD/@0x5AEED3 replayed by Show, so an out-of-range
+                // value is silently ignored just like the original @0x5AEED5).
+                // Live producers emit 0,1,2,3,5,10 (Net/WorldEntityDispatch.cpp,
                 // Net/GameVarDispatch.cpp, Net/GameHandlers_*.cpp).
                 //
-                // TODO [ancre 0x5AEF7A] : le `subType` (arg_4) est passe a 0. Il ne sert
-                // QU'A choisir le son (sous-switch @0x5AEFF5..) — sans effet sur le rendu —
-                // et game::MessageLine ne le transporte pas : MessageLog::Floating
-                // (Game/ClientRuntime.cpp L36) jette deja son parametre `flag` via
-                // `int /*flag*/`. A recabler quand le son sera porte.
-                // TODO [ancre 0x5AEF26] : `text2` (2e ligne, lue par le seul type 12
-                // @0x5AFCFF) est absent de game::MessageLine. Sans effet observable : aucun
-                // producteur de type 12 cote ClientSource.
+                // TODO [anchor 0x5AEF7A]: `subType` (arg_4) is passed as 0. It ONLY
+                // selects the sound (sub-switch @0x5AEFF5..) — no effect on rendering —
+                // and game::MessageLine doesn't carry it: MessageLog::Floating
+                // (Game/ClientRuntime.cpp L36) already discards its `flag` parameter via
+                // `int /*flag*/`. Rewire once the sound is ported.
+                // TODO [anchor 0x5AEF26]: `text2` (2nd line, read only by type 12
+                // @0x5AFCFF) is absent from game::MessageLine. No observable effect: no
+                // type-12 producer on the ClientSource side.
                 notices_.Show(l.floatType, 0, l.text);
                 break;
             default:
@@ -204,8 +205,8 @@ void ChatWindow::SyncFromMessageLog(const game::MessageLog& log) {
 }
 
 // -----------------------------------------------------------------------------
-// Rect plein (texture blanche 1x1 paresseuse, memes mecaniques que
-// UI/GameHud.cpp::CreateWhiteTexture, sans dependre de gfx::Renderer ici).
+// Solid rect (lazy 1x1 white texture, same mechanics as
+// UI/GameHud.cpp::CreateWhiteTexture, without depending on gfx::Renderer here).
 IDirect3DTexture9* ChatWindow::EnsureWhiteTexture(gfx::SpriteBatch& sprites) {
     if (whiteTex_) return whiteTex_;
     ID3DXSprite* spr = sprites.Get();
@@ -235,18 +236,18 @@ void ChatWindow::DrawFilledRect(gfx::SpriteBatch& sprites, int x, int y, int w, 
                              color, /*compensatePos=*/true);
 }
 
-// Passe "panneaux" (dans sprites.Begin()/End()) : fonds d'onglets + badges.
+// "Panels" pass (inside sprites.Begin()/End()): tab backgrounds + badges.
 void ChatWindow::RenderTabPanels(gfx::SpriteBatch& sprites, int tabsY, int badgesY) {
     if (!EnsureWhiteTexture(sprites)) return;
 
-    // §13d : 8 badges de notification generiques, empiles horizontalement.
+    // §13d: 8 generic notification badges, stacked horizontally.
     for (int i = 0; i < static_cast<int>(notif_.size()); ++i) {
         const int bx = originX_ + i * 14;
         const Color c = notif_[static_cast<size_t>(i)] ? 0xFFFFC020u : 0x40606060u;
         DrawFilledRect(sprites, bx, badgesY, 10, 10, c);
     }
 
-    // §13b : fonds des 5 onglets de canal + pastille "non lu".
+    // §13b: backgrounds of the 5 channel tabs + "unread" dot.
     for (int i = 0; i < kTabCount; ++i) {
         const TabInfo& t = kTabs[i];
         const int tx = originX_ + t.xOffset;
@@ -259,7 +260,7 @@ void ChatWindow::RenderTabPanels(gfx::SpriteBatch& sprites, int tabsY, int badge
     }
 }
 
-// Passe "texte" (dans font.BeginBatch()/EndBatch()) : libelles des onglets.
+// "Text" pass (inside font.BeginBatch()/EndBatch()): tab labels.
 void ChatWindow::RenderTabLabels(gfx::Font& font, int tabsY) {
     for (int i = 0; i < kTabCount; ++i) {
         const TabInfo& t = kTabs[i];
@@ -271,14 +272,14 @@ void ChatWindow::RenderTabLabels(gfx::Font& font, int tabsY) {
 }
 
 // -----------------------------------------------------------------------------
-// Filtre de mots bannis (maybe_Dict001_MatchWord 0x4C1410) via hook injectable.
+// Banned word filter (maybe_Dict001_MatchWord 0x4C1410) via injectable hook.
 bool ChatWindow::Banned(const std::string& s) const {
     return wordFilter_ && wordFilter_(s.c_str());
 }
 
 // -----------------------------------------------------------------------------
-// Emission : construit un payload 61 o (NUL-rempli) et route vers le bon builder
-// Net_Send* (voir Net/SendPackets.h). Whisper ajoute une cible 13 o.
+// Emission: builds a 61-byte payload (NUL-padded) and routes to the right
+// Net_Send* builder (see Net/SendPackets.h). Whisper adds a 13-byte target.
 void ChatWindow::SendOnChannel(ChatChannel ch, const std::string& body) {
     if (!net_) return;
 
@@ -291,7 +292,7 @@ void ChatWindow::SendOnChannel(ChatChannel ch, const std::string& body) {
             char target[kNameLen] = {};
             const size_t tn = std::min(whisperTarget_.size(), static_cast<size_t>(kNameLen - 1));
             std::memcpy(target, whisperTarget_.data(), tn);
-            net::Net_SendOp39(*net_, target, msg);   // 0x27 nom + message
+            net::Net_SendOp39(*net_, target, msg);   // 0x27 name + message
             break;
         }
         case ChatChannel::Party:    net::Net_SendOp38(*net_, msg); break; // 0x26
@@ -299,12 +300,12 @@ void ChatWindow::SendOnChannel(ChatChannel ch, const std::string& body) {
         case ChatChannel::Guild:    net::Net_SendOp77(*net_, msg); break; // 0x4d
         case ChatChannel::Trade:    net::Net_SendOp81(*net_, msg); break; // 0x51
         case ChatChannel::Faction:  net::Net_SendOp40(*net_, msg); break; // 0x28
-        case ChatChannel::Normal:   net::Net_SendOp80(*net_, msg); break; // 0x50 (dire)
+        case ChatChannel::Normal:   net::Net_SendOp80(*net_, msg); break; // 0x50 (say)
     }
 }
 
 // -----------------------------------------------------------------------------
-// UI_Chat_SubmitInput 0x68B330 : prefixe puis routage par canal.
+// UI_Chat_SubmitInput 0x68B330: prefix then routing by channel.
 void ChatWindow::Submit() {
     if (input_.empty()) return;
 
@@ -312,7 +313,7 @@ void ChatWindow::Submit() {
     input_.clear();
     caret_ = 0;
 
-    // Detection du prefixe de canal (! guilde / # faction / @ commerce / ~ alliance).
+    // Channel prefix detection (! guild / # faction / @ trade / ~ alliance).
     ChatChannel prefixCh = channel_;
     bool hasPrefix = true;
     switch (text[0]) {
@@ -324,9 +325,9 @@ void ChatWindow::Submit() {
     }
 
     const std::string body = hasPrefix ? text.substr(1) : text;
-    if (hasPrefix && body.empty()) return; // "!" seul : rien a envoyer (v36[0]==0)
+    if (hasPrefix && body.empty()) return; // "!" alone: nothing to send (v36[0]==0)
 
-    // Filtre de mots bannis -> ligne systeme (StrTable005 id 112 dans l'original).
+    // Banned word filter -> system line (StrTable005 id 112 in the original).
     if (Banned(body)) {
         AddSystemLine("Message bloque (mot filtre).", kColorSystem);
         return;
@@ -340,12 +341,12 @@ void ChatWindow::Submit() {
     }
 
     SendOnChannel(ch, body);
-    // Echo local (le serveur renvoie normalement la ligne ; utile hors-ligne).
+    // Local echo (the server normally echoes the line back; useful offline).
     AddChannelLine(ch, "moi", body);
 }
 
 // -----------------------------------------------------------------------------
-// Chat_SubmitTypedMessage 0x5C3CF0 : boite " dire " simple -> Op80.
+// Chat_SubmitTypedMessage 0x5C3CF0: simple "say" box -> Op80.
 void ChatWindow::SubmitSay() {
     if (input_.empty()) return;
     const std::string body = input_;
@@ -361,7 +362,7 @@ void ChatWindow::SubmitSay() {
 }
 
 // -----------------------------------------------------------------------------
-// Canal / cible.
+// Channel / target.
 void ChatWindow::CycleChannel() {
     static const ChatChannel kOrder[] = {
         ChatChannel::Normal, ChatChannel::Party, ChatChannel::Guild,
@@ -382,14 +383,14 @@ void ChatWindow::SetWhisperTarget(const std::string& name) {
 }
 
 // -----------------------------------------------------------------------------
-// Saisie clavier. Codes VK Win32 (evite d'inclure windows.h pour ces constantes).
+// Keyboard input. Win32 VK codes (avoids including windows.h for these constants).
 namespace {
 constexpr int kVK_BACK   = 0x08;
 constexpr int kVK_TAB    = 0x09;
 constexpr int kVK_RETURN = 0x0D;
 constexpr int kVK_ESCAPE = 0x1B;
-constexpr int kVK_PRIOR  = 0x21; // Page precedente
-constexpr int kVK_NEXT   = 0x22; // Page suivante
+constexpr int kVK_PRIOR  = 0x21; // Page Up
+constexpr int kVK_NEXT   = 0x22; // Page Down
 constexpr int kVK_END    = 0x23;
 constexpr int kVK_HOME   = 0x24;
 constexpr int kVK_LEFT   = 0x25;
@@ -397,19 +398,19 @@ constexpr int kVK_RIGHT  = 0x27;
 constexpr int kVK_DELETE = 0x2E;
 } // namespace
 
-// TODO [ancre 0x461930 / SceneManager.cpp L904/L908] : routage clavier InGame NON
-// cable (mission W4-F2). OnChar/OnKey ci-dessous sont complets et fideles (Entree ->
-// UI_Chat_FocusInput 0x68B200 / UI_Chat_SubmitInput 0x68B330, Echap/Backspace/fleches/
-// Tab/PageUp-Down, insertion caret) mais RIEN ne les appelle en scene monde :
-// Scene/SceneManager.cpp::OnChar (L904) et OnKeyDown (L908) ne dispatchent qu'a login_
-// (scene Login/CharSelect). Maillon manquant (fichier NON possede par ce front) : ajouter,
-// sous scene_==Scene::World, hud_->Chat().OnChar(c) / hud_->Chat().OnKey(vk) (accessor
-// GameHud::Chat() deja expose, GameHud.h L166). Source WM_CHAR/WM_KEYDOWN = App_WndProc
-// 0x461930 -> App.cpp -> SceneManager (non possedes). Idem Chat().Bind(net::NetClient*)
-// (ChatWindow.h L120) a appeler depuis SceneManager pour activer l'envoi reseau.
+// TODO [anchor 0x461930 / SceneManager.cpp L904/L908]: InGame keyboard routing NOT
+// wired (mission W4-F2). OnChar/OnKey below are complete and faithful (Enter ->
+// UI_Chat_FocusInput 0x68B200 / UI_Chat_SubmitInput 0x68B330, Escape/Backspace/arrows/
+// Tab/PageUp-Down, caret insertion) but NOTHING calls them in the world scene:
+// Scene/SceneManager.cpp::OnChar (L904) and OnKeyDown (L908) only dispatch to login_
+// (Login/CharSelect scene). Missing link (file NOT owned by this front-end): add,
+// under scene_==Scene::World, hud_->Chat().OnChar(c) / hud_->Chat().OnKey(vk) (accessor
+// GameHud::Chat() already exposed, GameHud.h L166). WM_CHAR/WM_KEYDOWN source = App_WndProc
+// 0x461930 -> App.cpp -> SceneManager (not owned). Same for Chat().Bind(net::NetClient*)
+// (ChatWindow.h L120) to be called from SceneManager to enable network sending.
 bool ChatWindow::OnKey(int vk) {
-    // Entree : ouvre la saisie (App_WndProc WM_KEYDOWN VK_RETURN -> UI_Chat_FocusInput),
-    // ou soumet puis referme.
+    // Enter: opens the input (App_WndProc WM_KEYDOWN VK_RETURN -> UI_Chat_FocusInput),
+    // or submits then closes.
     if (vk == kVK_RETURN) {
         if (!focused_) { Focus(); }
         else { Submit(); Unfocus(); }
@@ -417,13 +418,13 @@ bool ChatWindow::OnKey(int vk) {
     }
 
     if (!focused_) {
-        // Hors saisie : seul le defilement du journal est capture.
+        // Out of input mode: only log scrolling is captured.
         if (vk == kVK_PRIOR) { ++scroll_; return true; }
         if (vk == kVK_NEXT)  { if (scroll_ > 0) --scroll_; return true; }
-        return false; // le reste part au jeu / DirectInput
+        return false; // everything else goes to the game / DirectInput
     }
 
-    // En saisie : on capture tout (indicateur " texte en cours ", focusIndex != 0).
+    // While typing: capture everything (indicator "text in progress", focusIndex != 0).
     const int len = static_cast<int>(input_.size());
     switch (vk) {
         case kVK_ESCAPE: input_.clear(); Unfocus(); break;
@@ -436,14 +437,14 @@ bool ChatWindow::OnKey(int vk) {
         case kVK_TAB:    CycleChannel(); break;
         case kVK_PRIOR:  ++scroll_; break;
         case kVK_NEXT:   if (scroll_ > 0) --scroll_; break;
-        default: break; // touche capturee sans effet
+        default: break; // key captured with no effect
     }
     return true;
 }
 
 bool ChatWindow::OnChar(char c) {
     if (!focused_) return false;
-    // Caracteres de controle (Entree/Retour/Echap) geres par OnKey.
+    // Control characters (Enter/Backspace/Escape) handled by OnKey.
     const unsigned char uc = static_cast<unsigned char>(c);
     if (uc < 32 || uc == 127) return true;
     if (static_cast<int>(input_.size()) >= kInputLimit) return true;
@@ -453,19 +454,19 @@ bool ChatWindow::OnChar(char c) {
 }
 
 // -----------------------------------------------------------------------------
-// Rendu : fond (SpriteBatch) + onglets/badges, puis liste systeme + journal +
-// onglets(texte) + saisie (Font). Empilement vertical bas d'ecran (§13) :
-//   ... journal (empile vers le haut, bottomY=screenH-64) ...
-//   badgesY = screenH-54  (§13d, 8 badges de notification)
-//   tabsY   = screenH-40  (§13b, 5 onglets de canal)
-//   inputY  = screenH-20  (saisie)
+// Render: background (SpriteBatch) + tabs/badges, then system list + log +
+// tabs(text) + input (Font). Bottom-of-screen vertical stacking (§13):
+//   ... log (stacked upward, bottomY=screenH-64) ...
+//   badgesY = screenH-54  (§13d, 8 notification badges)
+//   tabsY   = screenH-40  (§13b, 5 channel tabs)
+//   inputY  = screenH-20  (input)
 void ChatWindow::Render(gfx::SpriteBatch& sprites, gfx::Font& font) {
-    // Notices flottantes du HUD (HUD_RenderFloatingMessages 0x5AF4C0) AVANT tout le
-    // reste : ordre fidele a UI_RenderAllDialogs 0x5AE2D0, qui appelle
-    // HUD_RenderFloatingMessages @0x5AE5A7 (this = dword_1821D58) PUIS
-    // UI_SysMsgList_Render 0x5AEC80 @0x5AE5B9 (this = dword_1822350, = la liste systeme
-    // dessinee plus bas). Composant autonome : gere ses propres passes sprite/police,
-    // d'ou l'appel hors des lots ouverts ci-dessous.
+    // HUD floating notices (HUD_RenderFloatingMessages 0x5AF4C0) BEFORE everything
+    // else: order faithful to UI_RenderAllDialogs 0x5AE2D0, which calls
+    // HUD_RenderFloatingMessages @0x5AE5A7 (this = dword_1821D58) THEN
+    // UI_SysMsgList_Render 0x5AEC80 @0x5AE5B9 (this = dword_1822350, = the system list
+    // drawn below). Standalone component: manages its own sprite/font passes,
+    // hence the call outside the batches opened below.
     notices_.Render(sprites, font, now_, screenW_, screenH_);
 
     const int total   = static_cast<int>(chat_.size());
@@ -477,8 +478,8 @@ void ChatWindow::Render(gfx::SpriteBatch& sprites, gfx::Font& font) {
     const int tabsY   = screenH_ - 40;
     const int inputY  = screenH_ - 20;
 
-    // Passe "panneaux" : fond optionnel (sprite d'UI deja uploade) + onglets +
-    // badges (rects pleins tant qu'aucune icone .IMG n'est resolue).
+    // "Panels" pass: optional background (UI sprite already uploaded) + tabs +
+    // badges (solid rects as long as no .IMG icon is resolved).
     if (sprites.Ready()) {
         sprites.Begin();
         if (bgTex_) sprites.DrawSprite(bgTex_, nullptr, bgX_, bgY_);
@@ -489,8 +490,8 @@ void ChatWindow::Render(gfx::SpriteBatch& sprites, gfx::Font& font) {
     if (!font.Ready()) return;
     font.BeginBatch();
 
-    // Liste des messages systeme (haut-gauche) : recentes d'abord, expiration 60 s
-    // hors focus (UI_SysMsgList_Render 0x5AEC80).
+    // System message list (top-left): most recent first, 60s expiry
+    // out of focus (UI_SysMsgList_Render 0x5AEC80).
     int sy = 64;
     int shownSys = 0;
     for (auto it = sys_.rbegin(); it != sys_.rend() && shownSys < 8; ++it) {
@@ -500,9 +501,9 @@ void ChatWindow::Render(gfx::SpriteBatch& sprites, gfx::Font& font) {
         ++shownSys;
     }
 
-    // Journal de chat (bas-gauche), empile vers le haut. scroll_ = lignes remontees.
+    // Chat log (bottom-left), stacked upward. scroll_ = lines scrolled back.
     const int bottomY = screenH_ - 64;
-    const int end   = total - scroll_;              // index exclusif du bas
+    const int end   = total - scroll_;              // exclusive bottom index
     const int start = std::max(0, end - visible);
     int y = bottomY - lineH_;
     for (int i = end - 1; i >= start; --i) {
@@ -513,11 +514,11 @@ void ChatWindow::Render(gfx::SpriteBatch& sprites, gfx::Font& font) {
         y -= lineH_;
     }
 
-    // Onglets de canal (libelles ; les fonds/badges sont deja passes en phase
-    // panneaux ci-dessus).
+    // Channel tabs (labels; backgrounds/badges were already drawn in the
+    // panels phase above).
     RenderTabLabels(font, tabsY);
 
-    // Ligne de saisie (si focus) : prefixe de canal + texte + caret clignotant.
+    // Input line (if focused): channel prefix + text + blinking caret.
     if (focused_) {
         const int iy = inputY;
         const char* prompt = ChannelPrefix(channel_);
@@ -525,7 +526,7 @@ void ChatWindow::Render(gfx::SpriteBatch& sprites, gfx::Font& font) {
         font.DrawTextStyled(prompt, originX_, iy, pc, gfx::kStyleOutline);
         const int px = originX_ + font.MeasureText(prompt) + 6;
         font.DrawTextStyled(input_.c_str(), px, iy, kColorNormal, gfx::kStyleOutline);
-        // Caret : " _ " a la position du curseur, clignote a 2 Hz.
+        // Caret: "_" at the cursor position, blinks at 2 Hz.
         if ((static_cast<int>(now_ * 2.0f) & 1) == 0) {
             const std::string left = input_.substr(0, static_cast<size_t>(caret_));
             const int cx = px + font.MeasureText(left.c_str());

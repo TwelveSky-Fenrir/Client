@@ -1,22 +1,22 @@
-// Asset/Mobject2.h — lecteur du conteneur .MOBJECT2 (array de meshes d'effet).
+// Asset/Mobject2.h — reader for the .MOBJECT2 container (array of effect meshes).
 //
-//   .MOBJECT2 -> struct Mobject2  (conteneur : magic "MOBJECT2" + tableau de meshes 268 o)
+//   .MOBJECT2 -> struct Mobject2  (container: magic "MOBJECT2" + array of 268-byte meshes)
 //
-// Format DISTINCT du .MOBJECT (parts 408 o, cf. Asset/Model.h MObject) : mesh 268 o,
-// sommet FVF 258 = D3DFVF_XYZ|TEX1 (20 o, SANS normale), textures au format SOBJECT 56 o
-// (Tex_ReadPacked 0x417740 — même struct que asset::SObjectTexture, réutilisée telle quelle).
+// Format DISTINCT from .MOBJECT (408-byte parts, cf. Asset/Model.h MObject): 268-byte mesh,
+// FVF 258 vertex = D3DFVF_XYZ|TEX1 (20 bytes, NO normal), textures in SOBJECT format 56 bytes
+// (Tex_ReadPacked 0x417740 — same struct as asset::SObjectTexture, reused as-is).
 //
-// Vivacité (xrefs_to Mesh_LoadMOBJECT2) : Model_LoadWO2_A/B (CODE MORT, 0 xref) + Emitter_ReadFile
-// 0x424D30 <- Effect_ReadStream 0x42A990 <- Effect_LoadFile 0x42A920 : le .MOBJECT2 est VIVANT
-// UNIQUEMENT via le système d'effets/emitters (meshes de particules). C'est pourquoi ce parseur
-// expose Parse(buffer, offset) : le conteneur est le plus souvent EMBARQUÉ dans un flux d'effet,
-// pas un fichier autonome. PARSER SEUL — aucun rendu, aucun upload GPU (cf. Docs/TS2_DEEP_MOBJECT.md §T5).
+// Liveness (xrefs_to Mesh_LoadMOBJECT2): Model_LoadWO2_A/B (DEAD CODE, 0 xrefs) + Emitter_ReadFile
+// 0x424D30 <- Effect_ReadStream 0x42A990 <- Effect_LoadFile 0x42A920: .MOBJECT2 is LIVE
+// ONLY via the effect/emitter system (particle meshes). This is why this parser
+// exposes Parse(buffer, offset): the container is most often EMBEDDED in an effect
+// stream, not a standalone file. PARSER ONLY — no rendering, no GPU upload (cf. Docs/TS2_DEEP_MOBJECT.md §T5).
 //
-// Loaders d'origine (vérité IDA, imagebase 0x400000, LECTURE SEULE le 2026-07-17) :
-//   Conteneur : Mesh_LoadMOBJECT2 0x4318C0  (magic + attribut + meshCount + array)
-//   Mesh      : Mesh_ReadFile     0x430470  (header 76 + N + tables 40·N/4·N + header 80 +
-//                                            subsets [VB 20·N·vc FVF 258 / IB 6·fc] + tex SOBJECT 56)
-//   Texture   : Tex_ReadPacked    0x417740  (imgSize/rawSize/packedSize/zlib + trailer 8 o)
+// Original loaders (IDA ground truth, imagebase 0x400000, READ-ONLY as of 2026-07-17):
+//   Container : Mesh_LoadMOBJECT2 0x4318C0  (magic + attribute + meshCount + array)
+//   Mesh      : Mesh_ReadFile     0x430470  (header 76 + N + tables 40*N/4*N + header 80 +
+//                                            subsets [VB 20*N*vc FVF 258 / IB 6*fc] + tex SOBJECT 56)
+//   Texture   : Tex_ReadPacked    0x417740  (imgSize/rawSize/packedSize/zlib + 8-byte trailer)
 //   Reset     : Mesh_ResetFields  0x430110
 #pragma once
 #include <cstddef>
@@ -24,82 +24,82 @@
 #include <string>
 #include <vector>
 
-#include "Asset/Model.h" // réutilise asset::SObjectTexture (format texture SOBJECT 56 o, Tex_ReadPacked)
+#include "Asset/Model.h" // reuses asset::SObjectTexture (SOBJECT texture format 56 bytes, Tex_ReadPacked)
 
 namespace ts2::asset {
 
-// Un "subset" de rendu d'un mesh MOBJECT2 (boucle par subset dans Mesh_ReadFile 0x430470).
-// Les tampons sont conservés bruts (octets) : destinés à un upload direct VB/IB D3D9 (axe rendu séparé).
+// A rendering "subset" of a MOBJECT2 mesh (per-subset loop in Mesh_ReadFile 0x430470).
+// Buffers are kept raw (bytes): meant for a direct D3D9 VB/IB upload (separate rendering axis).
 struct Mobject2Subset {
-    // FVF 258 = 0x102 = D3DFVF_XYZ | D3DFVF_TEX1 -> sommet 20 o (pos vec3 + uv vec2, SANS normale) —
-    // CreateVertexBuffer(..., FVF=258, ...) @0x430897. C'est la taille de sommet de BASE (N==1, cf. Mesh::n).
-    static constexpr size_t kVertexStrideBase = 20; // 20 o/sommet (FVF 258)
-    static constexpr size_t kFaceStride       = 6;  // IB : 6 o/face (3× u16), D3DFMT_INDEX16
+    // FVF 258 = 0x102 = D3DFVF_XYZ | D3DFVF_TEX1 -> 20-byte vertex (pos vec3 + uv vec2, NO normal) —
+    // CreateVertexBuffer(..., FVF=258, ...) @0x430897. This is the BASE vertex size (N==1, cf. Mesh::n).
+    static constexpr size_t kVertexStrideBase = 20; // 20 bytes/vertex (FVF 258)
+    static constexpr size_t kFaceStride       = 6;  // IB: 6 bytes/face (3x u16), D3DFMT_INDEX16
 
-    uint32_t vertexCount = 0;           // u32 lu -> a1[45][i]   @0x43079d
-    uint32_t faceCount   = 0;           // u32 lu -> a1[48][i]   @0x430928
-    // VB : taille disque = 20 * N * vertexCount octets (N = Mobject2Mesh::n).
-    //   @0x4307c1 (chemin CPU mode1 : v47 = 20 * a1[21] * vertexCount)
-    //   @0x430897 (chemin GXD       : CreateVertexBuffer(20 * a1[21] * vertexCount, FVF=258))
-    // Le multiplicateur `20·N` est byte-exact. SÉMANTIQUE DE N RÉSOLUE (B4, 2026-07-17) : N = nombre de
-    //   FRAMES du flipbook, prouvé par Mesh_DrawAnimatedFrame 0x430BE0 (offset VB de la frame f =
-    //   20·f·vertexCount @0x431520 ; bloc bbox = 40·f @0x431207). N==1 dégénère en mesh statique. La
-    //   lecture ci-dessous reste byte-exacte quel que soit N.
-    std::vector<uint8_t> vertexBuffer;  // 20 * N * vertexCount o (N frames, stride sommet 20 o)
-    std::vector<uint8_t> indexBuffer;   // 6 * faceCount o        @0x430942 (CPU) / @0x430a03 (GXD)
+    uint32_t vertexCount = 0;           // u32 read -> a1[45][i]   @0x43079d
+    uint32_t faceCount   = 0;           // u32 read -> a1[48][i]   @0x430928
+    // VB: on-disk size = 20 * N * vertexCount bytes (N = Mobject2Mesh::n).
+    //   @0x4307c1 (CPU path mode1: v47 = 20 * a1[21] * vertexCount)
+    //   @0x430897 (GXD path       : CreateVertexBuffer(20 * a1[21] * vertexCount, FVF=258))
+    // The `20*N` multiplier is byte-exact. SEMANTICS OF N RESOLVED (B4, 2026-07-17): N = number of
+    //   flipbook FRAMES, proven by Mesh_DrawAnimatedFrame 0x430BE0 (VB offset of frame f =
+    //   20*f*vertexCount @0x431520; bbox block = 40*f @0x431207). N==1 degenerates to a static mesh.
+    //   The read below stays byte-exact regardless of N.
+    std::vector<uint8_t> vertexBuffer;  // 20 * N * vertexCount bytes (N frames, 20-byte vertex stride)
+    std::vector<uint8_t> indexBuffer;   // 6 * faceCount bytes    @0x430942 (CPU) / @0x430a03 (GXD)
 };
 
-// Un mesh du conteneur MOBJECT2 (Mesh_ReadFile 0x430470), stride 268 o (67 dwords).
-// Champs pointeurs runtime (a1[22/23/45..50/66]) NON stockés : ce sont des heaps alloués au load,
-// leurs *contenus disque* sont capturés ici (boneTable/table4/subsets/extraTex).
+// A mesh of the MOBJECT2 container (Mesh_ReadFile 0x430470), stride 268 bytes (67 dwords).
+// Runtime pointer fields (a1[22/23/45..50/66]) NOT stored: these are heaps allocated at load
+// time, their *on-disk contents* are captured here (boneTable/table4/subsets/extraTex).
 struct Mobject2Mesh {
-    static constexpr size_t kStride       = 268; // 268 o par mesh (alloc 268*meshCount @0x4319df)
-    static constexpr size_t kHeader1Size  = 76;  // 0x4C, lu dans a1+2 (a1[2..20])   @0x4304dc
-    static constexpr size_t kHeader2Size  = 80;  // 0x50, lu dans a1+24 (a1[24..43])  @0x4305c6
-    static constexpr size_t kBoneStride   = 40;  // 40 o/entrée (table a1[22], 40*N)   @0x43051d
-    static constexpr size_t kTable4Stride = 4;   // 4 o/entrée  (table a1[23], 4*N)     @0x430573
+    static constexpr size_t kStride       = 268; // 268 bytes per mesh (alloc 268*meshCount @0x4319df)
+    static constexpr size_t kHeader1Size  = 76;  // 0x4C, read into a1+2 (a1[2..20])   @0x4304dc
+    static constexpr size_t kHeader2Size  = 80;  // 0x50, read into a1+24 (a1[24..43])  @0x4305c6
+    static constexpr size_t kBoneStride   = 40;  // 40 bytes/entry (table a1[22], 40*N)   @0x43051d
+    static constexpr size_t kTable4Stride = 4;   // 4 bytes/entry  (table a1[23], 4*N)     @0x430573
 
     uint32_t index = 0;
-    bool     empty = false;             // type==0 => mesh vide (rien d'autre à lire)  @0x4304a9
-    uint32_t type  = 0;                 // a1[0] : type/flag                            @0x4304a7
-    std::vector<uint8_t> header1;       // 76 o (a1[2..20]) — transform/bornes, non décodé
-    // a1[21] : NOMBRE DE FRAMES du flipbook (VB = 20·N·vertexCount, @0x4304fd). SÉMANTIQUE RÉSOLUE
-    // (B4, 2026-07-17) par Mesh_DrawAnimatedFrame 0x430BE0 : la frame f indexe le VB à 20·f·vertexCount
-    // (@0x431520) et son bloc bbox à 40·f (@0x431207) ; N==1 => mesh statique. Consommé par
-    // Gfx/EmitterMeshRenderer. (L'ancienne hypothèse « jeux de texcoords » est écartée.)
+    bool     empty = false;             // type==0 => empty mesh (nothing else to read)  @0x4304a9
+    uint32_t type  = 0;                 // a1[0]: type/flag                              @0x4304a7
+    std::vector<uint8_t> header1;       // 76 bytes (a1[2..20]) — transform/bounds, undecoded
+    // a1[21]: flipbook FRAME COUNT (VB = 20*N*vertexCount, @0x4304fd). SEMANTICS RESOLVED
+    // (B4, 2026-07-17) by Mesh_DrawAnimatedFrame 0x430BE0: frame f indexes the VB at 20*f*vertexCount
+    // (@0x431520) and its bbox block at 40*f (@0x431207); N==1 => static mesh. Consumed by
+    // Gfx/EmitterMeshRenderer. (The earlier "texcoord sets" hypothesis is ruled out.)
     uint32_t n = 0;
-    std::vector<uint8_t> boneTable;     // 40 * N o (a1[22]) — table d'os/matrices, non décodée
-    std::vector<uint8_t> table4;        // 4  * N o (a1[23]) — table parallèle, non décodée
-    std::vector<uint8_t> header2;       // 80 o (a1[24..43]) — 2e bloc d'en-tête, non décodé
+    std::vector<uint8_t> boneTable;     // 40 * N bytes (a1[22]) — bone/matrix table, undecoded
+    std::vector<uint8_t> table4;        // 4  * N bytes (a1[23]) — parallel table, undecoded
+    std::vector<uint8_t> header2;       // 80 bytes (a1[24..43]) — 2nd header block, undecoded
     uint32_t subsetCount = 0;           // a1[44]                                        @0x4305ec
     std::vector<Mobject2Subset> subsets;
-    SObjectTexture tex;                 // 1 texture SOBJECT 56 o (Tex_ReadPacked a1+51)  @0x430a80
+    SObjectTexture tex;                 // 1 SOBJECT texture 56 bytes (Tex_ReadPacked a1+51)  @0x430a80
     uint32_t extraTexCount = 0;         // a1[65]                                        @0x430ab1
-    std::vector<SObjectTexture> extraTex; // 56 o chacune (a1[66], 56*extraTexCount)      @0x430b22
+    std::vector<SObjectTexture> extraTex; // 56 bytes each (a1[66], 56*extraTexCount)      @0x430b22
 };
 
-// Conteneur .MOBJECT2 (Mesh_LoadMOBJECT2 0x4318C0). Layout disque :
-//   [8 o magic "MOBJECT2"][u32 attribut][u32 meshCount][mesh ×meshCount]
-// attribut==0 => conteneur vide (aucun meshCount lu, valide, return 1 @0x4319b0).
+// .MOBJECT2 container (Mesh_LoadMOBJECT2 0x4318C0). On-disk layout:
+//   [8-byte magic "MOBJECT2"][u32 attribute][u32 meshCount][mesh x meshCount]
+// attribute==0 => empty container (no meshCount read, valid, return 1 @0x4319b0).
 class Mobject2 {
 public:
     static constexpr size_t kMagicSize  = 8;
     static constexpr size_t kMeshStride = Mobject2Mesh::kStride; // 268
 
-    // Charge et décode un .MOBJECT2 AUTONOME (fichier entier). Renvoie false en cas d'échec.
+    // Loads and decodes a STANDALONE .MOBJECT2 (whole file). Returns false on failure.
     bool Load(const std::string& path);
 
-    // Décode un conteneur MOBJECT2 EMBARQUÉ à `offset` dans un flux (usage emitter/effet).
-    // bytesConsumed() indique combien d'octets ont été lus (pour reprendre le flux ensuite).
+    // Decodes a MOBJECT2 container EMBEDDED at `offset` in a stream (emitter/effect use).
+    // bytesConsumed() reports how many bytes were read (to resume the stream afterward).
     bool Parse(const uint8_t* data, size_t size, size_t offset = 0);
 
-    uint32_t attribute() const { return attribute_; } // lpBuffer[0] (flag/type conteneur)
+    uint32_t attribute() const { return attribute_; } // lpBuffer[0] (container flag/type)
     uint32_t meshCount() const { return meshCount_; }  // lpBuffer[1]
     const std::vector<Mobject2Mesh>& meshes() const { return meshes_; }
 
-    bool   ok() const { return ok_; }                  // parse structural complet, sans exception
-    size_t bytesConsumed() const { return bytesConsumed_; } // octets lus depuis `offset`
-    size_t leftover() const { return leftover_; }      // octets restants après le conteneur (>0 si embarqué)
+    bool   ok() const { return ok_; }                  // full structural parse, no exception
+    size_t bytesConsumed() const { return bytesConsumed_; } // bytes read since `offset`
+    size_t leftover() const { return leftover_; }      // bytes remaining after the container (>0 if embedded)
     const std::string& error() const { return error_; }
 
 private:

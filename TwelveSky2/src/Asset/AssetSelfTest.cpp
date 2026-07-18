@@ -1,7 +1,7 @@
-// Asset/AssetSelfTest.cpp — validation runtime de TOUTE la couche Asset contre les
-// vrais fichiers. Invoqué par « TwelveSky2.exe -assettest <cheminGameData> ».
+// Asset/AssetSelfTest.cpp — runtime validation of the ENTIRE Asset layer against
+// real files. Invoked via "TwelveSky2.exe -assettest <GameDataPath>".
 #include "Asset/AssetSelfTest.h"
-#include "Core/Log.h" // TS2_LOG (utilise par l'instrumentation debug GetForNpc plus bas)
+#include "Core/Log.h" // TS2_LOG (used by the GetForNpc debug instrumentation below)
 #include "Asset/NpkArchive.h"
 #include "Asset/ImgFile.h"
 #include "Asset/Motion.h"
@@ -11,29 +11,29 @@
 #include "Asset/Texture.h"
 #include "Asset/FileUtil.h"
 #include "Asset/Zlib.h"
-// Vérification GPU du logo Intro réel (mission "LOGO INTRO REEL", 2026-07-14) :
-// device D3D9 caché + IntroRender complet, cf. bloc dédié en bas de RunSelfTest.
+// Real intro logo GPU verification (mission "LOGO INTRO REEL", 2026-07-14):
+// hidden D3D9 device + full IntroRender, see dedicated block at the bottom of RunSelfTest.
 #include "UI/IntroRender.h"
 #include "UI/UIManager.h"
 #include "Gfx/Renderer.h"
 #include "Gfx/SpriteBatch.h"
 #include "Gfx/Font.h"
 #include "Game/IntroFlow.h"
-// Vérification de robustesse GetForMonster()/GetForNpc() (mission "VERIFICATION DE
-// ROBUSTESSE GetForMonster/GetForNpc", 2026-07-14) : ModelCache.h tire déjà
-// Game/GameDatabase.h (LoadGameDatabases/g_World.db.monster) et Game/ExtraDatabases.h
-// (NpcDefRecord/LoadExtraDatabases/GetNpcDefRecord), cf. bloc dédié en bas de RunSelfTest.
+// GetForMonster()/GetForNpc() robustness verification (mission "VERIFICATION DE
+// ROBUSTESSE GetForMonster/GetForNpc", 2026-07-14): ModelCache.h already pulls in
+// Game/GameDatabase.h (LoadGameDatabases/g_World.db.monster) and Game/ExtraDatabases.h
+// (NpcDefRecord/LoadExtraDatabases/GetNpcDefRecord), see dedicated block at the bottom of RunSelfTest.
 #include "Gfx/ModelCache.h"
-// Verification visuelle du rendu 3D hors connexion reseau (mission "VERIFICATION VISUELLE
-// COMPLETE DU RENDU 3D", 2026-07-14) : charge une VRAIE zone (Z001.WO/.ATM) via les memes
-// chargeurs que World::WorldMap (World_LoadZoneResource case 3/7) et pousse le resultat dans
-// Gfx/WorldGeometryRenderer.h (upload GPU + Render()) SANS passer par Net_ConnectGameServer,
-// cf. bloc dedie en bas de RunSelfTest.
+// Visual 3D-rendering verification, offline (mission "VERIFICATION VISUELLE
+// COMPLETE DU RENDU 3D", 2026-07-14): loads a REAL zone (Z001.WO/.ATM) via the same
+// loaders as World::WorldMap (World_LoadZoneResource case 3/7) and pushes the result into
+// Gfx/WorldGeometryRenderer.h (GPU upload + Render()) WITHOUT going through Net_ConnectGameServer,
+// see dedicated block at the bottom of RunSelfTest.
 #include "World/WorldIntegration.h"
 #include "World/WorldMap.h"
 #include "Gfx/WorldGeometryRenderer.h"
 #include "Gfx/Camera.h"
-#include "Core/Log.h" // TS2_LOG/TS2_WARN/TS2_ERR (correction : include manquant, mission audit fenetres 2026-07-14)
+#include "Core/Log.h" // TS2_LOG/TS2_WARN/TS2_ERR (fix: missing include, window-audit mission 2026-07-14)
 #include <windows.h>
 #include <cstdio>
 #include <string>
@@ -45,11 +45,11 @@ namespace fs = std::filesystem;
 namespace ts2::asset {
 
 static void OpenConsole() {
-    // Si stdout est déjà un flux valide (pipe/fichier redirigé par l'appelant, ex.
-    // « -RedirectStandardOutput » pour capturer les logs [INFO]/[WARN] TS2_LOG), NE
-    // PAS écraser ce flux avec une console éphémère : AllocConsole()+freopen_s vers
-    // CONOUT$ redirigerait TOUTE la sortie (y compris IntroRender) vers une fenêtre
-    // de console qui se referme dès la fin du process, perdant les logs capturés.
+    // If stdout is already a valid stream (pipe/file redirected by the caller, e.g.
+    // "-RedirectStandardOutput" to capture [INFO]/[WARN] TS2_LOG logs), do NOT
+    // overwrite that stream with an ephemeral console: AllocConsole()+freopen_s to
+    // CONOUT$ would redirect ALL output (including IntroRender) to a console window
+    // that closes as soon as the process ends, losing the captured logs.
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     if (h != nullptr && h != INVALID_HANDLE_VALUE) return;
     if (AllocConsole()) {
@@ -65,7 +65,7 @@ static std::string Join(const std::string& a, const std::string& b) {
     return (last == '/' || last == '\\') ? a + b : a + "\\" + b;
 }
 
-// Premier fichier d'extension `extLower` sous `dir` (récursif).
+// First file with extension `extLower` under `dir` (recursive).
 static std::string FirstWith(const std::string& dir, const std::string& extLower) {
     std::error_code ec;
     if (!fs::exists(dir, ec)) return "";
@@ -88,7 +88,7 @@ int RunSelfTest(const std::string& gd) {
         va_list ap; va_start(ap, fmt);
         char buf[512]; vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
         std::printf("[%s] %s\n", cond ? " ok " : "FAIL", buf);
-        std::fflush(stdout); // visibilite immediate meme si le process crashe juste apres (diagnostic)
+        std::fflush(stdout); // immediate visibility even if the process crashes right after (diagnostic)
         if (!cond) ++fails;
     };
 
@@ -158,32 +158,25 @@ int RunSelfTest(const std::string& gd) {
          dds.empty() ? "?" : fs::path(dds).filename().string().c_str(),
          r2 ? d.width : 0, r2 ? d.height : 0, r2 ? d.fourCC.c_str() : "?", r2 ? d.mipCount : 0); }
 
-    // INTRO LOGO (rendu GPU réel, mission "LOGO INTRO REEL") ---------------------
-    // Device D3D9 caché (fenêtre WS_POPUP hors écran) + IntroRender complet, pour
-    // vérifier hors du fast-forward de l'accumulateur 30 FPS (App::FrameTick) que
-    // les 33 sprites 001_00799..001_00831.IMG se chargent et se dessinent réellement
-    // via le MÊME chemin que Scene_IntroRender (ImgFile::Load + GpuTexture::
-    // CreateFromImgFile + SpriteBatch::DrawSpriteScaled). Voir les lignes
-    // "IntroRender : logo charge (...)" ci-dessus : une par sous-état 1..33 attendue.
-    // Chemin ABSOLU de gd, calcule AVANT le chdir ci-dessous (bug corrige 2026-07-14,
-    // mission "verification visuelle rendu 3D") : App::ResolveGameDataDir() (App.cpp)
-    // convertit deja gd en absolu avant son propre SetCurrentDirectoryA -- ce fichier
-    // ne le faisait PAS, si bien que gd (souvent relatif, ex. "..\..\..\TwelveSky2\
-    // GameData" passe sur la ligne de commande) redevenait un chemin INVALIDE apres le
-    // chdir (double-relatif, resolu contre le NOUVEAU CWD au lieu de l'ancien). Consequence
-    // observee : LoadGameDatabases/LoadExtraDatabases (lignes ci-dessous) echouaient
-    // "IMG illisible" alors que les fichiers existent bel et bien sur disque -- confirme
-    // par test manuel (les MEMES fichiers s'ouvrent sans probleme via Join(gd,...) plus
-    // haut dans cette fonction, AVANT le chdir). Toute utilisation de `gd` APRES ce point
-    // doit passer par `gdAbs` (chemin absolu, stable quel que soit le CWD courant).
+    // INTRO LOGO (real GPU rendering, mission "LOGO INTRO REEL") ---------------------
+    // Hidden D3D9 device (offscreen WS_POPUP) + full IntroRender: verifies, outside the
+    // 30 FPS accumulator fast-forward (App::FrameTick), that the 33 sprites
+    // 001_00799..001_00831.IMG load and draw via the SAME path as Scene_IntroRender
+    // (ImgFile::Load + GpuTexture::CreateFromImgFile + SpriteBatch::DrawSpriteScaled) --
+    // see the "IntroRender : logo charge (...)" lines above, one per sub-state 1..33.
+    // `gd` is converted to an ABSOLUTE path (`gdAbs`) BEFORE the chdir below -- bug fixed
+    // 2026-07-14 (mission "verification visuelle rendu 3D") where a relative gd became
+    // invalid after chdir, making LoadGameDatabases/LoadExtraDatabases fail with "IMG
+    // illisible" despite the files existing on disk. Any use of `gd` after this point
+    // must go through `gdAbs`.
     std::string gdAbs = gd;
     { char absPath[MAX_PATH] = {};
       if (GetFullPathNameA(gd.c_str(), MAX_PATH, absPath, nullptr) != 0) gdAbs = absPath; }
 
-    { // IntroRender charge ses chemins EN RELATIF (comme le binaire d'origine et comme
-      // App::Run après ResolveGameDataDir()) : bascule le CWD sur GameData ici aussi,
-      // sinon ImgFile::Load echoue (le -assettest n'a pas fait ce chdir, contrairement
-      // à App::Run) et le test retomberait systematiquement sur le repli aplat.
+    { // IntroRender loads its paths AS RELATIVE (like the original binary and like
+      // App::Run after ResolveGameDataDir()): switch the CWD to GameData here too,
+      // otherwise ImgFile::Load fails (the -assettest path didn't do this chdir, unlike
+      // App::Run) and the test would systematically fall back to the flat fallback.
       SetCurrentDirectoryA(gdAbs.c_str());
       WNDCLASSA wc = {}; wc.lpfnWndProc = DefWindowProcA; wc.hInstance = GetModuleHandleA(nullptr);
       wc.lpszClassName = "TS2_AssetSelfTest_Hidden";
@@ -231,16 +224,15 @@ int RunSelfTest(const std::string& gd) {
       renderer.Shutdown();
       if (hwnd) DestroyWindow(hwnd); }
 
-    // MODELCACHE — robustesse GetForMonster()/GetForNpc() (mission "VERIFICATION DE
+    // MODELCACHE — GetForMonster()/GetForNpc() robustness (mission "VERIFICATION DE
     // ROBUSTESSE GetForMonster/GetForNpc", 2026-07-14) -----------------------------
-    // But : confirmer qu'aucun appel de ces deux API, sur un ECHANTILLON LARGE de
-    // vrais identifiants (TOUTE la table MONSTER_INFO reelle 005_00004.IMG, 10000
-    // records, + TOUTE la table NpcDefRecord reelle 005_00005.IMG, 500 records) ni
-    // sur des bornes degenerees (0, count, count+1, UINT32_MAX, MSB seul), ne
-    // provoque de crash/exception ni de comportement hors contrat (le contrat de
-    // GetForMonster()/GetForNpc() est : nullptr OU pointeur SkinnedModel valide,
-    // jamais autre chose). Documente aussi le taux de resolution reussie (X modeles
-    // charges+uploades sur Y ids ayant un field244 dans le catalogue [1,333]).
+    // Goal: confirm that neither API call, across a LARGE sample of real ids (the FULL
+    // real MONSTER_INFO table 005_00004.IMG, 10000 records, + the FULL real NpcDefRecord
+    // table 005_00005.IMG, 500 records) nor on degenerate bounds (0, count, count+1,
+    // UINT32_MAX, MSB only), ever crashes/throws or breaks contract (GetForMonster()/
+    // GetForNpc() contract: nullptr OR a valid SkinnedModel pointer, never anything else).
+    // Also records the resolution success rate (X models loaded+uploaded out of Y ids
+    // with a field244 in the [1,333] catalog).
     { bool dbOk = game::LoadGameDatabases(gdAbs);
       bool extraOk = game::LoadExtraDatabases(gdAbs);
       ok(dbOk, "ModelCache selftest : g_World.db (LoadGameDatabases) charge");
@@ -249,7 +241,7 @@ int RunSelfTest(const std::string& gd) {
       if (dbOk) {
           WNDCLASSA wc2 = {}; wc2.lpfnWndProc = DefWindowProcA; wc2.hInstance = GetModuleHandleA(nullptr);
           wc2.lpszClassName = "TS2_AssetSelfTest_ModelCache";
-          RegisterClassA(&wc2); // echec silencieux si deja enregistree (classe reutilisee) : OK.
+          RegisterClassA(&wc2); // silent failure if already registered (class reused): OK.
           HWND hwnd2 = CreateWindowExA(0, wc2.lpszClassName, "selftest-modelcache", WS_POPUP,
                                         0, 0, 64, 64, nullptr, nullptr, wc2.hInstance, nullptr);
           gfx::Renderer renderer2;
@@ -264,14 +256,14 @@ int RunSelfTest(const std::string& gd) {
               if (mrOk) {
                   gfx::ModelCache cache(meshRenderer, gdAbs, /*maxResident=*/100000);
 
-                  // --- GetForMonster() sur TOUTE la table reelle (10000 records) --------
+                  // --- GetForMonster() over the FULL real table (10000 records) --------
                   const game::DataTable& monsterTable = game::g_World.db.monster;
-                  uint32_t validField244 = 0; // records dont field244 est dans le catalogue [1,333]
-                  uint32_t resolved      = 0; // GetForMonster() != nullptr (fichier reellement charge+uploade)
+                  uint32_t validField244 = 0; // records whose field244 is in the [1,333] catalog
+                  uint32_t resolved      = 0; // GetForMonster() != nullptr (file actually loaded+uploaded)
                   bool     monsterCrashed = false;
                   for (uint32_t id = 0; id < monsterTable.count; ++id) {
                       const uint8_t* rec = monsterTable.record(id);
-                      if (!rec) { monsterCrashed = true; break; } // ne devrait jamais arriver (id < count)
+                      if (!rec) { monsterCrashed = true; break; } // should never happen (id < count)
                       uint32_t field244 = 0;
                       std::memcpy(&field244, rec + 244, sizeof(field244));
                       if (field244 >= 1 && field244 <= 333) ++validField244;
@@ -289,28 +281,28 @@ int RunSelfTest(const std::string& gd) {
                      "plus que le catalogue kindIndex meme si le disque a tous les fichiers",
                      resolved, validField244);
 
-                  // --- GetForMonster() bornes degenerees : jamais de crash, toujours nullptr --
+                  // --- GetForMonster() degenerate bounds: never crashes, always nullptr --
                   bool edgeOk = true;
                   edgeOk = edgeOk && (cache.GetForMonster(monsterTable.count) == nullptr);
                   edgeOk = edgeOk && (cache.GetForMonster(monsterTable.count + 1) == nullptr);
                   edgeOk = edgeOk && (cache.GetForMonster(0xFFFFFFFFu) == nullptr);
                   edgeOk = edgeOk && (cache.GetForMonster(0x80000000u) == nullptr);
-                  // id 0 est deja couvert par le balayage [0,count) ci-dessus (valide, PAS une
-                  // borne degeneree pour une table indexee a partir de 0) -- pas reteste ici.
+                  // id 0 is already covered by the [0,count) sweep above (valid, NOT a
+                  // degenerate bound for a table indexed from 0) -- not retested here.
                   ok(edgeOk, "GetForMonster : bornes degenerees (count=%u, count+1, UINT32_MAX, "
                               "0x80000000) -> nullptr sans exception", monsterTable.count);
 
-                  // --- GetForNpc() sur TOUTE la table NpcDefRecord reelle (jusqu'a 500 ids) ---
-                  // Contrat actuel (cf. bandeau ModelCache.h "PNJ NON RESOLU") : TOUJOURS nullptr,
-                  // quel que soit le contenu du record -- on verifie juste l'absence de crash et
-                  // la stabilite du contrat sur de VRAIS NpcDefRecord charges depuis le disque.
+                  // --- GetForNpc() over the FULL real NpcDefRecord table (up to 500 ids) ---
+                  // Current contract (cf. ModelCache.h banner "PNJ NON RESOLU"): ALWAYS nullptr,
+                  // regardless of record content -- this just checks the absence of a crash and
+                  // the contract's stability on REAL NpcDefRecord entries loaded from disk.
                   uint32_t npcTested = 0;
                   bool npcAlwaysNull = true;
                   if (extraOk) {
                       for (uint32_t npcId = 1; npcId <= 500; ++npcId) {
-                          if (npcId % 25 == 1) TS2_LOG("ModelCache selftest : GetForNpc npcId=%u...", npcId); // DEBUG bisection (mission robustesse)
+                          if (npcId % 25 == 1) TS2_LOG("ModelCache selftest : GetForNpc npcId=%u...", npcId); // DEBUG bisection (robustness mission)
                           const game::NpcDefRecord* npc = game::GetNpcDefRecord(npcId);
-                          if (!npc) continue; // slot vide (id==0) ou hors bornes -- ignore, pas un "vrai" PNJ
+                          if (!npc) continue; // empty slot (id==0) or out of bounds -- skip, not a "real" NPC
                           ++npcTested;
                           if (cache.GetForNpc(*npc) != nullptr) npcAlwaysNull = false;
                       }
@@ -326,21 +318,21 @@ int RunSelfTest(const std::string& gd) {
           if (hwnd2) DestroyWindow(hwnd2);
       } }
 
-    // WORLDGEOMETRYRENDERER / SKYRENDERER — rendu 3D reel HORS CONNEXION RESEAU (mission
+    // WORLDGEOMETRYRENDERER / SKYRENDERER — real 3D rendering OFFLINE (mission
     // "VERIFICATION VISUELLE COMPLETE DU RENDU 3D", 2026-07-14) -----------------------
-    // Reproduit le SEUL chemin de donnees necessaire pour dessiner une zone (World_
-    // LoadZoneResource case 3 = .WO, case 7 = .ATM), SANS World_LoadMap (donc SANS la
-    // porte DRM/SilverLining -- cf. bandeau WorldMap.h) et SANS aucun paquet reseau :
-    // exactement le sous-ensemble dont World/WorldIntegration.h + Gfx/WorldGeometryRenderer.h
-    // ont besoin. But : prouver que Init()/Build()/Render() tournent sans exception/crash
-    // sur un VRAI chunk .WO (50k+ instances documentees ailleurs) et que le ciel derive
-    // reellement du .ATM reel (HasRealAtmosphere()==true, pas le repli "midi").
+    // Reproduces the ONLY data path needed to draw a zone (World_LoadZoneResource
+    // case 3 = .WO, case 7 = .ATM), WITHOUT World_LoadMap (so WITHOUT the DRM/
+    // SilverLining gate -- cf. WorldMap.h banner) and WITHOUT any network packet:
+    // exactly the subset World/WorldIntegration.h + Gfx/WorldGeometryRenderer.h need.
+    // Goal: prove Init()/Build()/Render() run without exception/crash on a REAL .WO
+    // chunk (50k+ instances documented elsewhere) and that the sky is really derived
+    // from the real .ATM (HasRealAtmosphere()==true, not the "midi" fallback).
     { world::WorldAssets assets(gdAbs);
       world::WorldLoadHooks hooks = assets.MakeHooks();
       world::WorldMap map(hooks);
-      // zoneId=1 -> fileId=1 (WorldMap::ZoneIdToFileId) -> Z001.WO/Z001.ATM (presents sur
-      // disque, deja valides plus haut dans ce fichier par le test "WORLD .wo/.tga" via
-      // FirstWith(D07_GWORLD) -- ici on cible NOMMEMENT ce fichier pour un resultat reproductible.
+      // zoneId=1 -> fileId=1 (WorldMap::ZoneIdToFileId) -> Z001.WO/Z001.ATM (present on
+      // disk, already validated earlier in this file by the "WORLD .wo/.tga" test via
+      // FirstWith(D07_GWORLD) -- here we target this file BY NAME for a reproducible result.
       map.SetCurrentZoneId(1);
       unsigned char woOk  = map.LoadZoneResource(1, world::ResourceKind::ObjectsWO);
       unsigned char atmOk = map.LoadZoneResource(1, world::ResourceKind::Atmosphere);
@@ -372,10 +364,10 @@ int RunSelfTest(const std::string& gd) {
                  worldGeo.SkippedMultiAnchorCount(),
                  worldGeo.InstanceCount(), worldGeo.PlannedDrawCallCount());
 
-              // Rendu reel (plusieurs frames, comme App::FrameTick) : preuve qu'aucune
-              // exception D3D/CPU ne survient sur des donnees reelles, hors du fast-forward
-              // 30 FPS et SANS connexion serveur (InGame reel inaccessible sans serveur --
-              // cf. Docs/notes de mission -- ceci est le repli honnete demande).
+              // Real rendering (several frames, like App::FrameTick): proves no D3D/CPU
+              // exception occurs on real data, outside the 30 FPS fast-forward and WITHOUT
+              // a server connection (real InGame is unreachable without a server --
+              // cf. mission notes -- this is the requested honest fallback).
               gfx::Camera camera;
               camera.SetTarget(0.0f, 0.0f, 0.0f);
               camera.SetDistance(80.0f);

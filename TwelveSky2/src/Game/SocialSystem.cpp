@@ -1,9 +1,9 @@
-// Game/SocialSystem.cpp — implémentation achievements + listes ami/ennemi AutoPlay (ts2::game).
-// Fidèle à Net_OnAchievementDataLoad (0x4ac920), Net_OnAchievementNotice (0x4ac950),
+// Game/SocialSystem.cpp — implementation of achievements + AutoPlay friend/enemy lists (ts2::game).
+// Faithful to Net_OnAchievementDataLoad (0x4ac920), Net_OnAchievementNotice (0x4ac950),
 // TribeSkill_SkillIdToIndex (0x692e00), AutoPlay_Load/SaveFriendList (0x45d730/0x45de50),
 // AutoPlay_Load/SaveEnemyList (0x45daf0/0x45e140), AutoPlay_Is Friend/Enemy (0x45faa0/
-// 0x45fbe0) et AutoPlay_OnMouseUpNameList (0x45b000). Voir SocialSystem.h pour le détail
-// EA par champ/branche et pour ce qui est explicitement HORS périmètre.
+// 0x45fbe0), and AutoPlay_OnMouseUpNameList (0x45b000). See SocialSystem.h for per-field/
+// per-branch EA detail and for what is explicitly OUT OF SCOPE.
 #include "Game/SocialSystem.h"
 
 #include <cstddef>
@@ -12,17 +12,15 @@
 
 namespace ts2::game {
 
-// =============================================================================
-// 1) ACHIEVEMENTS DE TRIBU
-// =============================================================================
+// 1) TRIBE ACHIEVEMENTS
 
 void AchievementState::LoadFromPayload(const void* payload96) {
-    // EA 0x4ac931 : Crt_Memcpy(v1, &unk_8156C1, 96) — copie directe, aucune validation.
+    // EA 0x4ac931: Crt_Memcpy(v1, &unk_8156C1, 96) — direct copy, no validation.
     std::memcpy(flags.data(), payload96, sizeof(flags));
 }
 
 int TribeSkillIdToIndex(int skillId) {
-    // EA 0x692e2b : switch irrégulier, reproduit tel quel (pas de formule fermée).
+    // EA 0x692e2b: irregular switch, reproduced as-is (no closed-form formula).
     switch (skillId) {
         case 2:   return 0;
         case 3:   return 1;
@@ -46,14 +44,14 @@ AchievementNoticeResult BuildAchievementNotice(const AchievementState& state,
     AchievementNoticeResult r;
 
     const int slot = TribeSkillIdToIndex(tribeSkillOrMorphId);   // EA 0x4ac9b5
-    if (slot == -1)                                              // EA 0x4ac9c1 -> EA 0x4aca3a (aucun message)
+    if (slot == -1)                                              // EA 0x4ac9c1 -> EA 0x4aca3a (no message)
         return r;
 
-    // EA 0x4ac9f2-0x4ac9f7 : StrTable005_Get(dword_184C218[v9] % 100 + 2249)
+    // EA 0x4ac9f2-0x4ac9f7: StrTable005_Get(dword_184C218[v9] % 100 + 2249)
     const std::string label  = Str(state.flags[static_cast<size_t>(slot)] % 100 + 2249);
     const std::string suffix = Str(2305);                        // EA 0x4ac9d4
 
-    // EA 0x4aca06 : Crt_Vsnprintf(&v7, "%s %s %s", v1=label, &v3=achieverName13, v2=suffix)
+    // EA 0x4aca06: Crt_Vsnprintf(&v7, "%s %s %s", v1=label, &v3=achieverName13, v2=suffix)
     r.text  = label + " " + achieverName13 + " " + suffix;
     r.shown = true;
     return r;
@@ -65,20 +63,18 @@ bool PostAchievementNotice(const AchievementState& state, int tribeSkillOrMorphI
     if (!r.shown)
         return false;
 
-    // g_SysMsgColor (EA 0x84dfd8) non modélisé en champ propre -> longue traîne via Var().
+    // g_SysMsgColor (EA 0x84dfd8) not modeled as a dedicated field -> long tail via Var().
     const uint32_t sysColor = static_cast<uint32_t>(g_Client.VarGet(0x84dfd8));
 
-    g_Client.msg.Floating(0, 0, r.text);      // EA 0x4aca20 : HUD_ShowFloatingMessage(0, 0, &v7, &String)
-    g_Client.msg.System(r.text, sysColor);    // EA 0x4aca35 : Msg_AppendSystemLine(&v7, g_SysMsgColor)
+    g_Client.msg.Floating(0, 0, r.text);      // EA 0x4aca20: HUD_ShowFloatingMessage(0, 0, &v7, &String)
+    g_Client.msg.System(r.text, sysColor);    // EA 0x4aca35: Msg_AppendSystemLine(&v7, g_SysMsgColor)
     return true;
 }
 
-// =============================================================================
-// 2) LISTES AMI / ENNEMI DE L'AUTOPLAY
-// =============================================================================
+// 2) AUTOPLAY FRIEND / ENEMY LISTS
 
 bool SocialNameList::Contains(const std::string& name) const {
-    // EA 0x45fbb3/0x45fba0 (IsFriend) / 0x45fcf3/0x45fce0 (IsEnemy) : Crt_Strcmp linéaire.
+    // EA 0x45fbb3/0x45fba0 (IsFriend) / 0x45fcf3/0x45fce0 (IsEnemy): linear Crt_Strcmp.
     for (const std::string& n : names)
         if (n == name)
             return true;
@@ -88,12 +84,12 @@ bool SocialNameList::Contains(const std::string& name) const {
 bool SocialNameList::Add(const std::string& name) {
     if (Full() || Contains(name))
         return false;
-    names.push_back(name);   // EA 0x45b7ce/0x45b8ec : List_PushBackNode
+    names.push_back(name);   // EA 0x45b7ce/0x45b8ec: List_PushBackNode
     return true;
 }
 
 bool SocialNameList::Remove(const std::string& name) {
-    // EA 0x45bb95-0x45bc21 / 0x45bd3e-0x45be34 : recherche linéaire, 1re occurrence.
+    // EA 0x45bb95-0x45bc21 / 0x45bd3e-0x45be34: linear search, 1st occurrence.
     for (size_t i = 0; i < names.size(); ++i) {
         if (names[i] == name) {
             names.erase(names.begin() + static_cast<std::ptrdiff_t>(i));   // List_EraseNode
@@ -105,7 +101,7 @@ bool SocialNameList::Remove(const std::string& name) {
 
 std::array<uint8_t, SocialNameList::kFileBytes> SocialNameList::Serialize() const {
     std::array<uint8_t, kFileBytes> buf{};
-    buf.fill(0x40);   // EA 0x45de9f/0x45e182 : Crt_Memset(Buffer, 64 /*'@'*/, 1200)
+    buf.fill(0x40);   // EA 0x45de9f/0x45e182: Crt_Memset(Buffer, 64 /*'@'*/, 1200)
     for (size_t i = 0; i < names.size() && i < kCapacity; ++i) {
         const std::string& n = names[i];
         const size_t len = n.size() < (kSlotBytes - 1) ? n.size() : (kSlotBytes - 1);
@@ -115,19 +111,19 @@ std::array<uint8_t, SocialNameList::kFileBytes> SocialNameList::Serialize() cons
 }
 
 void SocialNameList::Deserialize(const uint8_t* buf, size_t bufBytes) {
-    names.clear();   // EA 0x45d7e5 : List_Clear (cas fichier absent/taille invalide -> vide)
+    names.clear();   // EA 0x45d7e5: List_Clear (case: missing file/invalid size -> empty)
     if (bufBytes < kFileBytes)
         return;
     for (size_t i = 0; i < kCapacity; ++i) {
         const char* raw = reinterpret_cast<const char*>(buf + i * kSlotBytes);
         std::string s(raw, strnlen(raw, kSlotBytes));
-        const size_t at = s.find('@');   // EA 0x45d992/0x45d9af : Str_Find('@')
+        const size_t at = s.find('@');   // EA 0x45d992/0x45d9af: Str_Find('@')
         if (at != std::string::npos)
-            s.erase(at);                  // EA 0x45d9d1 : Str_Erase(from '@' to end)
+            s.erase(at);                  // EA 0x45d9d1: Str_Erase(from '@' to end)
         if (!s.empty())
             names.push_back(s);
-        // NOTE fidélité : l'original ne pousse le nom en liste que si MobDb_FindByName()
-        // le reconnaît (EA 0x45d9e9-0x45da26) — base non exposée ici, voir SocialSystem.h.
+        // FIDELITY NOTE: the original only pushes the name into the list if MobDb_FindByName()
+        // recognizes it (EA 0x45d9e9-0x45da26) — database not exposed here, see SocialSystem.h.
     }
 }
 
@@ -137,7 +133,7 @@ bool LoadSocialNameListFile(SocialNameList& list, const char* path) {
     std::array<uint8_t, SocialNameList::kFileBytes> buf{};
     const size_t got = std::fread(buf.data(), 1, buf.size(), f);
     std::fclose(f);
-    if (got != buf.size()) { list.names.clear(); return false; }    // EA 0x45d88e (taille != 1200)
+    if (got != buf.size()) { list.names.clear(); return false; }    // EA 0x45d88e (size != 1200)
     list.Deserialize(buf.data(), buf.size());
     return true;
 }

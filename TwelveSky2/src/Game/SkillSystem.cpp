@@ -1,15 +1,15 @@
-// Game/SkillSystem.cpp — implementation du systeme de competences (ts2::game).
-// Transcription fidele du desassemblage de TwelveSky2.exe. Cf. SkillSystem.h.
+// Game/SkillSystem.cpp — implementation of the skill system (ts2::game).
+// Faithful transcription of the TwelveSky2.exe disassembly. See SkillSystem.h.
 #include "Game/SkillSystem.h"
 #include <cstring>
 
 namespace ts2::game {
 
-// Resolution 1-based d'un record ITEM_INFO (mirroir MobDb_GetEntry 0x4C3C00) :
-// nul si id<1, id>count, ou record.dword0 == 0 (slot vide).
-// Sorti de l'espace de noms anonyme (2026-07-16) et declare dans SkillSystem.h :
-// Game/SkillCombat.cpp en a besoin pour la garde d'arme de Player_CastSkill
-// (0x53BDD2 -> MobDb_GetEntry(&mITEM, dword_1673248)). Comportement INCHANGE.
+// 1-based resolution of an ITEM_INFO record (mirrors MobDb_GetEntry 0x4C3C00):
+// null if id<1, id>count, or record.dword0 == 0 (empty slot).
+// Moved out of the anonymous namespace (2026-07-16) and declared in SkillSystem.h:
+// Game/SkillCombat.cpp needs it for the weapon guard of Player_CastSkill
+// (0x53BDD2 -> MobDb_GetEntry(&mITEM, dword_1673248)). Behavior UNCHANGED.
 const uint8_t* Skill_ItemRecord(const DataTable& t, uint32_t itemId) {
     if (itemId < 1 || itemId > t.count) return nullptr;
     const uint8_t* rec = t.record(itemId - 1);
@@ -20,8 +20,8 @@ const uint8_t* Skill_ItemRecord(const DataTable& t, uint32_t itemId) {
 
 namespace {
 
-// Extraction des 12 octets des 3 dwords (little-endian), commune aux fonctions
-// d'arbre Skill_UnpackTreeNodes / Skill_CountTreeNodes.
+// Extracts the 12 bytes of the 3 dwords (little-endian), common to the tree
+// functions Skill_UnpackTreeNodes / Skill_CountTreeNodes.
 void UnpackBytes(uint32_t w0, uint32_t w1, uint32_t w2, uint8_t b[12]) {
     b[0] = uint8_t(w0);       b[1] = uint8_t(w0 >> 8);  b[2] = uint8_t(w0 >> 16);  b[3]  = uint8_t(w0 >> 24);
     b[4] = uint8_t(w1);       b[5] = uint8_t(w1 >> 8);  b[6] = uint8_t(w1 >> 16);  b[7]  = uint8_t(w1 >> 24);
@@ -30,7 +30,7 @@ void UnpackBytes(uint32_t w0, uint32_t w1, uint32_t w2, uint8_t b[12]) {
 
 } // namespace
 
-// ===================== SkillLevelTable =====================================
+// ===================== SkillLevelTable ========================================
 
 int SkillLevelTable::Min(int skillId) const {
     if (skillId < 1 || skillId > 350) return 0;
@@ -43,18 +43,18 @@ int SkillLevelTable::Max(int skillId) const {
     return rec ? Skill_ReadI32(rec, 4) : 0;
 }
 
-// ===================== SkillBar ============================================
+// ===================== SkillBar ================================================
 
 int SkillBar::FindFree(int begin, int end) const {
     if (begin < 0) begin = 0;
     if (end > static_cast<int>(slots.size())) end = static_cast<int>(slots.size());
     for (int k = begin; k < end; ++k)
-        if (slots[k].skillId == 0)   // fidele : g_LearnedSkills[k*8] < 1
+        if (slots[k].skillId == 0)   // faithful: g_LearnedSkills[k*8] < 1
             return k;
     return -1;
 }
 
-// ===================== SkillLearnFlags =====================================
+// ===================== SkillLearnFlags =========================================
 
 bool SkillLearnFlags::IsTrackable(int skillId) {
     switch (skillId) {
@@ -71,25 +71,25 @@ bool SkillLearnFlags::IsTrackable(int skillId) {
     }
 }
 bool SkillLearnFlags::IsLearned(int skillId) const {
-    if (!IsTrackable(skillId)) return false;   // fidele : default -> 0
+    if (!IsTrackable(skillId)) return false;   // faithful: default -> 0
     auto it = flags.find(skillId);
     return it != flags.end() && it->second == 1;
 }
 
-// ===================== Record & interpolation ==============================
+// ===================== Record & interpolation ==================================
 
 const uint8_t* Skill_GetRecord(const DataTable& skillTbl, int skillId) {
     if (skillId < 1 || static_cast<uint32_t>(skillId) > skillTbl.count) return nullptr;
     const uint8_t* rec = skillTbl.record(static_cast<uint32_t>(skillId - 1));
     if (!rec) return nullptr;
-    if (Skill_ReadI32(rec, skillinfo::kOffSkillId) == 0) return nullptr; // record vide
+    if (Skill_ReadI32(rec, skillinfo::kOffSkillId) == 0) return nullptr; // empty record
     return rec;
 }
 
 const char* Skill_GetName(const uint8_t* rec) {
     if (!rec) return "";
-    // skillinfo::kOffName = record+4, C-string embarque (cf. commentaire d'offset
-    // et UI_SkillLearn_OnLDown 0x5E20A5 : v14+4 passe directement en "%s").
+    // skillinfo::kOffName = record+4, embedded C string (cf. offset comment
+    // and UI_SkillLearn_OnLDown 0x5E20A5: v14+4 is passed directly as "%s").
     return reinterpret_cast<const char*>(rec + skillinfo::kOffName);
 }
 
@@ -107,25 +107,25 @@ double Skill_InterpStat(const DataTable& skillTbl, int skillId, int level, int s
     int32_t vMin = Skill_ReadI32(rec, skillinfo::kOffStatMin + 4u * (statIndex - 1));
     int32_t vMax = Skill_ReadI32(rec, skillinfo::kOffStatMax + 4u * (statIndex - 1));
 
-    // Cas special stat#7 (portee distance) des competences 112..120 : penalite
-    // ×0.7 sauf si le contexte range vaut 3 (mirroir dword_16851B8).
+    // Special case stat#7 (range distance) for skills 112..120: ×0.7 penalty
+    // unless the range context equals 3 (mirrors dword_16851B8).
     if (statIndex == 7 && skillId >= 112 && skillId <= 120 && g_Skill112RangeMode != 3) {
         vMin = Skill_Ftol(static_cast<double>(vMin) * 0.699999988079071);
         vMax = Skill_Ftol(static_cast<double>(vMax) * 0.699999988079071);
     }
 
     int32_t maxLevel = Skill_ReadI32(rec, skillinfo::kOffLevelNorm);
-    // Numerateur en arithmetique entiere, division en double (fidele au binaire).
+    // Numerator in integer arithmetic, division in double (faithful to the binary).
     double num = static_cast<double>(level * (vMax - vMin));
     double v = static_cast<double>(vMin) + num / static_cast<double>(maxLevel);
     if (v > 0.0) return (v >= 1.0) ? v : 1.0;
     return 0.0;
 }
 
-// ===================== Cout MP =============================================
+// ===================== MP cost ==================================================
 
 int Skill_CostById(int skillId, const SelfState& self, const DataTable& itemTbl) {
-    // Table nominale codee en dur, skillId 1..138 (0 = passif).
+    // Hardcoded nominal table, skillId 1..138 (0 = passive).
     static const int kCost[139] = {
         0,   0,   0,   0,  15,  15,   0,   0,  20,  20,  45, //  0..10
         0,  25,  25,  50,   0, 120, 120,  45,   0,   0,       // 11..20
@@ -145,7 +145,7 @@ int Skill_CostById(int skillId, const SelfState& self, const DataTable& itemTbl)
     if (skillId >= 1 && skillId <= 138)
         return kCost[skillId];
 
-    // Defaut : classe de l'arme equipee (self.equip[7] = dword_1673248).
+    // Default: class of the equipped weapon (self.equip[7] = dword_1673248).
     const uint8_t* rec = Skill_ItemRecord(itemTbl, self.equip[7].itemId);
     if (rec) {
         switch (Skill_ReadI32(rec, iteminfo::kOffTypeCode)) {
@@ -176,7 +176,7 @@ int Skill_CalcRegenPct(const SelfState& self, const DataTable& itemTbl) {
 int Skill_CalcRealMpCost(const DataTable& skillTbl, int skillId, int level, int regenPct) {
     int cost = Skill_Ftol(Skill_InterpStat(skillTbl, skillId, level, 1));
     if (regenPct > 0)
-        cost -= regenPct * cost / 100;   // arithmetique entiere, fidele
+        cost -= regenPct * cost / 100;   // integer arithmetic, faithful
     return cost;
 }
 
@@ -185,14 +185,14 @@ SkillCastResult Skill_TryConsumeMp(SelfState& self, const DataTable& skillTbl,
     SkillCastResult r;
     int regen = Skill_CalcRegenPct(self, itemTbl);
     r.cost = Skill_CalcRealMpCost(skillTbl, skillId, level, regen);
-    if (self.mp >= r.cost) {           // fidele : dword_1687378 >= cost
+    if (self.mp >= r.cost) {           // faithful: dword_1687378 >= cost
         self.mp -= r.cost;
         r.ok = true;
     }
     return r;
 }
 
-// ===================== Disponibilite ======================================
+// ===================== Availability =============================================
 
 bool Skill_IsAvailableByLevel(const SkillLevelTable& t, int skillId,
                               int level, int levelBonus, int rebirth) {
@@ -219,12 +219,12 @@ bool Skill_IsAvailableByLevel(const SkillLevelTable& t, int skillId,
         switch (skillId) {
             case 49: case 51: case 53:
             case 120: case 121: case 122:
-                break;               // reconnu -> controle de niveau
+                break;               // recognized -> level check
             default:
                 return false;
         }
     }
-    // skillId dans [146..164] ou {49,51,53,120,121,122}
+    // skillId in [146..164] or {49,51,53,120,121,122}
     return lvlEff >= t.Min(skillId) && lvlEff <= t.Max(skillId);
 }
 
@@ -246,10 +246,10 @@ bool Skill_IsAvailableByBranch(const SkillLevelTable& t, int skillId,
     }
 }
 
-// ===================== Resolution de slot par niveau =======================
-// Transcription 1:1 de Skill_ResolveLevelSlot (0x4FB370) : chaine de tranches
-// de niveau strictement imbriquee (if/else mutuellement exclusifs). La 1re
-// tranche [Min(id),Max(id)] contenant lvlEff fixe (row,col).
+// ===================== Level-based slot resolution ===============================
+// 1:1 transcription of Skill_ResolveLevelSlot (0x4FB370): strictly nested chain
+// of level tiers (mutually exclusive if/else). The 1st
+// tier [Min(id),Max(id)] containing lvlEff sets (row,col).
 
 void Skill_ResolveLevelSlot(const SkillLevelTable& t, int level, int levelBonus,
                             int rebirth, int& outRow, int& outCol) {
@@ -284,7 +284,7 @@ void Skill_ResolveLevelSlot(const SkillLevelTable& t, int level, int levelBonus,
                                                   if (notIn(121)) {
                                                     if (notIn(122)) {
                                                       if (!notIn(295)) {
-                                                        // tranche 295 : gate renaissance
+                                                        // tier 295: rebirth gate
                                                         if (rebirth >= 4) {
                                                           outRow = 0;
                                                           outCol = (rebirth >= 7) ? 10 : 9;
@@ -319,7 +319,7 @@ void Skill_ResolveLevelSlot(const SkillLevelTable& t, int level, int levelBonus,
     } else { outRow = 0; outCol = 0; }
 }
 
-// ===================== Valeurs par classe / palier =========================
+// ===================== Values by class / tier =====================================
 
 int Skill_GetValueByClassA(int classId, int tier) {
     if (tier < 1 || tier > 12) return 0;
@@ -353,7 +353,7 @@ int Skill_GetUpgradeCostTier(int level) {
     return kTier[level];
 }
 
-// ===================== Arbre de talents ====================================
+// ===================== Talent tree ================================================
 
 int Skill_UnpackTreeNodes(uint32_t w0, uint32_t w1, uint32_t w2, int out[5]) {
     uint8_t b[12];
@@ -374,14 +374,14 @@ int Skill_UnpackTreeNodes(uint32_t w0, uint32_t w1, uint32_t w2, int out[5]) {
 int Skill_CountTreeNodes(uint32_t w0, uint32_t w1, uint32_t w2) {
     uint8_t b[12];
     UnpackBytes(w0, w1, w2, b);
-    if (b[1] == 0) return 0;                     // sentinelle nulle
+    if (b[1] == 0) return 0;                     // null sentinel
     for (int i = 0; i < 5; ++i)
         if (b[2 + 2 * i] == 0 && b[3 + 2 * i] == 0)
-            return i;                            // 1re paire (lo,hi) nulle
+            return i;                            // 1st (lo,hi) pair is null
     return 5;
 }
 
-// ===================== Apprentissage =======================================
+// ===================== Learning ===================================================
 
 uint32_t Skill_TaughtSkillIdFromItem(const uint8_t* itemRec) {
     if (!itemRec) return 0;
@@ -395,25 +395,25 @@ int Skill_Learn(SkillBar& bar, SelfState& self, const DataTable& skillTbl, uint3
     const int section = Skill_ReadI32(rec, skillinfo::kOffSection); // idx135
     int slot = -1;
     switch (section) {
-        case 1: // posture/base -> [0,10)
+        case 1: // stance/base -> [0,10)
             slot = bar.FindFree(0, 10);
             break;
         case 2: // -> [20,30)
             slot = bar.FindFree(20, 30);
             break;
-        // CORRECTIF (2026-07-16) : la borne BASSE etait 0 au lieu de 10 -> une
-        // competence de section 3/4 pouvait atterrir dans [0,10), la plage reservee
-        // a la section 1 (corruption de barre sur un chemin joueur reel : touche K
+        // FIX (2026-07-16): the LOW bound was 0 instead of 10 -> a
+        // section 3/4 skill could land in [0,10), the range reserved
+        // for section 1 (bar corruption on a real player path: K key
         // -> UI/SkillTreeWindow.cpp -> Skill_Learn).
-        // Ancre : Pkt_ItemActionDispatch 0x46A4B0, case 3 @0x46A5ED et case 4
-        // @0x46A689 -> `mov [ebp+var_424], 0Ah` puis `cmp [ebp+var_424], 14h`
-        // = [10,20) ; si epuisee (`cmp ...,14h` / `jnz`), repli @0x46A62E (case 3)
-        // et @0x46A6CA (case 4) -> `mov [ebp+var_424], 1Eh` / `cmp ...,28h`
-        // = [30,40). Les cases 3 et 4 sont STRICTEMENT identiques dans le binaire
-        // (le repli [30,40) existe pour les DEUX) -> le fallthrough ci-dessous est
-        // fidele. Gate UI corroborante : UI_SkillLearn_OnLDown 0x5E1C40 case 3
+        // Anchor: Pkt_ItemActionDispatch 0x46A4B0, case 3 @0x46A5ED and case 4
+        // @0x46A689 -> `mov [ebp+var_424], 0Ah` then `cmp [ebp+var_424], 14h`
+        // = [10,20); if exhausted (`cmp ...,14h` / `jnz`), fallback @0x46A62E (case 3)
+        // and @0x46A6CA (case 4) -> `mov [ebp+var_424], 1Eh` / `cmp ...,28h`
+        // = [30,40). Cases 3 and 4 are STRICTLY identical in the binary
+        // (the [30,40) fallback exists for BOTH) -> the fallthrough below is
+        // faithful. Corroborating UI gate: UI_SkillLearn_OnLDown 0x5E1C40 case 3
         // @0x5E1F44 + @0x5E1F73, case 4 @0x5E1FCC + @0x5E1FFB.
-        case 3: // -> [10,20) puis [30,40)
+        case 3: // -> [10,20) then [30,40)
         case 4:
             slot = bar.FindFree(10, 20);
             if (slot < 0) slot = bar.FindFree(30, 40);
@@ -424,7 +424,7 @@ int Skill_Learn(SkillBar& bar, SelfState& self, const DataTable& skillTbl, uint3
     if (slot < 0) return -1;
 
     const int32_t spCost = Skill_ReadI32(rec, skillinfo::kOffSpCost);
-    self.skillPoints -= spCost;                                  // g_SkillPointPool -= cout
+    self.skillPoints -= spCost;                                  // g_SkillPointPool -= cost
     bar.slots[slot].skillId = static_cast<uint32_t>(Skill_ReadI32(rec, skillinfo::kOffSkillId));
     bar.slots[slot].spCost  = spCost;
     return slot;

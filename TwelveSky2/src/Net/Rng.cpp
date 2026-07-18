@@ -1,12 +1,12 @@
-// Net/Rng.cpp — instance globale du PRNG réseau (voir Rng.h).
+// Net/Rng.cpp — global instance of the network PRNG (see Rng.h).
 #include "Net/Rng.h"
 
 namespace ts2::net {
 
 Rng& DefaultRng() {
-    // Un seul état, comme le _holdrand de la CRT côté client : les envois
-    // réseau (Net_Send*) se font tous sur le même thread, ils partagent donc
-    // une unique séquence rand().
+    // Single state, like the client-side CRT's _holdrand: network sends
+    // (Net_Send*) all happen on the same thread, so they share a single
+    // rand() sequence.
     static Rng g_rng;
     return g_rng;
 }

@@ -1,4 +1,4 @@
-// Asset/WorldChunk.cpp — fidèle à RE/asset_parsers/world_geometry.py (validé 455/455).
+// Asset/WorldChunk.cpp — faithful to RE/asset_parsers/world_geometry.py (validated 455/455).
 #include "Asset/WorldChunk.h"
 #include "Asset/ByteReader.h"
 #include "Asset/FileUtil.h"
@@ -10,24 +10,24 @@
 namespace ts2::asset {
 namespace {
 
-// ---- helpers bornés (calqués sur Reader.skip/take du parseur Python) ---------
+// ---- bounded helpers (modeled on Reader.skip/take from the Python parser) ---------
 
-// Copie n octets consécutifs dans un vecteur, en validant d'abord la borne.
+// Copies n consecutive bytes into a vector, validating the bound first.
 std::vector<uint8_t> ReadBlob(ByteReader& r, uint64_t n) {
-    if (n > r.Remaining()) throw AssetError("lecture de bloc hors limites");
+    if (n > r.Remaining()) throw AssetError("out-of-bounds block read");
     std::vector<uint8_t> v(static_cast<size_t>(n));
     if (n) r.Read(v.data(), static_cast<size_t>(n));
     return v;
 }
 
-// read_gxd_block : [rawSize u32][packedSize u32][zlib] -> octets décompressés.
-// Fait avancer r de 8 + packedSize octets. InflateTo valide len == rawSize.
-// GXD_DecompressEntity 0x6A1A30. ex-VeryOldClient: ZlibScope.h (framing partagé, CONFIRMED).
+// read_gxd_block: [rawSize u32][packedSize u32][zlib] -> decompressed bytes.
+// Advances r by 8 + packedSize bytes. InflateTo validates len == rawSize.
+// GXD_DecompressEntity 0x6A1A30. ex-VeryOldClient: ZlibScope.h (shared framing, CONFIRMED).
 std::vector<uint8_t> ReadGxdBlock(ByteReader& r, uint32_t& rawOut, uint32_t& packedOut) {
     const uint32_t rawSize = r.U32();
     const uint32_t packed  = r.U32();
     if (r.Remaining() < packed)
-        throw AssetError("bloc GXD : packedSize dépasse le flux");
+        throw AssetError("GXD block: packedSize exceeds the stream");
     std::vector<uint8_t> out = Zlib::Instance().InflateTo(r.Ptr(), packed, rawSize);
     r.Skip(packed);
     rawOut = rawSize;
@@ -35,30 +35,30 @@ std::vector<uint8_t> ReadGxdBlock(ByteReader& r, uint32_t& rawOut, uint32_t& pac
     return out;
 }
 
-// read_texture_block : [imageSize u32] ; si 0 -> absente (present=false).
-// Sinon [rawSize u32][packedSize u32][zlib] -> image(imageSize)+trailer(8o).
-// Tex_LoadCompressedFromHandle 0x6A9CF0. ex-VeryOldClient: TEXTURE_FOR_GXD (trailer 8 o) —
-// CONFIRMED : texture monde = zlib pur ; le LoadGXCW VeryOld (chemin SOBJECT3) ne s'applique
-// PAS au monde (IDA gagne, aucune substitution GXCW).
+// read_texture_block: [imageSize u32]; if 0 -> absent (present=false).
+// Otherwise [rawSize u32][packedSize u32][zlib] -> image(imageSize)+trailer(8 bytes).
+// Tex_LoadCompressedFromHandle 0x6A9CF0. ex-VeryOldClient: TEXTURE_FOR_GXD (8-byte trailer) —
+// CONFIRMED: world texture = pure zlib; the VeryOld LoadGXCW path (SOBJECT3) does NOT
+// apply to the world (IDA wins, no GXCW substitution).
 TextureBlock ReadTextureBlock(ByteReader& r) {
     TextureBlock tb;
     const uint32_t imageSize = r.U32();
-    if (imageSize == 0) return tb; // present reste false
+    if (imageSize == 0) return tb; // present stays false
 
     const uint32_t rawSize = r.U32();
     const uint32_t packed  = r.U32();
     if (r.Remaining() < packed)
-        throw AssetError("texture : packedSize dépasse le flux");
+        throw AssetError("texture: packedSize exceeds the stream");
     std::vector<uint8_t> out = Zlib::Instance().InflateTo(r.Ptr(), packed, rawSize);
     r.Skip(packed);
     if (rawSize != imageSize + 8)
-        throw AssetError("texture : rawSize != imageSize+8");
+        throw AssetError("texture: rawSize != imageSize+8");
 
     tb.present    = true;
     tb.imageSize  = imageSize;
     tb.packedSize = packed;
 
-    // Type d'image d'après les 4 octets magiques (identique au parseur Python).
+    // Image type from the 4 magic bytes (identical to the Python parser).
     if (out.size() >= 4 && std::memcmp(out.data(), "DDS ", 4) == 0) {
         tb.imgType = "DDS";
     } else if (out.size() >= 2 && out[0] == 'B' && out[1] == 'M') {
@@ -70,16 +70,16 @@ TextureBlock ReadTextureBlock(ByteReader& r) {
         tb.imgType = hex;
     }
 
-    // Trailer : deux u32 à l'offset imageSize (out fait exactement imageSize+8).
+    // Trailer: two u32 at offset imageSize (out is exactly imageSize+8 bytes).
     std::memcpy(tb.trailer, out.data() + imageSize, 8);
-    // Image décodée = les imageSize premiers octets.
+    // Decoded image = the first imageSize bytes.
     tb.data.assign(out.begin(), out.begin() + imageSize);
     return tb;
 }
 
-// read_anim_track : [present u32] ; si !=0 -> bloc GXD (8o en-tête + 28o*frames*tracks).
-// Anim_LoadQuatTrackFromHandle 0x6AAE20. ex-VeryOldClient: MOTION_MATRIX (record 28 o =
-// keyframe quaternion+translation, réutilisé, CONFIRMED).
+// read_anim_track: [present u32]; if !=0 -> GXD block (8-byte header + 28 bytes*frames*tracks).
+// Anim_LoadQuatTrackFromHandle 0x6AAE20. ex-VeryOldClient: MOTION_MATRIX (28-byte record =
+// quaternion+translation keyframe, reused, CONFIRMED).
 AnimTrack ReadAnimTrack(ByteReader& r) {
     AnimTrack at;
     const uint32_t present = r.U32();
@@ -88,13 +88,13 @@ AnimTrack ReadAnimTrack(ByteReader& r) {
     uint32_t raw = 0, packed = 0;
     std::vector<uint8_t> out = ReadGxdBlock(r, raw, packed);
     if (out.size() < 8)
-        throw AssetError("anim : bloc trop court pour l'en-tête");
+        throw AssetError("anim: block too short for the header");
     uint32_t numFrames = 0, numTracks = 0;
     std::memcpy(&numFrames, out.data() + 0, 4);
     std::memcpy(&numTracks, out.data() + 4, 4);
     const uint64_t expect = 8ull + 28ull * numFrames * numTracks;
     if (raw != expect)
-        throw AssetError("anim : rawSize != 8 + 28*frames*tracks");
+        throw AssetError("anim: rawSize != 8 + 28*frames*tracks");
 
     at.present = true;
     at.frames  = numFrames;
@@ -103,8 +103,8 @@ AnimTrack ReadAnimTrack(ByteReader& r) {
     return at;
 }
 
-// Décode un sommet terrain 40o (FVF 530 = XYZ|NORMAL|TEX2). Gap G7.
-// Position@0 (prouvée barycentrique) puis normal@12, uv0@24, uv1@32 (interprétation FVF).
+// Decodes a 40-byte terrain vertex (FVF 530 = XYZ|NORMAL|TEX2). Gap G7.
+// Position@0 (proven barycentric) then normal@12, uv0@24, uv1@32 (FVF interpretation).
 void ReadTerrainVertex(ByteReader& r, TerrainVertex& v) {
     v.position[0] = r.F32(); v.position[1] = r.F32(); v.position[2] = r.F32(); // +0
     v.normal[0]   = r.F32(); v.normal[1]   = r.F32(); v.normal[2]   = r.F32(); // +12
@@ -112,14 +112,14 @@ void ReadTerrainVertex(ByteReader& r, TerrainVertex& v) {
     v.uv1[0] = r.F32(); v.uv1[1] = r.F32();                                    // +32
 }
 
-// parse_collision_mesh : opère sur le buffer déjà décompressé (buf déplacé dans mesh.raw).
-// Décodage TYPÉ (Gaps G4/G5/G7) : ordre de lecture = miroir de MapColl_LoadFaces 0x694510.
-// Layouts prouvés via IDA (voir WorldChunk.h : CollisionFace/CollisionQuadNode/TerrainVertex).
+// parse_collision_mesh: operates on the already-decompressed buffer (buf moved into mesh.raw).
+// TYPED decoding (Gaps G4/G5/G7): read order mirrors MapColl_LoadFaces 0x694510.
+// Layouts proven via IDA (see WorldChunk.h: CollisionFace/CollisionQuadNode/TerrainVertex).
 CollisionMesh ParseCollisionMesh(std::vector<uint8_t> buf) {
     CollisionMesh cm;
     ByteReader m(buf);
 
-    // --- Faces (Gap G4) : numTri × 156o -----------------------------------
+    // --- Faces (Gap G4): numTri × 156 bytes -----------------------------------
     const uint32_t numTri = m.U32();
     cm.tris.reserve(numTri);
     cm.vertices.reserve(static_cast<size_t>(numTri) * 3u);
@@ -135,39 +135,39 @@ CollisionMesh ParseCollisionMesh(std::vector<uint8_t> buf) {
         f.sphereCenter[1] = m.F32();                          // +144
         f.sphereCenter[2] = m.F32();                          // +148
         f.sphereRadius    = m.F32();                          // +152
-        // Sommets à plat (miroir du VB dynamique Terrain_Render a1+164, upload 120o/face).
+        // Flat vertices (mirrors the dynamic VB in Terrain_Render a1+164, 120 bytes/face upload).
         cm.vertices.push_back(f.v0);
         cm.vertices.push_back(f.v1);
         cm.vertices.push_back(f.v2);
         cm.tris.push_back(f);
     }
 
-    // --- Quadtree (Gap G5) : numNodes nœuds disque -> nœuds 48o + index agrégé ---
+    // --- Quadtree (Gap G5): numNodes on-disk nodes -> 48-byte nodes + aggregated index ---
     const uint32_t numNodes = m.U32();
-    const uint32_t field34  = m.U32();       // (this+34) compteur global d'index (leafFaceRefTotal)
+    const uint32_t field34  = m.U32();       // (this+34) global index counter (leafFaceRefTotal)
     cm.nodes.reserve(numNodes);
     uint32_t totalIdx = 0;
     for (uint32_t i = 0; i < numNodes; ++i) {
         CollisionQuadNode node{};
         node.bboxMin[0] = m.F32(); node.bboxMin[1] = m.F32(); node.bboxMin[2] = m.F32(); // +0
         node.bboxMax[0] = m.F32(); node.bboxMax[1] = m.F32(); node.bboxMax[2] = m.F32(); // +12
-        const uint32_t numIdx = m.U32();     // +24 disque : nb d'index de faces dans ce nœud
-        const uint32_t hasIdx = m.U32();     // +28 disque : flag hasFaceRefs
+        const uint32_t numIdx = m.U32();     // +24 on disk: number of face indices in this node
+        const uint32_t hasIdx = m.U32();     // +28 on disk: hasFaceRefs flag
         node.trisNum   = numIdx;
-        node.trisIndex = static_cast<uint32_t>(cm.triIndices.size()); // offset dans le buffer agrégé
+        node.trisIndex = static_cast<uint32_t>(cm.triIndices.size()); // offset into the aggregated buffer
         if (hasIdx) {
             for (uint32_t k = 0; k < numIdx; ++k)
-                cm.triIndices.push_back(m.U32()); // index u32 dans tris[] (feuille)
+                cm.triIndices.push_back(m.U32()); // u32 index into tris[] (leaf)
             totalIdx += numIdx;
         }
-        node.child[0] = m.I32();             // +32 disque : children[4] u32
-        node.child[1] = m.I32();             //   child[0]==-1 => feuille
+        node.child[0] = m.I32();             // +32 on disk: children[4] u32
+        node.child[1] = m.I32();             //   child[0]==-1 => leaf
         node.child[2] = m.I32();
         node.child[3] = m.I32();
         cm.nodes.push_back(node);
     }
     if (!m.Eof())
-        throw AssetError("collision : octets restants après le quadtree");
+        throw AssetError("collision: leftover bytes after the quadtree");
 
     cm.numTri       = numTri;
     cm.numNodes     = numNodes;
@@ -177,14 +177,14 @@ CollisionMesh ParseCollisionMesh(std::vector<uint8_t> buf) {
     return cm;
 }
 
-// NOTE (dédup audit 2026-07-17) : le décodage des 120 o d'en-tête matériau est
-// FACTORISÉ dans asset::DecodeMeshPartMaterialHeader (déclaré Model.h:294, défini
-// Model.cpp) — les .WO et .MOBJECT passent par le MÊME MeshPart_Load 0x6AD160, donc
-// l'en-tête est BYTE-IDENTIQUE : un seul corps évite toute divergence future. Ici on
-// l'appelle avec `mp.geo` (bloc géométrie ≥ 136 o garanti) ; il ne lit que les 120
-// premiers octets. Mapping cross-prouvé écriture↔lecture : voir Model.cpp.
+// NOTE (dedup audit 2026-07-17): decoding of the 120-byte material header is
+// FACTORED into asset::DecodeMeshPartMaterialHeader (declared Model.h:294, defined
+// Model.cpp) — .WO and .MOBJECT go through the SAME MeshPart_Load 0x6AD160, so
+// the header is BYTE-IDENTICAL: a single body avoids any future divergence. Here it's
+// called with `mp.geo` (geometry block >= 136 bytes guaranteed); it only reads the first
+// 120 bytes. Cross-proven write<->read mapping: see Model.cpp.
 
-// read_meshpart : [present u32] ; si !=0 -> bloc GXD géométrie + tex1 + tex2 + matériaux.
+// read_meshpart: [present u32]; if !=0 -> GXD geometry block + tex1 + tex2 + materials.
 WorldMeshPart ReadMeshPart(ByteReader& r) {
     WorldMeshPart mp;
     const uint32_t present = r.U32();
@@ -193,12 +193,12 @@ WorldMeshPart ReadMeshPart(ByteReader& r) {
     uint32_t raw = 0, packed = 0;
     std::vector<uint8_t> out = ReadGxdBlock(r, raw, packed);
     if (out.size() < 136)
-        throw AssetError("meshpart : bloc géométrie trop court");
+        throw AssetError("meshpart: geometry block too short");
     uint32_t A = 0, B = 0, C = 0, D = 0;
     std::memcpy(&A, out.data() + 120, 4);    // Heap[30]
     std::memcpy(&B, out.data() + 124, 4);    // Heap[31]
     std::memcpy(&C, out.data() + 128, 4);    // Heap[32]
-    std::memcpy(&D, out.data() + 132, 4);    // Heap[33] (nb triangles)
+    std::memcpy(&D, out.data() + 132, 4);    // Heap[33] (triangle count)
     const uint64_t expect =
         136ull + (static_cast<uint64_t>(A) << 6) +
         32ull * A * B + 6ull * D;
@@ -207,11 +207,11 @@ WorldMeshPart ReadMeshPart(ByteReader& r) {
     mp.A = A; mp.B = B; mp.C = C; mp.D = D;
     mp.geoSizeOk = (static_cast<uint64_t>(raw) == expect);
     mp.geo       = std::move(out);
-    // Décode les 120 premiers octets du bloc géométrie (= en-tête matériau Heap[0..29]) en champs
-    // nommés (ADDITIF : `geo` intact). Décodeur PARTAGÉ avec le .MOBJECT (MeshPart_Load 0x6AD160).
+    // Decodes the first 120 bytes of the geometry block (= material header Heap[0..29]) into
+    // named fields (ADDITIVE: `geo` stays intact). Decoder SHARED with the .MOBJECT (MeshPart_Load 0x6AD160).
     DecodeMeshPartMaterialHeader(mp.geo, mp.mat);
-    mp.tex1      = ReadTextureBlock(r);      // this+296 (base ; tex1.mode() = base blend this[85])
-    mp.tex2      = ReadTextureBlock(r);      // this+348 (2e   ; tex2.mode() = 2e blend   this[98])
+    mp.tex1      = ReadTextureBlock(r);      // this+296 (base; tex1.mode() = base blend this[85])
+    mp.tex2      = ReadTextureBlock(r);      // this+348 (2nd; tex2.mode() = 2nd blend  this[98])
     const uint32_t numMat = r.U32();         // this+400
     mp.materials.reserve(numMat);
     for (uint32_t i = 0; i < numMat; ++i)
@@ -219,7 +219,7 @@ WorldMeshPart ReadMeshPart(ByteReader& r) {
     return mp;
 }
 
-// read_model : [present u32] ; si !=0 -> [numParts u32] + numParts MeshPart.
+// read_model: [present u32]; if !=0 -> [numParts u32] + numParts MeshPart.
 Model ReadModel(ByteReader& r) {
     Model md;
     const uint32_t present = r.U32();
@@ -232,20 +232,20 @@ Model ReadModel(ByteReader& r) {
     return md;
 }
 
-// read_fxnode : [present u32] ; si !=0 -> texture + piste anim + 144o de champs émetteur.
-// Ancre IDA : Fx_NodeLoadFromHandle 0x6a69f0 (18 ReadFile après texture+anim = 144 o disque).
+// read_fxnode: [present u32]; if !=0 -> texture + anim track + 144 bytes of emitter fields.
+// IDA anchor: Fx_NodeLoadFromHandle 0x6a69f0 (18 ReadFile calls after texture+anim = 144 bytes on disk).
 FxNode ReadFxNode(ByteReader& r) {
     FxNode fn;
     const uint32_t present = r.U32();
     if (present == 0) return fn;
     fn.tex    = ReadTextureBlock(r);         // this+1  Tex_LoadCompressedFromHandle 0x6a9cf0
     fn.anim   = ReadAnimTrack(r);            // this+14 Anim_LoadQuatTrackFromHandle 0x6aae20
-    fn.fields = ReadBlob(r, 144);            // [runtime +72, +216) : blob brut (parseur inchangé)
+    fn.fields = ReadBlob(r, 144);            // [runtime +72, +216): raw blob (parser unchanged)
     fn.present = true;
 
-    // Vue typée décodée depuis `fields` (offset = runtime - 72). Les 144 o sont lus dans l'ordre
-    // exact de Fx_NodeLoadFromHandle 0x6a69f0 ; seuls les champs à sémantique cohérente sont
-    // exposés (la queue +132.. reste dans `fields`, cf. WorldChunk.h).
+    // Typed view decoded from `fields` (offset = runtime - 72). The 144 bytes are read in the
+    // exact order of Fx_NodeLoadFromHandle 0x6a69f0; only fields with a coherent semantics are
+    // exposed (the tail +132.. stays in `fields`, cf. WorldChunk.h).
     const uint8_t* f = fn.fields.data();
     auto rf = [f](size_t off) { float v; std::memcpy(&v, f + off, 4); return v; };
     auto ru = [f](size_t off) { uint32_t v; std::memcpy(&v, f + off, 4); return v; };
@@ -263,9 +263,9 @@ FxNode ReadFxNode(ByteReader& r) {
     return fn;
 }
 
-// ---- parseurs de fichier complet --------------------------------------------
+// ---- full-file parsers --------------------------------------------
 
-// parse_WM (et .WJ) : un seul bloc GXD = maillage de collision, puis EOF.
+// parse_WM (and .WJ): a single GXD block = collision mesh, then EOF.
 MapCollisionChunk ParseWM(ByteReader& r) {
     MapCollisionChunk out;
     uint32_t raw = 0, packed = 0;
@@ -274,11 +274,11 @@ MapCollisionChunk ParseWM(ByteReader& r) {
     out.rawSize    = raw;
     out.packedSize = packed;
     if (!r.Eof())
-        throw AssetError("WM/WJ : octets après le bloc GXD");
+        throw AssetError("WM/WJ: bytes remaining after the GXD block");
     return out;
 }
 
-// parse_WG : bloc GXD géométrie + [numMat u32] + numMat textures + table d'index.
+// parse_WG: GXD geometry block + [numMat u32] + numMat textures + index table.
 MapFaceChunk ParseWG(ByteReader& r) {
     MapFaceChunk out;
     uint32_t raw = 0, packed = 0;
@@ -291,26 +291,26 @@ MapFaceChunk ParseWG(ByteReader& r) {
     out.textures.reserve(numMat);
     for (uint32_t i = 0; i < numMat; ++i)
         out.textures.push_back(ReadTextureBlock(r));
-    out.materialIndices.reserve(numMat);     // this+36 : table d'index matériaux
+    out.materialIndices.reserve(numMat);     // this+36: material index table
     for (uint32_t i = 0; i < numMat; ++i)
         out.materialIndices.push_back(r.U32());
     out.numMaterials = numMat;
 
     if (!r.Eof())
-        throw AssetError("WG : octets restants à EOF");
+        throw AssetError("WG: bytes remaining at EOF");
     return out;
 }
 
-// Extrait le nom NUL-terminé ASCII/MBCS en tête d'un enregistrement placements[] de 100 o
-// (le reste est du bourrage non lu par le moteur, cf. Docs/TS2_WO_PLACEMENT_FORMAT.md).
+// Extracts the NUL-terminated ASCII/MBCS name at the head of a 100-byte placements[] record
+// (the rest is padding not read by the engine, cf. Docs/TS2_WO_PLACEMENT_FORMAT.md).
 std::string ExtractPlacementName(const uint8_t* rec, size_t recSize) {
     const void* nul = std::memchr(rec, '\0', recSize);
     const size_t len = nul ? (static_cast<const uint8_t*>(nul) - rec) : recSize;
     return std::string(reinterpret_cast<const char*>(rec), len);
 }
 
-// Décode le tableau d'instances placées (28 o/instance sur disque, format confirmé par
-// désassemblage : voir AuxRecord dans WorldChunk.h et Docs/TS2_WO_PLACEMENT_FORMAT.md).
+// Decodes the placed-instance array (28 bytes/instance on disk, format confirmed by
+// disassembly: see AuxRecord in WorldChunk.h and Docs/TS2_WO_PLACEMENT_FORMAT.md).
 std::vector<AuxRecord> ReadAuxRecords(ByteReader& r, uint32_t numAux) {
     std::vector<AuxRecord> out;
     out.reserve(numAux);
@@ -324,33 +324,33 @@ std::vector<AuxRecord> ReadAuxRecords(ByteReader& r, uint32_t numAux) {
     return out;
 }
 
-// parse_WO : [numModels u32] + modèles + placements + [numAux u32] + records aux.
+// parse_WO: [numModels u32] + models + placements + [numAux u32] + aux records.
 ObjectChunk ParseWO(ByteReader& r) {
     ObjectChunk out;
     const uint32_t numModels = r.U32();      // this+23
     if (numModels == 0) {
         out.empty = true;
-        if (!r.Eof()) throw AssetError("WO : données après numModels=0");
+        if (!r.Eof()) throw AssetError("WO: data after numModels=0");
         return out;
     }
     out.models.reserve(numModels);
     for (uint32_t i = 0; i < numModels; ++i)
         out.models.push_back(ReadModel(r));
-    out.placements = ReadBlob(r, 100ull * numModels); // this+25 : 100o/modèle (métadonnée gabarit)
+    out.placements = ReadBlob(r, 100ull * numModels); // this+25: 100 bytes/model (template metadata)
     out.placementNames.reserve(numModels);
     for (uint32_t i = 0; i < numModels; ++i)
         out.placementNames.push_back(
             ExtractPlacementName(out.placements.data() + 100ull * i, 100));
     const uint32_t numAux = r.U32();                  // this+26
-    out.auxRecords = ReadAuxRecords(r, numAux);       // LE PLACEMENT : 28o/instance (modelIndex+pos+rot)
+    out.auxRecords = ReadAuxRecords(r, numAux);       // THE PLACEMENT: 28 bytes/instance (modelIndex+pos+rot)
     out.numAux = numAux;
     if (!r.Eof())
-        throw AssetError("WO : octets restants à EOF");
+        throw AssetError("WO: bytes remaining at EOF");
     return out;
 }
 
-// Décode les instances FX placées (28 o/instance : nodeIndex u32 + pos 12o + rot 12o).
-// Ancre IDA : MapColl_LoadObjectsB 0x6983b0 @0x698602 (ReadFile +0/4, +4/12, +16/12).
+// Decodes placed FX instances (28 bytes/instance: nodeIndex u32 + pos 12b + rot 12b).
+// IDA anchor: MapColl_LoadObjectsB 0x6983b0 @0x698602 (ReadFile +0/4, +4/12, +16/12).
 std::vector<AuxFxRecord> ReadAuxFxRecords(ByteReader& r, uint32_t numFxb) {
     std::vector<AuxFxRecord> out;
     out.reserve(numFxb);
@@ -364,40 +364,40 @@ std::vector<AuxFxRecord> ReadAuxFxRecords(ByteReader& r, uint32_t numFxb) {
     return out;
 }
 
-// parse_WP : [numFx u32] + nœuds FX + placements + [numFxb u32] + records B (instances placées).
+// parse_WP: [numFx u32] + FX nodes + placements + [numFxb u32] + B records (placed instances).
 FxChunk ParseWP(ByteReader& r) {
     FxChunk out;
     const uint32_t numFx = r.U32();          // this+28
     if (numFx == 0) {
         out.empty = true;
-        if (!r.Eof()) throw AssetError("WP : données après numFx=0");
+        if (!r.Eof()) throw AssetError("WP: data after numFx=0");
         return out;
     }
     out.nodes.reserve(numFx);
     for (uint32_t i = 0; i < numFx; ++i)
         out.nodes.push_back(ReadFxNode(r));
-    out.placements = ReadBlob(r, 100ull * numFx);     // this+30 : 100o/fx
+    out.placements = ReadBlob(r, 100ull * numFx);     // this+30: 100 bytes/fx
     const uint32_t numFxb = r.U32();                  // this+31
-    out.fxbRecords = ReadAuxFxRecords(r, numFxb);     // 28o disque (nodeIndex+pos+rot)
+    out.fxbRecords = ReadAuxFxRecords(r, numFxb);     // 28 bytes on disk (nodeIndex+pos+rot)
     out.numFxb = numFxb;
     if (!r.Eof())
-        throw AssetError("WP : octets restants à EOF");
+        throw AssetError("WP: bytes remaining at EOF");
     return out;
 }
 
-// read_meshpart_B : reproduit UNE part de cMesh_ReadFromStream 0x436CA0 (Format B). Renvoie
-// present==false quand le flag de tête est 0 (fin du walker). RÈGLE #4 : le bloc géométrie est
-// du zlib PUR (ReadGxdBlock), jamais XTEA/GXCW. Textures = ReadTextureBlock (framing identique
-// à Tex_ReadPacked 0x417740, prouvé).
+// read_meshpart_B: reproduces ONE part of cMesh_ReadFromStream 0x436CA0 (Format B). Returns
+// present==false when the head flag is 0 (end of walker). RULE #4: the geometry block is
+// PURE zlib (ReadGxdBlock), never XTEA/GXCW. Textures = ReadTextureBlock (framing identical
+// to Tex_ReadPacked 0x417740, proven).
 MeshFormatBPart ReadMeshFormatBPart(ByteReader& r) {
     MeshFormatBPart mp;
     const uint32_t present = r.U32();        // a1+188
-    if (present == 0) return mp;             // fin de walker
+    if (present == 0) return mp;             // end of walker
 
     uint32_t raw = 0, packed = 0;
     std::vector<uint8_t> heap = ReadGxdBlock(r, raw, packed); // [rawSize][packedSize][zlib]
     if (heap.size() < 176)
-        throw AssetError("meshB : bloc géométrie trop court (<176)");
+        throw AssetError("meshB: geometry block too short (<176)");
     std::memcpy(mp.header, heap.data() + 0, 136);        // qmemcpy(a1+192, Heap, 0x88)
     std::memcpy(mp.subHeader, heap.data() + 136, 40);    // qmemcpy(a1+144, Heap+136, 0x28)
     std::memcpy(&mp.numVerts, mp.header + 120, 4);       // a1+312
@@ -406,9 +406,9 @@ MeshFormatBPart ReadMeshFormatBPart(ByteReader& r) {
 
     const size_t vbBytes = 32ull * mp.numVerts;
     const size_t ibBytes = 6ull * mp.numFaces;
-    // Heap+176 = stream 0 ; Heap+176+32*B = stream 1 ; puis 6*D indices.
+    // Heap+176 = stream 0; Heap+176+32*B = stream 1; then 6*D bytes of indices.
     if (heap.size() < 176 + 2 * vbBytes + ibBytes)
-        throw AssetError("meshB : bloc géométrie incohérent (streams/indices hors limites)");
+        throw AssetError("meshB: geometry block inconsistent (streams/indices out of bounds)");
     const uint8_t* p = heap.data() + 176;
     mp.vb0.assign(p, p + vbBytes);          p += vbBytes;   // a1+348 (Crt_Memcpy Heap+176)
     mp.vb1.assign(p, p + vbBytes);          p += vbBytes;   // a1+352 (Heap+176+32*B)
@@ -419,29 +419,29 @@ MeshFormatBPart ReadMeshFormatBPart(ByteReader& r) {
     const uint32_t numMat = r.U32();        // a1+480
     mp.materials.reserve(numMat);
     for (uint32_t i = 0; i < numMat; ++i)
-        mp.materials.push_back(ReadTextureBlock(r)); // a1+484 (56o runtime chacune)
+        mp.materials.push_back(ReadTextureBlock(r)); // a1+484 (56 bytes runtime each)
 
     mp.present = true;
     return mp;
 }
 
-// parse_SOBJECT_B : walker multi-part. Boucle ReadMeshFormatBPart tant que present != 0
-// (chaque part auto-délimitée par son propre flag de tête). Ancre IDA : cMesh_ReadFromStream
-// 0x436CA0 rappelé en boucle par l'appelant du client d'origine.
+// parse_SOBJECT_B: multi-part walker. Loops ReadMeshFormatBPart while present != 0
+// (each part is self-delimited by its own head flag). IDA anchor: cMesh_ReadFromStream
+// 0x436CA0 called in a loop by the original client's caller.
 MeshFormatBChunk ParseMeshFormatB(ByteReader& r) {
     MeshFormatBChunk out;
     for (;;) {
         MeshFormatBPart part = ReadMeshFormatBPart(r);
-        if (!part.present) break;   // flag 0 -> plus de part
+        if (!part.present) break;   // flag 0 -> no more parts
         out.parts.push_back(std::move(part));
-        if (r.Eof()) break;         // flux épuisé (le flag 0 final peut être absent en fin de fichier)
+        if (r.Eof()) break;         // stream exhausted (the final flag-0 marker can be absent at EOF)
     }
     return out;
 }
 
-} // namespace (anonyme)
+} // namespace (anonymous)
 
-// ---- API publique -----------------------------------------------------------
+// ---- public API -----------------------------------------------------------
 
 void WorldChunk::Reset() {
     type_ = WorldChunkType::Unknown;
@@ -559,7 +559,7 @@ std::string WorldChunk::Describe() const {
 }
 
 WorldChunkType WorldChunkTypeFromExtension(const std::string& path) {
-    // Extrait l'extension (après le dernier '.'), en majuscules.
+    // Extracts the extension (after the last '.'), uppercased.
     const size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) return WorldChunkType::Unknown;
     std::string ext = path.substr(dot + 1);

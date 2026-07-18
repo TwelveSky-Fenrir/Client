@@ -1,39 +1,41 @@
-// Gfx/SilverLiningSky.h — module AUTONOME d'intégration du VRAI SDK SilverLining (DirectX9),
-// gardé par un flag de compilation. C'est le point d'entrée « ciel SilverLining » du client
-// réécrit ; il NE remplace PAS Gfx/SkyRenderer (gradient procédural) — le câblage entre les deux
-// (priorité vrai-ciel vs repli gradient) est laissé à l'intégrateur (App/Scene).
+// Gfx/SilverLiningSky.h — STANDALONE module integrating the REAL SilverLining SDK (DirectX9),
+// gated by a compile flag. This is the "SilverLining sky" entry point of the rewritten client;
+// it does NOT replace Gfx/SkyRenderer (procedural gradient) — wiring the two together
+// (real-sky priority vs. gradient fallback) is left to the integrator (App/Scene).
 //
-// === CONSTAT DÉCISIF (PROUVÉ, cf. Docs/TS2_SILVERLINING_INTEGRATION.md) ===
-//   Le SDK SilverLining de TwelveSky2 a DEUX couches :
-//     1. Un MOTEUR HAUT NIVEAU (classe SilverLining::Atmosphere : Initialize/BeginFrame/EndFrame/
-//        GetSunOrMoonColor/…) compilé STATIQUEMENT dans TwelveSky2.exe d'origine (cf.
-//        TS2_SILVERLINING_PIPELINE.md §1). Il est fourni par la bibliothèque statique
-//        `SilverLining-MT.lib`, NON redistribuable et ABSENTE du dépôt.
-//     2. Un BACKEND RENDERER bas niveau `SilverLiningDirectX9-MT.dll` (91 exports C, l'interface
-//        de SilverLiningDLLCommon.h : SetEnvironment/SetContext/DrawStrip/…), chargé DYNAMIQUEMENT
-//        au runtime par SL_Renderer_LoadBackendDLL 0x71F300. CE fichier-là EST présent (vendored
-//        sous external/SilverLining/VC9/win32/) — cf. RE/silverlining_exports.txt.
-//   Conséquence : sans la couche 1, la classe Atmosphere n'est pas linkable → le vrai ciel ne peut
-//   PAS rendre. On NE fabrique PAS une fausse API Atmosphere (règle projet « N'INVENTE RIEN »).
+// === DECISIVE FINDING (PROVEN, cf. Docs/TS2_SILVERLINING_INTEGRATION.md) ===
+//   The TwelveSky2 SilverLining SDK has TWO layers:
+//     1. A HIGH-LEVEL ENGINE (class SilverLining::Atmosphere: Initialize/BeginFrame/EndFrame/
+//        GetSunOrMoonColor/…) compiled STATICALLY into the original TwelveSky2.exe (cf.
+//        TS2_SILVERLINING_PIPELINE.md §1). Provided by the static library
+//        `SilverLining-MT.lib`, NOT redistributable and ABSENT from the repo.
+//     2. A low-level BACKEND RENDERER `SilverLiningDirectX9-MT.dll` (91 C exports, the
+//        SilverLiningDLLCommon.h interface: SetEnvironment/SetContext/DrawStrip/…), loaded
+//        DYNAMICALLY at runtime by SL_Renderer_LoadBackendDLL 0x71F300. THIS file IS present
+//        (vendored under external/SilverLining/VC9/win32/) — cf. RE/silverlining_exports.txt.
+//   Consequence: without layer 1, the Atmosphere class isn't linkable -> the real sky cannot
+//   render. We do NOT fabricate a fake Atmosphere API ("DON'T INVENT ANYTHING" project rule).
 //
 // === GATING ===
-//   TS2_SILVERLINING_ENGINE_AVAILABLE (défaut 0) :
-//     • == 1 (quand SilverLining-MT.lib sera fourni hors dépôt + external/SilverLining/Include au
-//       chemin d'inclusion) : le .cpp #include "Atmosphere.h" et appelle la VRAIE API SDK (mapping
-//       prouvé depuis les en-têtes réels — Atmosphere.h/AtmosphericConditions.h/Location.h/LocalTime.h).
-//     • == 0 (réalité actuelle) : Init charge quand même le VRAI backend DLL (LoadLibraryA +
-//       GetProcAddress SetEnvironment/SetContext — fidèle à 0x71F300, prouve que le renderer réel
-//       est câblé) mais retourne false (EngineUnavailable), car aucune géométrie de ciel ne peut
-//       être émise sans le moteur. Les autres méthodes sont des no-op documentées.
+//   TS2_SILVERLINING_ENGINE_AVAILABLE (default 0):
+//     - == 1 (once SilverLining-MT.lib is supplied out-of-repo + external/SilverLining/Include
+//       is on the include path): the .cpp #include "Atmosphere.h" and calls the REAL SDK API
+//       (mapping proven from the actual headers — Atmosphere.h/AtmosphericConditions.h/
+//       Location.h/LocalTime.h).
+//     - == 0 (current reality): Init still loads the REAL backend DLL (LoadLibraryA +
+//       GetProcAddress SetEnvironment/SetContext — faithful to 0x71F300, proves the real
+//       renderer is wired) but returns false (EngineUnavailable), since no sky geometry can be
+//       emitted without the engine. The other methods are documented no-ops.
 //
-//   ⚠ Le module compile SEUL, SANS external/SilverLining/Include : le bloc gardé-OFF n'inclut aucun
-//   en-tête SDK. L'include SDK n'est requis QUE pour le mode moteur (== 1) — cf. le .cpp.
+//   Note: the module compiles ALONE, WITHOUT external/SilverLining/Include: the gated-OFF
+//   block includes no SDK header. The SDK include is only required for engine mode (== 1) —
+//   see the .cpp.
 #pragma once
 
 #include <windows.h>
 #include <d3d9.h>
 
-// Flag de gating — défini à 0 (moteur statique absent) si l'environnement de build ne l'impose pas.
+// Gating flag — defaults to 0 (static engine absent) unless the build environment overrides it.
 #ifndef TS2_SILVERLINING_ENGINE_AVAILABLE
 #define TS2_SILVERLINING_ENGINE_AVAILABLE 0
 #endif
@@ -44,75 +46,75 @@ namespace ts2::gfx {
 
 class Camera;
 
-// Enveloppe du moteur d'atmosphère SilverLining réel (DirectX9). API demandée par la tâche ;
-// sémantique de chaque méthode : voir les commentaires + le .cpp (mode moteur vs mode repli).
+// Wrapper around the real SilverLining atmosphere engine (DirectX9). API requested by the task;
+// semantics of each method: see comments + the .cpp (engine mode vs. fallback mode).
 class SilverLiningSky {
 public:
-    // Prépare le ciel SilverLining pour le device D3D9 donné.
-    //   resourceDir : racine des ressources SilverLining (« Resources » du SDK), c.-à-d. le dossier
-    //   qui CONTIENT VC9/win32/<backend>.dll et SilverLining.config. Dans le client réécrit, c'est
-    //   external/SilverLining/ (vendored) ; dans TS2 d'origine c'était G03_GDATA\D11_ATMOSPHERE\.
-    //   Le chemin du backend DLL est construit exactement comme SL_Renderer_LoadBackendDLL 0x71F300 :
+    // Prepares the SilverLining sky for the given D3D9 device.
+    //   resourceDir: root of the SilverLining resources (SDK's "Resources"), i.e. the folder
+    //   that CONTAINS VC9/win32/<backend>.dll and SilverLining.config. In the rewritten client
+    //   this is external/SilverLining/ (vendored); in original TS2 it was G03_GDATA\D11_ATMOSPHERE\.
+    //   The backend DLL path is built exactly as SL_Renderer_LoadBackendDLL 0x71F300 does:
     //   <resourceDir> + "VC9/win32/SilverLiningDirectX9-MT.dll" (case 1 = DIRECTX9).
     //
-    //   Retour : true UNIQUEMENT si le moteur réel a été initialisé (jamais atteignable tant que
-    //   TS2_SILVERLINING_ENGINE_AVAILABLE == 0). En mode repli, retourne toujours false
-    //   (EngineUnavailable) après avoir réellement chargé/sondé le backend DLL. L'appelant DOIT
-    //   conserver son propre repli (ex. Gfx/SkyRenderer gradient) quand Init() renvoie false.
-    // ex-VeryOldClient: CAtmosphere::Create(pResourcePath, pDevice) — CONFIRMED (licence 0x791B40 +
-    //   Atmosphere::Initialize(1,…) 0x793390 ; chemin backend fidèle à SL_Renderer_LoadBackendDLL 0x71F300).
+    //   Return: true ONLY if the real engine was initialized (never reachable while
+    //   TS2_SILVERLINING_ENGINE_AVAILABLE == 0). In fallback mode, always returns false
+    //   (EngineUnavailable) after actually loading/probing the backend DLL. The caller MUST
+    //   keep its own fallback (e.g. Gfx/SkyRenderer gradient) when Init() returns false.
+    // ex-VeryOldClient: CAtmosphere::Create(pResourcePath, pDevice) — CONFIRMED (license 0x791B40 +
+    //   Atmosphere::Initialize(1,…) 0x793390; backend path faithful to SL_Renderer_LoadBackendDLL 0x71F300).
     bool Init(IDirect3DDevice9* device, const char* resourceDir);
 
-    // Pousse l'heure/position géographique de la zone (fichier .ATM réel déjà parsé) dans les
-    // AtmosphericConditions du moteur. No-op en mode repli.
-    // ex-VeryOldClient: CAtmosphere::SetTimeAndLocation — CONFIRMED (SetLocation/SetTime ; valeurs = .ATM
-    //   de zone, Atmosphere_Deserialize 0x795A40).
+    // Pushes the zone's time/geographic position (real .ATM file already parsed) into the
+    // engine's AtmosphericConditions. No-op in fallback mode.
+    // ex-VeryOldClient: CAtmosphere::SetTimeAndLocation — CONFIRMED (SetLocation/SetTime; values = zone
+    //   .ATM, Atmosphere_Deserialize 0x795A40).
     void UpdateTime(const asset::AtmosphereFile& atm);
 
-    // Rendu ciel AVANT la géométrie de monde : SetCameraMatrix/SetProjectionMatrix + BeginFrame
-    // (ciel/soleil/lune/étoiles). Fenêtre = Env_UpdateFrame 0x412550 dans l'original. No-op sans moteur.
+    // Sky render BEFORE world geometry: SetCameraMatrix/SetProjectionMatrix + BeginFrame
+    // (sky/sun/moon/stars). Window = Env_UpdateFrame 0x412550 in the original. No-op without engine.
     // ex-VeryOldClient: CAtmosphere::StartRender (SetViewProjectionMatrix + BeginFrame) — CONFIRMED,
     //   cf. cAtmosphere_RenderFrame 0x793B80.
     void RenderSkyBefore(const Camera& camera);
 
-    // Rendu nuages/précipitations APRÈS la scène : EndFrame (tri back-to-front). No-op sans moteur.
+    // Clouds/precipitation render AFTER the scene: EndFrame (back-to-front sort). No-op without engine.
     // ex-VeryOldClient: CAtmosphere::EndRender (Atmosphere::EndFrame) — CONFIRMED, cf. Atmosphere_DrawFrame 0x794FE0.
     void RenderSkyAfter(const Camera& camera);
 
-    // Détruit l'objet Atmosphere (le dtor décharge le backend via ShutdownShaderSystem) / libère l'état.
+    // Destroys the Atmosphere object (dtor unloads the backend via ShutdownShaderSystem) / releases state.
     // ex-VeryOldClient: CAtmosphere::Destroy — CONFIRMED, cf. cAtmosphere_dtor 0x791C40.
     void Shutdown();
 
-    // --- Diagnostics (tests, logs de sanité) --------------------------------------------------
-    // ready_ : true seulement si le moteur réel est initialisé (toujours false en mode repli).
+    // --- Diagnostics (tests, sanity logs) -------------------------------------------------
+    // ready_: true only if the real engine is initialized (always false in fallback mode).
     bool Ready() const { return ready_; }
-    // backendDllFound_ : le backend redistribuable a été chargé + ses exports résolus avec succès
-    // (utile pour distinguer « DLL absente » de « DLL présente mais moteur statique manquant »).
+    // backendDllFound_: the redistributable backend was loaded + its exports resolved successfully
+    // (useful to distinguish "DLL missing" from "DLL present but static engine missing").
     bool BackendDllFound() const { return backendDllFound_; }
 
 private:
 #if TS2_SILVERLINING_ENGINE_AVAILABLE
-    // Dérive l'éclairage solaire (D3DLIGHT9) + le fog GXD depuis l'objet Atmosphere SDK et les pousse
-    // dans le device — appelé par RenderSkyBefore APRÈS BeginFrame (fenêtre = juste après
-    // cAtmosphere_RenderFrame dans Env_UpdateFrame 0x412550). Fidèle à Env_UpdateSunLight 0x412210 +
-    // Env_UpdateFogState 0x412370. No-op hors mode moteur (méthode non déclarée).
+    // Derives sun lighting (D3DLIGHT9) + GXD fog from the SDK Atmosphere object and pushes them
+    // to the device — called by RenderSkyBefore AFTER BeginFrame (window = right after
+    // cAtmosphere_RenderFrame in Env_UpdateFrame 0x412550). Faithful to Env_UpdateSunLight 0x412210 +
+    // Env_UpdateFogState 0x412370. No-op outside engine mode (method not declared).
     void applySceneLightingAndFog();
 #endif
 
     IDirect3DDevice9* dev_ = nullptr;
-    bool ready_ = false;           // moteur réel initialisé (jamais true en mode repli)
-    bool backendDllFound_ = false; // backend DLL réellement chargé+résolu (diagnostic)
+    bool ready_ = false;           // real engine initialized (never true in fallback mode)
+    bool backendDllFound_ = false; // backend DLL actually loaded+resolved (diagnostic)
 
-    // Flags de rendu de la zone (mémorisés par UpdateTime, consommés par RenderSkyBefore en mode
-    // moteur — fidèle à cAtmosphere_RenderFrame @+352/@+642, cf. TS2_SILVERLINING_CONFIG.md §3.3).
-    bool skipCelestial_ = false;   // AtmosphereFile::RenderFlagSkipCelestial() (@+352) — CONFIRMED : @+352 gate
-                                   //   tout le bloc soleil/lune/étoiles/AtmoFromSpace dans 0x793B80 (if(!@+352)).
-    bool forceBlackSky_ = false;   // AtmosphereFile::RenderFlagForceBlackSky() (@+642) — CONFIRMED : @+642 force
-                                   //   les 3 échantillons ciel/horizon à (0,0,0,1) dans 0x793B80.
-                                   //   (flags .ATM @+643/@+644 encore non identifiés, cf. CONFIG §3.2 — pas d'indice VeryOldClient.)
+    // Zone render flags (recorded by UpdateTime, consumed by RenderSkyBefore in engine mode —
+    // faithful to cAtmosphere_RenderFrame @+352/@+642, cf. TS2_SILVERLINING_CONFIG.md §3.3).
+    bool skipCelestial_ = false;   // AtmosphereFile::RenderFlagSkipCelestial() (@+352) — CONFIRMED: @+352 gates
+                                   //   the entire sun/moon/stars/AtmoFromSpace block in 0x793B80 (if(!@+352)).
+    bool forceBlackSky_ = false;   // AtmosphereFile::RenderFlagForceBlackSky() (@+642) — CONFIRMED: @+642 forces
+                                   //   the 3 sky/horizon samples to (0,0,0,1) in 0x793B80.
+                                   //   (.ATM flags @+643/@+644 still unidentified, cf. CONFIG §3.2 — no VeryOldClient hint.)
 
-    // SilverLining::Atmosphere* opaque : gardé en void* pour que ce header n'impose PAS l'include SDK
-    // (le module compile sans external/SilverLining/Include). Utilisé seulement en mode moteur.
+    // Opaque SilverLining::Atmosphere*: kept as void* so this header does NOT require the SDK
+    // include (the module compiles without external/SilverLining/Include). Used only in engine mode.
     void* atmosphere_ = nullptr;
 };
 

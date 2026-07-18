@@ -1,5 +1,5 @@
-// Tools/WorldSelfTest.cpp — voir le header. Harnais `-worldtest` (voir le perso dans le monde 3D).
-// Ordre d'inclusion : Net/ EN PREMIER (NetSystem.h tire winsock2 avant windows.h).
+// Tools/WorldSelfTest.cpp — see header. `-worldtest` harness (view the character in the 3D world).
+// Include order: Net/ FIRST (NetSystem.h pulls winsock2 before windows.h).
 #include "Net/NetSystem.h"
 #include "Tools/WorldSelfTest.h"
 #include "Net/NetClient.h"
@@ -23,7 +23,7 @@ namespace ts2::tools {
 
 namespace {
 
-// Copie locale de la logique de App::ResolveGameDataDir (cf. CharSelectSelfTest.cpp).
+// Local copy of App::ResolveGameDataDir logic (cf. CharSelectSelfTest.cpp).
 std::string ResolveGameDataDirLocal() {
     static const char* const kCandidates[] = {
         ".", "GameData", "TwelveSky2/GameData",
@@ -46,16 +46,16 @@ LRESULT CALLBACK WndProcTest(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     return DefWindowProcA(hwnd, msg, w, l);
 }
 
-// Ecrit un u32 LE a l'offset `off` du body 600 o de PlayerEntity (apparence lue par
-// Scene/WorldRenderer : body+68 race, +72 gender, +76 costumeSlot0, +80 costumeSlot1, +148 arme).
+// Writes a LE u32 at offset `off` of PlayerEntity's 600-byte body (appearance read by
+// Scene/WorldRenderer: body+68 race, +72 gender, +76 costumeSlot0, +80 costumeSlot1, +148 weapon).
 void PutBodyU32(std::array<uint8_t, 600>& body, int off, uint32_t v) {
     if (off < 0 || off + 4 > static_cast<int>(body.size())) return;
     std::memcpy(body.data() + off, &v, sizeof(v));
 }
 
-// Cherche dans mITEM le 1er item dont field196 == targetEntry (= variant de mesh d'armure de corps ;
-// C%03d{token}%03d avec suffixe field196+1). Sert a EQUIPER le self : field196=34 -> suffixe 035 =
-// l'armure "showcase" que l'ecran de creation utilise. 0 si aucun -> corps de base.
+// Searches mITEM for the first item whose field196 == targetEntry (= body armor mesh variant;
+// C%03d{token}%03d with suffix field196+1). Used to EQUIP the self: field196=34 -> suffix 035 =
+// the "showcase" armor used by the creation screen. 0 if none -> base body.
 int32_t FindEquipItemWithField196(uint32_t targetEntry) {
     for (int32_t id = 1; id <= 99999; ++id) {
         const game::ItemInfo* it = game::GetItemInfo(static_cast<uint32_t>(id));
@@ -111,13 +111,13 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
     }
 
     net::NetSystem net;
-    net.Init(); // arme les handlers ; AUCUNE connexion reelle (pas de socket ouvert)
+    net.Init(); // arms the handlers; NO real connection (no socket opened)
 
     gfx::Camera camera;
     SceneManager scene;
     scene.Init(renderer, net, hwnd, w, h, gd);
 
-    // --- Etat monde force (ce que le serveur fournit normalement via op22/op0x0c/op0x0f) ---
+    // --- Forced world state (what the server normally provides via op22/op0x0c/op0x0f) ---
     game::g_World.zoneId = zoneId;              // = g_TargetZoneId / g_SelfMorphNpcId (0x1675A98)
     game::g_World.players.clear();
     game::g_World.monsters.clear();
@@ -128,43 +128,43 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
     self.name   = "Aventurier";
     self.x = selfX; self.y = selfY; self.z = selfZ;
     self.hp = 100; self.mp = 100;
-    self.anim.state = 1;                        // STAND (idle) — DEEP IDA render : etat 1 debout (pas 0=spawn)
-    // Apparence (mêmes bornes que -charselecttest, résout C001001001/C001002001/... sur disque).
+    self.anim.state = 1;                        // STAND (idle) — DEEP IDA render: state 1 standing (not 0=spawn)
+    // Appearance (same bounds as -charselecttest, resolves C001001001/C001002001/... on disk).
     PutBodyU32(self.body, 68, 0);  // race
     PutBodyU32(self.body, 72, 0);  // gender
     PutBodyU32(self.body, 76, 0);  // costume slot0
     PutBodyU32(self.body, 80, 0);  // costume slot1
-    // ARMURE (G3, DEEP IDA #5) : equip[2]=body+108 (torse token 003), equip[5]=body+132 (jambes token
-    // 004). Le CODE G3 (PlayerPaperdoll) resout le variant via ITEM_INFO+196 -> C%03d003{f196+1}. ⚠ Le
-    // rendu in-world de l'armure "showcase" (field196=34 -> C003035, 6 meshes) presente un ECART (pieces
-    // detachees + sombre) alors que la MEME armure rend PROPREMENT en CharSelect (meme fichier) -> ecart
-    // de PALETTE/rendu PlayerPaperdoll vs CharPreview3D, A INVESTIGUER. On laisse le self en corps de base
-    // (equip 0 -> variantEff 0 -> C%03d003001, l'entree AssetMgr catalogue[0]) pour une demo propre.
-    // Pour tester l'armure : decommenter (FindEquipItemWithField196 + PutBodyU32 108/132).
-    const int32_t armorItem = 0; // FindEquipItemWithField196(34); -- OFF : scatter armure multi-mesh non resolu (SUIVI)
+    // ARMOR (G3, DEEP IDA #5): equip[2]=body+108 (torso token 003), equip[5]=body+132 (legs token
+    // 004). The G3 CODE (PlayerPaperdoll) resolves the variant via ITEM_INFO+196 -> C%03d003{f196+1}. ⚠ The
+    // in-world render of the "showcase" armor (field196=34 -> C003035, 6 meshes) shows a MISMATCH (detached
+    // pieces + dark) whereas the SAME armor renders CLEANLY in CharSelect (same file) -> PALETTE/render
+    // gap between PlayerPaperdoll vs CharPreview3D, TO INVESTIGATE. Leaves the self in base body
+    // (equip 0 -> variantEff 0 -> C%03d003001, AssetMgr catalog entry[0]) for a clean demo.
+    // To test the armor: uncomment (FindEquipItemWithField196 + PutBodyU32 108/132).
+    const int32_t armorItem = 0; // FindEquipItemWithField196(34); -- OFF: multi-mesh armor scatter unresolved (TRACKED)
     TS2_LOG("WorldSelfTest : armure equipee id=%d (0 = corps de base).", armorItem);
-    PutBodyU32(self.body, 108, static_cast<uint32_t>(armorItem)); // equip[2] = torse
-    PutBodyU32(self.body, 132, static_cast<uint32_t>(armorItem)); // equip[5] = jambes
+    PutBodyU32(self.body, 108, static_cast<uint32_t>(armorItem)); // equip[2] = torso
+    PutBodyU32(self.body, 132, static_cast<uint32_t>(armorItem)); // equip[5] = legs
     game::g_World.players.push_back(self);
 
-    // Joueur DISTANT (race 1, genre 1 = femme) a cote : montre le rendu MULTI-JOUEURS + la variete
-    // d'apparence in-world (MEME chemin PlayerPaperdoll que le self, idx>0). Position dans le champ
-    // de la camera 3e personne (self + offset).
+    // REMOTE player (race 1, gender 1 = female) alongside: shows MULTI-PLAYER rendering + in-world
+    // appearance variety (SAME PlayerPaperdoll path as self, idx>0). Positioned within the 3rd-person
+    // camera field (self + offset).
     game::PlayerEntity distant{};
     distant.active  = true;
     distant.name    = "Compagnon";
     distant.x = selfX + 22.0f; distant.y = selfY; distant.z = selfZ + 6.0f;
     distant.hp = 100; distant.mp = 100;
-    distant.heading = 200.0f;      // orientation differente du self
+    distant.heading = 200.0f;      // heading different from self
     PutBodyU32(distant.body, 68, 1);  // race 1
-    PutBodyU32(distant.body, 72, 1);  // gender 1 (femme)
+    PutBodyU32(distant.body, 72, 1);  // gender 1 (female)
     PutBodyU32(distant.body, 76, 0);
     PutBodyU32(distant.body, 80, 0);
     game::g_World.players.push_back(distant);
     TS2_LOG("WorldSelfTest : zone=%d self=(%.1f,%.1f,%.1f) injecte a players[0].",
             zoneId, selfX, selfY, selfZ);
 
-    // Sauve le back-buffer courant dans un PNG (verification visuelle sans acces ecran).
+    // Saves the current back buffer to a PNG (visual verification without screen access).
     auto capturePng = [&](const char* file) {
         IDirect3DSurface9* bb = nullptr;
         if (SUCCEEDED(renderer.Device()->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
@@ -174,16 +174,16 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
         }
     };
 
-    // Etape 1 : flux EnterWorld -> charge les 12 ressources de zone (surtout .WG terrain) dans
-    // worldAssets_ (World_LoadZoneResource 0x4DCB60). L'envoi op12 echoue (pas de socket) mais
-    // le chargement de zone a lieu AVANT (etat LoadZoneResources), donc la zone est prete.
+    // Step 1: EnterWorld flow -> loads the 12 zone resources (mainly .WG terrain) into
+    // worldAssets_ (World_LoadZoneResource 0x4DCB60). The op12 send fails (no socket) but
+    // zone loading happens BEFORE that (LoadZoneResources state), so the zone is ready.
     scene.Change(ts2::Scene::EnterWorld);
 
-    // Bornes de frames (le chargement du .WG ~45 Mo peut bloquer une frame : on borne en FRAMES,
-    // pas en temps, pour garantir la capture).
-    const int kForceInGameFrame = 260; // apres WaitBeforeUnload(30)+LoadZoneResources(~200)
-    const int kCaptureFrame     = 330; // ~70 f apres InGame : Build terrain + cadrage camera fait
-    const int kEndFrame         = kCaptureFrame + 120; // maintien apres capture
+    // Frame bounds (loading the ~45 MB .WG can block a frame: bound by FRAMES,
+    // not time, to guarantee the capture).
+    const int kForceInGameFrame = 260; // after WaitBeforeUnload(30)+LoadZoneResources(~200)
+    const int kCaptureFrame     = 330; // ~70 f after InGame: terrain Build + camera framing done
+    const int kEndFrame         = kCaptureFrame + 120; // hold after capture
     const int maxSeconds        = (seconds > 0) ? seconds : 60;
 
     LARGE_INTEGER freq, t0;
@@ -204,7 +204,7 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
             DispatchMessageA(&msg);
         }
         ++frameNo;
-        // Simule l'ACK serveur (Pkt_EnterWorld 0x464160) : bascule InGame -> worldGeom_->Build.
+        // Simulates the server ACK (Pkt_EnterWorld 0x464160): switches to InGame -> worldGeom_->Build.
         if (frameNo == kForceInGameFrame && !forcedInGame) {
             forcedInGame = true;
             scene.Change(ts2::Scene::InGame);
@@ -214,7 +214,7 @@ int RunWorldSelfTest(int seconds, int zoneId, float selfX, float selfY, float se
         if (renderer.Ready() && renderer.BeginFrame()) {
             scene.Render(renderer.Device(), camera);
             if (frameNo == kCaptureFrame) { captured = true; capturePng("preview_world.png"); }
-            if (frameNo == kCaptureFrame + 45) capturePng("preview_world_anim2.png"); // ~1.5s + tard : DETECTE l'anim
+            if (frameNo == kCaptureFrame + 45) capturePng("preview_world_anim2.png"); // ~1.5s later: DETECT the anim
             renderer.EndFrame();
         }
         if (frameNo % 30 == 0)

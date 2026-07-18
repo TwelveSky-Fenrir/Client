@@ -1,8 +1,8 @@
-// Game/GroundAuraWorldObjectTick.cpp — voir GroundAuraWorldObjectTick.h pour les EAs
-// d'origine, les offsets exacts et les écarts de nommage documentés.
+// Game/GroundAuraWorldObjectTick.cpp — see GroundAuraWorldObjectTick.h for the original
+// EAs, exact offsets, and documented naming discrepancies.
 #include "Game/GroundAuraWorldObjectTick.h"
 #include <cmath>
-#include <cstring> // std::memcpy (lecture du gate visibilité entité dword_168724C)
+#include <cstring> // std::memcpy (reads the entity visibility gate dword_168724C)
 
 namespace ts2::game {
 
@@ -11,8 +11,8 @@ namespace {
 constexpr float kFrameRate30      = 30.0f; // Fx_MeleeSwingTick_Loop/Once @0x58043E/0x5804DE : a3*30.0
 constexpr float kFarCullDistance  = 400.0f; // Fx_MeleeSwingTick_Loop @0x580483
 
-// Redimensionne un vecteur d'extension pour couvrir `index` (croissance paresseuse — même
-// idiome que Game/EntityLifecycleTick.cpp::EnsureCapacity).
+// Resizes an extension vector to cover `index` (lazy growth — same
+// idiom as Game/EntityLifecycleTick.cpp::EnsureCapacity).
 template <class T>
 bool EnsureCapacity(std::vector<T>& ext, int index) {
     if (index < 0) return false;
@@ -25,26 +25,26 @@ inline float Dist3D(float ax, float ay, float az, float bx, float by, float bz) 
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-// Fx_MeleeSwingTick_Loop 0x580400.  // ex-VeryOldClient: EFFECT_OBJECT::Update (boucle, avance
+// Fx_MeleeSwingTick_Loop 0x580400.  // ex-VeryOldClient: EFFECT_OBJECT::Update (loop, advances
 // mFrame via MoveCurve/DisplayMObject) — CONFIRMED (Docs/TS2_FX_ROSETTA.md §1).
 void TickLoop(GroundItem& item, GroundItemTickExt& ext, float dt,
               const GroundAuraWorldObjectTickHost& host, const PlayerEntity& self) {
     const int frameCount = host.GetWeaponEffectFrameCount
                                 ? host.GetWeaponEffectFrameCount(ext.effectDefHandle, ext.mode)
-                                : -1; // oracle nul -> ne boucle jamais (dégradation propre)
+                                : -1; // null oracle -> never loops (clean degradation)
     ext.frame += dt * kFrameRate30; // @0x58043E
     if (frameCount > 0 && ext.frame >= static_cast<float>(frameCount))
         ext.frame -= static_cast<float>(frameCount); // @0x58045F
 
     // @0x580483 : Math_Dist3D((float*)this+5, flt_1687330) > 400.0 -> this+11 = this+20.
-    // flt_1687330 == position du joueur local (game::GameWorld::Self(), même convention que
+    // flt_1687330 == local player position (game::GameWorld::Self(), same convention as
     // Game/ItemPickupSystem.h/NpcInteraction.h/AutoPlaySystem.h).
     if (Dist3D(item.x, item.y, item.z, self.x, self.y, self.z) > kFarCullDistance)
-        ext.farField44 = ext.farSrcField80; // @0x58048E (sémantique non déterminée)
+        ext.farField44 = ext.farSrcField80; // @0x58048E (semantics undetermined)
 }
 
-// Fx_MeleeSwingTick_Once 0x5804A0.  // ex-VeryOldClient: EFFECT_OBJECT::Update (variante
-// « une-fois », auto-désactive mObjType au terme) — CONFIRMED (Docs/TS2_FX_ROSETTA.md §1).
+// Fx_MeleeSwingTick_Once 0x5804A0.  // ex-VeryOldClient: EFFECT_OBJECT::Update ("one-shot"
+// variant, auto-disables mObjType at completion) — CONFIRMED (Docs/TS2_FX_ROSETTA.md §1).
 void TickOnce(GroundItemTickExt& ext, float dt, const GroundAuraWorldObjectTickHost& host) {
     const int frameCount = host.GetWeaponEffectFrameCount
                                 ? host.GetWeaponEffectFrameCount(ext.effectDefHandle, ext.mode)
@@ -57,48 +57,48 @@ void TickOnce(GroundItemTickExt& ext, float dt, const GroundAuraWorldObjectTickH
 }
 
 // ===========================================================================
-// Pool de projectiles d'attaque FX — internes (pool SoA dword_17D06F4, cf. section 2 du .h).
-// Layout/logique prouvés par Fx_SpawnAttackProjectile 0x582530/0x582A10 (écritures) et
-// Fx_HomingProjectileUpdate 0x5862D0 (lectures). Chaque champ = son index dword d'origine.
+// FX attack-projectile pool — internals (SoA pool dword_17D06F4, cf. section 2 of the .h).
+// Layout/logic proven by Fx_SpawnAttackProjectile 0x582530/0x582A10 (writes) and
+// Fx_HomingProjectileUpdate 0x5862D0 (reads). Each field = its original dword index.
 // ===========================================================================
 
-// Slot du pool (64 dw = 256 o). Base dword_17D06F4. Zones non peuplées par le spawn de
-// projectile (modelClass* [13/14], sobj*/particle* [30..44]) = états d'attache (pool #2), 0 ici.
+// Pool slot (64 dw = 256 bytes). Base dword_17D06F4. Zones not populated by projectile spawn
+// (modelClass* [13/14], sobj*/particle* [30..44]) = attach states (pool #2), 0 here.
 struct FxSlot {
-    int32_t active;         // [0]  0x00  dword_17D06F4 — actif
-    int32_t state;          // [1]  0x04  dword_17D06F8 — état FSM (1..14)
-    int32_t targetKind2;    // [2]  0x08  dword_17D06FC — v12 (états 5..) : 1=entité 2=monstre
-    int32_t ownerId1;       // [3]  0x0C  dword_17D0700 — id tireur hi
-    int32_t ownerId2;       // [4]  0x10  dword_17D0704 — id tireur lo
-    int32_t weaponId;       // [5]  0x14  dword_17D0708 — id arme/skill
-    int32_t targetKind1;    // [6]  0x18  dword_17D070C — v22 (état 1) : 1=entité 2=monstre
-    int32_t targetId1;      // [7]  0x1C  dword_17D0710 — id cible hi
-    int32_t targetId2;      // [8]  0x20  dword_17D0714 — id cible lo
-    int32_t arcMode;        // [9]  0x24  dword_17D0718 — branche arc (état 3-A), 1 si wep==113
-    int32_t elemImmune;     // [10] 0x28  dword_17D071C — immunité élémentaire (supprime Op18)
-    float   arcTime;        // [11] 0x2C  unk_17D0720   — temps d'arc (état 3-A)
-    int32_t homingMode;     // [12] 0x30  dword_17D0724 — branche homing direct (état 3-B), Alt=1
-    int32_t modelClassA;    // [13] 0x34  — index modèle A (états 1/2, non peuplé ici)
-    int32_t modelClassB;    // [14] 0x38  — index modèle B (états 1/2, non peuplé ici)
+    int32_t active;         // [0]  0x00  dword_17D06F4 — active
+    int32_t state;          // [1]  0x04  dword_17D06F8 — FSM state (1..14)
+    int32_t targetKind2;    // [2]  0x08  dword_17D06FC — v12 (states 5..) : 1=entity 2=monster
+    int32_t ownerId1;       // [3]  0x0C  dword_17D0700 — shooter id hi
+    int32_t ownerId2;       // [4]  0x10  dword_17D0704 — shooter id lo
+    int32_t weaponId;       // [5]  0x14  dword_17D0708 — weapon/skill id
+    int32_t targetKind1;    // [6]  0x18  dword_17D070C — v22 (state 1) : 1=entity 2=monster
+    int32_t targetId1;      // [7]  0x1C  dword_17D0710 — target id hi
+    int32_t targetId2;      // [8]  0x20  dword_17D0714 — target id lo
+    int32_t arcMode;        // [9]  0x24  dword_17D0718 — arc branch (state 3-A), 1 if wep==113
+    int32_t elemImmune;     // [10] 0x28  dword_17D071C — elemental immunity (suppresses Op18)
+    float   arcTime;        // [11] 0x2C  unk_17D0720   — arc time (state 3-A)
+    int32_t homingMode;     // [12] 0x30  dword_17D0724 — direct-homing branch (state 3-B), Alt=1
+    int32_t modelClassA;    // [13] 0x34  — model A index (states 1/2, not populated here)
+    int32_t modelClassB;    // [14] 0x38  — model B index (states 1/2, not populated here)
     int32_t motionIndex;    // [15] 0x3C  dword_17D0730 — motion (Anim_MapWeaponToMotion1/2)
-    float   animFrame;      // [16] 0x40  unk_17D0734   — curseur de frame (+= dt*30)
-    float   posX, posY, posZ;   // [17..19] 0x44/48/4C  unk_17D0738/3C/40 — position courante
-    float   drawRotX;       // [20] 0x50  unk_17D0744   — rot rendu x (= 0)
-    float   angle;          // [21] 0x54  unk_17D0748   — cap (Math_AngleBetween2D)
-    float   drawRotZ;       // [22] 0x58  unk_17D074C   — rot rendu z (= 0)
-    float   startX, startY, startZ;    // [23..25] 0x5C/60/64 unk_17D0750/54/58 — pos de départ
-    float   targetX, targetY, targetZ; // [26..28] 0x68/6C/70 unk_17D075C/60/64 — pos de cible
-    float   speed;          // [29] 0x74  unk_17D0768   — vitesse
-    int32_t sobjPtr;        // [30] 0x78  — SObject (états 5..11 render, non peuplé ici)
+    float   animFrame;      // [16] 0x40  unk_17D0734   — frame cursor (+= dt*30)
+    float   posX, posY, posZ;   // [17..19] 0x44/48/4C  unk_17D0738/3C/40 — current position
+    float   drawRotX;       // [20] 0x50  unk_17D0744   — render rot x (= 0)
+    float   angle;          // [21] 0x54  unk_17D0748   — heading (Math_AngleBetween2D)
+    float   drawRotZ;       // [22] 0x58  unk_17D074C   — render rot z (= 0)
+    float   startX, startY, startZ;    // [23..25] 0x5C/60/64 unk_17D0750/54/58 — start position
+    float   targetX, targetY, targetZ; // [26..28] 0x68/6C/70 unk_17D075C/60/64 — target position
+    float   speed;          // [29] 0x74  unk_17D0768   — speed
+    int32_t sobjPtr;        // [30] 0x78  — SObject (states 5..11 render, not populated here)
     int32_t sobjArg;        // [31] 0x7C  — render
-    int32_t particleDef;    // [32] 0x80  — index def particule (états 5..14 render)
-    int32_t _slotBody[12];  // [33..44] 0x84..0xB0 — bloc émetteur (this+132, render/non-owned)
-    // Payload de rapport Op18 @ this+180 = [45..56] :
+    int32_t particleDef;    // [32] 0x80  — particle def index (states 5..14 render)
+    int32_t _slotBody[12];  // [33..44] 0x84..0xB0 — emitter block (this+132, render/non-owned)
+    // Op18 report payload @ this+180 = [45..56]:
     int32_t pktType;        // [45] 0xB4  dword_17D07A8 = 4
-    int32_t pktOwnerId1;    // [46] 0xB8  dword_17D07AC — id tireur hi
-    int32_t pktOwnerId2;    // [47] 0xBC  dword_17D07B0 — id tireur lo
-    int32_t pktTargetId1;   // [48] 0xC0  dword_17D07B4 — id cible hi
-    int32_t pktTargetId2;   // [49] 0xC4  dword_17D07B8 — id cible lo
+    int32_t pktOwnerId1;    // [46] 0xB8  dword_17D07AC — shooter id hi
+    int32_t pktOwnerId2;    // [47] 0xBC  dword_17D07B0 — shooter id lo
+    int32_t pktTargetId1;   // [48] 0xC0  dword_17D07B4 — target id hi
+    int32_t pktTargetId2;   // [49] 0xC4  dword_17D07B8 — target id lo
     float   pktImpactX;     // [50] 0xC8  unk_17D07BC
     float   pktImpactY;     // [51] 0xCC  unk_17D07C0
     float   pktImpactZ;     // [52] 0xD0  unk_17D07C4
@@ -106,16 +106,16 @@ struct FxSlot {
     int32_t pktFlag2;       // [54] 0xD8  dword_17D07CC = 0
     int32_t pktFlag3;       // [55] 0xDC  dword_17D07D0 = 0
     int32_t homingFlag2;    // [56] 0xE0  dword_17D07D4 — 0 (main) / 1 (Alt)
-    int32_t _tail[7];       // [57..63] 0xE4..0xFC — inutilisés
+    int32_t _tail[7];       // [57..63] 0xE4..0xFC — unused
 };
-static_assert(sizeof(FxSlot) == 256, "FxSlot doit faire 64 dwords (stride 0x100)");
+static_assert(sizeof(FxSlot) == 256, "FxSlot must be 64 dwords (stride 0x100)");
 
 constexpr size_t kFxPoolCapacity = 1000;  // cGameData_InitPools @0x5575DC (*(this+1721)=1000)
-FxSlot g_FxPool[kFxPoolCapacity];         // dword_17D06F4 (base) — zéro-init statique
-int    g_FxAuraCount = static_cast<int>(kFxPoolCapacity); // g_FxAuraCount 0x168722C (capacité)
+FxSlot g_FxPool[kFxPoolCapacity];         // dword_17D06F4 (base) — static zero-init
+int    g_FxAuraCount = static_cast<int>(kFxPoolCapacity); // g_FxAuraCount 0x168722C (capacity)
 
-// --- Tables arme/skill → motion (Anim_MapWeaponToMotion1/2/3), portées inline ---------------
-// Anim_MapWeaponToMotion1 0x5475F0 (motion de vol).
+// --- Weapon/skill -> motion tables (Anim_MapWeaponToMotion1/2/3), ported inline -------------
+// Anim_MapWeaponToMotion1 0x5475F0 (flight motion).
 int MapWeaponToMotion1(int a1) {
     if (a1 > 268) { if (a1 == 270) return 301; if (a1 == 272) return 307; return -1; }
     if (a1 == 268) return 295;
@@ -134,7 +134,7 @@ int MapWeaponToMotion1(int a1) {
         default: return -1;
     }
 }
-// Anim_MapWeaponToMotion2 0x547970 (motion d'impact).
+// Anim_MapWeaponToMotion2 0x547970 (impact motion).
 int MapWeaponToMotion2(int a1) {
     if (a1 > 266) { if (a1 == 270) return 302; if (a1 == 272) return 308; return -1; }
     if (a1 == 266) return 316;
@@ -153,7 +153,7 @@ int MapWeaponToMotion2(int a1) {
         default: return -1;
     }
 }
-// Anim_MapWeaponToMotion3 0x547CF0 (id de son d'impact).
+// Anim_MapWeaponToMotion3 0x547CF0 (impact sound id).
 int MapWeaponToMotion3(int a1) {
     if (a1 > 258) {
         switch (a1) {
@@ -180,8 +180,8 @@ int MapWeaponToMotion3(int a1) {
     }
 }
 
-// --- Helpers math portés (arbitrés par IDA) -------------------------------------------------
-// Math_AngleBetween2D 0x53FB20 : cap (deg 0..360) du point (a1,a2) vers (a3,a4).
+// --- Ported math helpers (arbitrated by IDA) -------------------------------------------------
+// Math_AngleBetween2D 0x53FB20 : heading (deg 0..360) from point (a1,a2) to (a3,a4).
 float AngleBetween2D(float a1, float a2, float a3, float a4) {
     if (a3 == a1 && a4 == a2) return 0.0f;                       // @0x53FB45
     float dx = a3 - a1, dz = a4 - a2;                            // v12,v13
@@ -198,8 +198,8 @@ float AngleBetween2D(float a1, float a2, float a3, float a4) {
     return deg;
 }
 
-// Math_MoveProjectileArc 0x588640 : intègre un pas de trajectoire parabolique (plan XZ +
-// hauteur Y en arc). Retour true à l'arrivée (snap sur la cible). start/target/out = vec3.
+// Math_MoveProjectileArc 0x588640 : integrates one step of a parabolic trajectory (XZ plane +
+// Y arc height). Returns true on arrival (snaps to target). start/target/out = vec3.
 bool MoveProjectileArc(float sx, float sy, float sz,
                        float tx, float ty, float tz,
                        float t, float speed,
@@ -225,10 +225,10 @@ bool MoveProjectileArc(float sx, float sy, float sz,
     return true;
 }
 
-// --- Accès entités (g_EntityArray dword_1687234 = g_World.players ; index 0 = self) ----------
-// Recherche l'entité JOUEUR active (g_EntityArray[227*i]) et visible (dword_168724C[227*i] =
-// entity+24 = body[0] != 0 ; sémantique exacte du gate non confirmée, offset prouvé) dont
-// l'id == (id1,id2). -1 si absente. @0x586D58 (boucle de l'état 3 branche C).
+// --- Entity access (g_EntityArray dword_1687234 = g_World.players ; index 0 = self) ----------
+// Looks up the active PLAYER entity (g_EntityArray[227*i]) that is visible (dword_168724C[227*i] =
+// entity+24 = body[0] != 0 ; exact gate semantics not confirmed, offset proven) whose
+// id == (id1,id2). -1 if absent. @0x586D58 (loop of state 3 branch C).
 int FindPlayerEntity(uint32_t id1, uint32_t id2) {
     for (size_t i = 0; i < g_World.players.size(); ++i) {
         const PlayerEntity& e = g_World.players[i];
@@ -241,14 +241,14 @@ int FindPlayerEntity(uint32_t id1, uint32_t id2) {
     return -1;
 }
 
-// Entité locale (index 0 = self, flt_1687330[0]/dword_1687238[0]). nullptr si le tableau est vide.
+// Local entity (index 0 = self, flt_1687330[0]/dword_1687238[0]). nullptr if the array is empty.
 const PlayerEntity* SelfEntity() {
     return g_World.players.empty() ? nullptr : &g_World.players[0];
 }
 
-// --- Tick FSM (états 3/4) -------------------------------------------------------------------
-// Libère le slot (Fx_AttachSlotClear 0x584220 : pour un projectile, aucun handle
-// particule/SObject à libérer → actif=0 suffit ; la libération de ressource est un no-op ici).
+// --- FSM tick (states 3/4) -------------------------------------------------------------------
+// Frees the slot (Fx_AttachSlotClear 0x584220: for a projectile, no particle/SObject
+// handle to free -> active=0 suffices; resource release is a no-op here).
 void ClearSlot(FxSlot& s) { s.active = 0; } // LABEL_258 @0x5884ED
 
 FxImpactReport MakeReport(const FxSlot& s) {
@@ -264,8 +264,8 @@ FxImpactReport MakeReport(const FxSlot& s) {
     return r;
 }
 
-// À l'impact quand la cible est le joueur local : renseigne la cible/pos self dans le payload
-// et émet le rapport Op18 (via host). @0x586992/@0x586C7D (pktTarget=self) + @0x5867B6 (Op18).
+// On impact when the target is the local player: fills in the target/self pos in the payload
+// and emits the Op18 report (via host). @0x586992/@0x586C7D (pktTarget=self) + @0x5867B6 (Op18).
 void SendSelfHitReport(FxSlot& s, const PlayerEntity& self) {
     s.pktTargetId1 = static_cast<int32_t>(self.id.hi);         // dword_1687238[0]
     s.pktTargetId2 = static_cast<int32_t>(self.id.lo);         // dword_168723C[0]
@@ -274,7 +274,7 @@ void SendSelfHitReport(FxSlot& s, const PlayerEntity& self) {
         g_FxProjectileHost.NotifyProjectileImpact(MakeReport(s)); // Net_SendPacket_Op18 @0x4B4CF0
 }
 
-// Transition commune post-impact (état 3 → 4) : son d'impact + motion d'impact. @0x5869F8..0x586A5F
+// Common post-impact transition (state 3 -> 4): impact sound + impact motion. @0x5869F8..0x586A5F
 void FinalizeImpact(FxSlot& s) {
     int sndId = MapWeaponToMotion3(s.weaponId);                // v37 @0x5869F8
     if (sndId != -1 && g_FxProjectileHost.PlayImpactSound)
@@ -291,12 +291,12 @@ int ProjectileFrameCount(const FxSlot& s) {
                : 0;
 }
 
-// État 3 (vol homing) : 3 branches — arc parabolique (arcMode, wep==113) / homing direct
-// (homingMode, Alt) / homing vers entité vivante (défaut). @0x58689F
+// State 3 (homing flight): 3 branches — parabolic arc (arcMode, wep==113) / direct homing
+// (homingMode, Alt) / homing toward a live entity (default). @0x58689F
 void TickState3(FxSlot& s, float dt) {
     const PlayerEntity* self = SelfEntity();
 
-    if (s.arcMode) {                                           // this[9] — arc parabolique @0x58689F
+    if (s.arcMode) {                                           // this[9] — parabolic arc @0x58689F
         int fc = ProjectileFrameCount(s);                     // @0x5868C4
         if (fc > 0) { s.animFrame += dt * 30.0f; if (s.animFrame >= (float)fc) s.animFrame = 0.0f; } // @0x5868D8
         s.arcTime += dt;                                       // @0x58691D
@@ -307,7 +307,7 @@ void TickState3(FxSlot& s, float dt) {
                 SendSelfHitReport(s, *self);
             FinalizeImpact(s);
         }
-    } else if (s.homingMode) {                                 // this[12] — homing direct @0x586A6F
+    } else if (s.homingMode) {                                 // this[12] — direct homing @0x586A6F
         int fc = ProjectileFrameCount(s);                     // @0x586A94
         if (fc > 0) { s.animFrame += dt * 30.0f; if (s.animFrame >= (float)fc) s.animFrame = 0.0f; }
         float dx = s.targetX - s.posX, dy = s.targetY - s.posY, dz = s.targetZ - s.posZ; // @0x586AED
@@ -322,7 +322,7 @@ void TickState3(FxSlot& s, float dt) {
                 SendSelfHitReport(s, *self);
             FinalizeImpact(s);
         }
-    } else {                                                  // homing vers entité vivante @0x586D58
+    } else {                                                  // homing toward a live entity @0x586D58
         int e = FindPlayerEntity(static_cast<uint32_t>(s.targetId1), static_cast<uint32_t>(s.targetId2));
         if (e < 0) { ClearSlot(s); return; }                  // @0x586DD8
         const PlayerEntity& tgt = g_World.players[static_cast<size_t>(e)];
@@ -334,7 +334,7 @@ void TickState3(FxSlot& s, float dt) {
         if (fc > 0) { s.animFrame += dt * 30.0f; if (s.animFrame >= (float)fc) s.animFrame = 0.0f; }
         float dx = s.targetX - s.posX, dy = s.targetY - s.posY, dz = s.targetZ - s.posZ; // @0x586EA9
         float d = std::sqrt(dx * dx + dy * dy + dz * dz);     // @0x586EF4
-        if (d > 500.0f) { ClearSlot(s); return; }             // @0x586F11 (cible trop loin → abandon)
+        if (d > 500.0f) { ClearSlot(s); return; }             // @0x586F11 (target too far → give up)
         if (d > 0.0f) { dx /= d; dy /= d; dz /= d; }          // @0x586F2E
         s.posX += s.speed * dt * dx; s.posY += s.speed * dt * dy; s.posZ += s.speed * dt * dz; // @0x586F60..
         s.angle = AngleBetween2D(s.posX, s.posZ, s.targetX, s.targetZ);                  // @0x586FC8
@@ -343,28 +343,28 @@ void TickState3(FxSlot& s, float dt) {
                < Dist3D(s.posX, s.posY, s.posZ, s.startX, s.startY, s.startZ)) {         // @0x587030
             s.posX = s.targetX; s.posY = s.targetY; s.posZ = s.targetZ;                  // @0x58703F..
             if (self && s.pktTargetId1 == static_cast<int32_t>(self->id.hi)
-                     && s.pktTargetId2 == static_cast<int32_t>(self->id.lo))             // @0x587079 (cible == self)
+                     && s.pktTargetId2 == static_cast<int32_t>(self->id.lo))             // @0x587079 (target == self)
                 SendSelfHitReport(s, *self);
             FinalizeImpact(s);
         }
     }
 }
 
-// État 4 (anim d'impact) : joue l'anim d'impact jusqu'au terme puis libère le slot. @0x58715C
+// State 4 (impact anim): plays the impact anim to completion then frees the slot. @0x58715C
 void TickState4(FxSlot& s, float dt) {
     int fc = ProjectileFrameCount(s);
-    if (fc < 1) { ClearSlot(s); return; }                     // @0x58715C (pas d'anim → clear)
+    if (fc < 1) { ClearSlot(s); return; }                     // @0x58715C (no anim → clear)
     s.animFrame += dt * 30.0f;                                // @0x58717D
-    if (s.animFrame >= static_cast<float>(fc)) { ClearSlot(s); return; } // @0x5871B2 (fin d'anim → clear)
+    if (s.animFrame >= static_cast<float>(fc)) { ClearSlot(s); return; } // @0x5871B2 (anim end → clear)
 }
 
-// Allocation partagée par Fx_SpawnAttackProjectile / …Alt. `alt` = variante 0x582A10.
+// Allocation shared by Fx_SpawnAttackProjectile / …Alt. `alt` = variant 0x582A10.
 int SpawnInternal(const FxProjectileSpawnParams& p, bool alt) {
     int i = 0;                                                 // @0x582539
     while (i < g_FxAuraCount && g_FxPool[i].active) ++i;
-    if (i == g_FxAuraCount) return i;                         // pool plein, pas d'alloc @0x582572
+    if (i == g_FxAuraCount) return i;                         // pool full, no alloc @0x582572
     FxSlot& s = g_FxPool[i];
-    s = FxSlot{};                                             // slot recyclé (cGameData_FxItemPoolItemDtor)
+    s = FxSlot{};                                             // recycled slot (cGameData_FxItemPoolItemDtor)
     s.active = 1;                                             // dw[0]  @0x58257F
     s.state = 3;                                             // dw[1]  @0x58258F
     s.targetKind2 = 2;                                        // dw[2]  @0x58259F
@@ -376,10 +376,10 @@ int SpawnInternal(const FxProjectileSpawnParams& p, bool alt) {
     s.targetId2 = static_cast<int32_t>(p.target.lo);         // dw[8]  @0x582613
     s.arcMode = 0;                                           // dw[9]  @0x58261F
     s.homingMode = alt ? 1 : 0;                              // dw[12] @0x58262F (main) / @0x582B0F (alt)
-    if (!alt && p.weaponId == 113) {                         // branche weaponId==113 (MAIN) @0x58264C
+    if (!alt && p.weaponId == 113) {                         // weaponId==113 branch (MAIN) @0x58264C
         s.arcMode = 1;                                       // dw[9]=1 @0x582659
-        // dw[10] : immunité élémentaire (switch weaponSubtype via g_LocalPlayerSheet non
-        // modélisée → host, défaut false). @0x58268F..0x5827A6
+        // dw[10]: elemental immunity (weaponSubtype switch via g_LocalPlayerSheet, not
+        // modeled → host, default false). @0x58268F..0x5827A6
         s.elemImmune = (g_FxProjectileHost.IsLocalElementImmune
                             && g_FxProjectileHost.IsLocalElementImmune(p.weaponSubtype)) ? 1 : 0;
         s.arcTime = 0.0f;                                    // dw[11] @0x5827B0
@@ -423,9 +423,9 @@ int SpawnInternal(const FxProjectileSpawnParams& p, bool alt) {
 // ===========================================================================
 // 1. Fx_MeleeSwingTick 0x5803A0
 // ex-VeryOldClient: EFFECT_OBJECT::Update (FSM mObjType 1..14) — CONFIRMED (Docs/TS2_FX_ROSETTA.md
-//   §1). ⚠ le build EU N'A PAS le mega-struct EFFECT_OBJECT[1000] : effets éclatés en slots
-//   d'attache (Fx_Attach*) + pool SoA projectiles + timers swing (CONFLICT 3-A — IDA gagne, ne
-//   transposer aucun layout/adresse VeryOld). Ici = timer swing (Loop/Once) porté fidèlement.
+//   §1). Note: the EU build does NOT have the mega-struct EFFECT_OBJECT[1000]: effects are split
+//   across attach slots (Fx_Attach*) + projectile SoA pool + swing timers (CONFLICT 3-A — IDA
+//   wins, no VeryOld layout/address transposed). Here = swing timer (Loop/Once) ported faithfully.
 // ===========================================================================
 
 void ResetGroundItemTickExt(int groundItemIndex) {
@@ -438,8 +438,8 @@ void TickGroundItemEffect(GameWorld& world, int groundItemIndex, float dt,
     if (groundItemIndex < 0 || static_cast<size_t>(groundItemIndex) >= world.npcRenderEntries.size())
         return;
     NpcRenderEntry& item = world.npcRenderEntries[static_cast<size_t>(groundItemIndex)];
-    if (!item.active) return; // garde de tête `*(this+1)` @0x5803AC (défensive, déjà filtré
-                               // par l'appelant InGameTickFlow.cpp)
+    if (!item.active) return; // head guard `*(this+1)` @0x5803AC (defensive, already filtered
+                               // by the caller InGameTickFlow.cpp)
 
     if (!EnsureCapacity(g_GroundItemTickExt, groundItemIndex)) return;
     GroundItemTickExt& ext = g_GroundItemTickExt[static_cast<size_t>(groundItemIndex)];
@@ -447,18 +447,18 @@ void TickGroundItemEffect(GameWorld& world, int groundItemIndex, float dt,
     switch (ext.mode) { // *(this+3) @0x5803BA
     case 0: TickLoop(item, ext, dt, host, world.Self()); break; // @0x5803D9
     case 1: TickOnce(ext, dt, host); break;                     // @0x5803EE
-    default: break;                                             // no-op fidèle (autre valeur)
+    default: break;                                             // faithful no-op (other value)
     }
 }
 
 // ===========================================================================
-// 2. Pool de projectiles d'attaque FX (g_FxAuraCount / dword_17D06F4)
+// 2. FX attack-projectile pool (g_FxAuraCount / dword_17D06F4)
 // ===========================================================================
-// IMPLÉMENTÉ (mission « FX pool #1 »). Layout du slot + spawn + tick homing (états 3/4) portés
-// FIDÈLEMENT (ancres IDA sur chaque ligne, cf. internes ci-dessus). Effets render/net/audio/
-// feuille-élément différés via g_FxProjectileHost (cf. .h). ex-VeryOldClient: EFFECT_OBJECT
-// types 1→2 (missile homing → impact → notif serveur), 3→4, 12→13 — PLAUSIBLE (taxonomie
-// seule ; SoA stride 64 EU ≠ EFFECT_OBJECT[1000], CONFLICT 3-A, aucun layout/adresse transposé).
+// IMPLEMENTED ("FX pool #1" mission). Slot layout + spawn + homing tick (states 3/4) ported
+// FAITHFULLY (IDA anchors on every line, cf. internals above). Render/net/audio/element-leaf
+// effects deferred via g_FxProjectileHost (cf. .h). ex-VeryOldClient: EFFECT_OBJECT
+// types 1→2 (homing missile → impact → server notify), 3→4, 12→13 — PLAUSIBLE (taxonomy
+// only; SoA stride 64 EU ≠ EFFECT_OBJECT[1000], CONFLICT 3-A, no layout/address transposed).
 
 void Fx_InitProjectilePool() {
     g_FxAuraCount = static_cast<int>(kFxPoolCapacity);   // *(this+1721)=1000 @0x5575DC
@@ -474,34 +474,34 @@ int Fx_SpawnAttackProjectileAlt(const FxProjectileSpawnParams& p) { // 0x582A10
 }
 
 int GetFxAuraCount() {
-    return g_FxAuraCount; // g_FxAuraCount 0x168722C (capacité, borne de la boucle du tick)
+    return g_FxAuraCount; // g_FxAuraCount 0x168722C (capacity, tick loop bound)
 }
 
 bool IsFxAuraActive(int index) {
-    if (index < 0 || index >= g_FxAuraCount) return false; // garde d'index
+    if (index < 0 || index >= g_FxAuraCount) return false; // index guard
     return g_FxPool[index].active != 0;                    // dword_17D06F4[64*index]
 }
 
 void UpdateHomingProjectile(int index, float dt) {         // Fx_HomingProjectileUpdate 0x5862D0
-    if (index < 0 || index >= g_FxAuraCount) return;       // garde d'index
+    if (index < 0 || index >= g_FxAuraCount) return;       // index guard
     FxSlot& s = g_FxPool[index];
-    if (!s.active) return;                                 // garde d'actif de tête @0x5862D6
+    if (!s.active) return;                                 // head active guard @0x5862D6
     switch (s.state) {                                     // switch (*((_DWORD *)this + 1)) @0x5862F0
     case 3: TickState3(s, dt); break;                      // @0x58689F
     case 4: TickState4(s, dt); break;                      // @0x58715C
     default:
-        // États 1/2/12/13 (projectiles d'AUTRES spawns NON POSSÉDÉS : Effect_SpawnSkillProjectile
-        // 0x573A90 / Effect_SpawnTargetedSkillFx 0x573F80) et 5..11/14 (attache/particules, pool
-        // #2 render NON POSSÉDÉ) : non produits par ce module → no-op fidèle (`default: return`).
-        // TODO(pool #2 / skill-proj) : si un futur spawn non possédé peuple ces états dans le
-        // pool partagé, router ici vers son updater dédié (états 5..14 = SObject_Draw 0x4D8F90 +
-        // Particle_EnsureLoadedThenUpdateEmit 0x4D9F40, HORS PÉRIMÈTRE render).
+        // States 1/2/12/13 (projectiles from OTHER spawns NOT OWNED: Effect_SpawnSkillProjectile
+        // 0x573A90 / Effect_SpawnTargetedSkillFx 0x573F80) and 5..11/14 (attach/particles, pool
+        // #2 render NOT OWNED): not produced by this module → faithful no-op (`default: return`).
+        // TODO(pool #2 / skill-proj): if a future non-owned spawn populates these states in the
+        // shared pool, route here to its dedicated updater (states 5..14 = SObject_Draw 0x4D8F90 +
+        // Particle_EnsureLoadedThenUpdateEmit 0x4D9F40, OUT OF render SCOPE).
         break;
     }
 }
 
 // ===========================================================================
-// 3. Objets de zone / nœuds de ressource (g_World.zoneObjects)
+// 3. Zone objects / resource nodes (g_World.zoneObjects)
 // ===========================================================================
 
 int GetWorldObjectCount(const GameWorld& world) {
@@ -514,7 +514,7 @@ bool IsWorldObjectActive(const GameWorld& world, int index) {
 }
 
 void TickWorldObject(float) {
-    // sub_584170 0x584170 : stub vide dans le binaire d'origine. Reproduit fidèlement.
+    // sub_584170 0x584170 : empty stub in the original binary. Reproduced faithfully.
 }
 
 } // namespace ts2::game

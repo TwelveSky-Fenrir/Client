@@ -1,11 +1,11 @@
-// Game/NpcInteraction.cpp — voir NpcInteraction.h pour la table EA -> fonction/méthode et
-// les notes de fidélité (provenance des champs PNJ, ambiguïté Npc_/Monster_ sur def+96).
+// Game/NpcInteraction.cpp — see NpcInteraction.h for the EA -> function/method table and
+// fidelity notes (NPC field provenance, Npc_/Monster_ ambiguity on def+96).
 #include "Game/NpcInteraction.h"
 
 namespace ts2::game {
 
 // ===========================================================================
-// Level_ToAggroValue 0x53F700 — table complète, transcrite telle quelle.
+// Level_ToAggroValue 0x53F700 — full table, transcribed as-is.
 // ===========================================================================
 int Npc_LevelToAggroValue(int level) {
     if (level < 100) return level;
@@ -35,7 +35,7 @@ int Npc_LevelToAggroValue(int level) {
 }
 
 // ===========================================================================
-// Npc_IsSpecialType 0x54EE60 — liste figée.
+// Npc_IsSpecialType 0x54EE60 — fixed list.
 // ===========================================================================
 bool Npc_IsSpecialType(int typeOrCode) {
     switch (typeOrCode) {
@@ -88,7 +88,7 @@ bool Npc_IsQuestTarget(const void* def, const NpcQuestContext& ctx) {
 // Npc_GetNameplateColor 0x540790.
 // ===========================================================================
 int Npc_GetNameplateColor(const void* def, const NpcQuestContext& ctx, int selfLevel, int selfLevelBonus) {
-    if (!def) return 2; // pas de record -> traité comme "hostile"/inconnu (choix sûr, non présent dans le binaire qui suppose def valide)
+    if (!def) return 2; // no record -> treated as "hostile"/unknown (safe choice, not present in the binary which assumes def is valid)
     const int elt = ctx.localElement;
 
     auto pairedOrEqual = [&](int loadoutVal) { return loadoutVal == elt || loadoutVal == ctx.GetPaired(elt); };
@@ -111,7 +111,7 @@ int Npc_GetNameplateColor(const void* def, const NpcQuestContext& ctx, int selfL
             case 0x22: case 0x26: return (elt == 3 || elt == ctx.GetPaired(3)) ? 10 : 2;
             case 0x2F: return (ctx.factionFlag == 1) ? 10 : 2;
             case 0x30: return (ctx.factionFlag == 2) ? 10 : 2;
-            default: break; // -> branche par défaut (aggro/niveau)
+            default: break; // -> default branch (aggro/level)
         }
         break;
     case 6: return (elt != 0 && elt != ctx.GetPaired(0)) ? 2 : 10;
@@ -120,11 +120,11 @@ int Npc_GetNameplateColor(const void* def, const NpcQuestContext& ctx, int selfL
     case 9: return (elt == 3 || elt == ctx.GetPaired(3)) ? 10 : 2;
     case 0x0E: return (ctx.factionFlag == 1) ? 10 : 2;
     case 0x0F: return (ctx.factionFlag == 2) ? 10 : 2;
-    default: break; // -> branche par défaut (aggro/niveau)
+    default: break; // -> default branch (aggro/level)
     }
 
-    // Branche par défaut (LABEL_60/LABEL_76 d'origine) : compare la "puissance" du joueur
-    // local (Level_ToAggroValue(niveau+bonus)) au seuil de la cible (def+352).
+    // Default branch (original LABEL_60/LABEL_76): compares the local player's "power"
+    // (Level_ToAggroValue(level+bonus)) against the target's threshold (def+352).
     const int selfPower = Npc_LevelToAggroValue(selfLevelBonus + selfLevel);
     const int targetThreshold = NpcDefReadI32(def, kNpcDefOffAggroLevel);
     if (selfPower - targetThreshold < 10) {
@@ -134,7 +134,7 @@ int Npc_GetNameplateColor(const void* def, const NpcQuestContext& ctx, int selfL
 }
 
 // ===========================================================================
-// NpcInteractionSystem — état + 4 fonctions d'action.
+// NpcInteractionSystem — state + 4 action functions.
 // ===========================================================================
 NpcInteractionExt& NpcInteractionSystem::Ext(std::size_t npcIndex) {
     if (npcIndex >= ext_.size()) ext_.resize(npcIndex + 1);
@@ -161,11 +161,11 @@ NpcInteractionSystem::RewardArgs NpcInteractionSystem::BuildRewardArgs(const Npc
     RewardArgs a;
     a.idHi = static_cast<int>(npc.id.hi);
     a.idLo = static_cast<int>(npc.id.lo);
-    a.p0 = 0; // littéral 0, toujours (3e argument de Net_SendVaultReq_201 dans les 2 branches)
+    a.p0 = 0; // literal 0, always (3rd argument of Net_SendVaultReq_201 in both branches)
 
     if (NpcDefReadI32(npc.def, kNpcDefOffKind) == 1) {
-        // Branche "vendeur"/vault direct — pas de placement en sac, mais garde de poids
-        // (Util_SumExceeds2Billion 0x53F660, cf. Quest_SumExceeds2Billion réutilisée telle quelle).
+        // "Vendor"/direct vault branch — no bag placement, but weight guard
+        // (Util_SumExceeds2Billion 0x53F660, cf. Quest_SumExceeds2Billion reused as-is).
         if (Quest_SumExceeds2Billion(g_Client.inv.weight, ext.offerWeight)) {
             a.blockedWeight = true;
             return a;
@@ -175,7 +175,7 @@ NpcInteractionSystem::RewardArgs NpcInteractionSystem::BuildRewardArgs(const Npc
         return a;
     }
 
-    // Branche cGameHud_PlaceItemIntoBag 0x650470 — ordre de sortie fidèle (v9,v11,v10,v14).
+    // cGameHud_PlaceItemIntoBag 0x650470 branch — faithful output order (v9,v11,v10,v14).
     int slot = -1, b = 0, c = 0, d = 0;
     if (host.TryPlaceItemIntoBag) host.TryPlaceItemIntoBag(ext.offerItemId, ext.offerWeight, slot, b, c, d);
     if (slot == -1) {
@@ -189,7 +189,7 @@ NpcInteractionSystem::RewardArgs NpcInteractionSystem::BuildRewardArgs(const Npc
 
 void NpcInteractionSystem::SendReward(const RewardArgs& args, float gameTimeSec) {
     if (!args.ok) return;
-    if (morphInProgress || pendingLatch_) return; // fidèle : silencieux, pas d'erreur
+    if (morphInProgress || pendingLatch_) return; // faithful: silent, no error
     if (host.SendVaultReq201) {
         host.SendVaultReq201(args.idHi, args.idLo, args.p0, args.outSlot, args.outB, args.outC, args.outD);
     }
@@ -202,12 +202,12 @@ void NpcInteractionSystem::SendReward(const RewardArgs& args, float gameTimeSec)
 // ---------------------------------------------------------------------------
 void NpcInteractionSystem::Interact(EntityId targetId, float gameTimeSec) {
     const int idx = FindNpcIndexById(targetId);
-    if (idx < 0) return; // "i == dword_1687228" -> absent, silencieux
+    if (idx < 0) return; // "i == dword_1687228" -> absent, silent
 
     const NpcEntity& npc = g_World.npcs[static_cast<std::size_t>(idx)];
     if (!ShouldRefresh(npc)) {
-        // TODO fidélité : couleur d'origine g_SysMsgColor 0x84DFD8 non modélisée ; MessageLog
-        // utilise sa couleur blanche par défaut.
+        // Fidelity TODO: original color g_SysMsgColor 0x84DFD8 not modeled ; MessageLog
+        // uses its default white color.
         g_Client.msg.System(Str(115));
         return;
     }
@@ -221,7 +221,7 @@ void NpcInteractionSystem::Interact(EntityId targetId, float gameTimeSec) {
         if (a.blockedBag)    { g_Client.msg.System(Str(117)); return; }
         SendReward(a, gameTimeSec);
     } else {
-        // Branche "hors de portée" -> approche à pied (hors périmètre, cf. host.ApproachNpc).
+        // "Out of range" branch -> approach on foot (out of scope, cf. host.ApproachNpc).
         if (host.ApproachNpc) host.ApproachNpc(ext.x, ext.y, ext.z);
     }
 }
@@ -239,12 +239,12 @@ int NpcInteractionSystem::AutoInteractCurrentTarget(EntityId currentAttackOrderT
     const NpcInteractionExt& ext = Ext(static_cast<std::size_t>(idx));
     const PlayerEntity& self = g_World.Self();
 
-    // Fidèle : contrairement à Interact(), AutoInteract ne déclenche AUCUNE approche si hors
-    // de portée — renvoie simplement 1 (pas une erreur côté appelant).
+    // Faithful: unlike Interact(), AutoInteract triggers NO approach if out of range —
+    // simply returns 1 (not an error on the caller's side).
     if (Npc_DistanceXZ(ext.x, ext.z, self.x, self.z) > kNpcInteractRange) return 1;
 
     RewardArgs a = BuildRewardArgs(npc, ext);
-    if (!a.ok) return 0; // poids ou sac bloqué -> échec silencieux (pas de message ici, fidèle)
+    if (!a.ok) return 0; // weight or bag blocked -> silent failure (no message here, faithful)
 
     if (morphInProgress || pendingLatch_) return 0;
     SendReward(a, gameTimeSec);
@@ -252,7 +252,7 @@ int NpcInteractionSystem::AutoInteractCurrentTarget(EntityId currentAttackOrderT
 }
 
 // ---------------------------------------------------------------------------
-// Npc_AutoSelectNearest 0x53ABC0 — 6 passes de priorité décroissante.
+// Npc_AutoSelectNearest 0x53ABC0 — 6 decreasing-priority passes.
 // ---------------------------------------------------------------------------
 void NpcInteractionSystem::AutoSelectNearestInteractable(float gameTimeSec) {
     const auto& npcs = g_World.npcs;
@@ -261,9 +261,9 @@ void NpcInteractionSystem::AutoSelectNearestInteractable(float gameTimeSec) {
     bool sawWeightBlocked = false; // v10
     bool sawBagBlocked = false;    // v11
 
-    // Passe 1 : PNJ "vendeur"/vault direct (kind==1), le plus proche exploitable (le binaire
-    // prend le PREMIER trouvé dans l'ordre du tableau, pas le plus proche au sens strict —
-    // fidèle : pas de tri par distance ici).
+    // Pass 1: "vendor"/direct vault NPC (kind==1), the closest exploitable one (the binary
+    // takes the FIRST one found in array order, not the strictly nearest one — faithful:
+    // no distance sort here).
     for (std::size_t i = 0; i < npcs.size(); ++i) {
         const NpcEntity& npc = npcs[i];
         if (!npc.active) continue;
@@ -280,7 +280,7 @@ void NpcInteractionSystem::AutoSelectNearestInteractable(float gameTimeSec) {
         return;
     }
 
-    // Passes 2..6 : PNJ non-vendeur (kind!=1), catégories décroissantes {5,6} puis 4,3,2,1.
+    // Passes 2..6: non-vendor NPC (kind!=1), decreasing categories {5,6} then 4,3,2,1.
     const std::array<std::array<int, 2>, 5> kCategoryPasses{{
         {5, 6}, {4, -1}, {3, -1}, {2, -1}, {1, -1}
     }};
@@ -306,7 +306,7 @@ void NpcInteractionSystem::AutoSelectNearestInteractable(float gameTimeSec) {
         }
     }
 
-    // Aucun PNJ exploitable trouvé -> message (poids > sac > "rien à proximité").
+    // No exploitable NPC found -> message (weight > bag > "nothing nearby").
     if (sawWeightBlocked) {
         g_Client.msg.System(Str(116));
     } else if (sawBagBlocked) {
@@ -344,8 +344,8 @@ void NpcInteractionSystem::AutoInteractForPet(uint32_t selectedItemId, float gam
             return;
         }
 
-        // Fidèle : le binaire compare l'id du record 3 fois (1401, 2132, 1401 — le 3e test
-        // est un doublon mort du binaire d'origine, reproduit tel quel sans "corriger").
+        // Faithful: the binary compares the record id 3 times (1401, 2132, 1401 — the 3rd
+        // test is a dead duplicate from the original binary, reproduced as-is, not "fixed").
         const int recordId0 = NpcDefReadI32(npc.def, 0);
         if (recordId0 == 1401 || recordId0 == 2132 || recordId0 == 1401) continue;
 
@@ -365,7 +365,7 @@ void NpcInteractionSystem::AutoInteractForPet(uint32_t selectedItemId, float gam
         if (!morphInProgress && !pendingLatch_) SendReward(a, gameTimeSec);
         return;
     }
-    // Aucune correspondance -> silencieux (pas de message, fidèle à l'original).
+    // No match -> silent (no message, faithful to the original).
 }
 
 } // namespace ts2::game

@@ -1,81 +1,81 @@
-// Scene/SceneManager.h — machine de scènes du client = cSceneMgr (objet dword_1676180).
-// Dispatch cSceneMgr_Update 0x517BF0 / _Render 0x517CB0 sur l'id de scène.
-// Voir Docs/TS2_CLIENT_SHELL.md §2.1.
+// Scene/SceneManager.h — client scene state machine = cSceneMgr (object dword_1676180).
+// Dispatches cSceneMgr_Update 0x517BF0 / _Render 0x517CB0 on the scene id.
+// See Docs/TS2_CLIENT_SHELL.md §2.1.
 //
-// Détient les scènes shell (LoginScene = ServerSelect/Login/CharSelect) et le HUD
-// en jeu (GameHud). Header léger : les scènes concrètes sont tenues par pointeur
-// (unique_ptr) pour ne pas tirer winsock2/d3dx9 dans tous les incluants.
+// Owns the shell scenes (LoginScene = ServerSelect/Login/CharSelect) and the
+// in-game HUD (GameHud). Lightweight header: concrete scenes are held by pointer
+// (unique_ptr) to avoid pulling winsock2/d3dx9 into every includer.
 #pragma once
 #include <memory>
 #include <string>
-#include "Game/IntroFlow.h"      // léger (STL uniquement) : IntroState détenu par valeur
-#include "Game/EnterWorldFlow.h" // idem : EnterWorldFlowState détenu par valeur
-#include "Game/InGameTickFlow.h" // idem : InGameTickFlowState détenu par valeur (Scene_InGameUpdate)
+#include "Game/IntroFlow.h"      // lightweight (STL only): IntroState held by value
+#include "Game/EnterWorldFlow.h" // same: EnterWorldFlowState held by value
+#include "Game/InGameTickFlow.h" // same: InGameTickFlowState held by value (Scene_InGameUpdate)
 
-struct IDirect3DDevice9; // COM (global) — évite d'inclure d3d9.h ici
+struct IDirect3DDevice9; // COM (global) — avoids including d3d9.h here
 
 namespace ts2 {
 
-// WorldRenderer (Scene/WorldRenderer.h) tire d3d9/d3dx9 (MeshRenderer/Font) : tenu
-// par pointeur et forward-déclaré ici, comme login_/hud_/windows_, pour ne pas
-// alourdir les incluants de ce header léger.
+// WorldRenderer (Scene/WorldRenderer.h) pulls in d3d9/d3dx9 (MeshRenderer/Font): held
+// by pointer and forward-declared here, like login_/hud_/windows_, to avoid
+// weighing down includers of this lightweight header.
 class WorldRenderer;
 
 namespace gfx { class Renderer; class Camera; class WorldGeometryRenderer; class ModelObjectRenderer; }
 namespace net { class NetSystem; }
 namespace ui  { class LoginScene; class GameHud; class GameWindows; }
 namespace world { class WorldAssets; class WorldMap; }
-// Slot BGM de scène (Audio/AudioSystem.h) : forward-déclaré + tenu par pointeur pour
-// ne pas tirer dsound.h dans ce header léger (comme login_/hud_/world_).
+// Scene BGM slot (Audio/AudioSystem.h): forward-declared + held by pointer to
+// avoid pulling dsound.h into this lightweight header (like login_/hud_/world_).
 namespace audio { class BgmChannel; }
 
 enum class Scene {
     None         = 0,
-    Intro        = 1,  // Scene_IntroUpdate 0x517FE0 : splash INTRO.AVI + fondus des logos
-    ServerSelect = 2,  // 0x518B30 : liste des serveurs (hardcodée ou via thread de statut)
-    Login        = 3,  // Scene_LoginUpdate 0x51A8D0 : saisie identifiants + handshake
-    CharSelect   = 4,  // sélection de personnage (UI_CharListWnd)
-    EnterWorld   = 5,  // transition d'entrée en monde
-    InGame       = 6,  // en jeu ; appelle aussi AutoPlay_Update
+    Intro        = 1,  // Scene_IntroUpdate 0x517FE0: INTRO.AVI splash + logo fades
+    ServerSelect = 2,  // 0x518B30: server list (hardcoded or via status thread)
+    Login        = 3,  // Scene_LoginUpdate 0x51A8D0: credential entry + handshake
+    CharSelect   = 4,  // character selection (UI_CharListWnd)
+    EnterWorld   = 5,  // entering-world transition
+    InGame       = 6,  // in game; also calls AutoPlay_Update
 };
 
-// Miroir du champ +4 de l'objet cSceneMgr 0x1676180, soit g_SceneSubState 0x1676184 =
-// sous-état de la scène courante. Exposé en GLOBAL — et non en membre privé — parce que
-// c'est ainsi que le binaire le consomme : Camera_UpdateFromInput 0x50B7D0 lit
-// DIRECTEMENT les deux globals dans sa garde d'entrée @0x50B7EC
+// Mirrors the +4 field of the cSceneMgr 0x1676180 object, i.e. g_SceneSubState 0x1676184 =
+// current scene sub-state. Exposed as a GLOBAL — not a private member — because
+// that's how the binary consumes it: Camera_UpdateFromInput 0x50B7D0
+// DIRECTLY reads both globals in its entry guard @0x50B7EC
 //   if ( g_SceneMgr != 6 || g_SceneSubState != 4 ) return;
-// sans jamais recevoir le sous-état en paramètre (cf. App/PlayerInputController.cpp).
+// never receiving the sub-state as a parameter (see App/PlayerInputController.cpp).
 //
-// ATTENTION (piège vérifié) : SceneManager::subState_ (privé, plus bas) NE porte PAS cette
-// valeur en scène InGame — il n'est jamais écrit qu'à 0. Le sous-état InGame réel vit dans
-// inGameTickState_ (game::InGameTickState, Game/InGameTickFlow.h) ; celui d'EnterWorld dans
-// enterWorldState_. C'est CE global que SceneManager::Update tient à jour depuis ces deux
-// automates (points de synchro commentés dans le .cpp). // 0x1676184
+// WARNING (verified pitfall): SceneManager::subState_ (private, below) does NOT carry this
+// value in the InGame scene — it is only ever written to 0. The real InGame sub-state lives
+// in inGameTickState_ (game::InGameTickState, Game/InGameTickFlow.h); the EnterWorld one lives in
+// enterWorldState_. THIS is the global that SceneManager::Update keeps in sync from these two
+// state machines (sync points commented in the .cpp). // 0x1676184
 extern int g_SceneSubState;
 
 // ---------------------------------------------------------------------------
-// SCN-01 — Action du bouton OK du dialogue de notice (byte_18225C8).
-// Reproduit `switch (*(this+4))` @0x5C04C9 de UI_NoticeDlg_OnLButtonUp 0x5C03F0, exécuté
-// juste après UI_NoticeDlg_Close (@0x5C04A5) :
-//   1 -> rien · 2 -> Net_CloseSocket + retour ServerSelect (@0x5C04DF/@0x5C04E4)
+// SCN-01 — OK button action of the notice dialog (byte_18225C8).
+// Reproduces `switch (*(this+4))` @0x5C04C9 from UI_NoticeDlg_OnLButtonUp 0x5C03F0, executed
+// right after UI_NoticeDlg_Close (@0x5C04A5):
+//   1 -> nothing · 2 -> Net_CloseSocket + return to ServerSelect (@0x5C04DF/@0x5C04E4)
 //   3 -> "[ABNORMAL_END] ( 3 )" + g_QuitFlag=1 (@0x5C0516/@0x5C051B)
 //   4..9 -> Net_SendOp44/48/54/66/73/60 (@0x5C0531..@0x5C0586)
-// Vit ICI (et non dans le front UI) parce que ses deux actions structurantes sont des
-// changements d'ÉTAT DE SCÈNE, propriété de ce module : le retour en scène 2 est mis en
-// attente et consommé par SceneManager::Update, comme sceneEnterWorldPending.
+// Lives HERE (not in the UI front-end) because its two structuring actions are
+// SCENE STATE changes, owned by this module: the return to scene 2 is queued
+// and consumed by SceneManager::Update, like sceneEnterWorldPending.
 //
-// Les types Oui/Non du registre MsgBox (8/9/10/14/19/20) sont IGNORÉS ici : ils sont déjà
-// émis par UI/GameWindows.cpp::SyncPrompt (Net_SendOp45/49/67/74/55/61). Les deux tables se
-// chevauchent en VALEUR mais pas en SÉMANTIQUE — cf. le bandeau détaillé dans le .cpp.
+// The Yes/No types of the MsgBox registry (8/9/10/14/19/20) are IGNORED here: they are
+// already emitted by UI/GameWindows.cpp::SyncPrompt (Net_SendOp45/49/67/74/55/61). The two
+// tables overlap in VALUE but not in SEMANTICS — see the detailed banner in the .cpp.
 //
-// APPELANT ATTENDU (câblage à poser par l'orchestrateur, fichier NON possédé par ce front) :
-// UI/GameWindows.cpp:211-216, dans le callback OK de MsgBox().Open, qui porte aujourd'hui le
-// TODO [ancre 0x5C04DF] et se contente de `game::g_Client.prompt.Close();`. Y ajouter :
-//     ts2::Notice_DispatchOkAction(type);   // 0x5C04C9 (avant le prompt.Close() existant)
-// (le `type` y est déjà capturé par le lambda ; inclure "Scene/SceneManager.h").
+// EXPECTED CALLER (wiring to be added by the orchestrator, file NOT owned by this front-end):
+// UI/GameWindows.cpp:211-216, in the OK callback of MsgBox().Open, which currently carries the
+// TODO [ancre 0x5C04DF] and just does `game::g_Client.prompt.Close();`. Add there:
+//     ts2::Notice_DispatchOkAction(type);   // 0x5C04C9 (before the existing prompt.Close())
+// (`type` is already captured by the lambda there; include "Scene/SceneManager.h").
 void Notice_DispatchOkAction(int type); // 0x5C03F0 / switch @0x5C04C9
 
-// En-tête de l'objet cSceneMgr : [+0 id][+4 sous-état][+8 compteur de frames][+12 tampon 150 dw][+612 slot BGM].
+// Header of the cSceneMgr object: [+0 id][+4 sub-state][+8 frame counter][+12 150-dword buffer][+612 BGM slot].
 class SceneManager {
 public:
     SceneManager();
@@ -83,123 +83,123 @@ public:
     SceneManager(const SceneManager&) = delete;
     SceneManager& operator=(const SceneManager&) = delete;
 
-    // cSceneMgr_Init 0x517AF0 : crée LoginScene + HUD à partir du device/réseau.
-    // renderer/net doivent être déjà initialisés (device créé, WSAStartup fait).
-    // `gameDataDir` : racine GameData (App::gameDataDir_, cf. App::ResolveGameDataDir) —
-    // nécessaire à world::WorldAssets pour charger Z%03d.WO (géométrie statique, cf.
+    // cSceneMgr_Init 0x517AF0: creates LoginScene + HUD from the device/network.
+    // renderer/net must already be initialized (device created, WSAStartup done).
+    // `gameDataDir`: GameData root (App::gameDataDir_, see App::ResolveGameDataDir) —
+    // needed by world::WorldAssets to load Z%03d.WO (static geometry, see
     // Gfx/WorldGeometryRenderer.h).
-    // `serverModeFlag` = GameConfig::buildVariant (1er jeton cmdline, g_ServerModeFlag
-    // dword_166918C) : pilote le mode ServerSelect (0 = SingleServer 8088). Transmis à
-    // LoginScene::Init (BuildServerList conditionnel). Défauté à 0 (lancement documenté).
+    // `serverModeFlag` = GameConfig::buildVariant (1st cmdline token, g_ServerModeFlag
+    // dword_166918C): drives ServerSelect mode (0 = SingleServer 8088). Passed to
+    // LoginScene::Init (conditional BuildServerList). Defaults to 0 (documented launch).
     void  Init(gfx::Renderer& renderer, net::NetSystem& net, void* notifyHwnd,
                int screenW, int screenH, const std::string& gameDataDir,
                int serverModeFlag = 0);
     void  Shutdown();
 
     void  StartIntro();              // cSceneMgr_StartIntro 0x517B80
-    // cSceneMgr_Update 0x517BF0. `camera` : caméra 3e personne de App (gfx::Camera), reçue
-    // ICI en MUTABLE (contrairement à Render() qui la reçoit en const) — nécessaire au
-    // câblage RÉEL de InGame_InitCamera/Camera_UpdateCollision (case Scene::InGame, cf.
-    // Gfx/CameraThirdPersonBridge.h) : la MÊME instance que celle passée à Render(),
-    // sinon le suivi de cible calculé ici n'aurait aucun effet visible côté rendu. Ajout
-    // MINIMAL de signature (même politique que celle déjà motivée pour Render() ci-dessous).
+    // cSceneMgr_Update 0x517BF0. `camera`: App's 3rd-person camera (gfx::Camera), received
+    // HERE as MUTABLE (unlike Render() which receives it as const) — needed for the
+    // REAL wiring of InGame_InitCamera/Camera_UpdateCollision (Scene::InGame case, see
+    // Gfx/CameraThirdPersonBridge.h): the SAME instance passed to Render(),
+    // otherwise the target tracking computed here would have no visible effect on rendering.
+    // MINIMAL signature addition (same policy already justified for Render() below).
     void  Update(double dt, gfx::Camera& camera);
-    // cSceneMgr_Render 0x517CB0. `camera` : caméra 3e personne de App (gfx::Camera),
-    // nécessaire au rendu monde (case InGame) pour les matrices vue/projection —
-    // absente de l'original cSceneMgr_Render (App ne portait pas encore de caméra
-    // séparée) ; ajout MINIMAL de signature pour le câblage WorldRenderer.
+    // cSceneMgr_Render 0x517CB0. `camera`: App's 3rd-person camera (gfx::Camera),
+    // needed for world rendering (InGame case) for the view/projection matrices —
+    // absent from the original cSceneMgr_Render (App did not yet carry a separate
+    // camera); MINIMAL signature addition for WorldRenderer wiring.
     void  Render(IDirect3DDevice9* device, const gfx::Camera& camera);
     void  OnLButtonDown(int x, int y);
     void  OnLButtonUp(int x, int y);
-    void  OnChar(char c);            // WM_CHAR (saisie login/chat)
+    void  OnChar(char c);            // WM_CHAR (login/chat input)
     void  OnKeyDown(int vk);         // WM_KEYDOWN
     void  Change(Scene s);
     Scene Current() const { return scene_; }
 
-    // --- Saisie texte in-game (GAP-APPLIFE-02) -------------------------------
-    // UI_Chat_FocusInput 0x68B200 : donne le focus à la boîte de saisie de chat.
-    // Reproduit la garde d'entrée @0x68B217 `if (g_SceneMgr == 6 && g_SceneSubState == 4)`
-    // — hors de cet état, l'original ne fait RIEN (pas de focus). Renvoie true si le
-    // focus a effectivement été pris.
-    // Son UNIQUE appelant d'origine est App_WndProc 0x461930 @0x461B5E (`if (a3 == 13)`,
-    // seul traitement clavier du WndProc) : c'est donc à App/App.cpp de l'appeler — cf.
-    // RouteTextInputKey ci-dessous, qui empaquette cet appel avec l'arbitrage du focus.
+    // --- In-game text input (GAP-APPLIFE-02) ---------------------------------
+    // UI_Chat_FocusInput 0x68B200: gives focus to the chat input box.
+    // Reproduces the entry guard @0x68B217 `if (g_SceneMgr == 6 && g_SceneSubState == 4)`
+    // — outside this state, the original does NOTHING (no focus). Returns true if
+    // focus was actually taken.
+    // Its ONE original caller is App_WndProc 0x461930 @0x461B5E (`if (a3 == 13)`,
+    // the WndProc's only keyboard handling): so it's App/App.cpp's job to call it — see
+    // RouteTextInputKey below, which packages this call with focus arbitration.
     bool  FocusChatInput();          // 0x68B200
-    // Point d'entrée clavier WM_KEYDOWN pour la saisie texte, à appeler depuis
-    // App::HandleMessage AVANT la restriction `scene_.Current() != Scene::InGame`
-    // (App/App.cpp) qui réserve OnKeyDown au chemin DIK. Renvoie true si la touche a été
-    // CONSOMMÉE par un champ de saisie (l'appelant ne doit alors pas la propager).
+    // WM_KEYDOWN keyboard entry point for text input, to be called from
+    // App::HandleMessage BEFORE the `scene_.Current() != Scene::InGame` restriction
+    // (App/App.cpp) that reserves OnKeyDown for the DIK path. Returns true if the key was
+    // CONSUMED by an input field (the caller must then not propagate it).
     //
-    // Reproduit l'arbitrage RÉEL du binaire, qui n'est PAS « le chat d'abord » :
-    //   - UI_EditBoxWndProc 0x50E070 : quand un EDIT natif a le focus, c'est LUI qui reçoit
-    //     WM_KEYDOWN et mange la touche (case 4 : `wParam==13` -> UI_Chat_SubmitInput
-    //     0x68B330 @0x50E1D6) — la fenêtre principale ne voit alors rien ;
-    //   - sinon la fenêtre principale reçoit WM_KEYDOWN et VK_RETURN ouvre le chat
+    // Reproduces the binary's REAL arbitration, which is NOT "chat first":
+    //   - UI_EditBoxWndProc 0x50E070: when a native EDIT has focus, IT receives
+    //     WM_KEYDOWN and eats the key (case 4: `wParam==13` -> UI_Chat_SubmitInput
+    //     0x68B330 @0x50E1D6) — the main window then sees nothing;
+    //   - otherwise the main window receives WM_KEYDOWN and VK_RETURN opens the chat
     //     (App_WndProc @0x461B5E -> UI_Chat_FocusInput 0x68B200).
-    // ClientSource n'a aucun EDIT natif vivant (la saisie in-game est le widget
-    // custom-dessiné ui::ChatWindow) : ce routage EST l'équivalent fidèle de 0x50E070.
+    // ClientSource has no live native EDIT (in-game input is the
+    // custom-drawn widget ui::ChatWindow): this routing IS the faithful equivalent of 0x50E070.
     bool  RouteTextInputKey(int vk); // 0x50E070 / 0x461B5E
 
-    // Perte/restauration du device D3D9 (autour d'un Reset()).
+    // D3D9 device loss/restoration (around a Reset()).
     void  OnDeviceLost();
     void  OnDeviceReset();
 
 private:
-    // Applique la transition demandée par LoginScene (PendingScene) et gère
-    // l'entrée en jeu (init HUD la 1re fois).
+    // Applies the transition requested by LoginScene (PendingScene) and handles
+    // entering the game (init HUD the 1st time).
     void  ConsumePending();
 
-    // UIFW-08 — porte d'état d'action des entrées souris, reproduite depuis les 4 entrées
+    // UIFW-08 — mouse-input action-state gate, reproduced from the 4 entry points
     // Input_OnLButtonDown 0x50AC90 (@0x50ACF7) / Input_OnLButtonUp 0x50AD20 (@0x50AD87) /
-    // Input_OnRButtonDown 0x50ADB0 (@0x50AE17) / Input_OnRButtonUp 0x50AE40, toutes gardées
-    // par le MÊME test :
+    // Input_OnRButtonDown 0x50ADB0 (@0x50AE17) / Input_OnRButtonUp 0x50AE40, all guarded
+    // by the SAME test:
     //   if ( (g_SceneMgr != 6 || g_SceneSubState != 4
     //      || g_SelfActionState[0] != 11 && != 12 && != 33 && != 34 && != 35 && != 36 && != 37)
     //     && !UI_RouteLButtonDown(...) )  cSceneMgr_OnLButtonDown(...);
-    // Autrement dit : en jeu (scène 6 / sous-état 4) ET g_SelfActionState[0] 0x1687328 dans
-    // {11,12,33,34,35,36,37}, le clic est TOTALEMENT avalé — ni UI, ni monde. Renvoie true
-    // dans ce cas. // 0x50ACF7 / 0x50AD87
+    // In other words: in game (scene 6 / sub-state 4) AND g_SelfActionState[0] 0x1687328 in
+    // {11,12,33,34,35,36,37}, the click is TOTALLY swallowed — neither UI nor world. Returns true
+    // in that case. // 0x50ACF7 / 0x50AD87
     bool  InputSwallowedByActionState() const;
 
-    // --- Slot BGM de scène (cSceneMgr +612 : cSceneMgr_ReinitBgm 0x517A80 /
+    // --- Scene BGM slot (cSceneMgr +612: cSceneMgr_ReinitBgm 0x517A80 /
     //     SceneMgr_ReleaseSoundBuffers 0x517B60). ---
-    // Charge+joue le .BGM de la zone (World_LoadZoneResource 0x4DCB60 case 12,
-    //   "G03_GDATA\D10_WORLDBGM\Z%03d.BGM") dans le slot, en boucle si l'option
-    //   g_BgmEnabled (0x84DEF0) est active. Guard si fileId inconnu / fichier absent.
+    // Loads+plays the zone's .BGM (World_LoadZoneResource 0x4DCB60 case 12,
+    //   "G03_GDATA\D10_WORLDBGM\Z%03d.BGM") into the slot, looping if the
+    //   g_BgmEnabled (0x84DEF0) option is active. Guarded if fileId unknown / file missing.
     void  LoadZoneBgm(int zoneId);
-    // Snd_ReleaseBuffers 0x6A80D0 (SceneMgr_ReleaseSoundBuffers 0x517B60) sur le slot.
+    // Snd_ReleaseBuffers 0x6A80D0 (SceneMgr_ReleaseSoundBuffers 0x517B60) on the slot.
     void  ReleaseBgm();
 
-    // Rechargement RE-ENTRANT de zone (warp / op 0x18 Pkt_GameServerConnectResult 0x469CF0
-    // -> g_SceneMgr=5). Rejoue le cycle Scene_EnterWorldUpdate 0x52BFF0 case 1
-    // (World_LoadZoneResource 0x4DCB60 idx 1..12) + rebuild geometrie .WO + BGM sur une
-    // NOUVELLE zone, SANS re-init du renderer (leve les gardes one-shot worldGeomReady_/
-    // LoadZoneBgm). Consomme sceneReloadPending/pendingWarpZoneId (GameState.h). // 0x52BFF0
+    // RE-ENTRANT zone reload (warp / op 0x18 Pkt_GameServerConnectResult 0x469CF0
+    // -> g_SceneMgr=5). Replays the Scene_EnterWorldUpdate 0x52BFF0 case 1 cycle
+    // (World_LoadZoneResource 0x4DCB60 idx 1..12) + rebuilds .WO geometry + BGM on a
+    // NEW zone, WITHOUT re-initializing the renderer (lifts the one-shot worldGeomReady_/
+    // LoadZoneBgm guards). Consumes sceneReloadPending/pendingWarpZoneId (GameState.h). // 0x52BFF0
     void  ReloadZone(int zoneId);
 
     Scene scene_      = Scene::None; // +0
     int   subState_   = 0;           // +4
     int   frameCount_ = 0;           // +8
-    game::IntroState       introState_;      // automate fidèle Scene_IntroUpdate (279 frames)
-    game::EnterWorldFlowState enterWorldState_; // automate fidèle Scene_EnterWorldUpdate
-    game::InGameTickFlowState inGameTickState_; // automate fidèle Scene_InGameUpdate 0x52C600 (scène InGame)
+    game::IntroState       introState_;      // faithful state machine Scene_IntroUpdate (279 frames)
+    game::EnterWorldFlowState enterWorldState_; // faithful state machine Scene_EnterWorldUpdate
+    game::InGameTickFlowState inGameTickState_; // faithful state machine Scene_InGameUpdate 0x52C600 (InGame scene)
 
-    std::unique_ptr<ui::LoginScene>   login_;       // scènes 2/3/4
-    std::unique_ptr<ui::GameHud>      hud_;          // HUD scène 6
-    std::unique_ptr<ui::GameWindows>  windows_;      // fenêtres de jeu scène 6 (Entrepôt/Guilde/...)
-    std::unique_ptr<WorldRenderer>    world_;        // rendu 3D des entités scène 6 (Scene/WorldRenderer.h)
-    // Renderer mesh model-object (Vague F, Gfx/ModelObjectRenderer.h) : dessine les meshes d'effet
-    // FX de combat (block/parry/deflect, banque MiscC) via le hook s_meshDraw. ModelObj_Draw 0x4D71B0.
+    std::unique_ptr<ui::LoginScene>   login_;       // scenes 2/3/4
+    std::unique_ptr<ui::GameHud>      hud_;          // HUD scene 6
+    std::unique_ptr<ui::GameWindows>  windows_;      // in-game windows scene 6 (Warehouse/Guild/...)
+    std::unique_ptr<WorldRenderer>    world_;        // 3D rendering of entities scene 6 (Scene/WorldRenderer.h)
+    // Model-object mesh renderer (Wave F, Gfx/ModelObjectRenderer.h): draws combat FX
+    // meshes (block/parry/deflect, MiscC bank) via the s_meshDraw hook. ModelObj_Draw 0x4D71B0.
     std::unique_ptr<gfx::ModelObjectRenderer> modelObjRenderer_;
-    // Géométrie de monde statique (chunk .WO, cf. Gfx/WorldGeometryRenderer.h) — DISTINCT de
-    // `world_` (WorldRenderer = entités players/monsters). worldAssets_/worldMap_ chargent
-    // Z%03d.WO SEUL (pas WM/WJ/WG/atmosphère/son, hors périmètre de ce câblage) via les
-    // hooks World/WorldIntegration.h ; worldGeom_ uploade+dessine son contenu GPU.
+    // Static world geometry (.WO chunk, see Gfx/WorldGeometryRenderer.h) — DISTINCT from
+    // `world_` (WorldRenderer = player/monster entities). worldAssets_/worldMap_ load
+    // Z%03d.WO ONLY (not WM/WJ/WG/atmosphere/sound, out of scope for this wiring) via the
+    // World/WorldIntegration.h hooks; worldGeom_ uploads+draws its GPU content.
     std::unique_ptr<world::WorldAssets>       worldAssets_;
     std::unique_ptr<world::WorldMap>          worldMap_;
     std::unique_ptr<gfx::WorldGeometryRenderer> worldGeom_;
-    // Slot BGM de scène = sous-objet SoundObj à cSceneMgr +612 dans l'original
-    //   (cSceneMgr_ReinitBgm 0x517A80). Tenu par pointeur ici (header léger).
+    // Scene BGM slot = SoundObj sub-object at cSceneMgr +612 in the original
+    //   (cSceneMgr_ReinitBgm 0x517A80). Held by pointer here (lightweight header).
     std::unique_ptr<audio::BgmChannel>        bgm_;
     gfx::Renderer* renderer_ = nullptr;
     net::NetSystem* net_     = nullptr;

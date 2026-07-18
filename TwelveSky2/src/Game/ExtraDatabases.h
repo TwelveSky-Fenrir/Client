@@ -1,205 +1,201 @@
-// Game/ExtraDatabases.h — chargeur de 2 tables .IMG supplementaires (005_00005/00006),
-// distinctes des 5 tables de Game/GameDatabase.h (LEVEL/ITEM/SKILL/MONSTER/SOCKET).
+// Game/ExtraDatabases.h — loader for 2 extra .IMG tables (005_00005/00006),
+// distinct from the 5 tables in Game/GameDatabase.h (LEVEL/ITEM/SKILL/MONSTER/SOCKET).
 //
-// ATTENTION NOMS IDA TROMPEURS (verifie via decompilation + ValidateRecord voisins,
-// meme methode que MobDb/ItemDefTbl documentee ailleurs dans ce projet) :
-//   005_00005.IMG -> chargeur IDA "SkillDefTbl_LoadImg" 0x4C6BD0 / validateur "SkillDefTbl_ValidateRecord"
-//                    0x4C65F0. CE N'EST PAS une table de competences : rec[0] = "Blacksmith Wu" + un
-//                    gros bloc de texte/dialogue, et l'erreur associee est [Error::mNPC.Init()].
-//                    -> C'est la vraie table de definition des PNJ, chargee dans le manager "mNPC".
-//                    Renomme ici NpcDefRecord / NpcDefTbl.
-//   005_00006.IMG -> chargeur IDA "NpcTbl_LoadImg" 0x4C8090 / validateur "NpcTbl_ValidateRecord" 0x4C78C0.
-//                    CE N'EST PAS une table de PNJ : rec[0] = "[Intro] Banker Bai & Beggar Xiao" +
-//                    10 blocs de dialogue, erreur associee [Error::mQUEST.Init()].
-//                    -> C'est la vraie table de definition des QUETES, chargee dans le manager "mQUEST".
-//                    Renomme ici QuestDefRecord / QuestDefTbl.
+// WARNING, MISLEADING IDA NAMES (verified via decompilation + neighboring ValidateRecord,
+// same method as MobDb/ItemDefTbl documented elsewhere in this project):
+//   005_00005.IMG -> IDA loader "SkillDefTbl_LoadImg" 0x4C6BD0 / validator "SkillDefTbl_ValidateRecord"
+//                    0x4C65F0. THIS IS NOT a skill table: rec[0] = "Blacksmith Wu" + a
+//                    large text/dialogue block, and the associated error is [Error::mNPC.Init()].
+//                    -> It's the real NPC definition table, loaded into the "mNPC" manager.
+//                    Renamed here NpcDefRecord / NpcDefTbl.
+//   005_00006.IMG -> IDA loader "NpcTbl_LoadImg" 0x4C8090 / validator "NpcTbl_ValidateRecord" 0x4C78C0.
+//                    THIS IS NOT an NPC table: rec[0] = "[Intro] Banker Bai & Beggar Xiao" +
+//                    10 dialogue blocks, associated error [Error::mQUEST.Init()].
+//                    -> It's the real QUEST definition table, loaded into the "mQUEST" manager.
+//                    Renamed here QuestDefRecord / QuestDefTbl.
 //
-// Layouts deduits des validateurs (mêmes bornes en dur que les gardes d'integrite des 5 tables
-// de GameDatabase.h) : les offsets ou une borne coincide avec le compte d'une autre table connue
-// (ITEM_INFO=99999, SKILL_INFO=300, LEVEL_INFO=145) sont de FORTES hypotheses de role (correlation
-// de bornes), pas des certitudes prouvees par un accesseur observe — signale en commentaire.
+// Layouts deduced from the validators (same hardcoded bounds as the integrity guards of the 5
+// tables in GameDatabase.h): offsets where a bound coincides with another known table's count
+// (ITEM_INFO=99999, SKILL_INFO=300, LEVEL_INFO=145) are STRONG role hypotheses (bound
+// correlation), not certainties proven by an observed accessor — flagged in comments.
 //
-// Enveloppe fichier : [rawSize u32][packedSize u32][zlib] -> payload (cf. Asset_DecompressImg 0x53F5E0,
-// meme decodeur que les 5 tables). Contrairement aux 5 tables de GameDatabase.h, il N'Y A PAS de nom de
-// table embarque dans le payload : les enregistrements commencent directement a l'offset 4 (juste apres
-// le compteur), header=4 pour les 2 tables ici.
+// File envelope: [rawSize u32][packedSize u32][zlib] -> payload (see Asset_DecompressImg 0x53F5E0,
+// same decoder as the 5 tables). Unlike the 5 tables in GameDatabase.h, there is NO embedded
+// table name in the payload: records start directly at offset 4 (right after the counter),
+// header=4 for both tables here.
 #pragma once
-#include "Game/GameState.h" // pour ts2::game::DataTable
+#include "Game/GameState.h" // for ts2::game::DataTable
 #include <cstdint>
 #include <string>
 
 namespace ts2::game {
 
-// ---------------------------------------------------------------------------
-// Enregistrements types (layout byte-exact des .IMG, deduits des boucles de
-// validation NpcDefTbl_ValidateRecord 0x4C65F0 / QuestDefTbl_ValidateRecord 0x4C78C0).
-// ---------------------------------------------------------------------------
+// Typed records (byte-exact .IMG layout, deduced from the validation loops of
+// NpcDefTbl_ValidateRecord 0x4C65F0 / QuestDefTbl_ValidateRecord 0x4C78C0).
 #pragma pack(push, 1)
 
-// NpcDefRecord — 11736 o. Table "mNPC" (005_00005.IMG). Slot vide si id == 0 (garde
-// en tete de NpcDefTbl_ValidateRecord : `if (!*(DWORD*)rec) return 1;`).
-// Cross-check VeryOldClient : classe NPC (VeryOldClient/GameSystem/CNPC.cpp, singleton mNPC).
-// Detail par offset : Docs/TS2_TABLES_ROSETTA.md §6. NB : VeryOld nHeadImg[6] est un champ
-// RUNTIME (overlay mNPC_nHeadImg dans CNPC::Init), ABSENT du record fichier 11736 o.
+// NpcDefRecord — 11736 bytes. Table "mNPC" (005_00005.IMG). Empty slot if id == 0 (guard
+// at the top of NpcDefTbl_ValidateRecord: `if (!*(DWORD*)rec) return 1;`).
+// Cross-check VeryOldClient: NPC class (VeryOldClient/GameSystem/CNPC.cpp, singleton mNPC).
+// Per-offset detail: Docs/TS2_TABLES_ROSETTA.md §6. NB: VeryOld nHeadImg[6] is a RUNTIME
+// field (mNPC_nHeadImg overlay in CNPC::Init), ABSENT from the 11736-byte file record.
 struct NpcDefRecord {
-    uint32_t id;                 // +0     1..500, DOIT valoir index+1 (0 = slot vide) ; ex-VeryOldClient: nIndex (CONFIRMED)
-    char     name[25];           // +4     nom du PNJ (ex. rec[0] = "Blacksmith Wu"), null dans [0..24] ; ex-VeryOldClient: nName (CONFIRMED)
-    uint8_t  _pad29[3];          // +29    reserve (alignement)
-    uint32_t fieldA;              // +32    (1..5) role inconnu — precede la grille de textes, peut-etre
-                                   //        le nombre de sous-menus/dialogues actifs sur les 5 disponibles.
-                                   //        ex-VeryOldClient: nSpeechNum (PLAUSIBLE, resout la supposition)
-    char     textGrid[5][5][51]; // +36    grille 5x5 de chaines (<=51 o, null-terminees) — texte de
-                                   //        dialogue/menu du PNJ (5 "pages" x 5 lignes, hypothese).
-                                   //        ex-VeryOldClient: nSpeech[5][5][51] (CONFIRMED, structure 5x5x51 identique)
-    uint8_t  _pad1311[1];        // +1311  reserve (alignement)
-    uint32_t fieldB;              // +1312  (1..5)  role inconnu ; ex-VeryOldClient: nTribe (PLAUSIBLE, tribus 1..4 + neutre ?)
-    uint32_t fieldC;              // +1316  (1..17) role inconnu (17 ~ nb. de zones/maps ?) ; ex-VeryOldClient: nType (PLAUSIBLE)
-    uint32_t fieldD;              // +1320  (1..10000) role inconnu (coordonnee monde ? cf. ITEM_INFO champs 192/196/200 bornes similaires)
-                                   //        ex-VeryOldClient: nDataSortNumber2D (PLAUSIBLE, corrige la supposition : index/tri image 2D portrait)
-    // RESOLU (Docs/TS2_NPC_MESH_DRAW.md §2-3, decompilation Npc_DrawMesh 0x57FF00) :
-    // kindIndex+1 du modele visuel PNJ. `Npc_DrawMesh` lit `*(DWORD*)(*this+1324) - 1` sur
-    // l'enregistrement runtime pointe par g_NpcRenderArray[i].ptr (resolu via
-    // SkillDefTbl_GetRecord(mNPC, kindId) == GetNpcDefRecord() ici) et l'utilise pour indexer
-    // g_NpcMeshCatalog (66 entrees, stem "N%03d%03d001.SOBJECT") apres verif Model_GetNpcMeshSlot
-    // (borne dure 0x41=65, donc fieldE doit valoir [1,66]). Cote ClientSource : voir
-    // Gfx/ModelCache.h::GetForNpc, qui calcule kindIndex = fieldE - 1.
-    uint32_t fieldE;              // +1324  kindIndex+1 du modele PNJ (N*.SOBJECT), [1,66] ; ex-VeryOldClient: nDataSortNumber3D (CONFIRMED, role modele 3D prouve)
-    // fieldF[1] (+1332) RESOLU (meme doc, meme fonction) : portee d'interaction/clic du PNJ,
-    // comparee via Target_IsBeyondClickRange((float*)this+5, fieldF[1]) -- hauteur/rayon de la
-    // garde anti-clipping camera, meme role que ItemInfo.drawSize pour Char_Draw. fieldF[0]/[2]
-    // restent de role inconnu.
-    uint32_t fieldF[3];           // +1328  3x (1..1000) [1]=portee d'interaction (RESOLU), [0]/[2] inconnus ; ex-VeryOldClient: nSize[3] (PLAUSIBLE)
-    uint32_t fieldG[100];         // +1340  100x (1..2) — probablement des drapeaux booleens (etat/dispo) ; ex-VeryOldClient: nMenu[100] (PLAUSIBLE, 100 entrees de menu actif/inactif)
-    // <100000 par valeur : correlation forte avec ITEM_INFO (garde d'integrite = 99999 objets,
-    // cf. GameDatabase.h). Hypothese : identifiants d'objets vendus par ce PNJ marchand (3 categories x 28 slots).
-    // ex-VeryOldClient: nShopInfo[3][28] (PLAUSIBLE, structure 3x28 identique + role boutique).
+    uint32_t id;                 // +0     1..500, MUST equal index+1 (0 = empty slot); ex-VeryOldClient: nIndex (CONFIRMED)
+    char     name[25];           // +4     NPC name (e.g. rec[0] = "Blacksmith Wu"), NUL within [0..24]; ex-VeryOldClient: nName (CONFIRMED)
+    uint8_t  _pad29[3];          // +29    reserved (alignment)
+    uint32_t fieldA;              // +32    (1..5) unknown role — precedes the text grid, possibly
+                                   //        the number of active submenus/dialogues out of the 5 available.
+                                   //        ex-VeryOldClient: nSpeechNum (PLAUSIBLE, resolves the guess)
+    char     textGrid[5][5][51]; // +36    5x5 grid of strings (<=51 bytes, NUL-terminated) — NPC
+                                   //        dialogue/menu text (5 "pages" x 5 lines, hypothesis).
+                                   //        ex-VeryOldClient: nSpeech[5][5][51] (CONFIRMED, identical 5x5x51 structure)
+    uint8_t  _pad1311[1];        // +1311  reserved (alignment)
+    uint32_t fieldB;              // +1312  (1..5)  unknown role; ex-VeryOldClient: nTribe (PLAUSIBLE, tribes 1..4 + neutral?)
+    uint32_t fieldC;              // +1316  (1..17) unknown role (17 ~ number of zones/maps?); ex-VeryOldClient: nType (PLAUSIBLE)
+    uint32_t fieldD;              // +1320  (1..10000) unknown role (world coordinate? see ITEM_INFO fields 192/196/200, similar bounds)
+                                   //        ex-VeryOldClient: nDataSortNumber2D (PLAUSIBLE, corrects the guess: 2D portrait image index/sort)
+    // RESOLVED (Docs/TS2_NPC_MESH_DRAW.md §2-3, decompilation of Npc_DrawMesh 0x57FF00):
+    // kindIndex+1 of the NPC's visual model. `Npc_DrawMesh` reads `*(DWORD*)(*this+1324) - 1` on
+    // the runtime record pointed to by g_NpcRenderArray[i].ptr (resolved via
+    // SkillDefTbl_GetRecord(mNPC, kindId) == GetNpcDefRecord() here) and uses it to index
+    // g_NpcMeshCatalog (66 entries, stem "N%03d%03d001.SOBJECT") after checking Model_GetNpcMeshSlot
+    // (hard bound 0x41=65, so fieldE must be [1,66]). ClientSource side: see
+    // Gfx/ModelCache.h::GetForNpc, which computes kindIndex = fieldE - 1.
+    uint32_t fieldE;              // +1324  kindIndex+1 of the NPC model (N*.SOBJECT), [1,66]; ex-VeryOldClient: nDataSortNumber3D (CONFIRMED, 3D model role proven)
+    // fieldF[1] (+1332) RESOLVED (same doc, same function): NPC interaction/click range,
+    // compared via Target_IsBeyondClickRange((float*)this+5, fieldF[1]) -- height/radius of the
+    // camera anti-clipping guard, same role as ItemInfo.drawSize for Char_Draw. fieldF[0]/[2]
+    // remain of unknown role.
+    uint32_t fieldF[3];           // +1328  3x (1..1000) [1]=interaction range (RESOLVED), [0]/[2] unknown; ex-VeryOldClient: nSize[3] (PLAUSIBLE)
+    uint32_t fieldG[100];         // +1340  100x (1..2) — probably boolean flags (state/availability); ex-VeryOldClient: nMenu[100] (PLAUSIBLE, 100 active/inactive menu entries)
+    // <100000 per value: strong correlation with ITEM_INFO (integrity guard = 99999 items,
+    // see GameDatabase.h). Hypothesis: item ids sold by this merchant NPC (3 categories x 28 slots).
+    // ex-VeryOldClient: nShopInfo[3][28] (PLAUSIBLE, identical 3x28 structure + shop role).
     uint32_t shopItemIds[3][28];  // +1740
-    // <=300 par valeur : correlation forte avec SKILL_INFO (garde d'integrite = 300 competences,
-    // cf. GameDatabase.h). Hypothese : identifiants de competences enseignees par ce PNJ (3x8).
-    // ex-VeryOldClient: nSkillInfo1[3][8] (PLAUSIBLE, structure 3x8 identique).
+    // <=300 per value: strong correlation with SKILL_INFO (integrity guard = 300 skills,
+    // see GameDatabase.h). Hypothesis: skill ids taught by this NPC (3x8).
+    // ex-VeryOldClient: nSkillInfo1[3][8] (PLAUSIBLE, identical 3x8 structure).
     uint32_t teachSkillIds[3][8]; // +2076
-    // <=300 par valeur : meme borne que SKILL_INFO. Hypothese : matrice de pre-requis/couts de
-    // competences (3 groupes x 3 x 3 x 8 slots) — structure imbriquee non elucidee en detail.
-    // ex-VeryOldClient: nSkillInfo2[3][3][3][8] (PLAUSIBLE, structure 3x3x3x8 identique).
+    // <=300 per value: same bound as SKILL_INFO. Hypothesis: prerequisite/cost matrix for
+    // skills (3 groups x 3 x 3 x 8 slots) — nested structure not fully elucidated.
+    // ex-VeryOldClient: nSkillInfo2[3][3][3][8] (PLAUSIBLE, identical 3x3x3x8 structure).
     uint32_t skillMatrix[3][3][3][8]; // +2172
-    // <=100000000 (1e8) par valeur, indexe par 145 (== garde LEVEL_INFO) x 15. Hypothese : table de
-    // couts (or ?) par niveau de joueur x 15 emplacements (ex. cout d'entrainement d'une competence
-    // scalant avec le niveau). ex-VeryOldClient: nGambleCostInfo[145][15] (PLAUSIBLE, cout de pari par niveau).
+    // <=100000000 (1e8) per value, indexed by 145 (== LEVEL_INFO guard) x 15. Hypothesis: cost
+    // table (gold?) per player level x 15 slots (e.g. skill training cost scaling with level).
+    // ex-VeryOldClient: nGambleCostInfo[145][15] (PLAUSIBLE, gamble cost per level).
     uint32_t levelCostTable[145][15]; // +3036
 };
-static_assert(sizeof(NpcDefRecord) == 11736, "NpcDefRecord doit faire 11736 o");
+static_assert(sizeof(NpcDefRecord) == 11736, "NpcDefRecord must be 11736 bytes");
 
-// QuestDefRecord — 8444 o. Table "mQUEST" (005_00006.IMG). Slot vide si name == ""
-// (garde en tete de QuestDefTbl_ValidateRecord : `if (!Crt_Strcmp(rec->name, "")) return 1;` —
-// CONTRAIREMENT aux autres tables, ce n'est PAS id==0 qui marque un slot vide ici).
-// Cross-check VeryOldClient : classe QUEST (VeryOldClient/GameSystem/CQUEST.cpp, singleton mQUEST).
-// Cross-check semantique FORT (Docs/TS2_TABLES_ROSETTA.md §7) : le champ CHAINE (name) est le
-// marqueur de slot vide dans les DEUX builds (VeryOld qSubject = "cle de vacuite").
+// QuestDefRecord — 8444 bytes. Table "mQUEST" (005_00006.IMG). Empty slot if name == ""
+// (guard at the top of QuestDefTbl_ValidateRecord: `if (!Crt_Strcmp(rec->name, "")) return 1;` —
+// UNLIKE the other tables, it is NOT id==0 that marks an empty slot here).
+// Cross-check VeryOldClient: QUEST class (VeryOldClient/GameSystem/CQUEST.cpp, singleton mQUEST).
+// STRONG semantic cross-check (Docs/TS2_TABLES_ROSETTA.md §7): the STRING field (name) is the
+// empty-slot marker in BOTH builds (VeryOld qSubject = "emptiness key").
 struct QuestDefRecord {
-    uint32_t id;                 // +0    1..1000, DOIT valoir index+1 ; ex-VeryOldClient: qIndex (CONFIRMED)
-    char     name[51];           // +4    titre de la quete (ex. rec[0] = "[Intro] Banker Bai & Beggar Xiao") ; ex-VeryOldClient: qSubject[51] (CONFIRMED, cle de vacuite)
-    uint8_t  _pad55[1];          // +55   reserve (alignement)
-    // +56/+60 = LA CLE COMPOSITE de la table (RESOLU — NpcTbl_FindByTypeAndId 0x4C8340) :
-    // le binaire ne cherche JAMAIS une quete par index de ligne, il scanne en comparant
-    // `rec[56] == element0 + 1` (le +1 est pose sur l'ARGUMENT, EA 0x4C839E ; cmp 0x4C83A1)
-    // ET `rec[60] == questId` (cmp 0x4C83BA). Preuve par les donnees (005_00006.IMG, 688
-    // lignes non vides) : histogramme de +56 = {1:207, 2:207, 3:207, 4:67} (= les 4 elements)
-    // et 678 lignes sur 688 ont +60 != id — l'index de ligne N'EST PAS la cle.
-    uint32_t fieldA;              // +56   (1..4)    element0 + 1 (element/faction du joueur, 0-based +1)
-    uint32_t fieldB;              // +60   (1..1000) id de quete AU SEIN de l'element (PAS l'id de ligne)
-    // +64 CONSOMME (RESOLU) : Quest_CheckObjectiveState 0x50FF10, branche « implicite »
-    // (EA 0x50FF80/0x50FF86) -> `cmp g_SelfLevel[base+0xA038], [rec+0x40]` puis `jge` : porte
-    // de NIVEAU de la quete SUIVANTE. Donnees intro coherentes (1,1,1,1,2,4,6,8,10,12).
-    uint32_t levelReq;            // +64   (1..145)  niveau requis ; ex-VeryOldClient: qLevel (CONFIRMED, consomme @0x50FF86)
-    uint32_t fieldD;              // +68   (1..2)   role inconnu — drapeau (repetable ?)
-    // +72 RESOLU : Pkt_SmithUpgradeResult 0x48E7D0 @0x48E929 lit `[rec+0x48]` et l'ecrit dans
-    // g_QuestObjType 0x16745FC ; Quest_CheckObjectiveState 0x50FF10 @0x50FFFC en fait le
-    // selecteur de son switch a 8 cas. Donnees : {1:227,2:57,3:38,4:69,5:127,6:7,7:88,8:75}.
-    uint32_t fieldE;              // +72   (1..8)    type d'objectif (selecteur du switch 0x50FFFC)
-    uint32_t fieldF;              // +76   (0..200) role inconnu
-    uint8_t  _unk80[12];          // +80   12 o NON couverts par le validateur (aucune garde observee)
-    uint32_t fieldG;              // +92   (1..500) resultat/id « variante A » (v10[23], Quest_GetObjectiveResult 0x510520)
-    uint32_t fieldH[5];           // +96   5x (0..500) [0] = resultat/id « variante B » (v10[24]) ; [1..4] role inconnu
-    uint32_t fieldI;              // +116  (1..500) resultat/id « objectif rempli » (v10[29])
-    // +120/+124 RESOLUS — le commentaire « 16 o NON couverts » etait FAUX (non valide par le
-    // validateur != non consomme). Double preuve :
-    //  (a) IDA : Pkt_SmithUpgradeResult @0x48E881/0x48E884 lit `[rec+0x78]` (=+120) et l'ecrit
-    //      comme ITEM ID dans g_InvMain ; Quest_CheckObjectiveState compare +120 (cible) et
-    //      +124 (quantite requise, EA 0x51002A : `progress >= [v10+124]` -> etat 3 « rempli »).
-    //  (b) Donnees : « [Intro] Kill one Goblin! » +120=1 +124=1 ; « Kill 5 Dragon Priests! »
-    //      +120=2 +124=5 ; « Kill 10 Killer Fish! » +120=3 +124=10. Correlation parfaite avec
-    //      le switch : les types 2/3/4/8 (jamais +124 lu) ont +124==0 ; le type 7 (jamais +120
-    //      lu) a +120==0.
-    uint32_t objectiveTarget;     // +120  cible de l'objectif (id mob/item/pnj selon le type +72)
-    uint32_t objectiveRequired;   // +124  quantite requise / 2e cible (phase 2 du type 6)
-    uint8_t  _gap128[8];          // +128  NON prouve : 0 sur les 688 lignes non vides, aucun lecteur observe
-    // 3 paires (categorie 1..6, valeur <=1e8) : table de recompenses (item/or/exp x montant).
-    // CONFIRME par Quest_GetRewardItemId 0x510A10 : boucle `i<3` sur `[rec + 8*i + 0x88]`
-    // (=+136, categorie) et `[rec + 8*i + 0x8C]` (=+140, valeur) ; categorie==6 => valeur = id
-    // d'item. ex-VeryOldClient: qReward[3][2] (type 1..6 / valeur) (CONFIRMED, meme forme).
+    uint32_t id;                 // +0    1..1000, MUST equal index+1; ex-VeryOldClient: qIndex (CONFIRMED)
+    char     name[51];           // +4    quest title (e.g. rec[0] = "[Intro] Banker Bai & Beggar Xiao"); ex-VeryOldClient: qSubject[51] (CONFIRMED, emptiness key)
+    uint8_t  _pad55[1];          // +55   reserved (alignment)
+    // +56/+60 = the table's COMPOSITE KEY (RESOLVED — NpcTbl_FindByTypeAndId 0x4C8340):
+    // the binary NEVER looks up a quest by row index, it scans comparing
+    // `rec[56] == element0 + 1` (the +1 is applied to the ARGUMENT, EA 0x4C839E; cmp 0x4C83A1)
+    // AND `rec[60] == questId` (cmp 0x4C83BA). Proven by data (005_00006.IMG, 688
+    // non-empty rows): histogram of +56 = {1:207, 2:207, 3:207, 4:67} (= the 4 elements)
+    // and 678 of 688 rows have +60 != id — the row index is NOT the key.
+    uint32_t fieldA;              // +56   (1..4)    element0 + 1 (player's element/faction, 0-based +1)
+    uint32_t fieldB;              // +60   (1..1000) quest id WITHIN the element (NOT the row id)
+    // +64 CONSUMED (RESOLVED): Quest_CheckObjectiveState 0x50FF10, "implied" branch
+    // (EA 0x50FF80/0x50FF86) -> `cmp g_SelfLevel[base+0xA038], [rec+0x40]` then `jge`: LEVEL
+    // gate for the NEXT quest. Intro data is consistent (1,1,1,1,2,4,6,8,10,12).
+    uint32_t levelReq;            // +64   (1..145)  required level; ex-VeryOldClient: qLevel (CONFIRMED, consumed @0x50FF86)
+    uint32_t fieldD;              // +68   (1..2)   unknown role — flag (repeatable?)
+    // +72 RESOLVED: Pkt_SmithUpgradeResult 0x48E7D0 @0x48E929 reads `[rec+0x48]` and writes it
+    // into g_QuestObjType 0x16745FC; Quest_CheckObjectiveState 0x50FF10 @0x50FFFC uses it as the
+    // selector of its 8-case switch. Data: {1:227,2:57,3:38,4:69,5:127,6:7,7:88,8:75}.
+    uint32_t fieldE;              // +72   (1..8)    objective type (selector of switch 0x50FFFC)
+    uint32_t fieldF;              // +76   (0..200) unknown role
+    uint8_t  _unk80[12];          // +80   12 bytes NOT covered by the validator (no guard observed)
+    uint32_t fieldG;              // +92   (1..500) "variant A" result/id (v10[23], Quest_GetObjectiveResult 0x510520)
+    uint32_t fieldH[5];           // +96   5x (0..500) [0] = "variant B" result/id (v10[24]); [1..4] unknown role
+    uint32_t fieldI;              // +116  (1..500) "objective completed" result/id (v10[29])
+    // +120/+124 RESOLVED — the comment "16 bytes NOT covered" was WRONG (not validated by the
+    // validator != not consumed). Dual proof:
+    //  (a) IDA: Pkt_SmithUpgradeResult @0x48E881/0x48E884 reads `[rec+0x78]` (=+120) and writes it
+    //      as an ITEM ID into g_InvMain; Quest_CheckObjectiveState compares +120 (target) and
+    //      +124 (required quantity, EA 0x51002A: `progress >= [v10+124]` -> state 3 "completed").
+    //  (b) Data: "[Intro] Kill one Goblin!" +120=1 +124=1; "Kill 5 Dragon Priests!"
+    //      +120=2 +124=5; "Kill 10 Killer Fish!" +120=3 +124=10. Perfect correlation with
+    //      the switch: types 2/3/4/8 (never read +124) have +124==0; type 7 (never reads +120)
+    //      has +120==0.
+    uint32_t objectiveTarget;     // +120  objective target (mob/item/npc id depending on the +72 type)
+    uint32_t objectiveRequired;   // +124  required quantity / 2nd target (phase 2 of type 6)
+    uint8_t  _gap128[8];          // +128  NOT proven: 0 across the 688 non-empty rows, no reader observed
+    // 3 pairs (category 1..6, value <=1e8): reward table (item/gold/exp x amount).
+    // CONFIRMED by Quest_GetRewardItemId 0x510A10: loop `i<3` over `[rec + 8*i + 0x88]`
+    // (=+136, category) and `[rec + 8*i + 0x8C]` (=+140, value); category==6 => value = item
+    // id. ex-VeryOldClient: qReward[3][2] (type 1..6 / value) (CONFIRMED, same shape).
     struct { uint32_t category; uint32_t value; } rewards[3]; // +136
-    uint32_t fieldK;              // +160  (0..1000) role inconnu
-    // 10 blocs de dialogue (correspond au commentaire desassemblage "10 blocs de dialogue") :
-    // chaque bloc = 15 lignes de texte (<=51 o, null-terminees, VALIDEES) + 63 o de fin de bloc
-    // NON valides par NpcTbl_ValidateRecord (metadonnees par bloc — orateur ? drapeaux ? — inconnues).
+    uint32_t fieldK;              // +160  (0..1000) unknown role
+    // 10 dialogue blocks (matches the disassembly comment "10 dialogue blocks"):
+    // each block = 15 lines of text (<=51 bytes, NUL-terminated, VALIDATED) + 63 bytes of
+    // block trailer NOT validated by NpcTbl_ValidateRecord (per-block metadata — speaker? flags? — unknown).
     struct {
-        char    lines[15][51]; // texte de dialogue (15 lignes max par bloc)
-        uint8_t _tail[63];     // NON valide par le desassemblage — role inconnu
+        char    lines[15][51]; // dialogue text (up to 15 lines per block)
+        uint8_t _tail[63];     // NOT validated by the disassembly — unknown role
     } dialogue[10];               // +164
 };
-static_assert(sizeof(QuestDefRecord) == 8444, "QuestDefRecord doit faire 8444 o");
+static_assert(sizeof(QuestDefRecord) == 8444, "QuestDefRecord must be 8444 bytes");
 
 #pragma pack(pop)
 
-// ---------------------------------------------------------------------------
 // API.
-// ---------------------------------------------------------------------------
 
-// Etat des 2 tables supplementaires (separe de game::GameDatabases pour ne pas modifier
-// GameState.h — cf. regle du module autonome).
+// State of the 2 extra tables (kept separate from game::GameDatabases so as not to
+// modify GameState.h — see the standalone-module rule).
 struct ExtraDatabases {
-    DataTable npc;   // NpcDefRecord   (11736 o) — manager "mNPC",   005_00005.IMG
-    DataTable quest; // QuestDefRecord (8444 o)  — manager "mQUEST", 005_00006.IMG
+    DataTable npc;   // NpcDefRecord   (11736 bytes) — manager "mNPC",   005_00005.IMG
+    DataTable quest; // QuestDefRecord (8444 bytes)  — manager "mQUEST", 005_00006.IMG
 };
 
-// Instance globale unique (miroir de g_World.db mais hors de GameState.h).
+// Single global instance (mirrors g_World.db but outside GameState.h).
 inline ExtraDatabases g_ExtraDb;
 
-// Charge les 2 tables .IMG dans g_ExtraDb. `gameDataDir` = racine "GameData" (les fichiers
-// sont sous <gameDataDir>\G03_GDATA\D01_GIMAGE2D\005\). Renvoie true si LES DEUX tables sont
-// chargees et validees (garde de compteur OK + boucle *_ValidateRecord OK sur chaque
-// enregistrement, comme l'original qui echoue au premier ValidateRecord invalide).
+// Loads the 2 .IMG tables into g_ExtraDb. `gameDataDir` = "GameData" root (files
+// live under <gameDataDir>\G03_GDATA\D01_GIMAGE2D\005\). Returns true if BOTH tables are
+// loaded and validated (counter guard OK + *_ValidateRecord loop OK on every
+// record, like the original which fails on the first invalid ValidateRecord).
 //
-// `useTR` = etat du flag g_UseTRVariant 0x1669190 (champ 1 de la cmdline, ecrit @0x460C48).
-// A 1, les DEUX tables basculent sur ...\005\TR\ : leurs chargeurs testent le flag
-// (`cmp ds:g_UseTRVariant, 1` @0x4C6BD9 pour 005_00005, @0x4C8099 pour 005_00006).
-// Defaut `false` = comportement EU historique (les appelants de test n'ont rien a changer).
+// `useTR` = state of flag g_UseTRVariant 0x1669190 (field 1 of the cmdline, written @0x460C48).
+// At 1, BOTH tables switch to ...\005\TR\: their loaders test the flag
+// (`cmp ds:g_UseTRVariant, 1` @0x4C6BD9 for 005_00005, @0x4C8099 for 005_00006).
+// Default `false` = historical EU behavior (test callers have nothing to change).
 bool LoadExtraDatabases(const std::string& gameDataDir, bool useTR = false);
 
-// Accesseur type NpcDefRecord. `npcId` 1-based (1..500) ; nullptr hors bornes OU slot vide (id==0).
+// Typed NpcDefRecord accessor. `npcId` 1-based (1..500); nullptr out of bounds OR empty slot (id==0).
 const NpcDefRecord* GetNpcDefRecord(uint32_t npcId);
 
-// Accesseur type QuestDefRecord PAR INDEX DE LIGNE. `questId` 1-based (1..1000) ; nullptr hors
-// bornes OU slot vide (name vide — cf. semantique differente de l'empty-check pour cette table).
-// ATTENTION — CE N'EST PAS le mode d'acces du binaire : aucune fonction de TwelveSky2.exe ne
-// resout une quete par index de ligne. Le seul resolveur du binaire est
-// NpcTbl_FindByTypeAndId 0x4C8340 = un scan composite (element, id) -> voir
-// FindQuestDefByElementAndId ci-dessous. Indexer par id est REFUTE par l'asset lui-meme : sur
-// les 688 lignes non vides de 005_00006.IMG, 678 ont +60 != id (seules les 10 premieres, celles
-// de l'element 1, coincident). Conserve pour les appelants historiques / le debogage ; tout
-// nouveau code doit utiliser FindQuestDefByElementAndId.
+// Typed QuestDefRecord accessor BY ROW INDEX. `questId` 1-based (1..1000); nullptr out of
+// bounds OR empty slot (empty name — see this table's different empty-check semantics).
+// WARNING — THIS IS NOT the binary's access mode: no function in TwelveSky2.exe
+// resolves a quest by row index. The binary's sole resolver is
+// NpcTbl_FindByTypeAndId 0x4C8340 = a composite (element, id) scan -> see
+// FindQuestDefByElementAndId below. Indexing by id is DISPROVEN by the asset itself: of
+// the 688 non-empty rows in 005_00006.IMG, 678 have +60 != id (only the first 10, those
+// of element 1, coincide). Kept for historical callers / debugging; all new code
+// must use FindQuestDefByElementAndId.
 const QuestDefRecord* GetQuestDefRecord(uint32_t questId);
 
-// NpcTbl_FindByTypeAndId 0x4C8340 — LE resolveur de la table mQUEST (le binaire l'appelle
-// toujours avec `ecx = offset mQUEST 0x8E71E4`). Scan lineaire composite sur g_ExtraDb.quest ;
-// retient la PREMIERE ligne verifiant, DANS CET ORDRE :
-//   (a) nom non vide        — Crt_Strcmp(rec+4, "") != 0   (push String 0x7EC95F @0x4C8365,
+// NpcTbl_FindByTypeAndId 0x4C8340 — THE resolver for the mQUEST table (the binary always
+// calls it with `ecx = offset mQUEST 0x8E71E4`). Composite linear scan over g_ExtraDb.quest;
+// keeps the FIRST row satisfying, IN THIS ORDER:
+//   (a) name not empty       — Crt_Strcmp(rec+4, "") != 0   (push String 0x7EC95F @0x4C8365,
 //                             call Crt_Strcmp 0x75CF20 @0x4C837E)
-//   (b) rec[56] == element0 + 1                            (add edx,1 @0x4C839E ; cmp @0x4C83A1)
-//   (c) rec[60] == questId                                 (cmp @0x4C83BA ; jnz @0x4C83BD)
-// Renvoie `base + 8444*i` @0x4C83CE, ou nullptr @0x4C83D4 (aucune ligne).
-// `element0` = element local 0-based (g_LocalElement 0x1673194 == g_World.self.element) ; le
-// +1 est applique A L'ARGUMENT, pas au champ.
+//   (b) rec[56] == element0 + 1                            (add edx,1 @0x4C839E; cmp @0x4C83A1)
+//   (c) rec[60] == questId                                 (cmp @0x4C83BA; jnz @0x4C83BD)
+// Returns `base + 8444*i` @0x4C83CE, or nullptr @0x4C83D4 (no row found).
+// `element0` = local 0-based element (g_LocalElement 0x1673194 == g_World.self.element); the
+// +1 is applied TO THE ARGUMENT, not to the field.
 const QuestDefRecord* FindQuestDefByElementAndId(int element0, int questId);
 
 } // namespace ts2::game

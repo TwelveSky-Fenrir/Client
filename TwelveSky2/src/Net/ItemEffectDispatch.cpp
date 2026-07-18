@@ -1,66 +1,66 @@
-// Net/ItemEffectDispatch.cpp — mega-switch d'effets consommables def_46B168 (EA 0x46B168).
+// Net/ItemEffectDispatch.cpp — consumable effect mega-switch def_46B168 (EA 0x46B168).
 //
 // ===========================================================================
-//  A. CLE DU SWITCH : var_480 = ITEM_INFO[+0] == item->itemId  (def_46A44F 0x46B10F)
+//  A. SWITCH KEY: var_480 = ITEM_INFO[+0] == item->itemId  (def_46A44F 0x46B10F)
 // ===========================================================================
-//     46B10F  mov edx, [ebp+var_438]   ; var_438 = record ITEM_INFO (MobDb_GetEntry mITEM)
+//     46B10F  mov edx, [ebp+var_438]   ; var_438 = ITEM_INFO record (MobDb_GetEntry mITEM)
 //     46B115  mov eax, [edx]           ; *record = ITEM_INFO[+0] = template id
 //     46B117  mov [ebp+var_480], eax   ; var_480 = template id
-//  Le brief demandait de tracer « le champ qui alimente var_480 » : c'est le PREMIER
-//  dword du record (itemId), pas un champ d'effet dedie. Aucun autre site n'ecrit
+//  The brief asked to trace "the field that feeds var_480": it is the FIRST
+//  dword of the record (itemId), not a dedicated effect field. No other site writes
 //  var_480.
 //
 // ===========================================================================
-//  B. STRUCTURE (cascade de plages, 0x46B11D..0x46B44E)
+//  B. STRUCTURE (range cascade, 0x46B11D..0x46B44E)
 // ===========================================================================
-//  Chaque plage : teste un/des singleton(s), sinon idx = id - base ; si idx > bound
-//  -> def_46B168 (no-op generique) ; sinon j = subTable[idx] ; jmp jptTable[j*4].
-//  Plages portees ici (les 6 premieres, sous-tables dumpees via get_bytes IDA) :
+//  Each range: tests one/some singleton(s), else idx = id - base; if idx > bound
+//  -> def_46B168 (generic no-op); else j = subTable[idx]; jmp jptTable[j*4].
+//  Ranges ported here (the first 6, sub-tables dumped via IDA get_bytes):
 //    P0  id<=0x320    base 0x1FA  bound 0xCF  byte_487E90(208) jpt_46B168  (0x46B11D)
 //    P1  0x321..0x419 base 0x321  bound 0xF8  byte_488014(249) jpt_46B1BA  (0x46B16F)
 //    P2  0x42D..0x533 base 0x42D  bound 0x106 byte_4882F8(263) jpt_46B20C  (0x46B1C1)
 //    P3  0x54C..0x5DB base 0x54C  bound 0x8F  byte_4884B4(144) jpt_46B25E  (0x46B213)
 //    P4  0x72C..0x81C base 0x72C  bound 0xF0  byte_488584(241) jpt_46B2B0  (0x46B265)
 //    P5  0x85A..0x950 base 0x85A  bound 0xF6  byte_4886F0(247) jpt_46B302  (0x46B2B7)
-//  Plages au-dela de 0x950 (0x957.., 0x2EE4.., 0x2FC9.., 0x30D5.., 0x4291.., ...) :
-//  non portees -> // TODO [cascade 0x46B309.. 0x46B44E].
+//  Ranges beyond 0x950 (0x957.., 0x2EE4.., 0x2FC9.., 0x30D5.., 0x4291.., ...):
+//  not ported -> // TODO [cascade 0x46B309.. 0x46B44E].
 //
 // ===========================================================================
-//  C. ARCHETYPES (tous prouves par disasm)
+//  C. ARCHETYPES (all proven by disasm)
 // ===========================================================================
-//  - Prologue commun de chaque loc_46Bxxx : `cmp var_414,0 ; jnz def_46B168`
-//    -> n'agir que si flag==0 (sinon retomber au defaut). Sauf archetype « SysMsg »
-//    qui, si flag!=0, affiche un message et retombe au defaut.
-//  - Epilogue « consommer » : clear des 6 SoA de la cellule a
-//    base + var_42C*0x600 + var_43C*0x18 (var_42C/var_43C BRUTS, sans %100 ; equiv.
-//    %100 car row<100/col<64), puis Snd3D_PlayScaledVolume(0,100,1,flt_1495ABC
-//    0x1495ABC) 0x4DA380, puis Msg_AppendSystemLine(g_ChatManager 0x184C3C8,
+//  - Common prologue of every loc_46Bxxx: `cmp var_414,0 ; jnz def_46B168`
+//    -> act only if flag==0 (else fall through to default). Except the "SysMsg" archetype
+//    which, if flag!=0, shows a message and falls through to the default.
+//  - "Consume" epilogue: clears the cell's 6 SoA fields at
+//    base + var_42C*0x600 + var_43C*0x18 (var_42C/var_43C RAW, no %100; equivalent
+//    to %100 since row<100/col<64), then Snd3D_PlayScaledVolume(0,100,1,flt_1495ABC
+//    0x1495ABC) 0x4DA380, then Msg_AppendSystemLine(g_ChatManager 0x184C3C8,
 //    StrTable005_Get(g_LangId 0x84DFF8, <id>) 0x4C1D10, g_SysMsgColor 0x84DFD8) 0x68D9D0.
 //
 // ===========================================================================
-//  D. CORRECTION CRITIQUE (Regle #0) — dword_1687370/1687378 NE SONT PAS PV/PM
+//  D. CRITICAL FIX (Rule #0) — dword_1687370/1687378 ARE NOT HP/MP
 // ===========================================================================
-//  Le brief demandait « potions PV/PM (dword_1687370/1687378) ». IDA (autorite unique)
-//  prouve le contraire : ce sont le rating d'attaque COURANT min/max, bornes par les
-//  plafonds dword_168736C / dword_1687374. Aucun handler de ce switch ne restaure de
-//  PV/PM (la restauration PV/PM est serveur-autoritaire, hors perimetre). Aucune logique
-//  « HP += ... » n'est ecrite ici : ce serait une invention.
+//  The brief asked for "HP/MP potions (dword_1687370/1687378)". IDA (sole authority)
+//  proves the contrary: these are the CURRENT min/max attack rating, bounded by the
+//  dword_168736C / dword_1687374 caps. No handler in this switch restores
+//  HP/MP (HP/MP restoration is server-authoritative, out of scope). No
+//  "HP += ..." logic is written here: that would be invention.
 //
-//  « Decrement de pile » : DEUX archetypes coexistent, tous deux prouves :
-//   - la plupart des handlers CLEAR complet la cellule (objets quantite-1) ;
-//   - loc_46BABE (tpl 1026) / loc_46BC20 (tpl 1109) DECREMENTENT reellement
-//     g_InvGrid_Count -= 1 et ne clear qu'au passage <1.
+//  "Stack decrement": TWO archetypes coexist, both proven:
+//   - most handlers fully CLEAR the cell (quantity-1 objects);
+//   - loc_46BABE (tpl 1026) / loc_46BC20 (tpl 1109) actually DECREMENT
+//     g_InvGrid_Count -= 1 and only clear once it drops below 1.
 //
 // ===========================================================================
-//  F. ETAT RUNTIME — globals via g_Client.Var(addr)
+//  F. RUNTIME STATE — globals via g_Client.Var(addr)
 // ===========================================================================
-//  Tous les accumulateurs/attributs mutes ci-dessous sont adresses via l'echappatoire
-//  fidele g_Client.Var(adresseOrigine) (comme ItemActionDispatch.cpp) : une seule
-//  representation, coherente avec le stockage unique du binaire. NB : certains de ces
-//  globals (attributs de base 0x16731B8/BC/C0/C4, points 0x16731D0) sont aussi modelises
-//  en champ dans game::SelfState (GameState.h, lecture seule pour ce front) ; le plan de
-//  ce front impose l'usage uniforme de Var() pour garder le mega-switch auto-coherent
-//  (respec relit ce qu'il ecrit). Voir Docs/TS2_PASSE3_BACKLOG.md.
+//  All accumulators/attributes mutated below are addressed via the faithful
+//  g_Client.Var(originalAddress) escape hatch (like ItemActionDispatch.cpp): a single
+//  representation, consistent with the binary's single storage. NB: some of these
+//  globals (base attributes 0x16731B8/BC/C0/C4, points 0x16731D0) are also modeled
+//  as fields in game::SelfState (GameState.h, read-only for this front); this front's
+//  plan mandates uniform use of Var() to keep the mega-switch self-consistent
+//  (respec re-reads what it writes). See Docs/TS2_PASSE3_BACKLOG.md.
 // ===========================================================================
 
 #include "Net/ItemEffectDispatch.h"
@@ -74,49 +74,49 @@ namespace ts2::game {
 
 namespace {
 
-// --- Adresses d'origine (Regle #0) ---
-// Accumulateurs « meridien » / rating.
+// --- Original addresses (Rule #0) ---
+// "Meridian" / rating accumulators.
 constexpr uint32_t kMeridian_RatingMin = 0x16731C8; // g_MeridianPts_RatingMin
 constexpr uint32_t kMeridian_RatingMax = 0x16731CC; // g_MeridianPts_RatingMax
 constexpr uint32_t kMeridian_ExtAtk    = 0x1674730; // g_MeridianPts_ExtAtk
 constexpr uint32_t kMeridian_Defense   = 0x1674734; // g_MeridianPts_Defense
-// Attributs de base (respec) + points non alloues.
+// Base attributes (respec) + unallocated points.
 constexpr uint32_t kBaseAttr_Defensive = 0x16731B8; // g_SelfBaseAttr300_Defensive
 constexpr uint32_t kBaseAttr_ExtForce  = 0x16731BC; // g_SelfBaseAttr292_ExtForce
 constexpr uint32_t kBaseAttr_Offensive = 0x16731C0; // g_SelfBaseAttr304_Offensive
 constexpr uint32_t kBaseAttr_IntForce  = 0x16731C4; // g_SelfBaseAttr296_IntForce
 constexpr uint32_t kUnspentAttrPoints  = 0x16731D0; // g_SelfUnspentAttrPoints
-// Rating d'attaque courant min/max (PAS PV/PM — cf. §D) et leurs plafonds.
+// Current min/max attack rating (NOT HP/MP — see §D) and their caps.
 constexpr uint32_t kAtkRatingMinCap = 0x168736C; // dword_168736C (= Char_CalcAttackRatingMin)
-constexpr uint32_t kAtkRatingMinCur = 0x1687370; // dword_1687370 (courant min, clampe)
+constexpr uint32_t kAtkRatingMinCur = 0x1687370; // dword_1687370 (current min, clamped)
 constexpr uint32_t kAtkRatingMaxCap = 0x1687374; // dword_1687374 (= Char_CalcAttackRatingMax)
-constexpr uint32_t kAtkRatingMaxCur = 0x1687378; // dword_1687378 (courant max, clampe)
-// Timer/buff a duree.
+constexpr uint32_t kAtkRatingMaxCur = 0x1687378; // dword_1687378 (current max, clamped)
+// Duration timer/buff.
 constexpr uint32_t kBuffTimer_16746F0 = 0x16746F0; // dword_16746F0 (+= 0xB4 = 180)
 
-// Numero de serie « objet transforme » (loc_46C612 : InstanceSerial = 100000001).
+// "Transformed object" serial number (loc_46C612: InstanceSerial = 100000001).
 constexpr uint32_t kTransformSerial = 0x5F5E101;
-// Variante loc_46C681 (tpl 1036) : InstanceSerial = 100000002 (DIFFERENT de 1035).
+// Variant loc_46C681 (tpl 1036): InstanceSerial = 100000002 (DIFFERENT from 1035).
 constexpr uint32_t kTransformSerial2 = 0x5F5E102; // 46C6F8 : g_InvGrid_InstanceSerial = 0x5F5E102
 
-// --- Ids de chaines localisees 005.DAT (StrTable005_Get), valeurs exactes du binaire ---
+// --- Localized string ids from 005.DAT (StrTable005_Get), exact values from the binary ---
 constexpr int kMsg_RatingMin   = 0x25F; // loc_46B658
 constexpr int kMsg_RatingMax   = 0x260; // loc_46B779
 constexpr int kMsg_ExtAtk      = 0x36D; // loc_46B89B
 constexpr int kMsg_Defense     = 0x36E; // loc_46B9AC
 constexpr int kMsg_DecrStack   = 0x122; // loc_46BABE (tpl 1026)
-constexpr int kMsg_Generic386  = 0x386; // loc_46BC20 (tpl 1109) et loc_46BD82 (tpl 591)
+constexpr int kMsg_Generic386  = 0x386; // loc_46BC20 (tpl 1109) and loc_46BD82 (tpl 591)
 constexpr int kMsg_Respec      = 0x124; // loc_46C3FC
 constexpr int kMsg_Transform   = 0x265; // loc_46C59B
-constexpr int kMsg_Transform2  = 0x266; // loc_46C681 (tpl 1036) : msg 0x266 (=614)
-constexpr int kMsg_Blocked     = 0x264; // loc_46C56C/loc_46C653 (branche flag!=0)
+constexpr int kMsg_Transform2  = 0x266; // loc_46C681 (tpl 1036): msg 0x266 (=614)
+constexpr int kMsg_Blocked     = 0x264; // loc_46C56C/loc_46C653 (flag!=0 branch)
 constexpr int kMsg_BuffTimer   = 0x128; // loc_46C81F
 constexpr int kMsg_BuffTimer2  = 0x556; // loc_46C935
 
 // ---------------------------------------------------------------------------
-// Sous-tables de dispatch (blobs exacts du binaire, dumpes via get_bytes IDA).
-// Chaque octet est l'index dans la jump-table de la plage ; la valeur « defaut »
-// (derniere entree de la jump-table) route vers def_46B168 (no-op).
+// Dispatch sub-tables (exact blobs from the binary, dumped via IDA get_bytes).
+// Each byte is the index into the range's jump table; the "default" value
+// (last jump-table entry) routes to def_46B168 (no-op).
 // ---------------------------------------------------------------------------
 constexpr uint8_t kDefault_P0 = 0x49; // byte_487E90 -> jpt_46B168 (index 0x49 = def)
 constexpr uint8_t kDefault_P1 = 0x2C; // byte_488014 -> jpt_46B1BA (index 0x2C = def)
@@ -125,7 +125,7 @@ constexpr uint8_t kDefault_P3 = 0x2C; // byte_4884B4 -> jpt_46B25E (index 0x2C =
 constexpr uint8_t kDefault_P4 = 0x0F; // byte_488584 -> jpt_46B2B0 (index 0x0F = def)
 constexpr uint8_t kDefault_P5 = 0x1D; // byte_4886F0 -> jpt_46B302 (index 0x1D = def)
 
-// byte_487E90 (0x487E90, 208 o) — get_bytes IDA.
+// byte_487E90 (0x487E90, 208 bytes) — IDA get_bytes.
 constexpr uint8_t kByte_487E90[208] = {
     0x00,0x01,0x02,0x03,0x49,0x49,0x04,0x49,0x49,0x49,0x49,0x49,0x49,0x49,0x49,0x49,
     0x49,0x49,0x49,0x49,0x05,0x49,0x49,0x49,0x06,0x49,0x49,0x49,0x49,0x49,0x07,0x08,
@@ -230,43 +230,44 @@ constexpr uint8_t kByte_4886F0[247] = {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-// Consomme (clear complet des 6 SoA) la cellule (0x46B684..0x46B744 : les 6 champs
-// InvMain/GridX/GridY/Count/Durability/InstanceSerial mis a 0). Le binaire indexe en
-// var_42C/var_43C BRUTS ; on borne comme InventoryState::At (equiv. car row<100/col<64).
+// Consumes (full clear of the 6 SoA fields) the cell (0x46B684..0x46B744: the 6
+// InvMain/GridX/GridY/Count/Durability/InstanceSerial fields set to 0). The binary
+// indexes with RAW var_42C/var_43C; here bounded like InventoryState::At (equivalent
+// since row<100/col<64).
 void ConsumeCellFull(uint32_t row, uint32_t col) {
     g_Client.inv.ClearCell(row % 100, col % 100); // ClearCell = At(r,c) = InvCell{}
 }
 
-// Son d'utilisation (0x46B744 : Snd3D_PlayScaledVolume(0,100,1,flt_1495ABC)) + message
-// systeme (0x46B75A : Msg_AppendSystemLine(StrTable005_Get(<id>))). L'audio n'a pas de
-// pont dans ce socle -> represente en commentaire (comme ItemActionDispatch.cpp).
+// Use sound (0x46B744: Snd3D_PlayScaledVolume(0,100,1,flt_1495ABC)) + system
+// message (0x46B75A: Msg_AppendSystemLine(StrTable005_Get(<id>))). Audio has no
+// bridge in this base -> represented as a comment (like ItemActionDispatch.cpp).
 void PlayUseSfxAndMsg(int msgId) {
     // [audio] Snd3D_PlayScaledVolume(0, 100, 1, flt_1495ABC 0x1495ABC) 0x4DA380
     g_Client.msg.System(Str(msgId));
 }
 
-// --- Archetype 1 : increment d'accumulateur + consommation ---
-// loc_46B658 (tpl 506/1017) : g_MeridianPts_RatingMin += 1 ; puis recompute cap
-//   dword_168736C = Char_CalcAttackRatingMin(g_EquipSnapshotScratch) ; clear ; msg 0x25F.
+// --- Archetype 1: accumulator increment + consume ---
+// loc_46B658 (tpl 506/1017): g_MeridianPts_RatingMin += 1; then recompute cap
+//   dword_168736C = Char_CalcAttackRatingMin(g_EquipSnapshotScratch); clear; msg 0x25F.
 void H_MeridianRatingMin(uint32_t flag, uint32_t row, uint32_t col) {
     if (flag != 0) return;                       // 46B658 cmp var_414,0 ; jnz def
     g_Client.Var(kMeridian_RatingMin) += 1;      // 46B666
-    // TODO [StatEngine 0x4CD970] : Var(kAtkRatingMinCap) = Char_CalcAttackRatingMin(...)
-    //   (le calcul du plafond n'est pas disponible ici ; ne pas inventer de valeur).
+    // TODO [StatEngine 0x4CD970]: Var(kAtkRatingMinCap) = Char_CalcAttackRatingMin(...)
+    //   (the cap calculation is not available here; do not invent a value).
     ConsumeCellFull(row, col);                   // 46B684..
     PlayUseSfxAndMsg(kMsg_RatingMin);            // 46B744/46B75A (msg 0x25F)
 }
 
-// loc_46B779 (tpl 507/1018) : g_MeridianPts_RatingMax += 1 ; dword_1687374 = CalcMax ; msg 0x260.
+// loc_46B779 (tpl 507/1018): g_MeridianPts_RatingMax += 1; dword_1687374 = CalcMax; msg 0x260.
 void H_MeridianRatingMax(uint32_t flag, uint32_t row, uint32_t col) {
     if (flag != 0) return;                       // 46B779
     g_Client.Var(kMeridian_RatingMax) += 1;      // 46B787
-    // TODO [StatEngine 0x4CE3F0] : Var(kAtkRatingMaxCap) = Char_CalcAttackRatingMax(...)
+    // TODO [StatEngine 0x4CE3F0]: Var(kAtkRatingMaxCap) = Char_CalcAttackRatingMax(...)
     ConsumeCellFull(row, col);                   // 46B7A5..
     PlayUseSfxAndMsg(kMsg_RatingMax);            // 46B87C (msg 0x260)
 }
 
-// loc_46B89B (tpl 509/1092) : g_MeridianPts_ExtAtk += 1 ; clear ; msg 0x36D.
+// loc_46B89B (tpl 509/1092): g_MeridianPts_ExtAtk += 1; clear; msg 0x36D.
 void H_MeridianExtAtk(uint32_t flag, uint32_t row, uint32_t col) {
     if (flag != 0) return;                       // 46B89B
     g_Client.Var(kMeridian_ExtAtk) += 1;         // 46B8A9
@@ -274,7 +275,7 @@ void H_MeridianExtAtk(uint32_t flag, uint32_t row, uint32_t col) {
     PlayUseSfxAndMsg(kMsg_ExtAtk);               // 46B98D (msg 0x36D)
 }
 
-// loc_46B9AC (tpl 508/1093) : g_MeridianPts_Defense += 1 ; clear ; msg 0x36E.
+// loc_46B9AC (tpl 508/1093): g_MeridianPts_Defense += 1; clear; msg 0x36E.
 void H_MeridianDefense(uint32_t flag, uint32_t row, uint32_t col) {
     if (flag != 0) return;                       // 46B9AC
     g_Client.Var(kMeridian_Defense) += 1;        // 46B9BA
@@ -282,29 +283,29 @@ void H_MeridianDefense(uint32_t flag, uint32_t row, uint32_t col) {
     PlayUseSfxAndMsg(kMsg_Defense);              // 46BA9F (msg 0x36E)
 }
 
-// --- Archetype « decrement de pile » ---
-// loc_46BABE (tpl 1026) : g_InvGrid_Count -= 1 ; si < 1 clear complet ; son ; msg 0x122.
-// loc_46BC20 (tpl 1109) : idem, msg 0x386. (msgId parametre le seul ecart.)
+// --- "Stack decrement" archetype ---
+// loc_46BABE (tpl 1026): g_InvGrid_Count -= 1; if < 1 full clear; sound; msg 0x122.
+// loc_46BC20 (tpl 1109): same, msg 0x386. (msgId is the only parameterized difference.)
 void H_DecrementStack(uint32_t flag, uint32_t row, uint32_t col, int msgId) {
     if (flag != 0) return;                       // 46BABE / 46BC20
     const uint32_t r = row % 100, c = col % 100;
     InvCell& cell = g_Client.inv.At(r, c);
     cell.flag -= 1;                              // 46BAE1 : g_InvGrid_Count -= 1 (flag = Count)
     if (static_cast<int32_t>(cell.flag) < 1)     // 46BB1C : cmp Count,1 ; jge (skip clear)
-        g_Client.inv.ClearCell(r, c);            // 46BB2A.. : clear complet des 6 SoA
-    PlayUseSfxAndMsg(msgId);                     // 46BBEA (son) + msg
+        g_Client.inv.ClearCell(r, c);            // 46BB2A.. : full clear of the 6 SoA fields
+    PlayUseSfxAndMsg(msgId);                     // 46BBEA (sound) + msg
 }
 
-// --- Archetype « message seul » (pas de mutation d'inventaire) ---
-// loc_46BD82 (tpl 591) : son + msg 0x386, aucune consommation.
+// --- "Message only" archetype (no inventory mutation) ---
+// loc_46BD82 (tpl 591): sound + msg 0x386, no consumption.
 void H_SoundMsgOnly(uint32_t flag, int msgId) {
     if (flag != 0) return;                       // 46BD82
-    PlayUseSfxAndMsg(msgId);                     // 46BD90 (son) + 46BDA7 (msg)
+    PlayUseSfxAndMsg(msgId);                     // 46BD90 (sound) + 46BDA7 (msg)
 }
 
-// --- Archetype « reset total d'attributs » (respec) ---
-// loc_46C3FC (tpl 1028) : g_SelfUnspentAttrPoints += (Def+Ext+Off+Int) - 4 ; les 4 attrs
-//   de base <- 1 ; dword_1687370 = 1 ; dword_1687378 = 0 ; clear ; msg 0x124 ;
+// --- "Full attribute reset" archetype (respec) ---
+// loc_46C3FC (tpl 1028): g_SelfUnspentAttrPoints += (Def+Ext+Off+Int) - 4; the 4 base
+//   attrs <- 1; dword_1687370 = 1; dword_1687378 = 0; clear; msg 0x124;
 //   cDrawWin_Init(dword_1839290) [UI, TODO].
 void H_FullStatRespec(uint32_t flag, uint32_t row, uint32_t col) {
     if (flag != 0) return;                                          // 46C3FC
@@ -320,16 +321,16 @@ void H_FullStatRespec(uint32_t flag, uint32_t row, uint32_t col) {
     g_Client.Var(kAtkRatingMaxCur) = 0;                            // 46C463 dword_1687378 = 0
     ConsumeCellFull(row, col);                                     // 46C46D..
     PlayUseSfxAndMsg(kMsg_Respec);                                 // 46C543 (msg 0x124)
-    // TODO [cDrawWin 0x628E40] : cDrawWin_Init(dword_1839290 0x1839290) (fenetre tirage, UI).
+    // TODO [cDrawWin 0x628E40]: cDrawWin_Init(dword_1839290 0x1839290) (allocation window, UI).
 }
 
-// --- Archetype « transformation/remplacement d'objet » ---
-// loc_46C56C (tpl 1035) : si flag!=0 -> msg 0x264 ; sinon (loc_46C59B) remplace la cellule
-//   par l'objet cible dstD : itemId = dstD ; Count = 0 ; Durability = 0 ;
-//   InstanceSerial = 100000001 (0x5F5E101). GridX/GridY conserves. Son ; msg 0x265.
+// --- "Object transformation/replacement" archetype ---
+// loc_46C56C (tpl 1035): if flag!=0 -> msg 0x264; else (loc_46C59B) replaces the cell
+//   with the target object dstD: itemId = dstD; Count = 0; Durability = 0;
+//   InstanceSerial = 100000001 (0x5F5E101). GridX/GridY kept. Sound; msg 0x265.
 void H_Transform1035(uint32_t flag, uint32_t row, uint32_t col, uint32_t dstD) {
     if (flag != 0) {                                    // 46C56C
-        PlayUseSfxAndMsg(kMsg_Blocked);                 // 46C57C (msg 0x264) — pas de son ici
+        PlayUseSfxAndMsg(kMsg_Blocked);                 // 46C57C (msg 0x264) — no sound here
         return;
     }
     InvCell& cell = g_Client.inv.At(row % 100, col % 100); // loc_46C59B
@@ -337,12 +338,12 @@ void H_Transform1035(uint32_t flag, uint32_t row, uint32_t col, uint32_t dstD) {
     cell.flag       = 0;                                // 46C5D2 : g_InvGrid_Count = 0
     cell.color      = 0;                                // 46C5F2 : g_InvGrid_Durability = 0
     cell.durability = kTransformSerial;                 // 46C612 : g_InvGrid_InstanceSerial = 0x5F5E101
-    PlayUseSfxAndMsg(kMsg_Transform);                   // 46C628 (son) + 46C634 (msg 0x265)
+    PlayUseSfxAndMsg(kMsg_Transform);                   // 46C628 (sound) + 46C634 (msg 0x265)
 }
 
-// loc_46C653 (tpl 1036) : si flag!=0 -> msg 0x264 ; sinon (loc_46C681) remplace la cellule
-//   par l'objet cible dstD : itemId = dstD ; Count = 0 ; Durability = 0 ;
-//   InstanceSerial = 100000002 (0x5F5E102, ≠ 1035). GridX/GridY conserves. Son ; msg 0x266.
+// loc_46C653 (tpl 1036): if flag!=0 -> msg 0x264; else (loc_46C681) replaces the cell
+//   with the target object dstD: itemId = dstD; Count = 0; Durability = 0;
+//   InstanceSerial = 100000002 (0x5F5E102, != 1035). GridX/GridY kept. Sound; msg 0x266.
 void H_SysMsgOrTransform1036(uint32_t flag, uint32_t row, uint32_t col, uint32_t dstD) {
     if (flag != 0) {                                    // 46C653
         PlayUseSfxAndMsg(kMsg_Blocked);                 // 46C662 (msg 0x264)
@@ -353,12 +354,12 @@ void H_SysMsgOrTransform1036(uint32_t flag, uint32_t row, uint32_t col, uint32_t
     cell.flag       = 0;                                // 46C6B8 : g_InvGrid_Count = 0
     cell.color      = 0;                                // 46C6D8 : g_InvGrid_Durability = 0
     cell.durability = kTransformSerial2;                // 46C6F8 : g_InvGrid_InstanceSerial = 0x5F5E102
-    PlayUseSfxAndMsg(kMsg_Transform2);                  // 46C70E (son) + 46C71A (msg 0x266)
+    PlayUseSfxAndMsg(kMsg_Transform2);                  // 46C70E (sound) + 46C71A (msg 0x266)
 }
 
-// --- Archetype « timer/buff a duree » ---
-// loc_46C81F (tpl 539/1041) : dword_16746F0 += 0xB4 (180) ; clear ; msg 0x128.
-// loc_46C935 (tpl 1421)     : dword_16746F0 += 0xB4 ; clear ; msg 0x556. (msgId parametre.)
+// --- "Duration timer/buff" archetype ---
+// loc_46C81F (tpl 539/1041): dword_16746F0 += 0xB4 (180); clear; msg 0x128.
+// loc_46C935 (tpl 1421)    : dword_16746F0 += 0xB4; clear; msg 0x556. (msgId parameterized.)
 void H_BuffTimer(uint32_t flag, uint32_t row, uint32_t col, int msgId) {
     if (flag != 0) return;                       // 46C81F / 46C935
     g_Client.Var(kBuffTimer_16746F0) += 0xB4;    // 46C82D / 46C943
@@ -369,122 +370,122 @@ void H_BuffTimer(uint32_t flag, uint32_t row, uint32_t col, int msgId) {
 } // namespace
 
 // ===========================================================================
-//  Point d'entree — cascade de plages sur item->itemId (var_480).
+//  Entry point — range cascade over item->itemId (var_480).
 // ===========================================================================
 void ApplyItemEffectDispatch(const ItemInfo* item, uint32_t flag,
                              uint32_t row, uint32_t col, uint32_t dstD) {
     if (!item) return;
     const uint32_t id = item->itemId; // var_480 = ITEM_INFO[+0]  (def_46A44F 0x46B10F)
 
-    // ---- P0 : id <= 0x320 (base 0x1FA, byte_487E90, jpt_46B168) — 0x46B11D ----
+    // ---- P0: id <= 0x320 (base 0x1FA, byte_487E90, jpt_46B168) — 0x46B11D ----
     if (static_cast<int32_t>(id) <= 0x320) {
         if (id == 0x320) return;                     // 46B133 -> loc_47FA60
-        // TODO [loc_47FA60 0x47FA60] : singleton tpl 800 (non porte).
+        // TODO [loc_47FA60 0x47FA60]: singleton tpl 800 (not ported).
         const uint32_t idx = id - 0x1FA;             // 46B13F : sub 0x1FA
         if (idx > 0xCF) return;                      // 46B14B : ja def
-        // Le `case` est l'INDEX DANS jpt_46B168 (0x487D68), pas un ordinal de handler :
+        // The `case` is the INDEX INTO jpt_46B168 (0x487D68), not a handler ordinal:
         // 46B161 movzx eax, byte_487E90[edx] ; 46B168 jmp jpt_46B168[eax*4].
         switch (kByte_487E90[idx]) {                 // 46B161 : movzx ; jmp jpt_46B168
-        case 0x00: H_MeridianRatingMin(flag, row, col); return;  // jpt[0x00]=0x46B658 ; octet 0x00 @0x487E90 (tpl 506)
-        case 0x01: H_MeridianRatingMax(flag, row, col); return;  // jpt[0x01]=0x46B779 ; octet 0x01 @0x487E91 (tpl 507)
-        case 0x02: H_MeridianDefense(flag, row, col);   return;  // jpt[0x02]=0x46B9AC ; octet 0x02 @0x487E92 (tpl 508)
-        case 0x03: H_MeridianExtAtk(flag, row, col);    return;  // jpt[0x03]=0x46B89B ; octet 0x03 @0x487E93 (tpl 509)
-        case 0x09: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return;   // jpt[0x09]=0x46C81F ; octet 0x09 @0x487EB1 (tpl 539)
-        case 0x23: H_SoundMsgOnly(flag, kMsg_Generic386); return;         // jpt[0x23]=0x46BD82 ; octet 0x23 @0x487EE5 (tpl 591)
-        // NB : jpt_46B168[0x23] != jpt_46B1BA[0x23] (0x46BD82 vs 0x46C56C) : deux switches
-        // distincts sur deux sous-tables distinctes — ne PAS factoriser avec P1.
-        // TODO [jpt_46B168 0x487D68] : cases 0x04..0x08, 0x0A..0x22, 0x24..0x48 non portes
+        case 0x00: H_MeridianRatingMin(flag, row, col); return;  // jpt[0x00]=0x46B658 ; byte 0x00 @0x487E90 (tpl 506)
+        case 0x01: H_MeridianRatingMax(flag, row, col); return;  // jpt[0x01]=0x46B779 ; byte 0x01 @0x487E91 (tpl 507)
+        case 0x02: H_MeridianDefense(flag, row, col);   return;  // jpt[0x02]=0x46B9AC ; byte 0x02 @0x487E92 (tpl 508)
+        case 0x03: H_MeridianExtAtk(flag, row, col);    return;  // jpt[0x03]=0x46B89B ; byte 0x03 @0x487E93 (tpl 509)
+        case 0x09: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return;   // jpt[0x09]=0x46C81F ; byte 0x09 @0x487EB1 (tpl 539)
+        case 0x23: H_SoundMsgOnly(flag, kMsg_Generic386); return;         // jpt[0x23]=0x46BD82 ; byte 0x23 @0x487EE5 (tpl 591)
+        // NB: jpt_46B168[0x23] != jpt_46B1BA[0x23] (0x46BD82 vs 0x46C56C): two switches,
+        // distinct, over two distinct sub-tables — do NOT merge with P1.
+        // TODO [jpt_46B168 0x487D68]: cases 0x04..0x08, 0x0A..0x22, 0x24..0x48 not ported
         //   (loc_470ED2, loc_4768E5, loc_477E64, loc_4821B0, ...).
         default: return;                             // 0x49 = def_46B168 (no-op)
         }
     }
 
-    // ---- P1 : 0x321..0x419 (base 0x321, byte_488014, jpt_46B1BA) — 0x46B16F ----
+    // ---- P1: 0x321..0x419 (base 0x321, byte_488014, jpt_46B1BA) — 0x46B16F ----
     if (static_cast<int32_t>(id) <= 0x42A) {
         if (id == 0x42A) return;                     // 46B185 -> loc_46D141
-        // TODO [loc_46D141 0x46D141] : singleton tpl 1066 (non porte).
+        // TODO [loc_46D141 0x46D141]: singleton tpl 1066 (not ported).
         const uint32_t idx = id - 0x321;             // 46B191 : sub 0x321
         if (idx > 0xF8) return;                      // 46B19D : ja def
-        // Index dans jpt_46B1BA (0x487F60) : 46B1B3 movzx eax, byte_488014[edx] ;
-        // 46B1BA jmp jpt_46B1BA[eax*4]. ATTENTION : `case 0x23` designe ici une cible
-        // DIFFERENTE de P0 (0x46C56C vs 0x46BD82) — switches disjoints, ne pas fusionner.
+        // Index into jpt_46B1BA (0x487F60): 46B1B3 movzx eax, byte_488014[edx] ;
+        // 46B1BA jmp jpt_46B1BA[eax*4]. WARNING: `case 0x23` here denotes a target
+        // DIFFERENT from P0 (0x46C56C vs 0x46BD82) — disjoint switches, do not merge.
         switch (kByte_488014[idx]) {                 // 46B1B3 ; jmp jpt_46B1BA
-        case 0x1E: H_MeridianRatingMin(flag, row, col); return;  // jpt[0x1E]=0x46B658 ; octet 0x1E @0x4880EC (subidx 0xD8, tpl 1017)
-        case 0x1F: H_MeridianRatingMax(flag, row, col); return;  // jpt[0x1F]=0x46B779 ; octet 0x1F @0x4880ED (subidx 0xD9, tpl 1018)
-        case 0x20: H_DecrementStack(flag, row, col, kMsg_DecrStack); return; // jpt[0x20]=0x46BABE ; octet 0x20 @0x4880F5 (subidx 0xE1, tpl 1026)
-        case 0x22: H_FullStatRespec(flag, row, col);    return;  // jpt[0x22]=0x46C3FC ; octet 0x22 @0x4880F7 (subidx 0xE3, tpl 1028)
-        case 0x23: H_Transform1035(flag, row, col, dstD); return; // jpt[0x23]=0x46C56C ; octet 0x23 @0x4880FE (subidx 0xEA, tpl 1035)
-        case 0x24: H_SysMsgOrTransform1036(flag, row, col, dstD); return; // jpt[0x24]=0x46C653 ; octet 0x24 @0x4880FF (subidx 0xEB, tpl 1036)
-        case 0x26: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return;   // jpt[0x26]=0x46C81F ; octet 0x26 @0x488104 (subidx 0xF0, tpl 1041)
-        // TODO [jpt_46B1BA 0x487F60] : cases 0x00..0x1D, 0x21 (loc_46BDC6), 0x25 (loc_46C739),
-        //   0x27..0x2B non portes.
+        case 0x1E: H_MeridianRatingMin(flag, row, col); return;  // jpt[0x1E]=0x46B658 ; byte 0x1E @0x4880EC (subidx 0xD8, tpl 1017)
+        case 0x1F: H_MeridianRatingMax(flag, row, col); return;  // jpt[0x1F]=0x46B779 ; byte 0x1F @0x4880ED (subidx 0xD9, tpl 1018)
+        case 0x20: H_DecrementStack(flag, row, col, kMsg_DecrStack); return; // jpt[0x20]=0x46BABE ; byte 0x20 @0x4880F5 (subidx 0xE1, tpl 1026)
+        case 0x22: H_FullStatRespec(flag, row, col);    return;  // jpt[0x22]=0x46C3FC ; byte 0x22 @0x4880F7 (subidx 0xE3, tpl 1028)
+        case 0x23: H_Transform1035(flag, row, col, dstD); return; // jpt[0x23]=0x46C56C ; byte 0x23 @0x4880FE (subidx 0xEA, tpl 1035)
+        case 0x24: H_SysMsgOrTransform1036(flag, row, col, dstD); return; // jpt[0x24]=0x46C653 ; byte 0x24 @0x4880FF (subidx 0xEB, tpl 1036)
+        case 0x26: H_BuffTimer(flag, row, col, kMsg_BuffTimer); return;   // jpt[0x26]=0x46C81F ; byte 0x26 @0x488104 (subidx 0xF0, tpl 1041)
+        // TODO [jpt_46B1BA 0x487F60]: cases 0x00..0x1D, 0x21 (loc_46BDC6), 0x25 (loc_46C739),
+        //   0x27..0x2B not ported.
         default: return;                             // 0x2C = def_46B168
         }
     }
 
-    // ---- P2 : 0x42D..0x533 (base 0x42D, byte_4882F8, jpt_46B20C) — 0x46B1C1 ----
+    // ---- P2: 0x42D..0x533 (base 0x42D, byte_4882F8, jpt_46B20C) — 0x46B1C1 ----
     if (static_cast<int32_t>(id) <= 0x54B) {
         if (id == 0x54B) return;                     // 46B1D7 -> loc_4728F1
-        // TODO [loc_4728F1 0x4728F1] : singleton tpl 1355 (non porte).
+        // TODO [loc_4728F1 0x4728F1]: singleton tpl 1355 (not ported).
         const uint32_t idx = id - 0x42D;             // 46B1E3 : sub 0x42D
         if (idx > 0x106) return;                     // 46B1EF : ja def
-        // Index dans jpt_46B20C (0x488110) : 46B205 movzx eax, byte_4882F8[edx] ;
-        // 46B20C jmp jpt_46B20C[eax*4]. (Les tpl 1069/1070/1071 routent en fait vers
-        // jpt[0x00]=0x481CD7, non porte — d'ou les anciens commentaires errones.)
+        // Index into jpt_46B20C (0x488110): 46B205 movzx eax, byte_4882F8[edx] ;
+        // 46B20C jmp jpt_46B20C[eax*4]. (tpl 1069/1070/1071 actually route to
+        // jpt[0x00]=0x481CD7, not ported — hence the old, incorrect comments.)
         switch (kByte_4882F8[idx]) {                 // 46B205 ; jmp jpt_46B20C
-        case 0x05: H_MeridianExtAtk(flag, row, col);  return;    // jpt[0x05]=0x46B89B ; octet 0x05 @0x48830F (subidx 0x17, tpl 1092)
-        case 0x06: H_MeridianDefense(flag, row, col); return;    // jpt[0x06]=0x46B9AC ; octet 0x06 @0x488310 (subidx 0x18, tpl 1093)
-        case 0x10: H_DecrementStack(flag, row, col, kMsg_Generic386); return; // jpt[0x10]=0x46BC20 ; octet 0x10 @0x488320 (subidx 0x28, tpl 1109)
-        // TODO [jpt_46B20C 0x488110] : cases 0x00..0x04, 0x07..0x0F, 0x11..0x78 non portes
+        case 0x05: H_MeridianExtAtk(flag, row, col);  return;    // jpt[0x05]=0x46B89B ; byte 0x05 @0x48830F (subidx 0x17, tpl 1092)
+        case 0x06: H_MeridianDefense(flag, row, col); return;    // jpt[0x06]=0x46B9AC ; byte 0x06 @0x488310 (subidx 0x18, tpl 1093)
+        case 0x10: H_DecrementStack(flag, row, col, kMsg_Generic386); return; // jpt[0x10]=0x46BC20 ; byte 0x10 @0x488320 (subidx 0x28, tpl 1109)
+        // TODO [jpt_46B20C 0x488110]: cases 0x00..0x04, 0x07..0x0F, 0x11..0x78 not ported
         //   (loc_481CD7, loc_46F2EF, loc_46F414, loc_46CBE2, ...).
         default: return;                             // 0x79 = def_46B168
         }
     }
 
-    // ---- P3 : 0x54C..0x5DB (base 0x54C, byte_4884B4, jpt_46B25E) — 0x46B213 ----
+    // ---- P3: 0x54C..0x5DB (base 0x54C, byte_4884B4, jpt_46B25E) — 0x46B213 ----
     if (static_cast<int32_t>(id) <= 0x72A) {
         if (id >= 0x729) return;                     // 46B229 : (0x729,0x72A) -> loc_486D1E
-        // TODO [loc_486D1E 0x486D1E] : singletons tpl 1833/1834 (non portes).
+        // TODO [loc_486D1E 0x486D1E]: singletons tpl 1833/1834 (not ported).
         const uint32_t idx = id - 0x54C;             // 46B235 : sub 0x54C
         if (idx > 0x8F) return;                      // 46B241 : ja def
-        // Index dans jpt_46B25E (0x488400) : 46B257 movzx eax, byte_4884B4[edx] ;
-        // 46B25E jmp jpt_46B25E[eax*4]. (Le tpl 1356 route vers jpt[0x00]=0x4729B7, non porte.)
+        // Index into jpt_46B25E (0x488400): 46B257 movzx eax, byte_4884B4[edx] ;
+        // 46B25E jmp jpt_46B25E[eax*4]. (tpl 1356 routes to jpt[0x00]=0x4729B7, not ported.)
         switch (kByte_4884B4[idx]) {                 // 46B257 ; jmp jpt_46B25E
-        case 0x13: H_BuffTimer(flag, row, col, kMsg_BuffTimer2); return; // jpt[0x13]=0x46C935 ; octet 0x13 @0x4884F5 (subidx 0x41, tpl 1421)
-        // TODO [jpt_46B25E 0x488400] : cases 0x00..0x12, 0x14..0x2B non portes
+        case 0x13: H_BuffTimer(flag, row, col, kMsg_BuffTimer2); return; // jpt[0x13]=0x46C935 ; byte 0x13 @0x4884F5 (subidx 0x41, tpl 1421)
+        // TODO [jpt_46B25E 0x488400]: cases 0x00..0x12, 0x14..0x2B not ported
         //   (loc_4729B7, loc_46D4C5, loc_46EA1C, ...).
         default: return;                             // 0x2C = def_46B168
         }
     }
 
-    // ---- P4 : 0x72C..0x81C (base 0x72C, byte_488584, jpt_46B2B0) — 0x46B265 ----
+    // ---- P4: 0x72C..0x81C (base 0x72C, byte_488584, jpt_46B2B0) — 0x46B265 ----
     if (static_cast<int32_t>(id) <= 0x859) {
         if (id == 0x859) return;                     // 46B27B -> loc_47ED39
-        // TODO [loc_47ED39 0x47ED39] : singleton tpl 2137 (non porte).
+        // TODO [loc_47ED39 0x47ED39]: singleton tpl 2137 (not ported).
         const uint32_t idx = id - 0x72C;             // 46B287 : sub 0x72C
         if (idx > 0xF0) return;                      // 46B293 : ja def
-        // Aucun handler de cette plage n'est encore porte (jpt_46B2B0 : loc_46D6E9..).
-        // TODO [jpt_46B2B0 0x488544] : cases 0x00..0x0E (byte_488584[idx]).
+        // No handler in this range is ported yet (jpt_46B2B0: loc_46D6E9..).
+        // TODO [jpt_46B2B0 0x488544]: cases 0x00..0x0E (byte_488584[idx]).
         (void)kByte_488584;
-        return;                                      // def_46B168 (P4 non portee)
+        return;                                      // def_46B168 (P4 not ported)
     }
 
-    // ---- P5 : 0x85A..0x950 (base 0x85A, byte_4886F0, jpt_46B302) — 0x46B2B7 ----
+    // ---- P5: 0x85A..0x950 (base 0x85A, byte_4886F0, jpt_46B302) — 0x46B2B7 ----
     if (static_cast<int32_t>(id) <= 0x955) {
         if (id == 0x955) return;                     // 46B2CD -> loc_482CA8
-        // TODO [loc_482CA8 0x482CA8] : singleton tpl 2389 (non porte).
+        // TODO [loc_482CA8 0x482CA8]: singleton tpl 2389 (not ported).
         const uint32_t idx = id - 0x85A;             // 46B2D9 : sub 0x85A
         if (idx > 0xF6) return;                      // 46B2E5 : ja def
-        // Aucun handler de cette plage n'est encore porte (jpt_46B302 : loc_475FC0..).
-        // TODO [jpt_46B302 0x488678] : cases 0x00..0x1C (byte_4886F0[idx]).
+        // No handler in this range is ported yet (jpt_46B302: loc_475FC0..).
+        // TODO [jpt_46B302 0x488678]: cases 0x00..0x1C (byte_4886F0[idx]).
         (void)kByte_4886F0;
-        return;                                      // def_46B168 (P5 non portee)
+        return;                                      // def_46B168 (P5 not ported)
     }
 
-    // ---- Plages > 0x955 (0x957.., 0x2EE4.., 0x2FC9.., 0x30D5.., 0x4291.., ...) ----
-    // TODO [cascade 0x46B309..0x46B651] : sous-tables byte_48881C/4888D4/4889CC/488AD0/
-    //   488BDC/488C80/488D18/488D3C + jpt_46B651, handlers 0x486D1E..0x487720 (non portes).
-    return; // def_46B168 (no-op generique)
+    // ---- Ranges > 0x955 (0x957.., 0x2EE4.., 0x2FC9.., 0x30D5.., 0x4291.., ...) ----
+    // TODO [cascade 0x46B309..0x46B651]: sub-tables byte_48881C/4888D4/4889CC/488AD0/
+    //   488BDC/488C80/488D18/488D3C + jpt_46B651, handlers 0x486D1E..0x487720 (not ported).
+    return; // def_46B168 (generic no-op)
 }
 
 } // namespace ts2::game

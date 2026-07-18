@@ -1,23 +1,23 @@
-// Net/ItemActionDispatch.h — mega-dispatcher de l'opcode reseau 0x1a.
+// Net/ItemActionDispatch.h — mega-dispatcher for network opcode 0x1a.
 //
-// Reecriture fidele de Pkt_ItemActionDispatch (EA 0x46A320, ~121 Ko, un des plus
-// gros handlers du binaire). Ce paquet est envoye par le serveur en reponse a une
-// action « utiliser/equiper/ranger un objet de l'inventaire » : le serveur echo la
-// position (ligne/colonne) de la cellule d'inventaire concernee, le client relit
-// l'objet dans sa propre grille, resout sa fiche ITEM_INFO et aiguille selon le
-// TYPE de l'objet (ITEM_INFO.typeCode, offset +188 = champ 0xBC).
+// Faithful rewrite of Pkt_ItemActionDispatch (EA 0x46A320, ~121 KB, one of the
+// binary's largest handlers). This packet is sent by the server in response to a
+// "use/equip/store an inventory object" action: the server echoes the
+// position (row/column) of the affected inventory cell, the client re-reads
+// the object from its own grid, resolves its ITEM_INFO record, and routes based
+// on the object's TYPE (ITEM_INFO.typeCode, offset +188 = field 0xBC).
 //
-// L'opcode 0x1a n'a pas de struct dans RecvPackets.h : le payload est un simple
-// bloc de 4 dwords (voir .cpp pour la carte). C'est un trou de couverture comble ici.
+// Opcode 0x1a has no struct in RecvPackets.h: the payload is a simple
+// block of 4 dwords (see .cpp for the map). This closes a coverage gap.
 //
-// SOURCE DE VERITE : desassemblage idaTs2. Les EA d'origine sont citees en commentaire.
+// SOURCE OF TRUTH: idaTs2 disassembly. Original EAs are cited in comment.
 #pragma once
 #include <cstdint>
 
 namespace ts2::game {
 
-// Applique un paquet 0x1a. `payload` pointe sur le bloc recu (equivalent de
-// unk_8156C1 dans le binaire) ; `len` sa taille (le binaire lit 16 octets fixes).
+// Applies a 0x1a packet. `payload` points to the received block (equivalent to
+// the binary's unk_8156C1); `len` its size (the binary reads 16 fixed bytes).
 void ApplyItemActionDispatch(const uint8_t* payload, uint32_t len);
 
 } // namespace ts2::game

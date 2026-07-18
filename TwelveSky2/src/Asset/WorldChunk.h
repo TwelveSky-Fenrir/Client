@@ -1,323 +1,294 @@
-// Asset/WorldChunk.h — lecteur des chunks de géométrie de monde TS2.
+// Asset/WorldChunk.h — reader for TS2 world geometry chunks.
 //   D07_GWORLD\Z%03d.{WM,WJ,WG,WO,WP}
 //
-// Reverse fidèle de RE/asset_parsers/world_geometry.py (validé 455/455 fichiers),
-// lui-même calqué sur les lecteurs runtime du client TwelveSky2.exe :
-//   .WM -> MapColl_LoadFaces      (0x694510)  collision principale  (enveloppe zlib)
-//   .WJ -> MapColl_LoadFaces      (0x694510)  collision secondaire  (même structure)
-//   .WG -> MapColl_LoadMapFile    (0x697B30)  faces + matériaux/textures
-//   .WO -> MapColl_LoadObjectsA   (0x6980D0)  modèles statiques (Model/MeshPart)
-//   .WP -> MapColl_LoadObjectsB   (0x6983B0)  nœuds FX (Fx_NodeLoadFromHandle)
+// Faithful reverse of RE/asset_parsers/world_geometry.py (validated 455/455 files),
+// itself modeled on TwelveSky2.exe's runtime readers:
+//   .WM -> MapColl_LoadFaces      (0x694510)  primary collision    (zlib envelope)
+//   .WJ -> MapColl_LoadFaces      (0x694510)  secondary collision  (same structure)
+//   .WG -> MapColl_LoadMapFile    (0x697B30)  faces + materials/textures
+//   .WO -> MapColl_LoadObjectsA   (0x6980D0)  static models (Model/MeshPart)
+//   .WP -> MapColl_LoadObjectsB   (0x6983B0)  FX nodes (Fx_NodeLoadFromHandle)
 //
-// Primitive de compression = GXD_DecompressEntity (0x6A1A30) :
-//   bloc GXD   = [rawSize:u32][packedSize:u32][flux zlib] -> rawSize octets
-//   bloc image = [imageSize:u32][rawSize=imageSize+8:u32][packedSize:u32][zlib]
-//                -> DDS/BMP(imageSize) + trailer 8o ; imageSize==0 => texture absente
+// Compression primitive = GXD_DecompressEntity (0x6A1A30):
+//   GXD block   = [rawSize:u32][packedSize:u32][zlib stream] -> rawSize bytes
+//   image block = [imageSize:u32][rawSize=imageSize+8:u32][packedSize:u32][zlib]
+//                -> DDS/BMP(imageSize) + 8-byte trailer; imageSize==0 => texture absent
 #pragma once
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
-// asset::MeshPartMaterial (en-tête matériau 120 o décodé) : RÉUTILISÉ tel quel pour le
-// WorldMeshPart des .WO. Les .WO ET les .MOBJECT passent par le MÊME chargeur MeshPart_Load
-// 0x6AD160, donc leur en-tête matériau est BYTE-IDENTIQUE — on partage donc la même struct
-// (pas de doublon : AssetSelfTest.cpp inclut les deux en-têtes dans la même unité).
+// asset::MeshPartMaterial (decoded 120-byte material header): REUSED as-is for the
+// WorldMeshPart of .WO files. .WO AND .MOBJECT go through the SAME MeshPart_Load
+// 0x6AD160 loader, so their material header is BYTE-IDENTICAL — hence sharing the same
+// struct (no duplication: AssetSelfTest.cpp includes both headers in the same unit).
 #include "Asset/Model.h"
 
 namespace ts2::asset {
 
-// Sous-format détecté (par extension). WM et WJ partagent la même structure.
-// SOBJECT_B = maillage « Format B » multi-part (W*.SOBJECT) — NON routé par extension
-// (l'extension .SOBJECT est ambiguë avec le SObject skinné) : à passer explicitement à
-// LoadFromMemory. Ancre IDA : cMesh_ReadFromStream 0x436CA0.
+// Sub-format detected (by extension). WM and WJ share the same structure.
+// SOBJECT_B = multi-part "Format B" mesh (W*.SOBJECT) — NOT routed by extension
+// (the .SOBJECT extension is ambiguous with the skinned SObject): must be passed
+// explicitly to LoadFromMemory. IDA anchor: cMesh_ReadFromStream 0x436CA0.
 enum class WorldChunkType { Unknown, WM, WJ, WG, WO, WP, SOBJECT_B };
 
-// -------------------------------------------------------------------------
-// Bloc texture compressé (Tex_LoadCompressedFromHandle).
-// present==false <=> imageSize==0 (« texture absente », 4 octets seulement).
-// -------------------------------------------------------------------------
+// Compressed texture block (Tex_LoadCompressedFromHandle).
+// present==false <=> imageSize==0 ("texture absent", 4 bytes only).
 struct TextureBlock {
     bool        present   = false;   // Python: not empty
-    uint32_t    imageSize = 0;       // taille de l'image décodée (DDS/BMP)
-    uint32_t    packedSize = 0;      // taille du flux zlib sur disque
-    std::string imgType;             // "DDS", "BMP", ou hex des 4 octets magiques
-    uint32_t    trailer[2] = {0, 0}; // 8 octets à l'offset imageSize (deux u32)
-    std::vector<uint8_t> data;       // image décodée (imageSize octets) — exploitable en aval
+    uint32_t    imageSize = 0;       // size of the decoded image (DDS/BMP)
+    uint32_t    packedSize = 0;      // size of the on-disk zlib stream
+    std::string imgType;             // "DDS", "BMP", or hex of the 4 magic bytes
+    uint32_t    trailer[2] = {0, 0}; // 8 bytes at offset imageSize (two u32)
+    std::vector<uint8_t> data;       // decoded image (imageSize bytes) — usable downstream
 
-    // --- Trailer décodé (Tex_LoadCompressedFromHandle 0x6A9CF0) ---------------
-    // Le bloc décompressé vaut [image(imageSize)][u32 @imageSize][u32 @imageSize+4]. Les DEUX
-    // u32 de queue sont rangés dans la struct texture runtime (52 o), prouvé par décompilation :
-    //   struct+40 = trailer[0]  (this[10], écrit `*(this+10)=*(lpMem+imageSize)`   @0x6a9ea1)
-    //   struct+44 = trailer[1]  (this[11], écrit `*(this+11)=*(lpMem+imageSize+4)` @0x6a9eab)
-    // Pour les textures d'un MeshPart (part+296 = base, part+348 = 2e), le champ +44 EST le mode
-    // de blend LU par MeshPart_RenderFull 0x6B0850 : base = `this[85]` (v24), 2e = `this[98]`
-    // (v42). Valeurs : 1 = alpha-test (RS15=1/RS24=128), 2 = blend alpha, autre = additif (si fade).
+    // --- Decoded trailer (Tex_LoadCompressedFromHandle 0x6A9CF0) ---------------
+    // The decompressed block is [image(imageSize)][u32 @imageSize][u32 @imageSize+4]. Both
+    // trailing u32 are stored in the 52-byte runtime texture struct, proven by decompilation:
+    //   struct+40 = trailer[0]  (this[10], writes `*(this+10)=*(lpMem+imageSize)`   @0x6a9ea1)
+    //   struct+44 = trailer[1]  (this[11], writes `*(this+11)=*(lpMem+imageSize+4)` @0x6a9eab)
+    // For a MeshPart's textures (part+296 = base, part+348 = 2nd), field +44 IS the blend
+    // mode READ by MeshPart_RenderFull 0x6B0850: base = `this[85]` (v24), 2nd = `this[98]`
+    // (v42). Values: 1 = alpha-test (RS15=1/RS24=128), 2 = alpha blend, other = additive (if fade).
     uint32_t category() const { return trailer[0]; } // struct+40 (this[10]) @0x6a9ea1
-    uint32_t mode()     const { return trailer[1]; } // struct+44 (this[11]) @0x6a9eab = blend MeshPart
+    uint32_t mode()     const { return trailer[1]; } // struct+44 (this[11]) @0x6a9eab = MeshPart blend
 };
 
-// -------------------------------------------------------------------------
-// Piste d'animation par quaternions (Anim_LoadQuatTrackFromHandle).
-// bloc GXD : 8o d'en-tête (frames,tracks) + 28o * frames * tracks.
-// -------------------------------------------------------------------------
+// Quaternion animation track (Anim_LoadQuatTrackFromHandle).
+// GXD block: 8-byte header (frames,tracks) + 28 bytes * frames * tracks.
 struct AnimTrack {
     bool     present = false;
-    uint32_t frames  = 0;            // u32 @0 du bloc décodé
-    uint32_t tracks  = 0;            // u32 @4 du bloc décodé
-    std::vector<uint8_t> data;       // bloc GXD décodé (en-tête + données 28o/entrée)
+    uint32_t frames  = 0;            // u32 @0 of the decoded block
+    uint32_t tracks  = 0;            // u32 @4 of the decoded block
+    std::vector<uint8_t> data;       // decoded GXD block (header + 28-byte entries)
 };
 
-// -------------------------------------------------------------------------
-// Vertex terrain (Gap G7) — FVF 530 = 0x212 = D3DFVF_XYZ|NORMAL|TEX2, 40 octets.
-// Deux jeux d'UV : uv0 = texture diffuse (stage 0), uv1 = lightmap/.SHADOW (stage 1).
-// Réf IDA : Terrain_Render 0x698670 — SetFVF(530) @0x698e6d ; stride 40 dans tous les
-// DrawPrimitiveUP (device vtbl+332, ex. @0x698ff3/@0x69913c/@0x69945d) ; 120o=3*40/face
-// copiés via qmemcpy(dst, v48+1, 0x78) @0x698e21 (v48+1 = saut du materialIndex).
-// Position @+0 prouvée par les tests barycentriques : MapColl_RayHitTriangle 0x695ae0
-// (lit face+4/+8/+12 puis face+44/+48/+52) et MapColl_PointInTriangleXZ 0x695c70 (face+84).
-// DISTINCT du MobjVertex 32o des .WO (voir Gfx). Layout normal/uv/uv2 = interprétation FVF.
-// -------------------------------------------------------------------------
+// Terrain vertex (Gap G7) — FVF 530 = 0x212 = D3DFVF_XYZ|NORMAL|TEX2, 40 bytes.
+// Two UV sets: uv0 = diffuse texture (stage 0), uv1 = lightmap/.SHADOW (stage 1).
+// IDA ref: Terrain_Render 0x698670 — SetFVF(530) @0x698e6d; stride 40 in every
+// DrawPrimitiveUP (device vtbl+332, e.g. @0x698ff3/@0x69913c/@0x69945d); 120 bytes=3*40/face
+// copied via qmemcpy(dst, v48+1, 0x78) @0x698e21 (v48+1 = skips materialIndex).
+// Position @+0 proven by the barycentric tests: MapColl_RayHitTriangle 0x695ae0
+// (reads face+4/+8/+12 then face+44/+48/+52) and MapColl_PointInTriangleXZ 0x695c70 (face+84).
+// DISTINCT from the 32-byte MobjVertex of .WO files (see Gfx). normal/uv/uv2 layout = FVF interpretation.
 struct TerrainVertex {
-    float position[3];   // +0x00  repère MONDE (world = identité au rendu terrain)
-    float normal[3];     // +0x0C  unitaire (D3DFVF_NORMAL)
+    float position[3];   // +0x00  WORLD space (world = identity for terrain rendering)
+    float normal[3];     // +0x0C  unit-length (D3DFVF_NORMAL)
     float uv0[2];        // +0x18  texcoord set 0 (diffuse, stage 0)
-    float uv1[2];        // +0x20  texcoord set 1 (lightmap/shadow, stage 1 — support G6)
+    float uv1[2];        // +0x20  texcoord set 1 (lightmap/shadow, stage 1 — supports G6)
 };
-static_assert(sizeof(TerrainVertex) == 40, "TerrainVertex doit faire 40 octets (FVF 530)");
+static_assert(sizeof(TerrainVertex) == 40, "TerrainVertex must be 40 bytes (FVF 530)");
 
-// -------------------------------------------------------------------------
-// Face de collision / rendu terrain (Gap G4) — 156 octets, ordre AUTORITATIF IDA.
-// CONFLICT C-02 (TS2_WORLD_ROSETTA.md §2) : materialIndex EN PREMIER (@0). VeryOldClient
-// le plaçait @152 -> IGNORÉ (IDA gagne). Total 156o confirmé des deux côtés.
-// Réf IDA (offsets prouvés) :
-//   - materialIndex@0    : 120o de sommets copiés depuis face+4 (Terrain_Render qmemcpy @0x698e21)
-//   - v0@+4 v1@+44 v2@+84 (stride 40) : MapColl_RayHitTriangle 0x695af4/0x695afc / PointInTriangleXZ 0x695c98
-//   - plane@+124/+128/+132/+136 (a,b,c,d) : MapColl_GetGroundHeight plane-solve 0x6972ad
+// Collision/terrain-render face (Gap G4) — 156 bytes, AUTHORITATIVE IDA order.
+// CONFLICT C-02 (TS2_WORLD_ROSETTA.md §2): materialIndex comes FIRST (@0). VeryOldClient
+// placed it @152 -> IGNORED (IDA wins). Total 156 bytes confirmed on both sides.
+// IDA ref (proven offsets):
+//   - materialIndex@0    : 120 bytes of vertices copied from face+4 (Terrain_Render qmemcpy @0x698e21)
+//   - v0@+4 v1@+44 v2@+84 (stride 40): MapColl_RayHitTriangle 0x695af4/0x695afc / PointInTriangleXZ 0x695c98
+//   - plane@+124/+128/+132/+136 (a,b,c,d): MapColl_GetGroundHeight plane-solve 0x6972ad
 //                                            + backface Terrain_Render 0x698dd4 (v47[31..34])
-//   - sphereCenter@+140 / sphereRadius@+152 : Cam_FrustumTestSphere2x(v47+35, v47[38]) @0x698de9
-// -------------------------------------------------------------------------
+//   - sphereCenter@+140 / sphereRadius@+152: Cam_FrustumTestSphere2x(v47+35, v47[38]) @0x698de9
 struct CollisionFace {
-    uint32_t      materialIndex;    // +0x00  (aussi « mTextureIndex ») ; ==1 => marchable couche .WM
+    uint32_t      materialIndex;    // +0x00  (aka "mTextureIndex"); ==1 => walkable in the .WM layer
     TerrainVertex v0;               // +0x04
     TerrainVertex v1;               // +0x2C
     TerrainVertex v2;               // +0x54
     float         plane[4];         // +0x7C  planeA/B/C/D = normal.xyz + D (tris+124/+128/+132/+136)
-    float         sphereCenter[3];  // +0x8C  centre de la sphère englobante (tris+140/+144/+148)
-    float         sphereRadius;     // +0x98  rayon de la sphère englobante (tris+152)
+    float         sphereCenter[3];  // +0x8C  bounding sphere center (tris+140/+144/+148)
+    float         sphereRadius;     // +0x98  bounding sphere radius (tris+152)
 
-    // planeB (= normal.y) : diviseur du plane-solve ; > 0 => face orientée vers le haut,
-    // marchable par défaut (MapColl_GetGroundHeight filtre 0x697259, solve 0x6972ad).
+    // planeB (= normal.y): plane-solve divisor; > 0 => face oriented upward,
+    // walkable by default (MapColl_GetGroundHeight filter 0x697259, solve 0x6972ad).
     bool PlaneFacesUp() const { return plane[1] > 0.0f; }
-    // Tag marchable de la couche .WM (variante WORLD2). Rosetta §1.A / §3 G04 : mTextureIndex==1.
+    // Walkable tag of the .WM layer (WORLD2 variant). Rosetta §1.A / §3 G04: mTextureIndex==1.
     bool IsWalkableTag() const { return materialIndex == 1; }
 };
-static_assert(sizeof(CollisionFace) == 156, "CollisionFace doit faire 156 octets");
+static_assert(sizeof(CollisionFace) == 156, "CollisionFace must be 156 bytes");
 
-// -------------------------------------------------------------------------
-// Nœud de quadtree de collision (Gap G5) — 48 octets, layout RUNTIME.
-// Réf IDA : MapColl_GetGroundHeight 0x697130 — base quadtree = *(this+35) ;
-//   bboxMin@+0 / bboxMax@+12 (test XZ @0x6971ba) ; ceiling = node0.bboxMax.y @+16 (@0x6971e5) ;
-//   trisNum@+24 (@0x6971fc) ; trisIndex@+28 (@0x69726c) ; child[4]@+32 (@0x697171/@0x697159).
-// Racine = nœud index 0 ; feuille <=> child[0] == -1.
-// Le format DISQUE est à taille variable (48o fixe + 4*faceRefCount si hasFaceRefs) ; on le
-// reconstruit ici en tableau 48o fixe + buffer d'index agrégé (CollisionMesh::triIndices).
-// `trisIndex` = OFFSET (en entrées u32) dans triIndices (le runtime y garde un pointeur vif).
-// -------------------------------------------------------------------------
+// Collision quadtree node (Gap G5) — 48 bytes, RUNTIME layout.
+// IDA ref: MapColl_GetGroundHeight 0x697130 — quadtree base = *(this+35);
+//   bboxMin@+0 / bboxMax@+12 (XZ test @0x6971ba); ceiling = node0.bboxMax.y @+16 (@0x6971e5);
+//   trisNum@+24 (@0x6971fc); trisIndex@+28 (@0x69726c); child[4]@+32 (@0x697171/@0x697159).
+// Root = node index 0; leaf <=> child[0] == -1.
+// The ON-DISK format is variable-size (fixed 48 bytes + 4*faceRefCount if hasFaceRefs); we
+// rebuild it here as a fixed 48-byte array + aggregated index buffer (CollisionMesh::triIndices).
+// `trisIndex` = OFFSET (in u32 entries) into triIndices (the runtime keeps a live pointer there).
 struct CollisionQuadNode {
     float    bboxMin[3];   // +0x00
-    float    bboxMax[3];   // +0x0C   (node0 +16 = bboxMax.y = plafond monde par défaut)
-    uint32_t trisNum;      // +0x18   nombre d'index de faces (feuille)
-    uint32_t trisIndex;    // +0x1C   offset dans CollisionMesh::triIndices (ptr vif à l'origine)
-    int32_t  child[4];     // +0x20   4 enfants ; child[0]==-1 => feuille
+    float    bboxMax[3];   // +0x0C   (node0 +16 = bboxMax.y = default world ceiling)
+    uint32_t trisNum;      // +0x18   number of face indices (leaf)
+    uint32_t trisIndex;    // +0x1C   offset into CollisionMesh::triIndices (originally a live ptr)
+    int32_t  child[4];     // +0x20   4 children; child[0]==-1 => leaf
 
     bool IsLeaf() const { return child[0] == -1; }
 };
-static_assert(sizeof(CollisionQuadNode) == 48, "CollisionQuadNode doit faire 48 octets");
+static_assert(sizeof(CollisionQuadNode) == 48, "CollisionQuadNode must be 48 bytes");
 
-// -------------------------------------------------------------------------
-// Maillage de collision partagé (MapColl_LoadFaces 0x694510 ; 1er bloc de WG).
-//   numTri + (156o * triangles) + numNodes + field34 + quadtree.
-//   Chaque nœud disque : min[3]f max[3]f numIdx u32 hasIdx u32 [index u32*numIdx] children[4]u32.
-// Décodage typé (Gaps G4/G5/G7) : `raw` reste conservé (fidélité byte-exacte + rétro-compat),
-// et les champs typés ci-dessous exposent la même donnée prête à consommer.
-// -------------------------------------------------------------------------
+// Shared collision mesh (MapColl_LoadFaces 0x694510; 1st block of WG).
+//   numTri + (156 bytes * triangles) + numNodes + field34 + quadtree.
+//   Each on-disk node: min[3]f max[3]f numIdx u32 hasIdx u32 [index u32*numIdx] children[4]u32.
+// Typed decoding (Gaps G4/G5/G7): `raw` is kept (byte-exact fidelity + backward compat),
+// and the typed fields below expose the same data ready to consume.
 struct CollisionMesh {
-    uint32_t numTri       = 0;       // nombre de triangles (156 octets chacun)
-    uint32_t numNodes     = 0;       // nombre de nœuds du quadtree
-    uint32_t field34      = 0;       // (this+34) compteur global d'index (leafFaceRefTotal)
-    uint32_t totalIndices = 0;       // somme des index de triangles (nœuds avec hasIdx)
-    std::vector<uint8_t> raw;        // buffer décompressé complet (triangles + quadtree)
+    uint32_t numTri       = 0;       // number of triangles (156 bytes each)
+    uint32_t numNodes     = 0;       // number of quadtree nodes
+    uint32_t field34      = 0;       // (this+34) global index counter (leafFaceRefTotal)
+    uint32_t totalIndices = 0;       // sum of triangle indices (nodes with hasIdx)
+    std::vector<uint8_t> raw;        // full decompressed buffer (triangles + quadtree)
 
-    // --- Vues typées décodées depuis `raw` (ordre de lecture = MapColl_LoadFaces 0x694510) ---
-    std::vector<CollisionFace>     tris;        // Gap G4 : numTri faces (156o) décodées
-    std::vector<CollisionQuadNode> nodes;       // Gap G5 : numNodes nœuds (48o), racine = index 0
-    std::vector<uint32_t>          triIndices;  // buffer d'index de faces agrégé (feuilles -> tris[])
-    std::vector<TerrainVertex>     vertices;    // Gap G7 : 3*numTri sommets à plat (miroir du VB
-                                                //   dynamique Terrain_Render a1+164, upload FVF 530)
+    // --- Typed views decoded from `raw` (read order = MapColl_LoadFaces 0x694510) ---
+    std::vector<CollisionFace>     tris;        // Gap G4: numTri decoded faces (156 bytes)
+    std::vector<CollisionQuadNode> nodes;       // Gap G5: numNodes decoded nodes (48 bytes), root = index 0
+    std::vector<uint32_t>          triIndices;  // aggregated face index buffer (leaves -> tris[])
+    std::vector<TerrainVertex>     vertices;    // Gap G7: 3*numTri flat vertices (mirrors the
+                                                //   dynamic VB in Terrain_Render a1+164, FVF 530 upload)
 };
 
-// -------------------------------------------------------------------------
-// Partie de maillage d'un modèle statique (MeshPart_Load).
-//   bloc GXD géométrie : 120o d'en-tête + os + VB + IB.
-//   A=Heap[30] B=Heap[31] C=Heap[32] D=Heap[33] (nb triangles).
-//   taille attendue = 136 + (A<<6) + 32*A*B + 6*D.
-// -------------------------------------------------------------------------
+// Mesh part of a static model (MeshPart_Load).
+//   GXD geometry block: 120-byte header + bones + VB + IB.
+//   A=Heap[30] B=Heap[31] C=Heap[32] D=Heap[33] (triangle count).
+//   expected size = 136 + (A<<6) + 32*A*B + 6*D.
 struct WorldMeshPart {
     bool     present   = false;
     uint32_t A = 0, B = 0, C = 0, D = 0;
     bool     geoSizeOk = false;      // raw == 136 + (A<<6) + 32*A*B + 6*D
-    std::vector<uint8_t> geo;        // bloc GXD géométrie décodé (les 120 premiers o = en-tête mat)
-    TextureBlock tex1;               // this+296 (texture de BASE ; tex1.mode() = base blend this[85])
-    TextureBlock tex2;               // this+348 (2e texture   ; tex2.mode() = 2e blend   this[98])
-    std::vector<TextureBlock> materials; // this+404[] (num_mat entrées = atlas flipbook this[101])
+    std::vector<uint8_t> geo;        // decoded GXD geometry block (first 120 bytes = material header)
+    TextureBlock tex1;               // this+296 (BASE texture; tex1.mode() = base blend this[85])
+    TextureBlock tex2;               // this+348 (2nd texture ; tex2.mode() = 2nd blend  this[98])
+    std::vector<TextureBlock> materials; // this+404[] (num_mat entries = flipbook atlas this[101])
 
-    // En-tête matériau 120 o (Heap[0..29]) DÉCODÉ en champs nommés — MÊME struct et MÊME décodage
-    // que le .MOBJECT (chargeur MeshPart_Load 0x6AD160 partagé ; `qmemcpy(this+132, Heap, 0x78)`
-    // @0x6ad2d1). ADDITIF : `geo` reste conservé brut (fidélité + audit). Chaque champ pilote une
-    // couche de MeshPart_RenderFull 0x6B0850 (mapping cross-prouvé écriture↔lecture, voir Model.h).
-    MeshPartMaterial mat;            // décodé si mat.decoded (geo >= 120 o)
+    // 120-byte material header (Heap[0..29]) DECODED into named fields — SAME struct and SAME
+    // decoding as the .MOBJECT (shared MeshPart_Load 0x6AD160 loader; `qmemcpy(this+132, Heap, 0x78)`
+    // @0x6ad2d1). ADDITIVE: `geo` still kept raw (fidelity + audit). Each field drives a layer of
+    // MeshPart_RenderFull 0x6B0850 (cross-proven write<->read mapping, see Model.h).
+    MeshPartMaterial mat;            // decoded if mat.decoded (geo >= 120 bytes)
 
-    // Cas billboard-quad détecté par MeshPart_Load @0x6ad413 : `B==4 && C==4 && D==2` -> le part
-    // est un gabarit de quad face-caméra (2 triangles / 4 sommets), AABB des 4 verts calculé au
-    // chargement. Complète le flag mat.billboard.Enable (this[58]).
+    // Billboard-quad case detected by MeshPart_Load @0x6ad413: `B==4 && C==4 && D==2` -> the
+    // part is a camera-facing quad template (2 triangles / 4 vertices), AABB of the 4 verts
+    // computed at load time. Complements the mat.billboard.Enable flag (this[58]).
     bool IsBillboardQuad() const { return B == 4 && C == 4 && D == 2; }
 };
 
-// Modèle statique (Model_LoadFromHandle) = liste de MeshPart.
+// Static model (Model_LoadFromHandle) = list of MeshPart.
 struct Model {
     bool present = false;
     std::vector<WorldMeshPart> parts;     // num_parts
 };
 
-// -------------------------------------------------------------------------
-// Fichier .WM / .WJ — un seul bloc GXD contenant le maillage de collision.
-// -------------------------------------------------------------------------
+// .WM / .WJ file — a single GXD block containing the collision mesh.
 struct MapCollisionChunk {
     CollisionMesh mesh;
     uint32_t rawSize    = 0;
     uint32_t packedSize = 0;
 };
 
-// -------------------------------------------------------------------------
-// Fichier .WG — bloc géométrie (collision) + matériaux/textures.
-// -------------------------------------------------------------------------
+// .WG file — geometry (collision) block + materials/textures.
 struct MapFaceChunk {
-    CollisionMesh mesh;                     // bloc géométrie (tri + quadtree)
+    CollisionMesh mesh;                     // geometry block (tri + quadtree)
     uint32_t geoRaw    = 0;
     uint32_t geoPacked = 0;
     uint32_t numMaterials = 0;              // this+3
-    std::vector<TextureBlock> textures;     // num_materials (certaines absentes)
-    std::vector<uint32_t> materialIndices;  // this+36 : table d'index matériaux (u32*num)
+    std::vector<TextureBlock> textures;     // num_materials (some absent)
+    std::vector<uint32_t> materialIndices;  // this+36: material index table (u32*num)
 };
 
-// -------------------------------------------------------------------------
-// Instance placée d'un gabarit `models[]` dans le monde — LE PLACEMENT réel.
-// 28 octets sur disque, format confirmé par désassemblage (Model_RenderParts
-// 0x6A3720, Model_RenderWithShadow_0 0x6A4110) : cf. Docs/TS2_WO_PLACEMENT_FORMAT.md.
-// PAS de champ d'échelle : le moteur ne multiplie jamais par une matrice de
-// scale pour les objets .WO — scale = 1.0 toujours.
-// -------------------------------------------------------------------------
+// Placed instance of a `models[]` template in the world — THE actual placement.
+// 28 bytes on disk, format confirmed by disassembly (Model_RenderParts
+// 0x6A3720, Model_RenderWithShadow_0 0x6A4110): cf. Docs/TS2_WO_PLACEMENT_FORMAT.md.
+// NO scale field: the engine never multiplies by a scale matrix for
+// .WO objects — scale is always 1.0.
 struct AuxRecord {
-    uint32_t modelIndex = 0;      // +0x00 index (0-based) dans ObjectChunk::models[]
-    float    pos[3] = {0, 0, 0};  // +0x04 position monde x,y,z
-    float    rot[3] = {0, 0, 0};  // +0x10 rotation en DEGRÉS x,y,z
-    // World = Rz(rot.z) * Ry(rot.y) * Rx(rot.x) * T(pos)  (ordre D3DX exact, voir doc)
+    uint32_t modelIndex = 0;      // +0x00 index (0-based) into ObjectChunk::models[]
+    float    pos[3] = {0, 0, 0};  // +0x04 world position x,y,z
+    float    rot[3] = {0, 0, 0};  // +0x10 rotation in DEGREES x,y,z
+    // World = Rz(rot.z) * Ry(rot.y) * Rx(rot.x) * T(pos)  (exact D3DX order, see doc)
 };
 
-// -------------------------------------------------------------------------
-// Fichier .WO — modèles statiques + placements + records auxiliaires.
-// -------------------------------------------------------------------------
+// .WO file — static models + placements + auxiliary records.
 struct ObjectChunk {
     bool     empty = false;                 // numModels == 0
-    std::vector<Model> models;              // this+23 : num_models
-    std::vector<uint8_t> placements;        // this+25 : 100 octets * num_models (métadonnée
-                                             // PAR GABARIT : nom NUL-terminé + bourrage non lu
-                                             // par le moteur, hors tag "NO_SHADOW_" — PAS un
-                                             // enregistrement de transform, cf. doc)
-    std::vector<std::string> placementNames;// nom extrait de placements[] pour chaque modèle
-                                             // (debug / futur tag NO_SHADOW_), même taille que
+    std::vector<Model> models;              // this+23: num_models
+    std::vector<uint8_t> placements;        // this+25: 100 bytes * num_models (PER-TEMPLATE
+                                             // metadata: NUL-terminated name + padding not read
+                                             // by the engine, except for the "NO_SHADOW_" tag —
+                                             // NOT a transform record, cf. doc)
+    std::vector<std::string> placementNames;// name extracted from placements[] for each model
+                                             // (debug / future NO_SHADOW_ tag), same size as
                                              // models
     uint32_t numAux = 0;                    // this+26
-    std::vector<AuxRecord> auxRecords;      // LES INSTANCES PLACÉES (28 o/instance sur disque) :
-                                             // position + rotation par instance, résolues via
+    std::vector<AuxRecord> auxRecords;      // THE PLACED INSTANCES (28 bytes/instance on disk):
+                                             // position + rotation per instance, resolved via
                                              // modelIndex -> models[modelIndex]
 };
 
-// -------------------------------------------------------------------------
-// Nœud FX (Fx_NodeLoadFromHandle 0x6a69f0) : texture + piste anim + 144o de champs
-// émetteur. La structure runtime fait 232 o ; sur DISQUE, après la texture (this+1) et la
-// piste d'anim (this+14), 18 ReadFile lisent séquentiellement 144 o [runtime +72, +216) :
-//   +72 u32, +76 u32, +80 u32, +84 u32, +88 u32, +92 (12o), +104 u32, +108 (12o),
-//   +120 (12o), +132 u32, +136 u32, +140 (16o), +156 (16o), +172 (12o), +184 (12o),
-//   +196 (12o), +208 u32, +212 u32  (= 144 o exactement, confirmé Fx_NodeLoadFromHandle).
-// `fields` conserve le blob brut 144 o (fidélité + parseur validé 455/455 inchangé) ; la vue
-// typée ci-dessous re-décode les champs nommés (offset dans `fields` = runtime - 72). Les
-// noms (lifetime/rate/shape/box/…) suivent l'usage prouvé côté émission (Particle_Init
-// 0x6a7020 / Particle_UpdateEmit 0x6a7530) ; leur interprétation float/u32 est cohérente
-// mais la SÉMANTIQUE exacte de la queue (+132..+215) n'est pas prouvée -> laissée dans `fields`.
-// -------------------------------------------------------------------------
+// FX node (Fx_NodeLoadFromHandle 0x6a69f0): texture + anim track + 144 bytes of
+// emitter fields. The runtime structure is 232 bytes; ON DISK, after the texture (this+1) and
+// anim track (this+14), 18 ReadFile calls sequentially read 144 bytes [runtime +72, +216):
+//   +72 u32, +76 u32, +80 u32, +84 u32, +88 u32, +92 (12b), +104 u32, +108 (12b),
+//   +120 (12b), +132 u32, +136 u32, +140 (16b), +156 (16b), +172 (12b), +184 (12b),
+//   +196 (12b), +208 u32, +212 u32  (= exactly 144 bytes, confirmed by Fx_NodeLoadFromHandle).
+// `fields` keeps the raw 144-byte blob (fidelity + validated 455/455 parser unchanged); the
+// typed view below re-decodes the named fields (offset in `fields` = runtime - 72). The
+// names (lifetime/rate/shape/box/…) follow the proven usage on the emission side (Particle_Init
+// 0x6a7020 / Particle_UpdateEmit 0x6a7530); their float/u32 interpretation is coherent
+// but the exact SEMANTICS of the tail (+132..+215) is not proven -> left in `fields`.
 struct FxNode {
     bool present = false;
     TextureBlock tex;                       // this+1  (byte 4)  Tex_LoadCompressedFromHandle
     AnimTrack    anim;                      // this+14 (byte 56) Anim_LoadQuatTrackFromHandle
-    std::vector<uint8_t> fields;            // 144 octets bruts [runtime +72, +216)
+    std::vector<uint8_t> fields;            // 144 raw bytes [runtime +72, +216)
 
-    // --- Vue typée décodée (ancre Fx_NodeLoadFromHandle 0x6a69f0) ---
+    // --- Decoded typed view (anchor Fx_NodeLoadFromHandle 0x6a69f0) ---
     float    lifetime     = 0.0f;           // +72
-    float    kfFps        = 0.0f;           // +76  (cadence keyframes)
-    float    rate         = 0.0f;           // +80  (débit d'émission)
-    uint32_t shape        = 0;              // +84  (forme d'émission, ∈ [1..6])
+    float    kfFps        = 0.0f;           // +76  (keyframe rate)
+    float    rate         = 0.0f;           // +80  (emission rate)
+    uint32_t shape        = 0;              // +84  (emission shape, ∈ [1..6])
     float    speed        = 0.0f;           // +88
-    float    box[3]       = {0,0,0};        // +92  (boîte d'émission xyz)
+    float    box[3]       = {0,0,0};        // +92  (emission box xyz)
     float    particleLife = 0.0f;           // +104
     float    minRange[3]  = {0,0,0};        // +108
     float    maxRange[3]  = {0,0,0};        // +120
     float    accelMin[3]  = {0,0,0};        // +172
     float    accelMax[3]  = {0,0,0};        // +184
-    // Queue +132/+136/+140(16o)/+156(16o)/+196(12o)/+208/+212 : présente dans `fields`, rôle
-    // non prouvé (lue par Particle_UpdateEmit 0x6a7530) -> TODO ancre 0x6a7530 avant de typer.
+    // Tail +132/+136/+140(16b)/+156(16b)/+196(12b)/+208/+212: present in `fields`, role
+    // not proven (read by Particle_UpdateEmit 0x6a7530) -> TODO anchor 0x6a7530 before typing.
 };
 
-// -------------------------------------------------------------------------
-// Instance FX placée en zone (.WP, enregistrement « B »). 28 o sur disque (4+12+12),
-// 76 o à l'exécution. Ancre IDA : MapColl_LoadObjectsB 0x6983b0 (@0x698602 lit 4/12/12) ;
-// tick MapColl_UpdateObjectAnim 0x694A00 (stride 76 ; fxb+28 = état système particules,
-// fxb+0 = nodeIndex, fxb+4 = pos, fxb+16 = rot passés à Particle_Init/UpdateEmit).
-// -------------------------------------------------------------------------
+// FX instance placed in a zone (.WP, "B" record). 28 bytes on disk (4+12+12),
+// 76 bytes at runtime. IDA anchor: MapColl_LoadObjectsB 0x6983b0 (@0x698602 reads 4/12/12);
+// tick MapColl_UpdateObjectAnim 0x694A00 (stride 76; fxb+28 = particle system state,
+// fxb+0 = nodeIndex, fxb+4 = pos, fxb+16 = rot passed to Particle_Init/UpdateEmit).
 struct AuxFxRecord {
-    uint32_t nodeIndex = 0;                  // +0  index dans FxChunk::nodes[]
-    float    pos[3] = {0, 0, 0};             // +4  position monde
-    float    rot[3] = {0, 0, 0};             // +16 rotation (degrés ; kDegToRad = pi/180)
-    // +28..+75 = état système particules (runtime, non disque — init Particle_Init 0x6a7020)
+    uint32_t nodeIndex = 0;                  // +0  index into FxChunk::nodes[]
+    float    pos[3] = {0, 0, 0};             // +4  world position
+    float    rot[3] = {0, 0, 0};             // +16 rotation (degrees; kDegToRad = pi/180)
+    // +28..+75 = particle system state (runtime, not on disk — init Particle_Init 0x6a7020)
 };
 
-// -------------------------------------------------------------------------
-// Fichier .WP — nœuds FX + placements + records B (instances placées).
-// -------------------------------------------------------------------------
+// .WP file — FX nodes + placements + B records (placed instances).
 struct FxChunk {
     bool     empty = false;                 // numFx == 0
-    std::vector<FxNode> nodes;              // this+28 : num_fx
-    std::vector<uint8_t> placements;        // this+30 : 100 octets * num_fx
+    std::vector<FxNode> nodes;              // this+28: num_fx
+    std::vector<uint8_t> placements;        // this+30: 100 bytes * num_fx
     uint32_t numFxb = 0;                    // this+31
-    std::vector<AuxFxRecord> fxbRecords;    // instances placées (28o disque : nodeIndex+pos+rot)
+    std::vector<AuxFxRecord> fxbRecords;    // placed instances (28 bytes on disk: nodeIndex+pos+rot)
 };
 
-// -------------------------------------------------------------------------
-// Maillage « Format B » — une PART (W*.SOBJECT). Ancre IDA : cMesh_ReadFromStream 0x436CA0.
-// Disque : [present u32] (si 0 -> part absente, fin du walker) ; puis bloc GXD
-// [rawSize u32][packedSize u32][zlib] (RÈGLE #4 : zlib pur, JAMAIS XTEA) décompressé en Heap ;
+// "Format B" mesh — a single PART (W*.SOBJECT). IDA anchor: cMesh_ReadFromStream 0x436CA0.
+// On disk: [present u32] (if 0 -> part absent, end of walker); then GXD block
+// [rawSize u32][packedSize u32][zlib] (RULE #4: pure zlib, NEVER XTEA) decompressed into Heap;
 //   Heap[0..136)   = header (numVerts@120, C@124, numFaces@132)
-//   Heap[136..176) = subHeader (40 o)
-//   Heap[176 ..)   = stream 0 (32 o/vertex, numVerts)      -> a1+348
-//   Heap[176+32*B) = stream 1 (32 o/vertex, numVerts)      -> a1+352
-//   puis 6*numFaces o d'indices (INDEX16)                  -> a1+356
-// (positions compactées a1+360 = 12 premiers o/vertex ; normales a1+364 = vertex+12 : dérivées
-//  du stream 0, non relues sur disque). Puis textures Tex_ReadPacked (framing = imageSize/
-// rawSize/packedSize/zlib + trailer 8o, IDENTIQUE à ReadTextureBlock, prouvé Tex_ReadPacked
-// 0x417740) : tex1 (a1+368), tex2 (a1+424), [numMat u32] (a1+480), numMat sous-textures (56o
-// runtime chacune, a1+484). Cas spécial B==4&&C==4&&D==2 = quad billboard (AABB des 4 verts).
-// -------------------------------------------------------------------------
+//   Heap[136..176) = subHeader (40 bytes)
+//   Heap[176 ..)   = stream 0 (32 bytes/vertex, numVerts)      -> a1+348
+//   Heap[176+32*B) = stream 1 (32 bytes/vertex, numVerts)      -> a1+352
+//   then 6*numFaces bytes of indices (INDEX16)                  -> a1+356
+// (compacted positions a1+360 = first 12 bytes/vertex; normals a1+364 = vertex+12: derived
+//  from stream 0, not re-read from disk). Then textures via Tex_ReadPacked (framing =
+// imageSize/rawSize/packedSize/zlib + 8-byte trailer, IDENTICAL to ReadTextureBlock, proven by
+// Tex_ReadPacked 0x417740): tex1 (a1+368), tex2 (a1+424), [numMat u32] (a1+480), numMat
+// sub-textures (56 bytes runtime each, a1+484). Special case B==4&&C==4&&D==2 = billboard quad
+// (AABB of the 4 verts).
 struct MeshFormatBPart {
     bool     present = false;
     uint8_t  header[136]    = {};   // Heap[0..136)   numVerts@120 / C@124 / numFaces@132
@@ -328,36 +299,34 @@ struct MeshFormatBPart {
     std::vector<uint8_t> ib;        // 6*numFaces  (INDEX16)
     TextureBlock tex1;              // a1+368
     TextureBlock tex2;              // a1+424
-    std::vector<TextureBlock> materials; // a1+484 (numMat entrées)
+    std::vector<TextureBlock> materials; // a1+484 (numMat entries)
 };
 
-// Maillage « Format B » complet = walker multi-part (boucle tant que present != 0).
+// Complete "Format B" mesh = multi-part walker (loop while present != 0).
 struct MeshFormatBChunk {
     std::vector<MeshFormatBPart> parts;
 };
 
-// -------------------------------------------------------------------------
-// Chargeur unifié : détecte le sous-format et peuple le membre correspondant.
-// -------------------------------------------------------------------------
+// Unified loader: detects the sub-format and populates the matching member.
 class WorldChunk {
 public:
-    // Charge un chunk depuis un fichier ; le type est déduit de l'extension.
-    // Renvoie false si extension inconnue, lecture ou parsing impossible.
+    // Loads a chunk from a file; the type is inferred from the extension.
+    // Returns false if the extension is unknown, or reading/parsing fails.
     bool Load(const std::string& path);
 
-    // Parse un buffer déjà en mémoire avec un type explicite.
+    // Parses an already in-memory buffer with an explicit type.
     bool LoadFromMemory(const std::vector<uint8_t>& data, WorldChunkType type);
 
     WorldChunkType Type() const { return type_; }
 
-    // Accès typé : seul le membre correspondant à Type() est peuplé (nullptr sinon).
+    // Typed access: only the member matching Type() is populated (nullptr otherwise).
     const MapCollisionChunk* AsCollision() const { return collision_ ? &*collision_ : nullptr; } // WM/WJ
     const MapFaceChunk*      AsFace()      const { return face_      ? &*face_      : nullptr; } // WG
     const ObjectChunk*       AsObjects()   const { return objects_   ? &*objects_   : nullptr; } // WO
     const FxChunk*           AsFx()        const { return fx_        ? &*fx_        : nullptr; } // WP
     const MeshFormatBChunk*  AsMeshB()     const { return meshB_     ? &*meshB_     : nullptr; } // SOBJECT_B
 
-    // Résumé lisible (compteurs), utile pour comparer à la sortie du parseur Python.
+    // Readable summary (counters), useful for comparing to the Python parser's output.
     std::string Describe() const;
 
 private:
@@ -371,9 +340,9 @@ private:
     std::optional<MeshFormatBChunk>  meshB_;
 };
 
-// Déduit le sous-format à partir de l'extension du chemin (.WM/.WJ/.WG/.WO/.WP).
+// Infers the sub-format from the path's extension (.WM/.WJ/.WG/.WO/.WP).
 WorldChunkType WorldChunkTypeFromExtension(const std::string& path);
-// Nom court du type (« WM », « WG », …) — « ? » si Unknown.
+// Short type name ("WM", "WG", …) — "?" if Unknown.
 const char*    WorldChunkTypeName(WorldChunkType t);
 
 } // namespace ts2::asset

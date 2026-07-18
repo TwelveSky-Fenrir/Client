@@ -1,88 +1,88 @@
-// Game/AnimationTick.h — SYSTEME ANIMATION/COLLISION : réécriture C++ fidèle de 4
-// fonctions décompilées via idaTs2 (Hex-Rays), câblées sur game::g_World (Game/GameState.h)
-// et Game/ActionStateMachine.h. Module Game/*.h/.cpp AUTONOME (mission dédiée) : n'édite PAS
-// Scene/SceneManager.*, l'agent de consolidation câble les hooks ci-dessous sur l'existant.
+// Game/AnimationTick.h — ANIMATION/COLLISION SYSTEM: faithful C++ rewrite of 4
+// functions decompiled via idaTs2 (Hex-Rays), wired onto game::g_World (Game/GameState.h)
+// and Game/ActionStateMachine.h. Standalone Game/*.h/.cpp module (dedicated mission): does NOT
+// edit Scene/SceneManager.*, the consolidation agent wires the hooks below onto the existing code.
 //
-// Fonctions couvertes (EA d'origine, imagebase 0x400000) :
-//   - Player_UpdateLocalAnim        0x5321D0 — anim/FX du joueur LOCAL uniquement (this =
-//     g_LocalPlayerSheet 0x1685748). RECOMPTÉ EXHAUSTIVEMENT bloc-par-bloc contre une
-//     ré-décompilation fraîche (audit 2026-07-14) : 85 blocs conditionnels au total =
-//     75 lignes génériques (table kMorphRows, vérifiée 1:1 par flagAddr avec le binaire)
-//     + 3 blocs "pulse" cadencés this+8%6 (0x1675BAC/BB0, BCC/BD0, BD4/BD8)
-//     + 3 blocs spéciaux indexés par g_SelfMorphNpcId (0x1675BA4/BDC/BE4)
-//     + 1 bloc indexé par g_LocalElement (0x1675D98/DA8)
-//     + 1 bloc pulse final (0x1675E90/E98)
-//     = 83 blocs "timer" au sens strict (le chiffre "~83" d'un rapport antérieur est donc
-//     CONFIRMÉ EXACT, pas sous-estimé), auxquels s'ajoutent
-//     + 1 bloc ambiance/BGM (replay 900s, non-timer)
-//     + 1 vérification finale one-shot (g_SelfMorphNpcId==196 && dword_1685E10==1 -> warp)
-//     = 85 blocs au total, TOUS présents et vérifiés dans Player_UpdateLocalAnim ci-dessous
-//     (aucun bloc manquant détecté). Entièrement DATA-DRIVEN : reproduits via une table
-//     statique (Player_UpdateLocalAnim dans AnimationTick.cpp), chaque timer stocké aux
-//     ADRESSES D'ORIGINE via game::g_Client.Var/VarF (Game/ClientRuntime.h, même convention
-//     que Game/MapWarp.cpp).
-//   - Char_UpdateAnimationFrame     0x571880 — fait avancer la FSM d'anim/action d'UNE
-//     entité du tableau JOUEURS (g_EntityArray, stride 908) — soi-même OU un joueur
-//     distant.
+// Functions covered (original EA, imagebase 0x400000):
+//   - Player_UpdateLocalAnim        0x5321D0 — anim/FX for the LOCAL player only (this =
+//     g_LocalPlayerSheet 0x1685748). EXHAUSTIVELY recounted block-by-block against a
+//     fresh re-decompilation (audit 2026-07-14): 85 conditional blocks total =
+//     75 generic rows (table kMorphRows, verified 1:1 by flagAddr against the binary)
+//     + 3 "pulse" blocks clocked at this+8%6 (0x1675BAC/BB0, BCC/BD0, BD4/BD8)
+//     + 3 special blocks indexed by g_SelfMorphNpcId (0x1675BA4/BDC/BE4)
+//     + 1 block indexed by g_LocalElement (0x1675D98/DA8)
+//     + 1 final pulse block (0x1675E90/E98)
+//     = 83 "timer" blocks in the strict sense (the "~83" figure from an earlier report is
+//     thus CONFIRMED EXACT, not underestimated), plus
+//     + 1 ambiance/BGM block (900s replay, non-timer)
+//     + 1 final one-shot check (g_SelfMorphNpcId==196 && dword_1685E10==1 -> warp)
+//     = 85 blocks total, ALL present and verified in Player_UpdateLocalAnim below
+//     (no missing block detected). Fully DATA-DRIVEN: reproduced via a static
+//     table (Player_UpdateLocalAnim in AnimationTick.cpp), each timer stored at its
+//     ORIGINAL ADDRESSES via game::g_Client.Var/VarF (Game/ClientRuntime.h, same convention
+//     as Game/MapWarp.cpp).
+//   - Char_UpdateAnimationFrame     0x571880 — advances the anim/action FSM of ONE
+//     entity in the PLAYERS array (g_EntityArray, stride 908) — either the local player
+//     or a remote one.
 //
-//     ///// CORRECTION FACTUELLE — Passe 4 / vague W7, front motion-anim (2026-07-16) /////
-//     La rédaction précédente disait « (joueur distant OU MONSTRE) ». C'est FAUX : AUCUN
-//     monstre ne passe jamais par 0x571880. Preuve, désassemblage de l'unique appelant
-//     Scene_InGameUpdate 0x52C600 (relu instruction par instruction cette session) — QUATRE
-//     familles d'entités, DISJOINTES, chacune avec sa propre fonction de tick :
+//     ///// FACTUAL CORRECTION — Pass 4 / wave W7, motion-anim front (2026-07-16) /////
+//     The earlier wording said "(remote player OR MONSTER)". This is WRONG: NO
+//     monster ever goes through 0x571880. Proof: disassembly of the single caller,
+//     Scene_InGameUpdate 0x52C600 (reread instruction-by-instruction this session) — FOUR
+//     DISJOINT entity families, each with its own tick function:
 //       @0x52c96d  Char_UpdateAnimationFrame(g_EntityArray, 0, dt)           self      (stride 908)
-//       @0x52c9fd  Char_UpdateAnimationFrame(&g_EntityArray[908*j], j, dt)   distants  (stride 908)
-//       @0x52ca4c  Npc_RenderSlotTick(&g_NpcRenderArray[88*k], k, dt)        PNJ décor (stride  88)
-//       @0x52cad6  Char_Update(&dword_1766F74[280*m], m, dt)                 MONSTRES  (stride 280)
-//     La FSM d'animation des MONSTRES est donc Char_Update 0x581E10 (switch @0x5822D3, 9
-//     handlers Char_MotionTick_*), portée par Monster_DispatchMotionTick ci-dessous (§5) ;
-//     celle des PNJ de décor est Npc_RenderSlotTick 0x5803A0, portée par ZoneNpc_TickAnim
-//     (§6). Le `TODO [ancre 0x571880]` qui figurait dans Scene/WorldRenderer.cpp pour
-//     l'animType des monstres pointait, pour la même raison, la mauvaise fonction.
+//       @0x52c9fd  Char_UpdateAnimationFrame(&g_EntityArray[908*j], j, dt)   remote    (stride 908)
+//       @0x52ca4c  Npc_RenderSlotTick(&g_NpcRenderArray[88*k], k, dt)        zone NPC  (stride  88)
+//       @0x52cad6  Char_Update(&dword_1766F74[280*m], m, dt)                 MONSTERS  (stride 280)
+//     The MONSTER animation FSM is therefore Char_Update 0x581E10 (switch @0x5822D3, 9
+//     Char_MotionTick_* handlers), ported by Monster_DispatchMotionTick below (§5);
+//     the zone NPC one is Npc_RenderSlotTick 0x5803A0, ported by ZoneNpc_TickAnim
+//     (§6). The `TODO [anchor 0x571880]` that used to sit in Scene/WorldRenderer.cpp for
+//     monster animType pointed, for the same reason, at the wrong function.
 //
-//     Le cœur (détection de contact, interruption de
-//     cast, primitives de tick générique) est DÉJÀ écrit dans Game/ActionStateMachine.h/.cpp
-//     (ActionFsm) : cette fonction construit un ActionFsm TRANSITOIRE depuis
-//     game::CharAnimState (persisté dans PlayerEntity::anim/MonsterEntity::anim, cf.
-//     GameState.h — champ AJOUTÉ par cette mission), l'utilise, puis recopie le résultat.
-//     Complète l'orchestration avec les blocs NON couverts par ActionFsm : timers FX
-//     secondaires (data-driven, même table-engine que Player_UpdateLocalAnim), rotation
-//     faciale lissée (540°/s, byte-exact, AUCUNE dépendance asset), aura spéciale, marque de
-//     guilde, requête d'arrêt AutoPlay. Le SWITCH terminal (0x5727BF, 81 cas Char_*/
-//     Combat_TickAttackState, chacun piloté par une durée d'anim ASSET, hors périmètre) est
-//     exposé via UN SEUL hook opaque `TickStateHandler` — même politique que
-//     Game/ActionStateMachine.h::IAnimFrameOracle (cf. tête de ce fichier pour la
-//     justification : rendu 3D/motion = hors périmètre gameplay). Un routeur PARTIEL de ce
-//     switch (6 cas PROUVÉS sur 81) est fourni en §7 ci-dessous : Char_DispatchStateTick.
+//     The core (contact detection, cast
+//     interruption, generic tick primitives) is ALREADY written in Game/ActionStateMachine.h/.cpp
+//     (ActionFsm): this function builds a TRANSIENT ActionFsm from
+//     game::CharAnimState (persisted in PlayerEntity::anim/MonsterEntity::anim, cf.
+//     GameState.h — field ADDED by this mission), uses it, then copies the result back.
+//     Completes the orchestration with the blocks NOT covered by ActionFsm: secondary FX
+//     timers (data-driven, same table engine as Player_UpdateLocalAnim), smoothed facial
+//     rotation (540°/s, byte-exact, NO asset dependency), special aura, guild mark,
+//     AutoPlay stop request. The terminal SWITCH (0x5727BF, 81 Char_*/
+//     Combat_TickAttackState cases, each driven by an asset anim duration, out of scope) is
+//     exposed via a SINGLE opaque hook `TickStateHandler` — same policy as
+//     Game/ActionStateMachine.h::IAnimFrameOracle (see top of this file for the
+//     rationale: 3D rendering/motion = out of gameplay scope). A PARTIAL router for this
+//     switch (6 cases PROVEN out of 81) is provided in §7 below: Char_DispatchStateTick.
 //
-//     ///// CORRECTION FACTUELLE — Passe 4 / vague W11, front w11-combat-fsm (2026-07-16) /////
-//     « 55 handlers » (ici et en AnimationTick.cpp) était FAUX : le switch en compte 81.
-//     Preuve à l'instruction près : `cmp [ebp+var_6C], 5Fh ; switch 96 cases` @0x5727B2,
-//     puis `ja def_5727BF ; default case, cases 8,24-29,47,53,59,77-80,84` @0x5727B6
-//     => 96 valeurs (0x00..0x5F) − 15 valeurs `default` = 81 cas vivants.
-//   - Camera_UpdateCollision        0x538580 — caméra 3e personne : recalcule l'œil en
-//     maintenant le même bras (œil-cible) qu'à la frame précédente autour de la nouvelle
-//     cible (joueur local, y+10), puis corrige par collision terrain (Terrain_SweepSphere
-//     Segment)/objets (MapColl_LineOfSightObjects + MapColl_GetGroundHeight, stepping au
-//     sol). Opère sur gfx::Camera (Gfx/Camera.h) et réutilise Cam_SetLookAt(déjà écrit dans
-//     Game/CameraWarpTick.h) pour le calage final — PAS de duplication de cette fonction.
-//   - MapColl_UpdateObjectAnim      0x694A00 — anim des objets de collision de carte
-//     (sous-objets animés à 15 fps + émetteurs de particules attachés). Le "this" d'origine
-//     (objet de collision de zone) N'A PAS d'équivalent dans GameState.h (propriété du futur
-//     World/WorldMap) : modélisé ici en état AUTONOME (MapCollisionObjectAnimState), fourni
-//     par l'appelant (pas dans g_World).
+//     ///// FACTUAL CORRECTION — Pass 4 / wave W11, front w11-combat-fsm (2026-07-16) /////
+//     "55 handlers" (here and in AnimationTick.cpp) was WRONG: the switch has 81 cases.
+//     Proof down to the instruction: `cmp [ebp+var_6C], 5Fh ; switch 96 cases` @0x5727B2,
+//     then `ja def_5727BF ; default case, cases 8,24-29,47,53,59,77-80,84` @0x5727B6
+//     => 96 values (0x00..0x5F) − 15 `default` values = 81 live cases.
+//   - Camera_UpdateCollision        0x538580 — 3rd-person camera: recomputes the eye by
+//     keeping the same arm (eye-target) as the previous frame around the new
+//     target (local player, y+10), then corrects for terrain collision (Terrain_SweepSphere
+//     Segment) / objects (MapColl_LineOfSightObjects + MapColl_GetGroundHeight, ground
+//     stepping). Operates on gfx::Camera (Gfx/Camera.h) and reuses Cam_SetLookAt (already
+//     written in Game/CameraWarpTick.h) for the final placement — NO duplication of that function.
+//   - MapColl_UpdateObjectAnim      0x694A00 — animation of map collision objects
+//     (animated sub-objects at 15 fps + attached particle emitters). The original "this"
+//     (zone collision object) has NO equivalent in GameState.h (property of the future
+//     World/WorldMap): modeled here as STANDALONE state (MapCollisionObjectAnimState), supplied
+//     by the caller (not in g_World).
 //
-// HORS PÉRIMÈTRE (données d'assets 3D/motion, réseau, rendu FX — cf. même politique que
-// Game/ActionStateMachine.h et Game/InGameTickFlow.h) : exposé via interfaces "oracle"
-// (IMorphModelOracle, ICameraCollisionQueries) et hosts `std::function` opaques, EA
-// d'origine documentée à chaque point d'usage. Un hook/oracle nul dégrade proprement
-// (timer ne complète jamais / pas de correction de collision / no-op), ne bloque JAMAIS.
+// OUT OF SCOPE (3D asset/motion data, network, FX rendering — same policy as
+// Game/ActionStateMachine.h and Game/InGameTickFlow.h): exposed via "oracle" interfaces
+// (IMorphModelOracle, ICameraCollisionQueries) and opaque `std::function` hosts, original EA
+// documented at each usage site. A null hook/oracle degrades cleanly
+// (timer never completes / no collision correction / no-op), NEVER blocks.
 //
-// Autonomie : dépend de Game/GameState.h (CharAnimState, GameWorld — champ `anim` AJOUTÉ par
-// cette mission), Game/ActionStateMachine.h (ActionFsm, réutilisé tel quel), Game/MapWarp.h
-// (BeginWarpToFactionTown, réutilisé tel quel), Game/ClientRuntime.h (g_Client.Var/VarF,
-// échappatoire globals "longue traîne"), Game/CameraWarpTick.h + Gfx/Camera.h (Cam_SetLookAt,
-// réutilisé tel quel). N'inclut PAS Scene/SceneManager.h ni Net/*.
+// Self-containment: depends on Game/GameState.h (CharAnimState, GameWorld — field `anim` ADDED by
+// this mission), Game/ActionStateMachine.h (ActionFsm, reused as-is), Game/MapWarp.h
+// (BeginWarpToFactionTown, reused as-is), Game/ClientRuntime.h (g_Client.Var/VarF,
+// "long tail" globals escape hatch), Game/CameraWarpTick.h + Gfx/Camera.h (Cam_SetLookAt,
+// reused as-is). Does NOT include Scene/SceneManager.h or Net/*.
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -93,16 +93,14 @@
 
 namespace ts2::game {
 
-// =====================================================================================
 // 1. Player_UpdateLocalAnim 0x5321D0
-// =====================================================================================
 
-// Fidèle à ModelObj_GetSubObjectCount(tableAddr, 0) : nombre de sous-objets/frames d'un
-// modèle de morph identifié par son ADRESSE D'ORIGINE (unk_Bxxxxxx, éventuellement décalée
-// par 150368*modelIndex + 75184*modelVariant pour les tables paramétrées — cf. usage dans
-// Char_UpdateAnimationFrame). Donnée d'asset 3D, HORS PÉRIMÈTRE (cf. tête de fichier) :
-// l'implémentation réelle vit dans la couche rendu/assets. oracle==nullptr -> les timers
-// avancent mais ne complètent jamais (dégradation propre, cf. Duration() dans le .cpp).
+// Faithful to ModelObj_GetSubObjectCount(tableAddr, 0): number of sub-objects/frames of a
+// morph model identified by its ORIGINAL ADDRESS (unk_Bxxxxxx, possibly offset
+// by 150368*modelIndex + 75184*modelVariant for the parameterized tables — cf. usage in
+// Char_UpdateAnimationFrame). 3D asset data, OUT OF SCOPE (see top of file):
+// the real implementation lives in the render/asset layer. oracle==nullptr -> the timers
+// advance but never complete (clean degradation, cf. Duration() in the .cpp).
 class IMorphModelOracle {
 public:
     virtual ~IMorphModelOracle() = default;
@@ -110,56 +108,54 @@ public:
 };
 
 struct LocalAnimTickHost {
-    // World_LoadCurrentZoneModel((char*)dword_14A883C, reason) 0x4dd6e0 — recharge le
-    // calque de modèle de zone (mode ville/pvp/monture/etc.) quand un timer de morph se
-    // termine. Cible réelle : world::WorldMap::LoadCurrentZoneModel(int) déjà écrit
-    // (World/WorldMap.h), instance possédée par SceneManager — câblage laissé à l'agent de
-    // consolidation (host pattern, comme InGameTickFlow.h).
+    // World_LoadCurrentZoneModel((char*)dword_14A883C, reason) 0x4dd6e0 — reloads the
+    // zone model layer (town/pvp/mount/etc. mode) when a morph timer
+    // completes. Real target: world::WorldMap::LoadCurrentZoneModel(int), already written
+    // (World/WorldMap.h), instance owned by SceneManager — wiring left to the
+    // consolidation agent (host pattern, like InGameTickFlow.h).
     std::function<void(int reason)> LoadCurrentZoneModel;
-    // World_IsPointOnGround(pos) — hors périmètre (collision/hauteur de terrain).
+    // World_IsPointOnGround(pos) — out of scope (collision/terrain height).
     std::function<bool(float x, float y, float z)> IsPointOnGround;
-    // g_BgmEnabled == 1 (option utilisateur musique) + Snd_Play3D(0,100,0) si vrai — relance
-    // l'ambiance toutes les 900s (15 min). IsBgmEnabled nul -> false (pas de replay).
+    // g_BgmEnabled == 1 (user music option) + Snd_Play3D(0,100,0) if true — restarts
+    // the ambiance every 900s (15 min). IsBgmEnabled null -> false (no replay).
     std::function<bool()> IsBgmEnabled;
     std::function<void()> PlayAmbientBgm;
 };
 
-// Player_UpdateLocalAnim 0x5321D0. `dt` = a3 d'origine (delta-temps de la frame, 1/30s
-// @30 FPS). Opère UNIQUEMENT sur le joueur LOCAL (world.Self(), world.self.element pour la
-// résolution de faction) — fidèle à l'original qui n'a pas de paramètre d'entité (this =
-// singleton g_LocalPlayerSheet). Les 83 timers eux-mêmes vivent dans game::g_Client.Var/
-// VarF, PAS dans GameWorld (ce sont des globals d'origine, pas des champs par-entité) :
-// aucune modification de GameState.h nécessaire pour cette fonction.
+// Player_UpdateLocalAnim 0x5321D0. `dt` = original a3 (frame delta-time, 1/30s
+// @30 FPS). Operates ONLY on the LOCAL player (world.Self(), world.self.element for
+// faction resolution) — faithful to the original, which has no entity parameter (this =
+// singleton g_LocalPlayerSheet). The 83 timers themselves live in game::g_Client.Var/
+// VarF, NOT in GameWorld (these are original globals, not per-entity fields):
+// no modification to GameState.h needed for this function.
 void Player_UpdateLocalAnim(GameWorld& world, float dt,
                              const IMorphModelOracle* oracle, const LocalAnimTickHost& host);
 
-// =====================================================================================
 // 2. Char_UpdateAnimationFrame 0x571880
-// =====================================================================================
 
 struct CharAnimTickHost {
-    // GuildMark_RegisterName(this+40) — hors périmètre (registre de rendu de marque de
-    // guilde flottante). Déclenché quand anim.hasPendingGuildMark==true (entity+68==1).
+    // GuildMark_RegisterName(this+40) — out of scope (floating guild mark render
+    // registry). Triggered when anim.hasPendingGuildMark==true (entity+68==1).
     std::function<void()> RegisterGuildMark;
 
-    // Aura spéciale (entity+180==2160 -> tente d'attacher, cf. g_FxAuraCount/dword_17D06F4
-    // hors périmètre, propriété du futur FxAuraSystem — même tableau que
-    // Game/InGameTickFlow.h étape 10). HasFreeAuraSlot nul -> false (jamais attachée).
+    // Special aura (entity+180==2160 -> attempts to attach, cf. g_FxAuraCount/dword_17D06F4,
+    // out of scope, property of the future FxAuraSystem — same array as
+    // Game/InGameTickFlow.h step 10). HasFreeAuraSlot null -> false (never attached).
     std::function<bool()> HasFreeAuraSlot;
     std::function<void()> AttachSpecialAura; // Fx_AttachSpecialAura(this) 0x?
 
     // g_PendingStopRequest==1 && isLocalSimulation && state==Move(1) -> clear global +
-    // Net_SendOp95(&g_AutoPlayMgr, 2). GetPendingStopRequest/ClearPendingStopRequest sont
-    // des globals PARTAGÉS (pas par-entité) : l'appelant les branche sur son propre état
-    // AutoPlay (cf. Game/AutoPlaySystem.h). Nuls -> jamais déclenché.
+    // Net_SendOp95(&g_AutoPlayMgr, 2). GetPendingStopRequest/ClearPendingStopRequest are
+    // SHARED globals (not per-entity): the caller wires them to its own AutoPlay
+    // state (cf. Game/AutoPlaySystem.h). Null -> never triggered.
     std::function<bool()> GetPendingStopRequest;
     std::function<void()> ClearPendingStopRequest;
     std::function<void()> SendAutoPlayStopAck;
 };
 
-// Résultat exposé pour le SEUL bloc "détection de contact" (délégué à
-// ActionFsm::UpdateContactDetection, déjà écrit) — voir Game/ActionStateMachine.h pour la
-// sémantique complète de chaque champ.
+// Result exposed for the SINGLE "contact detection" block (delegated to
+// ActionFsm::UpdateContactDetection, already written) — see Game/ActionStateMachine.h for the
+// full semantics of each field.
 struct CharAnimTickResult {
     bool                contactFiredThisTick = false;
     CombatActionRequest lastAction{};
@@ -167,27 +163,27 @@ struct CharAnimTickResult {
     bool                pendingProjectile = false;
 };
 
-// Char_UpdateAnimationFrame 0x571880. `anim` = état persistant de l'entité (PlayerEntity::
-// anim / MonsterEntity::anim, GameState.h). `actor`/`hitOracle` = contexte combat + table
-// de frames d'événement, transmis TELS QUELS à ActionFsm::UpdateContactDetection (cf.
-// Game/ActionStateMachine.h — hitOracle peut être nullptr, dégrade proprement).
-// `isLocalSimulation` = !a2 d'origine (true = entité pilotée localement, déclenche
-// réellement les envois réseau via lastAction) ; `isSelf` = comparaison *(this+4)==
-// dword_1687238[0] d'origine (true seulement pour l'entité 0 = soi-même) ;
-// `pendingCastInterrupt` = condition externe déjà évaluée par l'appelant (g_InvDirtyEnable
-// ==1 && (g_AutoHuntFuelA>0||g_AutoHuntFuelB>0), globals hors périmètre de ce module — cf.
-// Game/ActionStateMachine.h::ActionFsm::pendingCastInterrupt). `modelOracle` = même oracle
-// que Player_UpdateLocalAnim (tables de timers FX secondaires). `stateHandler`, s'il est
-// fourni, est appelé APRÈS l'interruption de cast avec l'état COURANT (post-interruption)
-// pour faire avancer le switch terminal (0x5727BF, 81 cas asset-driven) — nul -> aucune
-// progression d'anim au-delà de ce que ce module couvre déjà (contact/interrupt/FX/
-// rotation), la FSM reste "gelée" sur son état courant.
-// L'appel de `stateHandler` avec l'état RELU après l'interruption de cast est FIDÈLE : le
-// binaire recharge *(this+244) juste avant le switch (`mov edx, [ecx+0F4h]` @0x5727A9,
-// 0xF4 = 244), en aval du bloc d'interruption 0x57275A.
-// ⚠️ CÂBLAGE (gap CTF-01/CTF-02) : ce paramètre vaut `nullptr` à l'unique site d'appel réel
-// (Scene/SceneManager.cpp:1133, 2e `nullptr` = 10e argument) -> le switch n'est JAMAIS
-// dispatché. Voir §7 (Char_DispatchStateTick) pour le routeur prêt à y être posé.
+// Char_UpdateAnimationFrame 0x571880. `anim` = the entity's persistent state (PlayerEntity::
+// anim / MonsterEntity::anim, GameState.h). `actor`/`hitOracle` = combat context + event
+// frame table, passed THROUGH UNCHANGED to ActionFsm::UpdateContactDetection (cf.
+// Game/ActionStateMachine.h — hitOracle can be nullptr, degrades cleanly).
+// `isLocalSimulation` = original !a2 (true = locally-driven entity,
+// actually triggers network sends via lastAction); `isSelf` = original *(this+4)==
+// dword_1687238[0] comparison (true only for entity 0 = self);
+// `pendingCastInterrupt` = external condition already evaluated by the caller (g_InvDirtyEnable
+// ==1 && (g_AutoHuntFuelA>0||g_AutoHuntFuelB>0), globals out of scope for this module — cf.
+// Game/ActionStateMachine.h::ActionFsm::pendingCastInterrupt). `modelOracle` = same oracle
+// as Player_UpdateLocalAnim (secondary FX timer tables). `stateHandler`, if
+// supplied, is called AFTER the cast interruption with the CURRENT (post-interruption)
+// state to advance the terminal switch (0x5727BF, 81 asset-driven cases) — null -> no
+// anim progression beyond what this module already covers (contact/interrupt/FX/
+// rotation), the FSM stays "frozen" on its current state.
+// Calling `stateHandler` with the state RE-READ after the cast interruption is FAITHFUL: the
+// binary reloads *(this+244) right before the switch (`mov edx, [ecx+0F4h]` @0x5727A9,
+// 0xF4 = 244), downstream of the interruption block 0x57275A.
+// WARNING WIRING (gap CTF-01/CTF-02): this parameter is `nullptr` at the single real call site
+// (Scene/SceneManager.cpp:1133, 2nd `nullptr` = 10th argument) -> the switch is NEVER
+// dispatched. See §7 (Char_DispatchStateTick) for the router ready to be plugged in.
 void Char_UpdateAnimationFrame(CharAnimState& anim, const CombatActorState& actor,
                                 const GameWorld& world, const IAnimFrameOracle* hitOracle,
                                 bool isLocalSimulation, bool isSelf, bool pendingCastInterrupt,
@@ -195,78 +191,74 @@ void Char_UpdateAnimationFrame(CharAnimState& anim, const CombatActorState& acto
                                 const std::function<void(CharActionState state, float dt)>& stateHandler,
                                 const CharAnimTickHost& host, CharAnimTickResult& outResult);
 
-// =====================================================================================
 // 3. Camera_UpdateCollision 0x538580
-// =====================================================================================
 
-// Interfaces de collision terrain/objets — HORS PÉRIMÈTRE (géométrie de monde, propriété
-// de World/WorldMap.*/Gfx/WorldGeometryRenderer.h, pas de Game/GameState.h). Un oracle nul
-// désactive TOUTE correction de collision (la caméra suit alors le bras précédent sans
-// jamais se rapprocher du mur/décor) — dégrade proprement, ne bloque jamais.
+// Terrain/object collision interfaces — OUT OF SCOPE (world geometry, property
+// of World/WorldMap.*/Gfx/WorldGeometryRenderer.h, not Game/GameState.h). A null oracle
+// disables ALL collision correction (the camera then follows the previous arm without
+// ever pulling in from a wall/prop) — degrades cleanly, never blocks.
 class ICameraCollisionQueries {
 public:
     virtual ~ICameraCollisionQueries() = default;
-    // Terrain_SweepSphereSegment(&from,&to,2.5,outHit) — vrai si le segment croise le
-    // terrain avant `to` ; `outHit` = point d'impact (remplace `to`).
+    // Terrain_SweepSphereSegment(&from,&to,2.5,outHit) — true if the segment intersects the
+    // terrain before `to`; `outHit` = impact point (replaces `to`).
     virtual bool SweepSphereSegment(const D3DXVECTOR3& from, const D3DXVECTOR3& to,
                                      float radius, D3DXVECTOR3& outHit) const = 0;
-    // World_IsPointBlocked(p) — vrai si p est à l'intérieur d'un solide de collision.
+    // World_IsPointBlocked(p) — true if p is inside a collision solid.
     virtual bool IsPointBlocked(const D3DXVECTOR3& p) const = 0;
-    // MapColl_LineOfSightObjects(&from,&to) — vrai si la ligne from->to nécessite le repli
-    // "ground-height stepping" ci-dessous (mobilier/mur intercepté par un objet de map).
+    // MapColl_LineOfSightObjects(&from,&to) — true if the from->to line requires the
+    // "ground-height stepping" fallback below (furniture/wall intercepted by a map object).
     virtual bool LineOfSightBlockedByObjects(const D3DXVECTOR3& from, const D3DXVECTOR3& to) const = 0;
-    // MapColl_GetGroundHeight(x,z,&out,0,0.0,0,true) — les 4 derniers arguments d'origine
-    // (index de calque/seuil de pente/flags) sont FIXES sur cet unique site d'appel, donc
-    // non paramétrés ici. Vrai si (x,,z) est obstrué à cette hauteur.
+    // MapColl_GetGroundHeight(x,z,&out,0,0.0,0,true) — the last 4 original arguments
+    // (layer index/slope threshold/flags) are FIXED at this single call site, so
+    // not parameterized here. True if (x,,z) is obstructed at that height.
     virtual bool IsGroundBlocked(float x, float z) const = 0;
 };
 
 struct CameraCollisionHost {
-    // Mode free-look (g_CamFreeLook && g_CamMode==3) : cherche l'entité dont le nom ==
-    // g_CamFollowName (Crt_Strcmp sur unk_168727C+908*i, tableau parallèle indexé par
-    // g_EntityArray — HORS PÉRIMÈTRE, propriété du futur EntityManager). Nul -> traité
-    // comme "aucune cible trouvée" (comportement fidèle : `return` anticipé du binaire).
+    // Free-look mode (g_CamFreeLook && g_CamMode==3): looks for the entity whose name ==
+    // g_CamFollowName (Crt_Strcmp over unk_168727C+908*i, array parallel to and indexed by
+    // g_EntityArray — OUT OF SCOPE, property of the future EntityManager). Null -> treated
+    // as "no target found" (faithful behavior: the binary's early `return`).
     std::function<bool(D3DXVECTOR3& outPos)> FindFreeLookFollowTarget;
-    // Net_SendCmd_251(pos) — notifie le serveur du nouveau point de suivi caméra.
+    // Net_SendCmd_251(pos) — notifies the server of the new camera follow point.
     std::function<void(const D3DXVECTOR3& pos)> SendFollowCameraUpdate;
 };
 
-// Camera_UpdateCollision 0x538580. Lit/écrit `camera` (œil/cible caméra 3e personne, cf.
-// Gfx/Camera.h) : `camera.Eye()`/`camera.Target()` = flt_1687330-dérivé/g_CameraPos-dérivé
-// de la frame PRÉCÉDENTE ; `camera.Distance()` = approximation de g_CamFollowDist (MÊME
-// convention d'approximation que Game/CameraWarpTick.h::InGame_InitCamera, cf. sa note de
-// fidélité — g_CamFollowDist n'est lu nulle part d'autre dans ClientSource à ce jour).
-// `freeLookActive`/`camMode` = g_CamFreeLook/g_CamMode (état caméra UI, PAS dans GameWorld).
-// Ne modifie PAS `camera` si le binaire aurait fait un `return` anticipé (gardes fidèles :
-// morph "boutique" 194 hors free-look ; cible free-look introuvable).
+// Camera_UpdateCollision 0x538580. Reads/writes `camera` (3rd-person camera eye/target, cf.
+// Gfx/Camera.h): `camera.Eye()`/`camera.Target()` = derived from flt_1687330/g_CameraPos of
+// the PREVIOUS frame; `camera.Distance()` = approximation of g_CamFollowDist (SAME
+// approximation convention as Game/CameraWarpTick.h::InGame_InitCamera, cf. its fidelity
+// note — g_CamFollowDist is not read anywhere else in ClientSource to date).
+// `freeLookActive`/`camMode` = g_CamFreeLook/g_CamMode (camera UI state, NOT in GameWorld).
+// Does NOT modify `camera` where the binary would have taken an early `return` (faithful
+// guards: "shop" morph 194 outside free-look; free-look target not found).
 void Camera_UpdateCollision(gfx::Camera& camera, const GameWorld& world,
                              bool freeLookActive, int camMode,
                              const ICameraCollisionQueries* collision,
                              const CameraCollisionHost& host);
 
-// =====================================================================================
 // 4. MapColl_UpdateObjectAnim 0x694A00
-// =====================================================================================
 
-// Sous-objet animé (record 36o d'origine, *(this+27) array, compte *(this+26)).
+// Animated sub-object (original 36-byte record, *(this+27) array, count *(this+26)).
 struct MapAnimSubObject {
-    int32_t modelIndex = 0; // record+0 — clé de résolution du modèle animé (hors périmètre)
-    float   frame       = 0.0f; // record+28 — position dans l'anim (frames @ 15 fps)
+    int32_t modelIndex = 0; // record+0 — resolution key for the animated model (out of scope)
+    float   frame       = 0.0f; // record+28 — position in the anim (frames @ 15 fps)
 };
 
-// Émetteur de particules (record 76o d'origine, *(this+32) array, compte *(this+31)).
+// Particle emitter (original 76-byte record, *(this+32) array, count *(this+31)).
 struct MapParticleEmitter {
-    int32_t particleDefIndex = 0; // record+0 — index dans la table de défs (hors périmètre)
-    bool    initialized      = false; // record+28 — PROPRIÉTÉ EXTERNE : jamais écrit par
-                                       // cette fonction dans le binaire (positionné ailleurs,
-                                       // au spawn de l'émetteur) ; lu seulement ici.
+    int32_t particleDefIndex = 0; // record+0 — index into the def table (out of scope)
+    bool    initialized      = false; // record+28 — EXTERNAL PROPERTY: never written by
+                                       // this function in the binary (set elsewhere,
+                                       // at emitter spawn); only read here.
 };
 
-// État autonome de l'objet de collision de carte (le "this" d'origine, PAS dans
-// game::GameWorld — propriété du futur World/WorldMap, cf. tête de fichier).
+// Standalone state for the map collision object (the original "this", NOT in
+// game::GameWorld — property of the future World/WorldMap, see top of file).
 struct MapCollisionObjectAnimState {
-    bool active = false; // *(this+1) (idx1) — validité de l'enregistrement
-    int  mode   = 0;     // *(this+2) (idx2) — doit valoir 1 pour que le tick s'exécute
+    bool active = false; // *(this+1) (idx1) — record validity
+    int  mode   = 0;     // *(this+2) (idx2) — must be 1 for the tick to run
     std::vector<MapAnimSubObject>   animObjects;
     std::vector<MapParticleEmitter> particleEmitters;
 };
@@ -274,325 +266,321 @@ struct MapCollisionObjectAnimState {
 class IMapObjectAnimOracle {
 public:
     virtual ~IMapObjectAnimOracle() = default;
-    // ModelObj frame count pour un objet de collision animé — table de modèles hors
-    // périmètre (assets), résolue via *(this+24)[modelIndex]+8 -> ...+252 dans le binaire.
+    // ModelObj frame count for an animated collision object — model table out of
+    // scope (assets), resolved via *(this+24)[modelIndex]+8 -> ...+252 in the binary.
     virtual int GetModelFrameCount(int modelIndex) const = 0;
-    // Particle_Init(defTable + 232*defIndex) — démarre l'émetteur (record pas encore
-    // `initialized`). Mutable (démarre réellement l'émetteur côté FX).
+    // Particle_Init(defTable + 232*defIndex) — starts the emitter (record not yet
+    // `initialized`). Mutates state (actually starts the emitter on the FX side).
     virtual void InitParticle(int particleDefIndex) = 0;
-    // Particle_UpdateEmit(dt, paramsA, paramsB) — hors périmètre (FX), un hook opaque par
-    // émetteur déjà initialisé (params bruts entity+4/+16 non modélisés ici).
+    // Particle_UpdateEmit(dt, paramsA, paramsB) — out of scope (FX), an opaque hook per
+    // already-initialized emitter (raw entity+4/+16 params not modeled here).
     virtual void UpdateParticle(int index, float dt) = 0;
 };
 
-// MapColl_UpdateObjectAnim 0x694A00. `dt` = a3 d'origine. Le paramètre a2 d'origine vaut
-// TOUJOURS 15.0 au seul site d'appel connu (InGameTickFlow.h, MainTick étape 4,
-// `MapColl_UpdateObjectAnim(15.0,dt)`) — figé ici en constante (kAnimFps) plutôt qu'en
-// paramètre pour coller à l'usage réel. `oracle` peut être nullptr : les sous-objets
-// avancent mais ne rebouclent jamais (frame croît sans borne) et les particules ne sont ni
-// initialisées ni mises à jour — dégradation propre.
-// IDENTITÉ DU "this" D'ORIGINE (précision apportée par audit 2026-07-14, disasm brut du site
-// d'appel 0x52c946) : `mov ecx, offset dword_14A883C` — le "this" est le MÊME global fixe
-// dword_14A883C que celui passé en premier argument à World_LoadCurrentZoneModel partout
-// dans Player_UpdateLocalAnim (0x5321D0, cf. plus haut). C'est donc un SINGLETON unique
-// (probablement le "modèle/objet de zone courante"), PAS une instance par sous-objet de
-// carte — utile si un futur World/WorldMap veut exposer une seule instance globale de
-// MapCollisionObjectAnimState plutôt qu'un tableau.
+// MapColl_UpdateObjectAnim 0x694A00. `dt` = original a3. The original a2 parameter is
+// ALWAYS 15.0 at the single known call site (InGameTickFlow.h, MainTick step 4,
+// `MapColl_UpdateObjectAnim(15.0,dt)`) — fixed here as a constant (kAnimFps) rather than a
+// parameter to match actual usage. `oracle` can be nullptr: sub-objects
+// still advance but never wrap (frame grows unbounded) and particles are neither
+// initialized nor updated — clean degradation.
+// ORIGINAL "this" IDENTITY (established by the 2026-07-14 audit, raw disasm of the call
+// site 0x52c946): `mov ecx, offset dword_14A883C` — "this" is the SAME fixed global
+// dword_14A883C passed as the first argument to World_LoadCurrentZoneModel everywhere
+// in Player_UpdateLocalAnim (0x5321D0, see above). It is therefore a single SINGLETON
+// (probably the "current zone model/object"), NOT a per-map-sub-object instance — useful if
+// a future World/WorldMap wants to expose a single global instance of
+// MapCollisionObjectAnimState instead of an array.
 void MapColl_UpdateObjectAnim(MapCollisionObjectAnimState& obj, float dt,
                                IMapObjectAnimOracle* oracle);
 
-// =====================================================================================
-// 5. FSM d'animation MONSTRE — les 9 Char_MotionTick_* + leur dispatch @0x5822D3
-//    (Passe 4 / vague W7, front motion-anim — gaps as-motion-01 / as-motion-02)
-// =====================================================================================
+// 5. MONSTER animation FSM — the 9 Char_MotionTick_* + their dispatch @0x5822D3
+//    (Pass 4 / wave W7, motion-anim front — gaps as-motion-01 / as-motion-02)
 //
-// POURQUOI CE BLOC EXISTE. Les monstres étaient dessinés avec `animType` figé à 0 (idle) et
-// une horloge GLOBALE partagée : toutes les entités animées en phase, aucune ne changeant
-// jamais d'animation. La cause racine n'était PAS le renderer mais un hook jamais assigné :
-// `EntityLifecycleTickHost::DispatchMotionTick` (Game/EntityLifecycleTick.h:187) est
-// déclaré, appelé par UpdateMonster (EntityLifecycleTick.cpp:153) ... et personne ne
-// l'implémentait — les 9 handlers étaient classés « HORS PÉRIMÈTRE ». Résultat :
-// `MonsterTickExt::motionState` / `::animFrame` ne bougeaient JAMAIS.
-// => Conséquence à connaître avant de câbler : brancher le renderer sur
-// g_MonsterTickExt[i].animFrame SANS ce portage donnerait un curseur constamment 0, donc des
-// monstres TOTALEMENT FIGÉS — strictement pire que l'horloge globale. Les deux vont ensemble.
+// WHY THIS BLOCK EXISTS. Monsters were drawn with `animType` frozen at 0 (idle) and
+// a shared GLOBAL clock: all animated entities in phase, none ever changing
+// animation. The root cause was NOT the renderer but a hook that was never assigned:
+// `EntityLifecycleTickHost::DispatchMotionTick` (Game/EntityLifecycleTick.h:187) is
+// declared, called by UpdateMonster (EntityLifecycleTick.cpp:153) ... and nobody
+// implemented it — the 9 handlers were classified "OUT OF SCOPE". Result:
+// `MonsterTickExt::motionState` / `::animFrame` NEVER moved.
+// => Consequence to keep in mind before wiring: hooking the renderer onto
+// g_MonsterTickExt[i].animFrame WITHOUT this port would give a cursor stuck at 0, i.e.
+// TOTALLY FROZEN monsters — strictly worse than the shared clock. The two must go together.
 //
-// VÉRITÉ TERRAIN (IDA, re-prouvée bloc par bloc cette session) :
-//   Char_Draw 0x5805C0 @0x580770 : animType = *((_DWORD*)this + 6)  = slot monstre +24
-//   Char_Draw 0x5805C0 @0x580828 : curseur  = *((float*)this + 7)   = slot monstre +28
-//   Char_Update 0x581E10 @0x5822D3 : switch sur CE MÊME slot+24, 9 cas — et ces 9 valeurs
-//     {0,1,3,4,5,7,8,0xC,0x13} sont EXACTEMENT le set valide de Model_GetNpcMotionSlot
-//     0x4E5960 @0x4e59a4 (preuve croisée : slot+24 EST bien l'index d'animation du dessin).
-//   Tous les handlers : `frame += dt*30`, frameCount = Model_GetMotionFrameCount 0x4E5A70
-//     (MÊME slot que le dessin -> count == palette.frameCount, cf. Gfx/MotionCache.h).
-//     Le wrap est une SOUSTRACTION UNIQUE (jamais un modulo).
+// GROUND TRUTH (IDA, re-proven block by block this session):
+//   Char_Draw 0x5805C0 @0x580770: animType = *((_DWORD*)this + 6)  = monster slot +24
+//   Char_Draw 0x5805C0 @0x580828: cursor   = *((float*)this + 7)   = monster slot +28
+//   Char_Update 0x581E10 @0x5822D3: switch on this SAME slot+24, 9 cases — and these 9 values
+//     {0,1,3,4,5,7,8,0xC,0x13} are EXACTLY the valid set of Model_GetNpcMotionSlot
+//     0x4E5960 @0x4e59a4 (cross-proof: slot+24 IS indeed the draw's animation index).
+//   All handlers: `frame += dt*30`, frameCount = Model_GetMotionFrameCount 0x4E5A70
+//     (SAME slot as the draw -> count == palette.frameCount, cf. Gfx/MotionCache.h).
+//     The wrap is a SINGLE SUBTRACTION (never a modulo).
 //
-// Correspondance état -> sémantique de fin (EA du handler, EA de la transition) :
-//   0  ToIdle    0x582D40 : frame>=count -> state=1, frame=0            @0x582d99/@0x582da5
-//   1  Loop      0x582DB0 : frame>=count -> frame -= count              @0x582e10
-//   3  MoveA     0x582E20 : wrap @0x582e80 + StepTowardTarget(vit. +384) -> arrivée/échec
+// State -> end semantics mapping (handler EA, transition EA):
+//   0  ToIdle    0x582D40: frame>=count -> state=1, frame=0            @0x582d99/@0x582da5
+//   1  Loop      0x582DB0: frame>=count -> frame -= count              @0x582e10
+//   3  MoveA     0x582E20: wrap @0x582e80 + StepTowardTarget(speed+384) -> arrival/failure
 //                           => state=1, frame=0                         @0x582ebd/@0x582ed7
-//   4  MoveB     0x582EF0 : idem MoveA, vitesse def+388                 @0x582f8d/@0x582fa7
-//   5  AttackA   0x582FC0 : frame>=count -> state=1, frame=0, +108=0    @0x583019..@0x58302b
-//   7  AttackB   0x583040 : idem AttackA                                @0x583099..@0x5830ab
-//   8  Hit       0x5830C0 : frame>=count -> state=1, frame=0            @0x583119/@0x583125
-//   0xC Knockback 0x583130 : frame>=count -> frame = count-1 (gel)      @0x583284
-//   0x13 Death   0x5832E0 : frame>=count -> frame = count-1 (gel)       @0x583345
+//   4  MoveB     0x582EF0: same as MoveA, speed def+388                 @0x582f8d/@0x582fa7
+//   5  AttackA   0x582FC0: frame>=count -> state=1, frame=0, +108=0    @0x583019..@0x58302b
+//   7  AttackB   0x583040: same as AttackA                             @0x583099..@0x5830ab
+//   8  Hit       0x5830C0: frame>=count -> state=1, frame=0            @0x583119/@0x583125
+//   0xC Knockback 0x583130: frame>=count -> frame = count-1 (freeze)   @0x583284
+//   0x13 Death   0x5832E0: frame>=count -> frame = count-1 (freeze)    @0x583345
 //
-// L'état porteur est `game::g_MonsterTickExt[monsterIndex]` (Game/EntityLifecycleTick.h) :
-// `.motionState` = slot+24, `.animFrame` = slot+28, `.attackWindupMode` = slot+108. Ces trois
-// champs EXISTENT DÉJÀ et portent les bons offsets — rien à ajouter à MonsterTickExt (fichier
-// non possédé par ce front). `MonsterEntity::anim` (GameState.h:225) n'est PAS utilisé ici :
-// c'est un CharAnimState calqué sur des offsets JOUEUR (entity+244/+248), mort pour les
-// monstres (cf. avertissement Game/AutoTargetCombatGate.h:106-112).
+// The carrier state is `game::g_MonsterTickExt[monsterIndex]` (Game/EntityLifecycleTick.h):
+// `.motionState` = slot+24, `.animFrame` = slot+28, `.attackWindupMode` = slot+108. These three
+// fields ALREADY EXIST and carry the correct offsets — nothing to add to MonsterTickExt (file
+// not owned by this front). `MonsterEntity::anim` (GameState.h:225) is NOT used here:
+// it's a CharAnimState modeled on PLAYER offsets (entity+244/+248), dead for
+// monsters (cf. warning in Game/AutoTargetCombatGate.h:106-112).
 
-// Nombre de frames d'une anim, par famille d'entité. Miroir de Model_GetMotionFrameCount
-// 0x4E5A70 (monstre) / Model_GetWeaponEffectFrameCount 0x4E5A40 (PNJ décor) : tous deux
-// résolvent le MÊME slot que le dessin, donc le count est celui de la palette de dessin.
-// Donnée d'asset (motion) => HORS PÉRIMÈTRE de Game/*, exposée en oracle — même politique que
-// IMorphModelOracle/IAnimFrameOracle. Implémenté par Scene/WorldRenderer.cpp (seul détenteur
-// du MotionCache), exposé via ts2::WorldMotionFrameCountOracle() (Scene/WorldRenderer.h).
-// Renvoie 0 si le slot ne résout pas (fichier absent/borne dépassée) — traité comme "durée
-// inconnue" par les handlers (cf. dégradation ci-dessous).
+// Number of frames of an animation, per entity family. Mirrors Model_GetMotionFrameCount
+// 0x4E5A70 (monster) / Model_GetWeaponEffectFrameCount 0x4E5A40 (zone NPC): both
+// resolve the SAME slot as the draw, so the count is that of the draw palette.
+// Asset (motion) data => OUT OF SCOPE for Game/*, exposed as an oracle — same policy as
+// IMorphModelOracle/IAnimFrameOracle. Implemented by Scene/WorldRenderer.cpp (sole owner
+// of the MotionCache), exposed via ts2::WorldMotionFrameCountOracle() (Scene/WorldRenderer.h).
+// Returns 0 if the slot doesn't resolve (missing file/out-of-bounds index) — treated as "unknown
+// duration" by the handlers (see degradation below).
 class IMotionFrameCountOracle {
 public:
     virtual ~IMotionFrameCountOracle() = default;
     // Model_GetMotionFrameCount 0x4E5A70(g_ModelMotionArray, MONSTER_INFO.kindIndexP1-1, animType).
-    // monsterDefId = MonsterEntity::body[0] (id brut, sans -1 — même convention que
-    // Game/EntityManager.cpp::ResolveMobDef ; le -1 sur kindIndexP1 est fait en interne).
+    // monsterDefId = MonsterEntity::body[0] (raw id, no -1 — same convention as
+    // Game/EntityManager.cpp::ResolveMobDef; the -1 on kindIndexP1 is applied internally).
     virtual int GetMonsterMotionFrameCount(uint32_t monsterDefId, int animType) const = 0;
     // Model_GetWeaponEffectFrameCount 0x4E5A40(g_ModelMotionArray, NpcDefRecord::fieldE-1, animType),
-    // indexé comme game::ZoneNpcs() (Game/StaticNpcLoader.h).
+    // indexed the same way as game::ZoneNpcs() (Game/StaticNpcLoader.h).
     virtual int GetZoneNpcMotionFrameCount(int zoneNpcIndex, int animType) const = 0;
 };
 
-// Dépendances des états Move (3/4) sortant du périmètre "animation" : déplacement réel de
-// l'entité contre la collision de carte. Hook nul -> cf. note de dégradation sur
+// Dependencies of the Move states (3/4) falling outside the "animation" scope: actual
+// entity displacement against map collision. Null hook -> see degradation note on
 // Monster_DispatchMotionTick.
 struct MonsterMotionTickHost {
-    // MapColl_StepTowardTarget 0x6974C0(&dword_14A88E4, this+32 /*pos*/, this+44 /*cible*/,
-    // speed, dt, &outArrived) — déplace le monstre vers sa cible. Renvoie false si le pas a
-    // ÉCHOUÉ (bloqué) ; outArrived=true quand la cible est atteinte. Les DEUX cas repassent
-    // l'état à Loop(1) dans le binaire (@0x582ebd échec, @0x582ed7 arrivée).
-    // speed = MONSTER_INFO+384 (MoveA) / +388 (MoveB) — lu par l'implémenteur du hook, qui
-    // seul a accès au record de def et à la géométrie de collision.
+    // MapColl_StepTowardTarget 0x6974C0(&dword_14A88E4, this+32 /*pos*/, this+44 /*target*/,
+    // speed, dt, &outArrived) — moves the monster toward its target. Returns false if the step
+    // FAILED (blocked); outArrived=true when the target is reached. BOTH cases revert
+    // the state to Loop(1) in the binary (@0x582ebd failure, @0x582ed7 arrival).
+    // speed = MONSTER_INFO+384 (MoveA) / +388 (MoveB) — read by the hook implementer, who
+    // alone has access to the def record and the collision geometry.
     std::function<bool(int monsterIndex, bool moveB, float dt, bool& outArrived)> StepTowardTarget;
 };
 
-// Char_Update 0x581E10, switch terminal @0x5822D3 UNIQUEMENT (les blocs amont — timers d'aura,
-// fenêtre de coup, physique de chute — sont déjà portés par Game/EntityLifecycleTick.cpp::
-// UpdateMonster, qui appelle ce dispatch en dernier via host.DispatchMotionTick).
+// Char_Update 0x581E10, terminal switch @0x5822D3 ONLY (the upstream blocks — aura timers,
+// hit window, fall physics — are already ported by Game/EntityLifecycleTick.cpp::
+// UpdateMonster, which calls this dispatch last via host.DispatchMotionTick).
 //
-// DÉGRADATION (aucun hook/oracle n'est obligatoire, rien ne bloque jamais) :
-//   - oracle nul OU frameCount<=0 : le curseur AVANCE (frame += dt*30) mais aucune borne n'est
-//     connue -> aucun wrap, aucune transition d'état émise. Sûr : on ne fabrique pas une durée.
-//   - StepTowardTarget nul (états 3/4) : on saute le déplacement ET la transition "arrivé". On
-//     NE traite SURTOUT PAS "hook absent" comme "result==0 -> state=1", ce qui ferait sortir de
-//     Move instantanément à chaque frame (le monstre ne marcherait jamais). Le wrap de frame,
-//     lui, reste appliqué (il ne dépend pas du déplacement).
-// No-op si l'index est hors bornes, si le monstre est inactif, ou si motionState n'est pas
-// l'un des 9 cas du switch (`default: return` du binaire @0x5822d3 — fidèle).
+// DEGRADATION (no hook/oracle is mandatory, nothing ever blocks):
+//   - null oracle OR frameCount<=0: the cursor ADVANCES (frame += dt*30) but no bound is
+//     known -> no wrap, no state transition emitted. Safe: we don't fabricate a duration.
+//   - null StepTowardTarget (states 3/4): the displacement AND the "arrived" transition are
+//     skipped. We deliberately do NOT treat "hook absent" as "result==0 -> state=1", which
+//     would kick the entity out of Move instantly every frame (the monster would never walk).
+//     The frame wrap, however, is still applied (it doesn't depend on movement).
+// No-op if the index is out of bounds, if the monster is inactive, or if motionState is not
+// one of the 9 switch cases (binary's `default: return` @0x5822d3 — faithful).
 void Monster_DispatchMotionTick(GameWorld& world, int monsterIndex, float dt,
                                  const IMotionFrameCountOracle* oracle,
                                  const MonsterMotionTickHost& host);
 
-// Vrai dès qu'un Monster_DispatchMotionTick a réellement été exécuté au moins une fois depuis
-// le lancement. GARDE DE NON-RÉGRESSION DE CÂBLAGE, PAS un comportement du binaire : elle
-// permet à Scene/WorldRenderer.cpp de ne consommer le curseur par-entité QUE s'il est
-// réellement alimenté, et de conserver sinon l'ancien repli par horloge globale (animé mais en
-// phase) au lieu de figer tous les monstres à la frame 0 — le scénario de régression décrit en
-// tête de ce bloc, qui surviendrait si le câblage de DispatchMotionTick était oublié. À retirer
-// le jour où le câblage est verrouillé par un test.
+// True as soon as a Monster_DispatchMotionTick has actually run at least once since
+// startup. WIRING NON-REGRESSION GUARD, NOT a binary behavior: it lets
+// Scene/WorldRenderer.cpp consume the per-entity cursor ONLY once it is actually
+// fed, and otherwise keep the old global-clock fallback (animated but in
+// phase) instead of freezing every monster at frame 0 — the regression scenario described at
+// the top of this block, which would occur if wiring DispatchMotionTick were forgotten. To be
+// removed once the wiring is locked in by a test.
 bool Monster_MotionTickIsWired();
 
-// =====================================================================================
-// 6. Animation des PNJ DE DÉCOR — Npc_RenderSlotTick 0x5803A0 (+ _Loop/_Once)
-//    (Passe 4 / vague W7, front motion-anim — gaps as-motion-01 / as-motion-02)
-// =====================================================================================
+// 6. Zone-decor NPC animation — Npc_RenderSlotTick 0x5803A0 (+ _Loop/_Once)
+//    (Pass 4 / wave W7, motion-anim front — gaps as-motion-01 / as-motion-02)
 //
-// VÉRITÉ TERRAIN (IDA, re-prouvée cette session). Slot d'origine = &g_NpcRenderArray[88*i]
-// (0x1764D14, stride 88), layout concordant sur 3 fonctions (cGameData_LoadZoneNpcInfo
-// 0x5578E0, Npc_DrawMesh 0x57FF00, Npc_RenderSlotTick 0x5803A0) :
-//     +0  ptr def (*(def+1324) = kindIndex+1)   +4  actif
-//     +12 animType/mode (0=Loop, 1=Once)        +16 curseur
-//     +20/24/28 pos                             +44 angle affiché   +80 angle baseline
-//   Npc_DrawMesh @0x57ffa0 : Model_GetNpcMeshSlot(..., a3 = *((_DWORD*)this + 3)) -> +12
-//   Npc_DrawMesh @0x57fff1 : SObject_DrawEx(..., animTime = *(this + 4), ...)     -> +16
-//   Npc_RenderSlotTick_Loop 0x580400 : +16 += dt*30 @0x58043e ; wrap par soustraction @0x58045f ;
-//     si Math_Dist3D(pos, flt_1687330 /*joueur local*/) > 400 -> +44 = +80 @0x58048e
-//   Npc_RenderSlotTick_Once 0x5804A0 : frame>=count -> +12 = 0, +16 = 0 @0x5804f8/@0x580504
+// GROUND TRUTH (IDA, re-proven this session). Original slot = &g_NpcRenderArray[88*i]
+// (0x1764D14, stride 88), layout consistent across 3 functions (cGameData_LoadZoneNpcInfo
+// 0x5578E0, Npc_DrawMesh 0x57FF00, Npc_RenderSlotTick 0x5803A0):
+//     +0  def ptr (*(def+1324) = kindIndex+1)   +4  active
+//     +12 animType/mode (0=Loop, 1=Once)        +16 cursor
+//     +20/24/28 pos                             +44 displayed angle   +80 baseline angle
+//   Npc_DrawMesh @0x57ffa0: Model_GetNpcMeshSlot(..., a3 = *((_DWORD*)this + 3)) -> +12
+//   Npc_DrawMesh @0x57fff1: SObject_DrawEx(..., animTime = *(this + 4), ...)     -> +16
+//   Npc_RenderSlotTick_Loop 0x580400: +16 += dt*30 @0x58043e; wrap by subtraction @0x58045f;
+//     if Math_Dist3D(pos, flt_1687330 /*local player*/) > 400 -> +44 = +80 @0x58048e
+//   Npc_RenderSlotTick_Once 0x5804A0: frame>=count -> +12 = 0, +16 = 0 @0x5804f8/@0x580504
 //
-// QUI ÉCRIT animType=1 (trouvé — le système est bien VIVANT) : UI_NpcWin_Open 0x5DB530, à
-// l'ouverture de la fenêtre de dialogue d'un PNJ, @0x5dc019..0x5dc0a8 :
+// WHO WRITES animType=1 (found — the system is indeed ALIVE): UI_NpcWin_Open 0x5DB530, when
+// a NPC's dialogue window opens, @0x5dc019..0x5dc0a8:
 //     if (slot+12 != 1) { slot+12 = 1; slot+16 = 0.0;                      @0x5dc026/@0x5dc032
 //         if (kind not in {63,113,213,313,7})
-//             slot+44 = Math_AngleBetween2D(slot+20, slot+28, joueur.x, joueur.z);  @0x5dc0a2
+//             slot+44 = Math_AngleBetween2D(slot+20, slot+28, player.x, player.z);  @0x5dc0a2
 //         Fx_MeleeSwingUpdate(slot); }                                     @0x5dc0a8
-// Soit : animType ∈ {0,1} — 0 = idle bouclé, 1 = animation « salut » jouée UNE FOIS quand on
-// lui parle (+ le PNJ se tourne vers le joueur, sauf 5 kinds), puis _Once le remet à 0. Le
-// reset baseline au-delà de 400 u ferme la boucle (il reprend son cap d'origine si on s'éloigne).
+// I.e.: animType ∈ {0,1} — 0 = looped idle, 1 = "greeting" animation played ONCE when
+// talked to (+ the NPC turns to face the player, except 5 kinds), then _Once resets it to 0. The
+// baseline reset beyond 400 units closes the loop (it resumes its original heading once you move away).
 //
-// PIÈGE ÉVITÉ (à ne pas refaire) : `xrefs_to(0x1764D20)` (= slot+12) renvoie 0 xref. En
-// conclure « personne n'écrit animType » serait FAUX — les écritures sont relatives à un
-// registre (`mov [eax+0Ch], 1`), donc INVISIBLES en xref absolue. Même piège que celui déjà
-// documenté pour flt_18C53C0 (Scene/WorldRenderer.h:269).
+// PITFALL AVOIDED (do not repeat): `xrefs_to(0x1764D20)` (= slot+12) returns 0 xrefs. To
+// conclude "nobody writes animType" would be WRONG — the writes are register-relative
+// (`mov [eax+0Ch], 1`), hence INVISIBLE to absolute xref lookup. Same pitfall already
+// documented for flt_18C53C0 (Scene/WorldRenderer.h:269).
 //
-// OÙ VIT L'ÉTAT — PLUS DE VECTEUR PARALLÈLE (adaptation W7 « npc-array-unify »). La rédaction
-// initiale de ce front portait un `ZoneNpcAnimExt` parallèle « parce que StaticNpcSlot n'avait NI
-// animType NI curseur ». Cette prémisse est CADUQUE : la vague W7 a fusionné les DEUX modélisations
-// du pool d'origine dans `GameWorld::npcRenderEntries` (Game/GameState.h, struct NpcRenderEntry)
-// dont le layout PROUVÉ porte DÉJÀ, aux offsets d'origine du slot g_NpcRenderArray, tous les
-// champs de ce tick :
-//     +12 mode (animType, 0=Loop / 1=Once)      +16 frameAcc (curseur)
-//     +44 angle (affiché, muté par le tick)     +80 angleBase (baseline)
-// On tick donc DIRECTEMENT ces champs natifs (fidèle à Npc_RenderSlotTick 0x5803A0 qui opère
-// EXACTEMENT sur eux), au lieu de dupliquer l'état — c'est précisément l'anti-doublon que W7 a
-// établi (`StaticNpcSlot` est désormais un alias de `NpcRenderEntry`, `kindId` supprimé). Le
-// chargeur (cGameData_LoadZoneNpcInfo 0x5578E0) initialise déjà mode=0 @0x55797f, frameAcc=0
-// @0x557995, angle=angleBase @0x557a42/@0x557a62 : aucun état d'init à porter ici (l'ancien
-// ZoneNpc_ResetAnimExt disparaît avec le vecteur).
+// WHERE THE STATE LIVES — NO MORE PARALLEL VECTOR (W7 "npc-array-unify" adaptation). The
+// initial writeup of this front carried a parallel `ZoneNpcAnimExt` "because StaticNpcSlot had
+// NEITHER animType NOR cursor". That premise is now OBSOLETE: wave W7 merged the TWO models of
+// the original pool into `GameWorld::npcRenderEntries` (Game/GameState.h, struct NpcRenderEntry),
+// whose PROVEN layout ALREADY carries, at the original g_NpcRenderArray slot offsets, every
+// field this tick needs:
+//     +12 mode (animType, 0=Loop / 1=Once)      +16 frameAcc (cursor)
+//     +44 angle (displayed, mutated by the tick) +80 angleBase (baseline)
+// The tick therefore operates DIRECTLY on these native fields (faithful to Npc_RenderSlotTick
+// 0x5803A0, which operates on EXACTLY the same ones), instead of duplicating state — this is
+// precisely the de-duplication W7 established (`StaticNpcSlot` is now an alias of
+// `NpcRenderEntry`, `kindId` removed). The loader (cGameData_LoadZoneNpcInfo 0x5578E0) already
+// initializes mode=0 @0x55797f, frameAcc=0 @0x557995, angle=angleBase @0x557a42/@0x557a62: no
+// init state left to port here (the old ZoneNpc_ResetAnimExt disappears along with the vector).
 //
-// DOUBLON DE TICK RESTANT (à signaler, hors périmètre — non tranché). Ce même pool a un SECOND
-// portage de 0x5803A0 déjà câblé : Game/GroundAuraWorldObjectTick.h::TickGroundItemEffect
-// (InGameTickFlow étape 7, Scene/SceneManager.cpp). Mais il écrit une EXTENSION PARALLÈLE MORTE
-// (`g_GroundItemTickExt`, oracle nul) que PERSONNE ne lit pour le rendu -> il n'anime rien à
-// l'écran. `ZoneNpc_TickAnim` ci-dessous écrit les champs NATIFS que le renderer lit : c'est LUI
-// qui ferme le gap. Les deux écrivent des champs DISJOINTS (natifs vs ext morte) -> pas de
-// double-avance du même curseur ; le doublon reste néanmoins une dette de fidélité (le binaire
-// tick 0x5803A0 une seule fois par slot/frame). Ce front ne retire pas TickGroundItemEffect
-// (GroundAuraWorldObjectTick / SceneManager non possédés) — cf. rapport.
+// REMAINING TICK DUPLICATE (flagged, out of scope — unresolved). This same pool already has a
+// SECOND port of 0x5803A0 wired up: Game/GroundAuraWorldObjectTick.h::TickGroundItemEffect
+// (InGameTickFlow step 7, Scene/SceneManager.cpp). But it writes a DEAD PARALLEL EXTENSION
+// (`g_GroundItemTickExt`, null oracle) that NOBODY reads for rendering -> it animates nothing
+// on screen. `ZoneNpc_TickAnim` below writes the NATIVE fields the renderer reads: it is THE ONE
+// that closes the gap. The two write DISJOINT fields (native vs. dead ext) -> no
+// double-advance of the same cursor; the duplicate remains a fidelity debt nonetheless (the
+// binary ticks 0x5803A0 exactly once per slot/frame). This front does not remove
+// TickGroundItemEffect (GroundAuraWorldObjectTick / SceneManager not owned by it) — see report.
 
-// Npc_RenderSlotTick 0x5803A0 pour TOUS les slots ACTIFS de g_World.npcRenderEntries (pool unique
-// W7), une fois par frame. Dispatch fidèle @0x5803ba : slot inactif (`active`==false, garde
-// @0x5803ac) -> no-op ; mode==0 -> _Loop (0x580400) ; mode==1 -> _Once (0x5804A0) ; toute autre
-// valeur -> no-op (le binaire ne teste que ces deux-là). oracle nul ou frameCount<=0 : le curseur
-// (frameAcc) avance mais ne reboucle/ne complète jamais (dégradation propre, cohérente avec
+// Npc_RenderSlotTick 0x5803A0 for ALL ACTIVE slots of g_World.npcRenderEntries (single pool,
+// W7), once per frame. Faithful dispatch @0x5803ba: inactive slot (`active`==false, guard
+// @0x5803ac) -> no-op; mode==0 -> _Loop (0x580400); mode==1 -> _Once (0x5804A0); any other
+// value -> no-op (the binary only tests these two). Null oracle or frameCount<=0: the cursor
+// (frameAcc) advances but never wraps/completes (clean degradation, consistent with
 // Monster_DispatchMotionTick).
-// À CÂBLER (hors de mes fichiers, bloquant pour as-motion-01/02 côté PNJ) : appeler UNE FOIS PAR
-// FRAME dans le tick InGame — Scene/SceneManager.cpp, juste après game::InGameTickFlow_Update
-// (~ligne 1151) — avec l'oracle ts2::WorldMotionFrameCountOracle(). Sans ce câblage frameAcc reste
-// 0 et le renderer garde le repli horloge globale (cf. ZoneNpc_AnimTickIsWired ci-dessous).
+// TO WIRE (outside my files, blocking for as-motion-01/02 on the NPC side): call ONCE PER
+// FRAME in the InGame tick — Scene/SceneManager.cpp, right after game::InGameTickFlow_Update
+// (~line 1151) — with the oracle ts2::WorldMotionFrameCountOracle(). Without this wiring frameAcc
+// stays 0 and the renderer keeps the global-clock fallback (see ZoneNpc_AnimTickIsWired below).
 void ZoneNpc_TickAnim(float dt, const IMotionFrameCountOracle* oracle);
 
-// Pendant exact de Monster_MotionTickIsWired() pour les PNJ de décor : vrai dès qu'un
-// ZoneNpc_TickAnim a réellement tourné. MÊME garde de non-régression, MÊME justification —
-// tant que Scene/SceneManager.cpp n'appelle pas ZoneNpc_TickAnim par frame, le curseur reste
-// à 0 et consommer `cursor` figerait les PNJ de décor sur la 1re frame de leur idle, alors
-// qu'ils étaient au moins animés (en phase) par l'ancien repli SampleByGameTime. PAS un
-// comportement du binaire : à retirer quand le câblage est verrouillé par un test.
+// Exact counterpart of Monster_MotionTickIsWired() for zone-decor NPCs: true as soon as a
+// ZoneNpc_TickAnim has actually run. SAME non-regression guard, SAME rationale —
+// as long as Scene/SceneManager.cpp does not call ZoneNpc_TickAnim per frame, the cursor stays
+// at 0 and consuming `cursor` would freeze zone NPCs on the 1st frame of their idle, whereas
+// they were at least animated (in phase) by the old SampleByGameTime fallback. NOT a
+// binary behavior: to be removed once the wiring is locked in by a test.
 bool ZoneNpc_AnimTickIsWired();
 
-// UI_NpcWin_Open 0x5DB530 @0x5dc019..0x5dc0a8 — à appeler à l'OUVERTURE de la fenêtre de dialogue
-// d'un PNJ de décor. Mute DIRECTEMENT le slot natif g_World.npcRenderEntries[zoneNpcIndex] (index
-// dans le pool unique = index de game::ZoneNpcs()). Idempotent : ne fait rien si mode vaut déjà 1
-// (garde @0x5dc01d, fidèle).
-// `playerX/playerZ` = flt_1687330/flt_1687338 (position du joueur local) — le PNJ se tourne vers
-// le joueur (angle=+44) SAUF si son NpcDefRecord::id ∈ {63,113,213,313,7} (@0x5dc03a..0x5dc06b).
-// NON CÂBLÉ à ce jour (l'UI NpcDialog appartient à une vague voisine) -> mode reste 0 : c'est
-// FIDÈLE (un PNJ à qui personne ne parle boucle son idle), pas un bug.
-// NOTE : Fx_MeleeSwingUpdate(slot) 0x57FE90 (@0x5dc0a8, son positionnel) n'est PAS reproduit ici —
-// hors périmètre audio/FX de ce front. TODO [ancre 0x57FE90].
+// UI_NpcWin_Open 0x5DB530 @0x5dc019..0x5dc0a8 — to be called when a zone-decor NPC's dialogue
+// window OPENS. Mutates DIRECTLY the native slot g_World.npcRenderEntries[zoneNpcIndex] (index
+// into the single pool = index of game::ZoneNpcs()). Idempotent: does nothing if mode is already 1
+// (guard @0x5dc01d, faithful).
+// `playerX/playerZ` = flt_1687330/flt_1687338 (local player position) — the NPC turns to face
+// the player (angle=+44) UNLESS its NpcDefRecord::id ∈ {63,113,213,313,7} (@0x5dc03a..0x5dc06b).
+// NOT WIRED to date (the NpcDialog UI belongs to a neighboring wave) -> mode stays 0: this is
+// FAITHFUL (an NPC nobody talks to loops its idle), not a bug.
+// NOTE: Fx_MeleeSwingUpdate(slot) 0x57FE90 (@0x5dc0a8, positional sound) is NOT reproduced here —
+// out of scope for this front's audio/FX. TODO [anchor 0x57FE90].
 void ZoneNpc_OnDialogueOpen(int zoneNpcIndex, float playerX, float playerZ);
 
-// =====================================================================================
-// 7. Routeur PARTIEL du switch terminal JOUEUR — Char_UpdateAnimationFrame 0x571880,
-//    switch @0x5727BF (Passe 4 / vague W11, front w11-combat-fsm — gap CTF-02)
-// =====================================================================================
+// 7. PARTIAL router for the terminal PLAYER switch — Char_UpdateAnimationFrame 0x571880,
+//    switch @0x5727BF (Pass 4 / wave W11, front w11-combat-fsm — gap CTF-02)
 //
-// POURQUOI CE BLOC EXISTE. Game/ActionStateMachine.cpp porte 4 primitives de tick d'état
-// (TickTimedState / TickCastState / TickGuardBegin / TickGuardLoop) écrites, ancrées EA par
-// EA... et que PERSONNE N'APPELLE (grep exhaustif de ClientSource : 1 seule occurrence
-// chacune = leur propre définition). C'est le défaut « code juste que personne n'appelle ».
-// Le chemin binaire correspondant est VIVANT et atteignable par le joueur — `reaches`
-// (WinMain 0x4609C0 -> Char_CastAnimTick_5762F0 0x5762F0) = true, profondeur 5, non tronqué :
+// WHY THIS BLOCK EXISTS. Game/ActionStateMachine.cpp carries 4 state-tick primitives
+// (TickTimedState / TickCastState / TickGuardBegin / TickGuardLoop), written, anchored EA by
+// EA... and that NOBODY CALLS (exhaustive grep of ClientSource: 1 single occurrence
+// each = their own definition). This is the "correct code that nobody calls" defect.
+// The corresponding binary path is LIVE and reachable by the player — `reaches`
+// (WinMain 0x4609C0 -> Char_CastAnimTick_5762F0 0x5762F0) = true, depth 5, not truncated:
 //     WinMain 0x4609C0 -> App_FrameTick 0x4625D0 -> cSceneMgr_Update 0x517BF0
 //                      -> Scene_InGameUpdate 0x52C600 -> Char_UpdateAnimationFrame 0x571880
 //                      -> 0x5762F0
-// => la règle « une fonction MORTE du binaire doit rester morte » NE s'applique PAS ici.
+// => the rule "a DEAD binary function should stay dead" does NOT apply here.
 //
-// COUVERTURE : 6 cas PROUVÉS sur 81. Chacune des 6 fonctions d'origine ci-dessous a
-// EXACTEMENT UN appelant dans tout le binaire (`xrefs_to` -> xref_count == 1), et cet
-// appelant est à chaque fois ce switch — la correspondance case -> primitive est donc
-// bijective et sans ambiguïté. Les libellés de case sont ceux d'IDA elle-même
-// (`jumptable 005727BF case N`), relus cette session, pas une déduction :
+// COVERAGE: 6 cases PROVEN out of 81. Each of the 6 original functions below has
+// EXACTLY ONE caller in the whole binary (`xrefs_to` -> xref_count == 1), and that
+// caller is always this switch — the case -> primitive mapping is therefore
+// bijective and unambiguous. The case labels are IDA's own
+// (`jumptable 005727BF case N`), reread this session, not a deduction:
 //     case 4  @0x572834 -> Char_AnimEndToIdle_5761A0   0x5761A0  -> TickTimedState(-> Move)
 //     case 5  @0x57284C -> Char_CastAnimTick_5762F0    0x5762F0  -> TickCastState
-//     case 6  @0x572864 -> Char_CastAnimTick_5764D0    0x5764D0  -> TickCastState (corps identique)
-//     case 7  @0x57287C -> Char_CastAnimTick_5766B0    0x5766B0  -> TickCastState (corps identique)
+//     case 6  @0x572864 -> Char_CastAnimTick_5764D0    0x5764D0  -> TickCastState (identical body)
+//     case 7  @0x57287C -> Char_CastAnimTick_5766B0    0x5766B0  -> TickCastState (identical body)
 //     case 91 @0x572EEE -> Char_ActionTick_GuardBegin  0x57F260  -> TickGuardBegin
 //     case 92 @0x572F03 -> Char_ActionTick_GuardLoop   0x57F410  -> TickGuardLoop
-// Les 75 autres cas -> `default:` no-op EXPLICITE (cf. TODO dans le .cpp). Ce n'est PAS le
-// `default` du binaire (lui n'a que 15 valeurs muettes) : c'est l'aveu que ces cas n'ont pas
-// encore de primitive portée. Ils restent donc gelés, exactement comme aujourd'hui.
+// The other 75 cases -> explicit `default:` no-op (cf. TODO in the .cpp). This is NOT the
+// binary's `default` (which only has 15 silent values): it's an admission that these cases don't
+// yet have a ported primitive. They therefore stay frozen, exactly as today.
 //
-// DÉGRADATION (aucun hook n'est obligatoire, rien ne bloque jamais) — MÊME politique que
-// Monster_DispatchMotionTick (§5) et MorphDuration : ON NE FABRIQUE JAMAIS UNE DURÉE.
-//   - GetMotionFrameCount nul OU count<=0 : durée « inconnue » -> le curseur AVANCE mais
-//     aucune transition n'est émise (les familles timed/guard tournent sans jamais finir).
-//   - GetCastRateWithinBounds nul : le taux d'arme est INCONNU. Or c'est un MULTIPLICATEUR
-//     du pas de frame (et non une borne) : faute de valeur, le curseur de cast N'AVANCE PAS.
-//     Asymétrie ASSUMÉE avec le cas ci-dessus, et pour la même raison (ne rien inventer) —
-//     l'état de cast reste gelé, c'est-à-dire le comportement actuel : aucune régression.
+// DEGRADATION (no hook is mandatory, nothing ever blocks) — SAME policy as
+// Monster_DispatchMotionTick (§5) and MorphDuration: WE NEVER FABRICATE A DURATION.
+//   - null GetMotionFrameCount OR count<=0: "unknown" duration -> the cursor ADVANCES but
+//     no transition is emitted (the timed/guard families run without ever finishing).
+//   - null GetCastRateWithinBounds: the weapon rate is UNKNOWN. Since it's a MULTIPLIER
+//     of the frame step (not a bound), the cast cursor does NOT advance for lack of a value.
+//     Asymmetry DELIBERATE with the case above, and for the same reason (fabricate nothing) —
+//     the cast state stays frozen, i.e. the current behavior: no regression.
 struct CharStateTickHost {
-    // PcModel_ResolveSlotAndApply 0x4E5A00 -> NOMBRE DE FRAMES de l'anim courante. Appelée en
-    // TÊTE des 4 handlers, avant l'avance de frame (@0x5761AC/@0x5762FC/@0x57F26C/@0x57F41C).
-    // Arguments d'origine (identiques dans les 4) :
+    // PcModel_ResolveSlotAndApply 0x4E5A00 -> the NUMBER OF FRAMES of the current anim. Called at
+    // the TOP of the 4 handlers, before the frame advance (@0x5761AC/@0x5762FC/@0x57F26C/@0x57F41C).
+    // Original arguments (identical across all 4):
     //     PcModel_ResolveSlotAndApply(g_ModelMotionArray, this+92 /*modelIndex*/,
     //         this+96 /*modelVariant*/, this+240 /*animSlot*/, this+244 /*state*/,
     //         this+108, this+112, (*(this+576) ? 0 : *(this+220)), a2 == 0)
-    // NB : le 8e argument reproduit EXACTEMENT l'idiome `altWeaponSet ? 0 : weaponAnimSlot`
-    // déjà utilisé pour `altIndex` dans ActionFsm::UpdateContactDetection — recoupement
-    // indépendant qui valide les deux lectures.
-    // ⚠️ TODO [ancre 0x4E5A00] : `this+240` (animSlot) et `this+108`/`this+112` N'ONT PAS de
-    // champ porteur dans game::CharAnimState (Game/GameState.h — hors périmètre de ce front).
-    // L'implémenteur du hook ne peut donc PAS reconstituer l'appel d'origine à l'identique ;
-    // relation prouvée pour combler +240 le jour où le champ existe : +240 == 2 * weaponClass
-    // (cf. @0x57629B et Game/ActionStateMachine.cpp::TickTimedState). Renvoyer <=0 tant que
-    // le slot ne résout pas -> traité comme « durée inconnue » (cf. dégradation ci-dessus).
+    // NOTE: the 8th argument reproduces EXACTLY the `altWeaponSet ? 0 : weaponAnimSlot`
+    // idiom already used for `altIndex` in ActionFsm::UpdateContactDetection — an
+    // independent cross-check validating both readings.
+    // WARNING TODO [anchor 0x4E5A00]: `this+240` (animSlot) and `this+108`/`this+112` have NO
+    // carrier field in game::CharAnimState (Game/GameState.h — out of scope for this front).
+    // The hook implementer therefore CANNOT reconstruct the original call identically;
+    // relation proven to fill in +240 once the field exists: +240 == 2 * weaponClass
+    // (cf. @0x57629B and Game/ActionStateMachine.cpp::TickTimedState). Return <=0 as long as
+    // the slot doesn't resolve -> treated as "unknown duration" (see degradation above).
     std::function<int(const CharAnimState& anim, bool isLocalSimulation)> GetMotionFrameCount;
 
-    // Char_CalcWeaponRatePct 0x4CD900(this+328, this+116) @0x5763BE, puis test des bornes
-    // OUVERTES @0x5763FA : `v6 > Char_CalcAnimBoundMin99(this, this+328)
+    // Char_CalcWeaponRatePct 0x4CD900(this+328, this+116) @0x5763BE, then open-bound test
+    // @0x5763FA: `v6 > Char_CalcAnimBoundMin99(this, this+328)
     //                    && v6 < Char_CalcAnimBoundMax121(this, this+328)`.
-    // Renvoie true si le taux est dans les bornes (le curseur de cast avance alors de
-    // dt*rate*0.3), et écrit le taux dans outRatePct. Utilisé UNIQUEMENT par les cas 5/6/7.
-    // ⚠️ TODO [ancres 0x4CD900 / 0x57FB30 / 0x57FBB0] : aucune des trois n'est portée pour une
-    // entité ARBITRAIRE. Game/StatFormulas.h:71 porte bien CalcWeaponRatePct, mais avec la
-    // signature `(const SelfState&, const GameDatabases&)` = SOI uniquement, alors que le
-    // binaire la paramètre par entité (this+328, this+116). Les deux bornes se décompilent en
-    // `floor(GemStat_WeaponRateFactor(*(entity+144)) * base)` avec base = 99.0 (0x57FB30) /
-    // 121.0 (0x57FBB0), HALVÉE si `*(entity+428) > 0` (@0x57FB49 / @0x57FBC9).
+    // Returns true if the rate is within bounds (the cast cursor then advances by
+    // dt*rate*0.3), and writes the rate into outRatePct. Used ONLY by cases 5/6/7.
+    // WARNING TODO [anchors 0x4CD900 / 0x57FB30 / 0x57FBB0]: none of the three is ported for an
+    // ARBITRARY entity. Game/StatFormulas.h:71 does port CalcWeaponRatePct, but with the
+    // signature `(const SelfState&, const GameDatabases&)` = SELF only, whereas the
+    // binary parameterizes it per entity (this+328, this+116). Both bounds decompile to
+    // `floor(GemStat_WeaponRateFactor(*(entity+144)) * base)` with base = 99.0 (0x57FB30) /
+    // 121.0 (0x57FBB0), HALVED if `*(entity+428) > 0` (@0x57FB49 / @0x57FBC9).
     std::function<bool(const CharAnimState& anim, double& outRatePct)> GetCastRateWithinBounds;
 };
 
-// Routeur du switch terminal @0x5727BF, à poser dans le paramètre `stateHandler` de
-// Char_UpdateAnimationFrame (§2). `state` = état COURANT relu après l'interruption de cast
-// (c'est ce que fournit déjà Char_UpdateAnimationFrame). `anim` est muté en place (state /
-// animFrame / guardSubstate / hitCheckActive). `isLocalSimulation` = !a2 d'origine, propagé
-// jusqu'aux primitives car il GARDE des transitions (cf. TickGuardBegin : le saut
-// GuardLoop->GuardEnd est imbriqué dans `if (!a4)` @0x57F371).
-// No-op pour les 75 cas non couverts (cf. TODO du .cpp) et pour les 15 valeurs `default`
-// du binaire (8 ; 24-29 ; 47 ; 53 ; 59 ; 77-80 ; 84) — fidèle pour ces dernières.
+// Router for the terminal switch @0x5727BF, meant to be plugged into the `stateHandler`
+// parameter of Char_UpdateAnimationFrame (§2). `state` = the CURRENT state re-read after the
+// cast interruption (which is what Char_UpdateAnimationFrame already supplies). `anim` is
+// mutated in place (state / animFrame / guardSubstate / hitCheckActive). `isLocalSimulation` =
+// original !a2, propagated all the way down to the primitives since it GUARDS transitions (cf.
+// TickGuardBegin: the GuardLoop->GuardEnd jump is nested inside
+// `if (!a4)` @0x57F371).
+// No-op for the 75 uncovered cases (cf. TODO in the .cpp) and for the 15 `default`
+// values of the binary (8; 24-29; 47; 53; 59; 77-80; 84) — faithful for the latter.
 //
-// À CÂBLER (HORS DE MES FICHIERS — front voisin, cf. rapport W11) :
-//   Scene/SceneManager.cpp:1133, 10e argument (2e `nullptr`) de game::Char_UpdateAnimationFrame,
-//   dans la lambda host.UpdateEntityAnimFrame ouverte :1109. Remplacer ce `nullptr` par :
+// TO WIRE (OUTSIDE MY FILES — neighboring front, see W11 report):
+//   Scene/SceneManager.cpp:1133, 10th argument (2nd `nullptr`) of game::Char_UpdateAnimationFrame,
+//   in the open lambda host.UpdateEntityAnimFrame :1109. Replace this `nullptr` with:
 //       [&p, isSelf](game::CharActionState st, float sdt) {
 //           game::Char_DispatchStateTick(p.anim, st, sdt, isSelf, s_charStateHost);
 //       }
-//   (`s_charStateHost` = un game::CharStateTickHost ; le laisser DÉFAUT est légitime et sans
-//   régression — cf. dégradation ci-dessus.) Tant que ce `nullptr` reste en place, ce routeur
-//   n'est appelé par personne : CTF-02 n'est PAS clos, il est seulement déplacé d'un cran.
+//   (`s_charStateHost` = a game::CharStateTickHost; leaving it DEFAULT is legitimate and without
+//   regression — see degradation above.) As long as this `nullptr` stays in place, this router
+//   is called by nobody: CTF-02 is NOT closed, it is merely moved one step over.
 void Char_DispatchStateTick(CharAnimState& anim, CharActionState state, float dt,
                              bool isLocalSimulation, const CharStateTickHost& host);
 
-// Pendant exact de Monster_MotionTickIsWired()/ZoneNpc_AnimTickIsWired() pour la FSM JOUEUR :
-// vrai dès qu'un Char_DispatchStateTick a réellement tourné au moins une fois. GARDE DE
-// NON-RÉGRESSION DE CÂBLAGE, PAS un comportement du binaire — elle permet à un consommateur
-// (p. ex. Gfx/PlayerPaperdoll.cpp:20-23, qui échantillonne aujourd'hui par horloge globale via
-// MotionCache::SampleByGameTime) de ne basculer sur CharAnimState::animFrame QUE s'il est
-// réellement alimenté, au lieu de figer tous les joueurs à la frame 0. Cf. l'aveu de gel
-// documenté en Gfx/MotionCache.h:90-95. À retirer quand le câblage est verrouillé par un test.
+// Exact counterpart of Monster_MotionTickIsWired()/ZoneNpc_AnimTickIsWired() for the PLAYER
+// FSM: true as soon as a Char_DispatchStateTick has actually run at least once. WIRING
+// NON-REGRESSION GUARD, NOT a binary behavior — it lets a consumer
+// (e.g. Gfx/PlayerPaperdoll.cpp:20-23, which today samples via the global-clock
+// MotionCache::SampleByGameTime) switch to CharAnimState::animFrame ONLY once it is
+// actually fed, instead of freezing every player at frame 0. See the freeze
+// admission documented at Gfx/MotionCache.h:90-95. To be removed once the wiring is locked in
+// by a test.
 bool Char_StateTickIsWired();
 
 } // namespace ts2::game

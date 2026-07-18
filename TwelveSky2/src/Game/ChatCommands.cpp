@@ -1,51 +1,51 @@
-// Game/ChatCommands.cpp — voir Game/ChatCommands.h pour le contrat du module.
+// Game/ChatCommands.cpp — see Game/ChatCommands.h for the module's contract.
 //
 // ============================================================================
-// ÉCART ASSUMÉ PAR RAPPORT À LA CONSIGNE INITIALE — à lire avant tout le reste
+// DEVIATION FROM THE INITIAL INSTRUCTION — read before anything else
 // ============================================================================
-// La mission demandait de décompiler Chat_SubmitTypedMessage (EA 0x5c3cf0) pour en
-// déduire les préfixes joueur (whisper/party/guild...), et suggérait d'élargir vers
-// Chat_ParseGmCommand (0x68bfd0) si des préfixes joueur légitimes s'y trouvaient
-// mêlés aux commandes GM.
+// The mission asked to decompile Chat_SubmitTypedMessage (EA 0x5c3cf0) to derive
+// the player prefixes (whisper/party/guild...), and suggested expanding to
+// Chat_ParseGmCommand (0x68bfd0) if legitimate player prefixes turned out to be
+// mixed in with the GM commands there.
 //
-// Décompilation de 0x5c3cf0 (Chat_SubmitTypedMessage) :
-//   GetWindowTextA -> filtre mots bannis (maybe_Dict001_MatchWord 0x4c1410) ->
+// Decompiling 0x5c3cf0 (Chat_SubmitTypedMessage):
+//   GetWindowTextA -> banned-word filter (maybe_Dict001_MatchWord 0x4c1410) ->
 //   Net_SendOp80(&unk_846C08, String) (0x5c3d87).
-// C'est effectivement un quasi-trampoline confirmé par la décompilation : AUCUNE
-// détection de préfixe, aucun routage de canal. Il envoie tout le texte tapé tel
-// quel sur l'opcode 80 (chat « dire » simple). C'est la boîte de saisie utilisée
-// par g_hEditChatInput (0x1669000), distincte de la boîte principale.
+// It is indeed confirmed by decompilation to be a near-trampoline: NO prefix
+// detection, no channel routing. It sends the entire typed text as-is on
+// opcode 80 (plain "say" chat). It is the input box used by g_hEditChatInput
+// (0x1669000), distinct from the main chat box.
 //
-// Décompilation de 0x68bfd0 (Chat_ParseGmCommand) : 36 commandes distinctes,
-// TOUTES des commandes GM/triche (/movezone, /hide, /show, /exp, /money, /item,
-// /moncall, /die, /max, /tribe, /equip, /unequip, /find, /call, /move, /nchat,
-// /ychat, /kick, /block, /tribebank, /pvppoint, /level, /message, /editstr,
-// /editdex, /editcon, /editint, /level2, /useitem, /delitem, /monkill,
-// /movezonepos, /movepos, /pvpkill, /319Battle, /notice — /item et /nchat/
-// /ychat/kick/block ont chacune 2-3 variantes selon le nombre de tokens espacés
-// dans la ligne, mais restent la même commande nommée). AUCUN préfixe joueur
-// légitime (whisper/party/guild) n'y est mélangé — confirmé exhaustivement par
-// la décompilation complète (tokenizer : jusqu'à 5 tokens espacés de 100o max
-// chacun, 0x68c043-0x68c129).
-// Conformément à la consigne, cette logique reste hors périmètre et n'est PAS
-// implémentée ici.
+// Decompiling 0x68bfd0 (Chat_ParseGmCommand): 36 distinct commands, ALL GM/
+// cheat commands (/movezone, /hide, /show, /exp, /money, /item, /moncall,
+// /die, /max, /tribe, /equip, /unequip, /find, /call, /move, /nchat, /ychat,
+// /kick, /block, /tribebank, /pvppoint, /level, /message, /editstr, /editdex,
+// /editcon, /editint, /level2, /useitem, /delitem, /monkill, /movezonepos,
+// /movepos, /pvpkill, /319Battle, /notice — /item and /nchat/ /ychat/kick/
+// block each have 2-3 variants depending on the number of space-separated
+// tokens in the line, but remain the same named command). NO legitimate
+// player prefix (whisper/party/guild) is mixed in there — exhaustively
+// confirmed by full decompilation (tokenizer: up to 5 space-separated tokens
+// of 100 bytes max each, 0x68c043-0x68c129).
+// Per the instruction, this logic remains out of scope and is NOT implemented
+// here.
 //
-// Les VRAIS préfixes/canaux joueur (whisper/party/guild/alliance/trade/faction)
-// vivent ailleurs : dans UI_Chat_SubmitInput (EA 0x68b330), la fonction appelée
-// par la boîte de chat PRINCIPALE (g_hEditChatMain 0x1668FD4), qui tente d'abord
-// Chat_ParseGmCommand (uniquement si g_GmAuthLevel > 0, donc jamais pour un joueur
-// normal) puis, si ce n'était pas une commande GM, route selon :
-//   - le premier caractère de la ligne s'il vaut '!', '#', '@' ou '~' ;
-//   - sinon l'onglet de canal actuellement sélectionné dans la boîte de chat.
-// Contrairement à l'hypothèse de la consigne ("/w ", "/p ", "/g "), TS2 N'UTILISE
-// PAS de préfixes multi-caractères à la "/lettre " pour les canaux joueur : ce sont
-// des SYMBOLES D'UN SEUL CARACTÈRE, collés au texte (pas d'espace après). Les seuls
-// préfixes textuels "/xxx" du jeu sont les commandes GM de Chat_ParseGmCommand.
-// C'est donc UI_Chat_SubmitInput, et non Chat_SubmitTypedMessage, qui est la
-// fonction pertinente pour cette mission ; ce fichier reproduit sa partie JOUEUR.
-// Recoupement : Docs/TS2_CLIENT_SHELL.md §2.5 (déjà documenté par une session RE
-// antérieure) confirme exactement le même mapping préfixe/canal -> opcode que la
-// décompilation ci-dessous.
+// The REAL player prefixes/channels (whisper/party/guild/alliance/trade/
+// faction) live elsewhere: in UI_Chat_SubmitInput (EA 0x68b330), the function
+// called by the MAIN chat box (g_hEditChatMain 0x1668FD4), which first tries
+// Chat_ParseGmCommand (only if g_GmAuthLevel > 0, so never for a regular
+// player) then, if it wasn't a GM command, routes based on:
+//   - the line's first character if it is '!', '#', '@' or '~';
+//   - otherwise the channel tab currently selected in the chat box.
+// Contrary to the instruction's hypothesis ("/w ", "/p ", "/g "), TS2 does
+// NOT use multi-character "/letter " prefixes for player channels: these are
+// SINGLE-CHARACTER SYMBOLS glued to the text (no space after). The game's
+// only textual "/xxx" prefixes are the GM commands of Chat_ParseGmCommand.
+// So it is UI_Chat_SubmitInput, not Chat_SubmitTypedMessage, that is the
+// relevant function for this mission; this file reproduces its PLAYER part.
+// Cross-check: Docs/TS2_CLIENT_SHELL.md §2.5 (already documented by an earlier
+// RE session) confirms exactly the same prefix/channel -> opcode mapping as
+// the decompilation below.
 // ============================================================================
 
 #include "Game/ChatCommands.h"
@@ -54,14 +54,15 @@ namespace ts2::game {
 
 namespace {
 
-// Construit une commande à partir du texte suivant un préfixe spécial. Reproduit
-// le test `if (v36[0])` présent devant chaque branche '!'/'#'/'@'/'~' dans
-// UI_Chat_SubmitInput (0x68b54e, 0x68b677, 0x68b7a0, 0x68b8ff) : si rien ne suit
-// le caractère de préfixe, le client n'envoie RIEN (pas d'erreur, pas de paquet).
+// Builds a command from the text following a special prefix. Reproduces the
+// `if (v36[0])` test present before every '!'/'#'/'@'/'~' branch in
+// UI_Chat_SubmitInput (0x68b54e, 0x68b677, 0x68b7a0, 0x68b8ff): if nothing
+// follows the prefix character, the original client sends NOTHING (no error,
+// no packet).
 ChatCommand MakePrefixed(ChatCommandKind kind, const std::string& rest) {
     ChatCommand cmd;
     if (rest.empty()) {
-        return cmd; // kind reste None -> l'appelant ne doit rien envoyer
+        return cmd; // kind stays None -> the caller must send nothing
     }
     cmd.kind = kind;
     cmd.message = rest;
@@ -73,101 +74,105 @@ ChatCommand MakePrefixed(ChatCommandKind kind, const std::string& rest) {
 ChatCommand ParseChatInput(const std::string& raw, ChatChannelMode currentChannelMode) {
     ChatCommand cmd;
 
-    // GetWindowTextA renvoie 0 sur une boîte vide -> le client d'origine sort sans
-    // rien faire (0x68b370/0x68bf2a). Même comportement ici : kind reste None.
+    // GetWindowTextA returns 0 on an empty box -> the original client exits
+    // without doing anything (0x68b370/0x68bf2a). Same behavior here: kind
+    // stays None.
     if (raw.empty()) {
         return cmd;
     }
 
-    // NOTE (hors périmètre, non reproduit ici) : avant le switch de préfixe, le
-    // client compare le texte ENTIER à 3 chaînes localisées via StrTable005_Get
-    // (indices 738/739/740, chargées depuis 005.DAT — non disponibles statiquement)
-    // pour déclencher un raccourci d'ouverture d'entrepôt (Net_SendVaultReq_234(1|2|3),
-    // EA 0x68b3c5-0x68b4b0). Ce n'est pas une commande de chat au sens de cette
-    // mission (whisper/party/guild) : non implémenté, laissé en TODO pour un module
-    // ultérieur s'il faut un jour la reproduire.
+    // NOTE (out of scope, not reproduced here): before the prefix switch, the
+    // client compares the ENTIRE text against 3 localized strings via
+    // StrTable005_Get (indices 738/739/740, loaded from 005.DAT — not
+    // statically available) to trigger a warehouse-opening shortcut
+    // (Net_SendVaultReq_234(1|2|3), EA 0x68b3c5-0x68b4b0). This is not a chat
+    // command in the sense of this mission (whisper/party/guild): not
+    // implemented, left as a TODO for a future module if it ever needs
+    // reproducing.
 
-    // switch(String[0]) — EA 0x68b531/0x68b53e. Le caractère de préfixe n'est PAS
-    // suivi d'un espace dans le binaire d'origine (contrairement à l'hypothèse
-    // "/w " de la consigne) : le reste du buffer (à partir de l'index 1) est
-    // utilisé tel quel comme corps du message.
+    // switch(String[0]) — EA 0x68b531/0x68b53e. The prefix character is NOT
+    // followed by a space in the original binary (contrary to the instruction's
+    // "/w " hypothesis): the rest of the buffer (from index 1) is used as-is as
+    // the message body.
     const char first = raw[0];
     const std::string rest = raw.substr(1);
 
-    // Les QUATRE préfixes partagent en outre une garde commune non reproduite ici :
-    // Map_IsArenaZone() (0x54b690) bloque toujours le canal (message StrTable005[1352],
-    // LABEL_86 unique à 0x68be5a) ; '#' et '@' ajoutent en plus g_SelfMorphNpcId == 291
-    // au même test (0x68b945/0x68b7e5). Voir aussi le TODO générique en tête de fichier.
+    // The FOUR prefixes additionally share a common guard not reproduced here:
+    // Map_IsArenaZone() (0x54b690) always blocks the channel (message
+    // StrTable005[1352], LABEL_86 shared at 0x68be5a); '#' and '@' additionally
+    // add g_SelfMorphNpcId == 291 to the same test (0x68b945/0x68b7e5). See
+    // also the generic TODO at the top of this file.
     switch (first) {
         case '!':
-            // Guild : Net_SendOp77, EA 0x68b733. Gardes non reproduites ici : arène
-            // (Map_IsArenaZone, 0x68b683) puis Crt_Strcmp(unk_16746A8, raw) (0x68b6bc)
-            // -> message d'erreur StrTable005[371] si égal (rôle exact de unk_16746A8
-            // non confirmé statiquement — TODO).
+            // Guild: Net_SendOp77, EA 0x68b733. Guards not reproduced here: arena
+            // (Map_IsArenaZone, 0x68b683) then Crt_Strcmp(unk_16746A8, raw)
+            // (0x68b6bc) -> error message StrTable005[371] if equal (exact role
+            // of unk_16746A8 not statically confirmed — TODO).
             return MakePrefixed(ChatCommandKind::Guild, rest);
         case '#':
-            // Faction : Net_SendOp40, EA 0x68ba50. Gardes non reproduites : arène ou
-            // g_SelfMorphNpcId==291 (0x68b945) ; réservé aux joueurs dont
-            // g_SelfMorphNpcId ∈ {37,119,124,170,50,52} (0x68b9a4-0x68b9d6), avec une
-            // seconde restriction par g_LocalElement (0x68ba02-0x68ba3d).
+            // Faction: Net_SendOp40, EA 0x68ba50. Guards not reproduced: arena or
+            // g_SelfMorphNpcId==291 (0x68b945); reserved for players whose
+            // g_SelfMorphNpcId is in {37,119,124,170,50,52} (0x68b9a4-0x68b9d6),
+            // with a second restriction by g_LocalElement (0x68ba02-0x68ba3d).
             return MakePrefixed(ChatCommandKind::Faction, rest);
         case '@':
-            // Trade : Net_SendOp81, EA 0x68b894. Gardes non reproduites : arène ou
-            // g_SelfMorphNpcId==291 (0x68b7e5) ; bloqué si g_SelfMorphNpcId ==
+            // Trade: Net_SendOp81, EA 0x68b894. Guards not reproduced: arena or
+            // g_SelfMorphNpcId==291 (0x68b7e5); blocked if g_SelfMorphNpcId ==
             // table{138,139,165,166}[g_LocalElement] (0x68b846-0x68b881).
             return MakePrefixed(ChatCommandKind::Trade, rest);
         case '~':
-            // Alliance : Net_SendOp68, EA 0x68b60a. Gardes non reproduites : arène
-            // (0x68b55a) puis Crt_Strcmp(g_AllianceRosterNames, raw) (0x68b593) ->
-            // StrTable005[355] si égal.
+            // Alliance: Net_SendOp68, EA 0x68b60a. Guards not reproduced: arena
+            // (0x68b55a) then Crt_Strcmp(g_AllianceRosterNames, raw) (0x68b593) ->
+            // StrTable005[355] if equal.
             return MakePrefixed(ChatCommandKind::Alliance, rest);
         default:
             break;
     }
 
-    // Pas de préfixe spécial -> route selon l'onglet de canal actif
-    // (switch(*(this + 161)), EA 0x68bb10). Le texte est envoyé intégralement
-    // (pas de retrait de caractère : les builders sont appelés avec &String en entier,
-    // ex. 0x68bba9, 0x68bc22).
+    // No special prefix -> routes based on the active channel tab
+    // (switch(*(this + 161)), EA 0x68bb10). The text is sent in full (no
+    // character stripped: the builders are called with &String in full,
+    // e.g. 0x68bba9, 0x68bc22).
     cmd.message = raw;
     switch (currentChannelMode) {
         case ChatChannelMode::Whisper:
-            // case 0, EA 0x68bb1c-0x68bba9 : Net_SendOp39. Gardes non reproduites :
-            // arène (Map_IsArenaZone, 0x68bb1c) puis Crt_Stricmp(cible, byte_1673184)
-            // (0x68bb5d) -> StrTable005[303] si la cible est soi-même. La cible
-            // elle-même (this+162) n'est PAS dans `raw` : voir ChatCommand::target
-            // dans le .h. L'appelant doit la renseigner.
+            // case 0, EA 0x68bb1c-0x68bba9: Net_SendOp39. Guards not reproduced:
+            // arena (Map_IsArenaZone, 0x68bb1c) then Crt_Stricmp(target,
+            // byte_1673184) (0x68bb5d) -> StrTable005[303] if the target is
+            // oneself. The target itself (this+162) is NOT in `raw`: see
+            // ChatCommand::target in the .h. The caller must fill it in.
             cmd.kind = ChatCommandKind::Whisper;
             break;
         case ChatChannelMode::Party:
-            // case 1, EA 0x68bb10-0x68bc22 : Net_SendOp38. Pas de garde d'arène ici
-            // (seul canal joueur non bloqué en zone arène) : bloqué uniquement si
-            // g_SelfMorphNpcId == table{138,139,165,166}[g_LocalElement]
-            // (0x68bbb3-0x68bbed, StrTable005[2040] si bloqué).
+            // case 1, EA 0x68bb10-0x68bc22: Net_SendOp38. No arena guard here
+            // (the only player channel not blocked in an arena zone): blocked
+            // only if g_SelfMorphNpcId == table{138,139,165,166}[g_LocalElement]
+            // (0x68bbb3-0x68bbed, StrTable005[2040] if blocked).
             cmd.kind = ChatCommandKind::Party;
             break;
         case ChatChannelMode::Alliance:
-            // case 2, EA 0x68bc31-0x68bca9 : Net_SendOp68. Gardes non reproduites :
-            // arène (0x68bc31) puis même garde sentinelle g_AllianceRosterNames que
-            // le préfixe '~' (0x68bc74).
+            // case 2, EA 0x68bc31-0x68bca9: Net_SendOp68. Guards not reproduced:
+            // arena (0x68bc31) then the same g_AllianceRosterNames sentinel guard
+            // as the '~' prefix (0x68bc74).
             cmd.kind = ChatCommandKind::Alliance;
             break;
         case ChatChannelMode::Guild:
-            // case 3, EA 0x68bcb8-0x68bd30 : Net_SendOp77. Gardes non reproduites :
-            // arène (0x68bcb8) puis même garde sentinelle unk_16746A8 que le préfixe
-            // '!' (0x68bcfb).
+            // case 3, EA 0x68bcb8-0x68bd30: Net_SendOp77. Guards not reproduced:
+            // arena (0x68bcb8) then the same unk_16746A8 sentinel guard as the
+            // '!' prefix (0x68bcfb).
             cmd.kind = ChatCommandKind::Guild;
             break;
         case ChatChannelMode::Trade:
-            // case 4, EA 0x68bd78-0x68be10 : Net_SendOp81. Même garde que le préfixe
-            // '@' : arène ou g_SelfMorphNpcId==291 (0x68bd78), puis
-            // table{138,139,165,166}[g_LocalElement] (0x68bda1-0x68bddb, StrTable005[2041]).
+            // case 4, EA 0x68bd78-0x68be10: Net_SendOp81. Same guard as the '@'
+            // prefix: arena or g_SelfMorphNpcId==291 (0x68bd78), then
+            // table{138,139,165,166}[g_LocalElement] (0x68bda1-0x68bddb,
+            // StrTable005[2041]).
             cmd.kind = ChatCommandKind::Trade;
             break;
         case ChatChannelMode::Faction:
-            // case 5, EA 0x68be58-0x68bf25 : Net_SendOp40. Même garde que le préfixe
-            // '#' : arène ou g_SelfMorphNpcId==291 (0x68be58), puis liste blanche de
-            // morphs + table par g_LocalElement.
+            // case 5, EA 0x68be58-0x68bf25: Net_SendOp40. Same guard as the '#'
+            // prefix: arena or g_SelfMorphNpcId==291 (0x68be58), then a morph
+            // whitelist + table by g_LocalElement.
             cmd.kind = ChatCommandKind::Faction;
             break;
     }

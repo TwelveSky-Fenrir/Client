@@ -1,18 +1,20 @@
-// World/WorldMap.cpp — implémentation fidèle des chargeurs de monde/zone TwelveSky2.
-// Voir WorldMap.h pour les EA sources. Toutes les branches des quatre fonctions cibles
-// sont couvertes ; les chemins de fichiers et la table zoneId->fileId sont byte-exacts.
+// World/WorldMap.cpp — faithful implementation of the TwelveSky2 world/zone loaders.
+// See WorldMap.h for source EAs. All branches of the four target functions are
+// covered; file paths and the zoneId->fileId table are byte-exact.
+// (Zone-model path resolution and zone resource dispatch live in WorldMap_ZoneModel.cpp:
+//  ZoneModelPathWM/WJ, CurrentZoneModelPath, LoadZoneResource, LoadCurrentZoneModel.)
 #include "WorldMap.h"
-#include "Asset/WorldChunk.h" // vues terrain typées (CollisionMesh/Face/QuadNode/TerrainVertex) — Gaps G4/G5/G7
+#include "Asset/WorldChunk.h" // typed terrain views (CollisionMesh/Face/QuadNode/TerrainVertex) — Gaps G4/G5/G7
 
-#include <algorithm> // std::min/std::max — bornes AABB des sweeps (namespace collision, WG-02/WG-03)
-#include <cmath>   // sqrt/fabs — requêtes de collision (namespace collision, Gaps G02/G03/G04)
+#include <algorithm> // std::min/std::max — AABB bounds for sweeps (namespace collision, WG-02/WG-03)
+#include <cmath>   // sqrt/fabs — collision queries (namespace collision, Gaps G02/G03/G04)
 #include <cstdint>
 #include <cstdio>
 
 namespace ts2::world {
 
 namespace {
-// Retours vides quand aucune maille n'est liée (build-safe : jamais de déréférencement nul).
+// Empty returns when no mesh is bound (build-safe: never a null dereference).
 const std::vector<asset::CollisionFace>     kEmptyFaces;
 const std::vector<asset::CollisionQuadNode> kEmptyNodes;
 const std::vector<asset::TerrainVertex>     kEmptyVertices;
@@ -20,8 +22,8 @@ const std::vector<uint32_t>                 kEmptyFaceIndices;
 } // namespace
 
 // ===========================================================================
-// Accesseurs de données terrain typées (Gaps G4/G5/G7). Forwardent vers la maille
-// liée par SetCollisionMesh ; vecteurs vides si aucune maille (voir WorldMap.h).
+// Typed terrain data accessors (Gaps G4/G5/G7). Forward to the mesh bound
+// by SetCollisionMesh; empty vectors if no mesh (see WorldMap.h).
 // ===========================================================================
 const std::vector<asset::CollisionFace>& WorldMap::Faces() const {
     return collisionMesh_ ? collisionMesh_->tris : kEmptyFaces;
@@ -36,25 +38,9 @@ const std::vector<uint32_t>& WorldMap::FaceIndices() const {
     return collisionMesh_ ? collisionMesh_->triIndices : kEmptyFaceIndices;
 }
 
-namespace {
-
-// snprintf « Z%03d » vers un std::string (reproduit Crt_Vsnprintf 0x75cd5f / sub_75CDF8 0x75cdf8).
-std::string FormatZone(const char* fmt, int a) {
-    char buf[268] = {0}; // CHAR v7[268] dans les fonctions d'origine
-    std::snprintf(buf, sizeof(buf), fmt, a);
-    return std::string(buf);
-}
-std::string FormatZone2(const char* fmt, int a, int b) {
-    char buf[268] = {0};
-    std::snprintf(buf, sizeof(buf), fmt, a, b);
-    return std::string(buf);
-}
-
-} // namespace
-
 // ===========================================================================
-// World_ZoneIdToFileId 0x4db0f0 — table zoneId -> fileId. Transcription exacte
-// du switch (les groupes de `case` qui retombent sur la même valeur sont fusionnés).
+// World_ZoneIdToFileId 0x4db0f0 — zoneId -> fileId table. Exact transcription
+// of the switch (groups of `case`s that fall through to the same value are merged).
 // ===========================================================================
 int WorldMap::ZoneIdToFileId(int zoneId) {
     switch (zoneId) {
@@ -140,7 +126,7 @@ int WorldMap::ZoneIdToFileId(int zoneId) {
         case 116: return 104;
         case 117: return 105;
         case 118: return 118;
-        // NB : case 119 absent -> défaut (-1)
+        // NB: case 119 absent -> default (-1)
         case 120: case 121: case 122: return 154;
         case 123: return 175;
         case 124: return 124;
@@ -229,7 +215,7 @@ int WorldMap::ZoneIdToFileId(int zoneId) {
         case 303: return 303;
         case 304: case 305: case 306: case 307: return 304;
         case 308: return 308;
-        // NB : case 309 absent -> défaut (-1)
+        // NB: case 309 absent -> default (-1)
         case 310: return 310;
         case 311: case 312: return 241;
         case 313: case 314: case 315: case 316: case 317: case 318: return 313;
@@ -237,7 +223,7 @@ int WorldMap::ZoneIdToFileId(int zoneId) {
         case 324: return 324;
         case 325: case 326: case 327: case 328: case 329: case 330: return 241;
         case 331: case 332: case 333: case 334: case 335: case 336: return 313;
-        // NB : cases 337, 338 absentes -> défaut (-1)
+        // NB: cases 337, 338 absent -> default (-1)
         case 339: return 118;
         case 340: return 340;
         case 341: return 341;
@@ -247,205 +233,71 @@ int WorldMap::ZoneIdToFileId(int zoneId) {
 }
 
 // ===========================================================================
-// Chemin .WM principal (World_LoadZoneResource case 6, premier switch 0x4dcd9b).
-// ===========================================================================
-std::string WorldMap::ZoneModelPathWM(int fileId, int z291Variant) {
-    switch (fileId) {
-        case 34:  return "G03_GDATA\\D07_GWORLD\\Z034_1.WM";
-        case 49:  return "G03_GDATA\\D07_GWORLD\\Z049_1.WM";
-        case 51:  return "G03_GDATA\\D07_GWORLD\\Z051_1.WM";
-        case 53:  return "G03_GDATA\\D07_GWORLD\\Z053_1.WM";
-        case 54:  return "G03_GDATA\\D07_GWORLD\\Z054_1.WM";
-        case 138: case 139: case 165: case 166:
-                  return "G03_GDATA\\D07_GWORLD\\Z138_1.WM";
-        case 154: return "G03_GDATA\\D07_GWORLD\\Z154_1.WM";
-        case 155: return "G03_GDATA\\D07_GWORLD\\Z155_1.WM";
-        case 156: return "G03_GDATA\\D07_GWORLD\\Z156_1.WM";
-        case 175: return "G03_GDATA\\D07_GWORLD\\Z175_01.WM";
-        case 194: return "G03_GDATA\\D07_GWORLD\\Z194_1.WM";
-        // 50/52/170 : le principal est Z170_1.WM (le secondaire Z170_2.WM se charge à part).
-        case 50: case 52: case 170:
-                  return "G03_GDATA\\D07_GWORLD\\Z170_1.WM";
-        case 267: return "G03_GDATA\\D07_GWORLD\\Z267_1.WM";
-        case 270: return "G03_GDATA\\D07_GWORLD\\Z270_1.WM";
-        case 291: return z291Variant == 0 ? "G03_GDATA\\D07_GWORLD\\Z291_1.WM"   // dword_1686134==0
-                                           : "G03_GDATA\\D07_GWORLD\\Z291_2.WM";
-        case 297: return "G03_GDATA\\D07_GWORLD\\Z297_1.WM"; // fileId 297 couvre zones 200/298/299
-        case 319: return "G03_GDATA\\D07_GWORLD\\Z319_1.WM";
-        default:  return FormatZone(kFmtWM, fileId);         // "Z%03d.WM"
-    }
-}
-
-// ===========================================================================
-// Chemin .WJ secondaire (World_LoadZoneResource case 6, second switch 0x4dd0b4).
-// CONFLICT C-01 (Docs/TS2_WORLD_ROSETTA.md §2) : la couche .WJ est ABSENTE de VeryOldClient
-// (WORLD_FOR_GXD = que des .WM) ; introduite par la cible — IDA GAGNE (ancre : second switch
-// 0x4dd0b4 -> MapColl_LoadFaces this+0x150). NE PAS backporter l'absence de WJ.
-// ===========================================================================
-std::string WorldMap::ZoneModelPathWJ(int fileId) {
-    switch (fileId) {
-        case 34:  return "G03_GDATA\\D07_GWORLD\\Z034_1.WJ";
-        case 49:  return "G03_GDATA\\D07_GWORLD\\Z049_1.WJ";
-        case 51:  return "G03_GDATA\\D07_GWORLD\\Z051_1.WJ";
-        case 53:  return "G03_GDATA\\D07_GWORLD\\Z053_1.WJ";
-        case 154: return "G03_GDATA\\D07_GWORLD\\Z154_1.WJ";
-        case 155: return "G03_GDATA\\D07_GWORLD\\Z155_1.WJ";
-        case 156: return "G03_GDATA\\D07_GWORLD\\Z156_1.WJ";
-        case 175: return "G03_GDATA\\D07_GWORLD\\Z175_01.WJ";
-        case 194: return "G03_GDATA\\D07_GWORLD\\Z194_1.WJ";
-        case 267: return "G03_GDATA\\D07_GWORLD\\Z267_1.WJ";
-        case 270: return "G03_GDATA\\D07_GWORLD\\Z270_1.WJ";
-        default:  return FormatZone(kFmtWJ, fileId);         // "Z%03d.WJ"
-    }
-}
-
-// ===========================================================================
-// Chemin .WM de la couche courante (World_LoadCurrentZoneModel 0x4dd6e0).
-// Sélection par fileId + mode (a2). Chaîne vide = pas de rechargement.
-// ===========================================================================
-std::string WorldMap::CurrentZoneModelPath(int fileId, int mode) {
-    switch (fileId) {
-        case 34:  return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z034_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z034_2.WM";
-        case 49:  return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z049_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z049_2.WM";
-        case 51:  return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z051_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z051_2.WM";
-        case 53:  return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z053_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z053_2.WM";
-        case 54:  return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z054_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z054_2.WM";
-        case 88:
-            switch (mode) {
-                case 1: return "G03_GDATA\\D07_GWORLD\\Z088_1.WM";
-                case 2: return "G03_GDATA\\D07_GWORLD\\Z088_2.WM";
-                case 3: return "G03_GDATA\\D07_GWORLD\\Z088_3.WM";
-                case 4: return "G03_GDATA\\D07_GWORLD\\Z088_4.WM";
-                case 5: return "G03_GDATA\\D07_GWORLD\\Z088_5.WM";
-                case 6: return "G03_GDATA\\D07_GWORLD\\Z088.WM";
-                default: return std::string(); // "" -> saut
-            }
-        case 138: case 139: case 165: case 166:
-            switch (mode) {
-                case 1: return "G03_GDATA\\D07_GWORLD\\Z138_1.WM";
-                case 2: return "G03_GDATA\\D07_GWORLD\\Z138_2.WM";
-                case 3: return "G03_GDATA\\D07_GWORLD\\Z138_3.WM";
-                case 4: return "G03_GDATA\\D07_GWORLD\\Z138_4.WM";
-                default: return "G03_GDATA\\D07_GWORLD\\Z138_5.WM";
-            }
-        case 154: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z154_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z154_2.WM";
-        case 155: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z155_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z155_2.WM";
-        case 156: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z156_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z156_2.WM";
-        case 175:
-            // mode 1..11 -> Z175_01..Z175_11.WM ; sinon "" (saut).
-            switch (mode) {
-                case 1:  return "G03_GDATA\\D07_GWORLD\\Z175_01.WM";
-                case 2:  return "G03_GDATA\\D07_GWORLD\\Z175_02.WM";
-                case 3:  return "G03_GDATA\\D07_GWORLD\\Z175_03.WM";
-                case 4:  return "G03_GDATA\\D07_GWORLD\\Z175_04.WM";
-                case 5:  return "G03_GDATA\\D07_GWORLD\\Z175_05.WM";
-                case 6:  return "G03_GDATA\\D07_GWORLD\\Z175_06.WM";
-                case 7:  return "G03_GDATA\\D07_GWORLD\\Z175_07.WM";
-                case 8:  return "G03_GDATA\\D07_GWORLD\\Z175_08.WM";
-                case 9:  return "G03_GDATA\\D07_GWORLD\\Z175_09.WM";
-                case 10: return "G03_GDATA\\D07_GWORLD\\Z175_10.WM";
-                case 11: return "G03_GDATA\\D07_GWORLD\\Z175_11.WM";
-                default: return std::string();
-            }
-        case 194: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z194_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z194_2.WM";
-        case 267: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z267_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z267_2.WM";
-        case 270: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z270_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z270_2.WM";
-        case 291: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z291_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z291_2.WM";
-        case 297:
-            if (mode == 1) return "G03_GDATA\\D07_GWORLD\\Z297_1.WM";
-            if (mode == 2) return "G03_GDATA\\D07_GWORLD\\Z297_2.WM";
-            return "G03_GDATA\\D07_GWORLD\\Z297_3.WM";
-        case 319: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z319_1.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z319_2.WM";
-        case 324: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z324.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z324_2.WM";
-        case 342: return mode == 1 ? "G03_GDATA\\D07_GWORLD\\Z342.WM"
-                                   : "G03_GDATA\\D07_GWORLD\\Z342_1.WM";
-        default:  return std::string(); // toutes les autres zones : "" -> aucun rechargement
-    }
-}
-
-// ===========================================================================
-// World_LoadMap 0x4116b0 — porte DRM + init atmosphère + météo Atmosphere.DAT.
+// World_LoadMap 0x4116b0 — DRM gate + atmosphere init + Atmosphere.DAT weather.
 // ===========================================================================
 bool WorldMap::LoadMap(const std::string& mapName, const std::string& drmKey) {
-    // this+12 = device (déjà posé via SetDevice ; a3 dans le binaire).
+    // this+12 = device (already set via SetDevice; a3 in the binary).
 
-    // --- Porte DRM « ALT1 » ---------------------------------------------------
-    // if (Crt_OperatorNew(648)) atmo = cAtmosphere_ctor("ALT1 License 3", clé) else atmo = 0
+    // --- "ALT1" DRM gate ---------------------------------------------------
+    // if (Crt_OperatorNew(648)) atmo = cAtmosphere_ctor("ALT1 License 3", key) else atmo = 0
     void* atmo = nullptr;
     void* mem = hooks_.allocAtmosphere ? hooks_.allocAtmosphere(hooks_.user, 648) : nullptr;
     if (mem && hooks_.constructAtmosphere) {
-        // cAtmosphere_ctor 0x791b40 : valide la licence SilverLining (nom const + clé).
+        // cAtmosphere_ctor 0x791b40: validates the SilverLining license (const name + key).
         atmo = hooks_.constructAtmosphere(hooks_.user, mem, kAltLicenseName, drmKey.c_str());
     }
     atmosphere_ = atmo; // this+8
 
-    // (*device)[+164] : encadrement device avant init.
+    // (*device)[+164]: device bracket before init.
     if (hooks_.deviceBeginMap) hooks_.deviceBeginMap(hooks_.user, device_);
 
-    // cAtmosphere_Initialize(1, mapName, 0, device). Retour != 0 => branche « échec » -> 0.
+    // cAtmosphere_Initialize(1, mapName, 0, device). Nonzero return => "failure" branch -> 0.
     int initRc = hooks_.atmosphereInitialize
                      ? hooks_.atmosphereInitialize(hooks_.user, atmosphere_, mapName.c_str(), device_)
                      : 0;
 
-    // (*device)[+168] : encadrement device après init (appelé dans les DEUX branches).
+    // (*device)[+168]: device bracket after init (called on BOTH branches).
     if (hooks_.deviceEndMap) hooks_.deviceEndMap(hooks_.user, device_);
 
     if (initRc) {
-        // Branche « if (Initialize(...)) { ...; return 0; } » : échec/annulation.
-        return false; // renvoie 0
+        // Branch "if (Initialize(...)) { ...; return 0; }": failure/cancel.
+        return false; // returns 0
     }
 
-    // --- Branche succès : atmosphere[+644]=1, this+4=1, météo par défaut, Atmosphere.DAT ---
-    // *(atmosphere+644) = 1  (marqueur interne de l'objet atmosphère) — `mov byte ptr [eax+284h], 1`
-    // @0x411765 avec eax = [ebx+8] = l'objet cAtmosphere (0x284 = 644).
-    //
-    // EW-02 (Passe 4 / W11) — le « correctif C-03 » qui armait le flag était un PIÈGE, ANNULÉ ICI
-    // (chaîne re-prouvée intégralement dans IDA, idaTs2 lecture seule). L'octet du flag
-    // (g_WorldEnv+4 = 0x18C67C8, g_WorldEnvAtmInitFlag) est REMIS À 0 à CHAQUE ENTRÉE DE ZONE, donc
-    // World_LoadMap tourne 1×/ZONE et NON 1×/session :
-    //   - World_LoadMap @0x41176E `mov byte ptr [ebx+4], 1` (ebx=this=g_WorldEnv 0x18C67C4) ARME le flag ;
-    //   - Scene_EnterWorldUpdate case 1 @0x52C091 met le compteur à 0 puis l'incrémente 0,1,…,19
-    //     @0x52C106 -> les pas défilent DANS L'ORDRE, donc le pas 1 précède TOUJOURS le pas 7 ;
-    //   - pas 1 = World_LoadZoneResource case 1 @0x4DCBB1 -> WSndMgr_Free 0x4DB060 @0x4DB09E ->
-    //     World_UnloadMap 0x411A80 @0x411A9F `mov byte [this+4], 0` = EFFACE le flag (sous garde
-    //     `if (this+8)` @0x411A89, vraie après le 1er load car this+8 = cAtmosphere non nul) ;
-    //   - pas 7 = case 7 @0x4DD202 relit le flag (=0) -> @0x4DD217 ne saute pas -> World_LoadMap re-run.
-    //   Le court-circuit `||` de la case 7 est donc une GARDE DÉFENSIVE jamais prise dans ce flux.
-    // AVANT C-03 le port C++ n'armait jamais le flag -> LoadMap tournait à chaque zone : ACCIDENTELLE-
-    // MENT CORRECT. C-03 a armé le flag -> 1×/session = RÉGRESSION de fidélité, ici annulée. On n'arme
-    // donc PAS `atmosphereLoaded_` : le pas 7 (`proceed = atmosphereLoaded_`, toujours faux) rejoue
-    // LoadMap chaque zone = comportement exact du binaire.
-    // NE PAS porter World_UnloadMap pour « compenser » : ce serait un NO-OP nuisible. Sa garde
-    // @0x411A89 `if (this+8)` -> en ClientSource `atmosphere_` est TOUJOURS nul (WorldAssets::
-    // AllocAtmosphere renvoie nullptr par conception, WorldIntegration.cpp:302) -> early-return
-    // systématique -> le flag ne serait JAMAIS effacé -> le bug 1×/session reviendrait, plus 3 hooks
-    // non câblés (l'anti-motif « code que personne n'appelle »). À reconsidérer UNIQUEMENT si
-    // SilverLining est un jour lié (atmosphere_ non nul), et alors dans WorldIntegration (EW-03), pas ici.
-    valid_ = true;                       // this+4 = 1  @0x41176E — écriture littérale, aucun lecteur hors WorldMap
-    // (PAS de `atmosphereLoaded_ = true` : cf. EW-02 ci-dessus — flag laissé à 0 -> LoadMap 1×/zone.)
-    // Str_Assign(mapName) : mémorise le nom de map (byte_815190 côté binaire) — omis (leaf).
-    // EW-05 : qmemcpy(this+180, &dword_18C5358, 0x68) @0x4117A2 = SAUVEGARDE global->instance du
-    // D3DLIGHT9 soleil (0x68 = sizeof(D3DLIGHT9)), PAS une « météo à zéro ». Non modélisé ici (aucun
-    // lecteur de weather_) : le fill(0) est un placeholder inobservable. Cf. .h:275 et
+    // --- Success branch: atmosphere[+644]=1, this+4=1, default weather, Atmosphere.DAT ---
+    // *(atmosphere+644)=1 (cAtmosphere internal marker) @0x411765 (eax=[ebx+8]=cAtmosphere
+    // object, 0x284=644).
+    // EW-02 (Pass 4/W11): the "C-03 fix" that armed the flag was a TRAP, reverted here (chain
+    // re-proven in IDA, idaTs2 read-only). g_WorldEnv+4 (0x18C67C8, g_WorldEnvAtmInitFlag) is
+    // reset to 0 on every zone entry -> World_LoadMap runs 1x/ZONE, not 1x/session:
+    // World_LoadMap @0x41176E arms the flag (ebx=this=g_WorldEnv 0x18C67C4); step 1 of
+    // Scene_EnterWorldUpdate case 1 @0x52C091 (counter incremented 0,1,...,19 @0x52C106, steps
+    // run IN ORDER so step 1 always precedes step 7) = World_LoadZoneResource case 1 @0x4DCBB1
+    // -> WSndMgr_Free 0x4DB060 @0x4DB09E -> World_UnloadMap 0x411A80 @0x411A9F clears the flag
+    // (guarded by `if (this+8)` @0x411A89, true after the 1st load since this+8 = non-null
+    // cAtmosphere) before step 7 (case 7 @0x4DD202) rereads it (=0) -> @0x4DD217 doesn't skip ->
+    // World_LoadMap re-runs. The case-7 `||` short-circuit is thus a defensive guard never taken
+    // in this flow. Before C-03 the C++ port never armed the flag -> LoadMap ran every zone:
+    // ACCIDENTALLY CORRECT. C-03 armed the flag -> 1x/session = a fidelity REGRESSION, reverted
+    // here: we do NOT arm `atmosphereLoaded_`, so step 7 (`proceed = atmosphereLoaded_`, always
+    // false) replays LoadMap every zone = the binary's exact behavior. Do NOT port
+    // World_UnloadMap "to compensate": that would be a harmful no-op. Its guard @0x411A89
+    // `if (this+8)` -> in ClientSource `atmosphere_` is ALWAYS null (WorldAssets::AllocAtmosphere
+    // returns nullptr by design, WorldIntegration.cpp:302) -> systematic early-return -> the flag
+    // would NEVER be cleared -> the 1x/session bug would come back, plus 3 dangling hooks
+    // (the "code nobody calls" anti-pattern). Reconsider ONLY if SilverLining ever gets linked
+    // (atmosphere_ non-null), and then in WorldIntegration (EW-03), not here.
+    valid_ = true;                       // this+4 = 1  @0x41176E — literal write, no reader outside WorldMap
+    // (NOT `atmosphereLoaded_ = true`: see EW-02 above — flag left at 0 -> LoadMap 1x/zone.)
+    // Str_Assign(mapName): stores the map name (byte_815190 in the binary) — omitted (leaf).
+    // EW-05: qmemcpy(this+180, &dword_18C5358, 0x68) @0x4117A2 = global->instance SAVE of the
+    // sun D3DLIGHT9 (0x68 = sizeof(D3DLIGHT9)), NOT "weather zeroed out". Not modeled here (no
+    // reader of weather_): the fill(0) is an unobservable placeholder. See .h:275 and
     // Gfx/SilverLiningSky.cpp:217-222 / Env_UpdateSunLight 0x412210.
     weather_.fill(0);
 
-    // File_IfstreamOpen("Atmosphere.DAT") : si absent/vide -> géoloc par défaut (Séoul) ;
-    // sinon parse ligne à ligne (Istream_GetChar/Ostream_WritePad) puis sub_4135F0 + World_FinishLoad.
+    // File_IfstreamOpen("Atmosphere.DAT"): if absent/empty -> default geolocation (Seoul);
+    // otherwise parse line by line (Istream_GetChar/Ostream_WritePad) then sub_4135F0 + World_FinishLoad.
     bool weatherOk = hooks_.loadWeatherDat
                          ? hooks_.loadWeatherDat(hooks_.user, kAtmosphereDatFile)
                          : false;
@@ -455,198 +307,18 @@ bool WorldMap::LoadMap(const std::string& mapName, const std::string& drmKey) {
     } else {
         if (hooks_.finishLoad) hooks_.finishLoad(hooks_.user); // World_FinishLoad 0x411c40
     }
-    return true; // renvoie 1
+    return true; // returns 1
 }
 
 // ===========================================================================
-// World_LoadZoneResource 0x4dcb60 — aiguillage par type de ressource.
-// Renvoie l'octet de retour d'origine (LOBYTE(v3)).
-// ===========================================================================
-unsigned char WorldMap::LoadZoneResource(int zoneId, ResourceKind kind) {
-    // LOBYTE(v3) = a3 (kind) à l'entrée ; conservé pour les cas qui ne le réécrivent pas.
-    int v3 = static_cast<int>(kind);
-
-    switch (kind) {
-        case ResourceKind::FreeSound: // case 1
-            v3 = hooks_.freeZoneSound ? (hooks_.freeZoneSound(hooks_.user) ? 1 : 0) : 0;
-            return static_cast<unsigned char>(v3);
-
-        case ResourceKind::MapFileWG: { // case 2  .WG
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtWG, fileId);
-                v3 = hooks_.loadMapFileWG ? (hooks_.loadMapFileWG(hooks_.user, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::ObjectsWO: { // case 3  .WO
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtWO, fileId);
-                v3 = hooks_.loadObjectsWO ? (hooks_.loadObjectsWO(hooks_.user, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::ObjectsWP: { // case 4  .WP
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtWP, fileId);
-                v3 = hooks_.loadObjectsWP ? (hooks_.loadObjectsWP(hooks_.user, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::ShadowTex: { // case 5  .SHADOW
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtShadow, fileId);
-                v3 = hooks_.loadShadowTexture ? (hooks_.loadShadowTexture(hooks_.user, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::WorldModel: { // case 6  .WM + .WJ
-            int fileId = ZoneIdToFileId(zoneId);
-            if (fileId == -1) return static_cast<unsigned char>(fileId); // 0xFF
-
-            // Chemin .WM principal.
-            std::string wm = ZoneModelPathWM(fileId, flagZ291Variant);
-            // Zones 50/52/170 : double chargement (secondaire Z170_2.WM dans le slot Secondary).
-            if (fileId == 170 || fileId == 50 || fileId == 52) {
-                if (hooks_.loadFaces)
-                    hooks_.loadFaces(hooks_.user, CollisionSlot::Secondary,
-                                     "G03_GDATA\\D07_GWORLD\\Z170_2.WM");
-                // wm reste Z170_1.WM (déjà renvoyé par ZoneModelPathWM).
-            }
-            // MapColl_LoadFaces(this+0xA8, wm) — collision principale.
-            // CONFIRMED ex-VeryOldClient: WORLD_FOR_GXD::LoadWM (WM1->mRANGE1). Ancre IDA :
-            // MapColl_LoadFaces 0x694510. NB : la donnée chargée reste un buffer opaque
-            // (CollisionMesh.raw) jamais décodé ni requêté ici -> voir TODO hauteur de sol dans
-            // WorldIntegration.cpp::LoadFaces (gaps G01/G02, TS2_WORLD_ROSETTA.md §3).
-            if (hooks_.loadFaces) hooks_.loadFaces(hooks_.user, CollisionSlot::Main, wm.c_str());
-
-            // Gap G02 : relier la maille décodée de la couche principale (this+0xA8) pour les
-            // requêtes de sol/collision (résout le TODO SetCollisionMesh). La MapColl runtime
-            // porte faces+quadtree in situ ; ici on pointe la donnée déjà décodée par G01.
-            if (hooks_.queryCollisionMesh)
-                collisionMesh_ = hooks_.queryCollisionMesh(hooks_.user, CollisionSlot::Main);
-
-            // Chemin .WJ secondaire -> MapColl_LoadFaces(this+0x150, wj) — CONFLICT C-01 (WJ
-            // absent de VeryOldClient, IDA gagne ; cf. ZoneModelPathWJ 0x4dd0b4 ci-dessus).
-            std::string wj = ZoneModelPathWJ(fileId);
-            v3 = hooks_.loadFaces ? (hooks_.loadFaces(hooks_.user, CollisionSlot::WJ, wj.c_str()) ? 1 : 0) : 0;
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::Atmosphere: { // case 7  .ATM
-            // a2 == -1 -> saut (renvoie v3 = kind à l'entrée).
-            if (zoneId == -1) return static_cast<unsigned char>(v3);
-            // if (atmosphereLoaded || World_LoadMap(...)) { charger .ATM }
-            // Structure byte-exacte (World_LoadZoneResource 0x4dcb60 case 7 : `byte_18C67C8 ||
-            // World_LoadMap 0x4116b0`), lecture du garde @0x4DD202 / saut @0x4DD217.
-            // EW-02 (W11) : `atmosphereLoaded_` reste TOUJOURS false (LoadMap ne l'arme plus, cf. plus
-            // haut) -> `proceed` est faux -> World_LoadMap est rejoué À CHAQUE zone, exactement comme le
-            // binaire (où World_UnloadMap 0x411A80 efface le flag au pas 1 avant le pas 7). Le court-
-            // circuit `||` reproduit ainsi son effet net sans avoir d'objet atmosphère à libérer.
-            bool proceed = atmosphereLoaded_;
-            if (!proceed) {
-                bool ok = LoadMap(kAtmosphereResourceDir); // -> dword_18C67C4, device g_GfxRenderer_pDevice
-                v3 = ok ? 1 : 0;
-                proceed = ok;
-            }
-            if (proceed) {
-                // ATM utilise le zoneId BRUT (a2), pas le fileId.
-                std::string p = FormatZone(kFmtAtm, zoneId);
-                v3 = hooks_.loadDataFile ? (hooks_.loadDataFile(hooks_.user, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::Minimap01: { // case 8
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtMinimap1, fileId);
-                v3 = hooks_.loadMinimap ? (hooks_.loadMinimap(hooks_.user, 1, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::Minimap02: { // case 9
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtMinimap2, fileId);
-                v3 = hooks_.loadMinimap ? (hooks_.loadMinimap(hooks_.user, 2, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::Minimap03: { // case 10
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtMinimap3, fileId);
-                v3 = hooks_.loadMinimap ? (hooks_.loadMinimap(hooks_.user, 3, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::WorldSound: { // case 11  .WSOUND (Z%03d\Z%03d.WSOUND)
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone2(kFmtWSound, fileId, fileId);
-                v3 = hooks_.loadWorldSound ? (hooks_.loadWorldSound(hooks_.user, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        case ResourceKind::WorldBgm: { // case 12  .BGM
-            int fileId = ZoneIdToFileId(zoneId);
-            v3 = fileId;
-            if (fileId != -1) {
-                std::string p = FormatZone(kFmtBgm, fileId);
-                v3 = hooks_.loadWorldBgm ? (hooks_.loadWorldBgm(hooks_.user, p.c_str()) ? 1 : 0) : 0;
-            }
-            return static_cast<unsigned char>(v3);
-        }
-        default: // switch default : renvoie v3 inchangé (= kind).
-            return static_cast<unsigned char>(v3);
-    }
-}
-
-// ===========================================================================
-// World_LoadCurrentZoneModel 0x4dd6e0 — recharge la collision principale (this+0xA8)
-// avec le modèle .WM de la couche `mode` de la zone courante (g_SelfMorphNpcId).
-// ===========================================================================
-int WorldMap::LoadCurrentZoneModel(int mode) {
-    int fileId = ZoneIdToFileId(currentZoneId_); // World_ZoneIdToFileId(dword_1675A98)
-    if (fileId == -1) return fileId;             // -1
-
-    std::string path = CurrentZoneModelPath(fileId, mode);
-
-    // result = Crt_Strcmp(path, "") : 0 si path vide -> pas de rechargement (renvoie 0).
-    if (path.empty()) return 0;
-
-    // MapColl_Free(this+0xA8) puis MapColl_LoadFaces(this+0xA8, path).
-    if (hooks_.freeFaces) hooks_.freeFaces(hooks_.user, CollisionSlot::Main);
-    // Le free ci-dessus a pu invalider la maille précédemment liée : on la déreliera puis
-    // reliera après le rechargement (Gap G02, cohérence avec la couche Main courante).
-    collisionMesh_ = nullptr;
-    const int rc = hooks_.loadFaces
-                       ? (hooks_.loadFaces(hooks_.user, CollisionSlot::Main, path.c_str()) ? 1 : 0)
-                       : 0;
-    if (hooks_.queryCollisionMesh)
-        collisionMesh_ = hooks_.queryCollisionMesh(hooks_.user, CollisionSlot::Main);
-    return rc;
-}
-
-// ===========================================================================
-// namespace collision — moteur de requête terrain (Gaps G02/G03/G04).
-// Portage byte-fidèle des MapColl_* (voir WorldMap.h pour la correspondance this[]->mesh).
-// Chaque fonction porte les ancres @EA de la cible. Toutes build-safe.
+// namespace collision — terrain query engine (Gaps G02/G03/G04).
+// Byte-faithful port of the MapColl_* functions (see WorldMap.h for the this[]->mesh
+// correspondence). Every function carries the target's @EA anchors. All build-safe.
 // ===========================================================================
 namespace collision {
 namespace {
 
-// this[1] : la MapColl est active dès qu'une maille (faces + quadtree) est chargée.
+// this[1]: the MapColl is active as soon as a mesh (faces + quadtree) is loaded.
 inline bool MeshActive(const asset::CollisionMesh& m) {
     return !m.nodes.empty() && !m.tris.empty();
 }
@@ -654,28 +326,28 @@ inline float Dot3(float ax, float ay, float az, float bx, float by, float bz) {
     return ax * bx + ay * by + az * bz;
 }
 
-// Descente de localisation de point en XZ, commune à MapColl_GetGroundHeight 0x697130
-// (0x697148..0x6971d9) et MapColl_PointInMeshXZ 0x695dc0 (0x695dd9..0x695e80).
-// Renvoie l'index de la FEUILLE contenant (x,z), ou -1 si (x,z) est hors du quadtree.
+// XZ point-location descent, shared by MapColl_GetGroundHeight 0x697130
+// (0x697148..0x6971d9) and MapColl_PointInMeshXZ 0x695dc0 (0x695dd9..0x695e80).
+// Returns the index of the LEAF containing (x,z), or -1 if (x,z) is outside the quadtree.
 int LocateLeafXZ(const asset::CollisionMesh& m, float x, float z) {
     const auto& nodes = m.nodes;
-    uint32_t nodeIdx = 0;                                   // racine = this[35] index 0
-    if (nodes[0].child[0] != -1) {                          // 0x697159 : racine non-feuille
+    uint32_t nodeIdx = 0;                                   // root = this[35] index 0
+    if (nodes[0].child[0] != -1) {                          // 0x697159: root is not a leaf
         for (;;) {
             const asset::CollisionQuadNode& n = nodes[nodeIdx];
             int c = 0;
-            for (; c < 4; ++c) {                            // 0x697182 : scan des 4 enfants
+            for (; c < 4; ++c) {                            // 0x697182: scan the 4 children
                 const int32_t ci = n.child[c];
                 if (ci < 0 || static_cast<size_t>(ci) >= nodes.size())
-                    continue;                               // guard OOB (données malformées)
+                    continue;                               // OOB guard (malformed data)
                 const asset::CollisionQuadNode& cn = nodes[static_cast<size_t>(ci)];
-                if (x >= cn.bboxMin[0] && x <= cn.bboxMax[0] &&   // 0x6971ba : test bbox XZ
+                if (x >= cn.bboxMin[0] && x <= cn.bboxMax[0] &&   // 0x6971ba: XZ bbox test
                     z >= cn.bboxMin[2] && z <= cn.bboxMax[2])
                     break;
             }
-            if (c == 4) return -1;                          // 0x6971c3 : aucun enfant contenant
-            nodeIdx = static_cast<uint32_t>(n.child[c]);    // 0x6971c7 : descente
-            if (nodes[nodeIdx].child[0] == -1) break;       // 0x6971d9 : feuille atteinte
+            if (c == 4) return -1;                          // 0x6971c3: no containing child
+            nodeIdx = static_cast<uint32_t>(n.child[c]);    // 0x6971c7: descend
+            if (nodes[nodeIdx].child[0] == -1) break;       // 0x6971d9: leaf reached
         }
     }
     return static_cast<int>(nodeIdx);
@@ -718,7 +390,7 @@ bool PointInTriangleXZ(const asset::CollisionMesh& mesh, uint32_t faceIndex,
                        float px, float pz) {
     if (faceIndex >= mesh.tris.size()) return false;
     const asset::CollisionFace& f = mesh.tris[faceIndex];
-    // Barycentrique dans le plan XZ (0x695c84..0x695d18).
+    // Barycentric in the XZ plane (0x695c84..0x695d18).
     const float e0x = f.v1.position[0] - f.v0.position[0];
     const float e0z = f.v1.position[2] - f.v0.position[2];
     const float e1x = f.v2.position[0] - f.v0.position[0];
@@ -740,34 +412,34 @@ bool PointInTriangleXZ(const asset::CollisionMesh& mesh, uint32_t faceIndex,
     return (u + v) <= 1.0f;                                 // 0x695da5
 }
 
-// MapColl_GetGroundHeight 0x697130 — « le sol nul » comblé.
+// MapColl_GetGroundHeight 0x697130 — "null ground" filled in.
 bool GetGroundHeight(const asset::CollisionMesh& mesh, float x, float z,
                      float& outGroundY, bool a5CeilingGiven, float a6Ceiling,
                      bool a7TwoSide, bool a8OnlyOne) {
-    if (!MeshActive(mesh)) return false;                    // 0x697135 : if (!this[1]) return 0
-    const int leaf = LocateLeafXZ(mesh, x, z);              // descente XZ jusqu'à la feuille
-    if (leaf < 0) return false;                             // hors quadtree (0x6971c3/0x697226)
+    if (!MeshActive(mesh)) return false;                    // 0x697135: if (!this[1]) return 0
+    const int leaf = LocateLeafXZ(mesh, x, z);              // XZ descent down to the leaf
+    if (leaf < 0) return false;                             // outside the quadtree (0x6971c3/0x697226)
     const asset::CollisionQuadNode& node = mesh.nodes[static_cast<size_t>(leaf)];
     const float ceiling = a5CeilingGiven ? a6Ceiling : mesh.nodes[0].bboxMax[1]; // 0x6971e5 (node0 +16)
     bool hit = false;                                       // v18
-    for (uint32_t i = 0; i < node.trisNum; ++i) {           // 0x697215 : faces de la feuille
+    for (uint32_t i = 0; i < node.trisNum; ++i) {           // 0x697215: leaf faces
         const size_t idx = static_cast<size_t>(node.trisIndex) + i;
         if (idx >= mesh.triIndices.size()) break;           // guard
         const uint32_t faceIdx = mesh.triIndices[idx];      // trisIndex[i] -> face
         if (faceIdx >= mesh.tris.size()) continue;          // guard
         const asset::CollisionFace& f = mesh.tris[faceIdx];
         const float b = f.plane[1];                         // this[22]+156*f+128 (= normal.y)
-        if (!a7TwoSide && b <= 0.0f) continue;              // 0x697259 : filtre marchable
-        if (b == 0.0f) continue;                            // 0x697288 : garde division
-        // y = (d - a*x - c*z) / b — plane-solve (0x6972ad, plan @+124/+128/+132/+136).
+        if (!a7TwoSide && b <= 0.0f) continue;              // 0x697259: walkable filter
+        if (b == 0.0f) continue;                            // 0x697288: division guard
+        // y = (d - a*x - c*z) / b — plane-solve (0x6972ad, plane @+124/+128/+132/+136).
         const float y = (f.plane[3] - x * f.plane[0] - z * f.plane[2]) / b;
         if (y <= ceiling && RayHitTriangle(mesh, faceIdx, x, y, z)) {   // 0x6972ca
             if (!hit) {
                 outGroundY = y;                             // 0x6972df
                 hit = true;
-                if (a8OnlyOne) return true;                 // 0x6972ec : 1er hit
+                if (a8OnlyOne) return true;                 // 0x6972ec: 1st hit
             } else if (y > outGroundY) {
-                outGroundY = y;                             // 0x6972fb : retenir le plus haut
+                outGroundY = y;                             // 0x6972fb: keep the highest
             }
         }
     }
@@ -776,7 +448,7 @@ bool GetGroundHeight(const asset::CollisionMesh& mesh, float x, float z,
 
 // World_IsPointOnGround 0x540d40.
 bool IsPointOnGround(const asset::CollisionMesh& mesh, float x, float y, float z) {
-    float out = 0.0f;                                       // plafond = y+20 ; a5=1, a7=0, a8=1
+    float out = 0.0f;                                       // ceiling = y+20; a5=1, a7=0, a8=1
     return GetGroundHeight(mesh, x, z, out, true, y + 20.0f, false, true); // 0x540d59/0x540d93
 }
 
@@ -786,7 +458,7 @@ bool PointInMeshXZ(const asset::CollisionMesh& mesh, float x, float z) {
     const int leaf = LocateLeafXZ(mesh, x, z);
     if (leaf < 0) return false;
     const asset::CollisionQuadNode& node = mesh.nodes[static_cast<size_t>(leaf)];
-    for (uint32_t i = 0; i < node.trisNum; ++i) {           // 0x695e9d : aucun filtre marchable
+    for (uint32_t i = 0; i < node.trisNum; ++i) {           // 0x695e9d: no walkable filter
         const size_t idx = static_cast<size_t>(node.trisIndex) + i;
         if (idx >= mesh.triIndices.size()) break;
         if (PointInTriangleXZ(mesh, mesh.triIndices[idx], x, z)) return true;
@@ -799,11 +471,11 @@ bool RayPlaneTriHit(const asset::CollisionMesh& mesh, uint32_t faceIndex,
                     const float start[3], const float dir[3], float outHit[3], bool twoSide) {
     if (faceIndex >= mesh.tris.size()) return false;
     const asset::CollisionFace& f = mesh.tris[faceIndex];
-    const float denom = f.plane[1] * dir[1] + f.plane[2] * dir[2] + f.plane[0] * dir[0]; // 0x695f1b : n·dir
+    const float denom = f.plane[1] * dir[1] + f.plane[2] * dir[2] + f.plane[0] * dir[0]; // 0x695f1b: n·dir
     if (twoSide) {
         if (denom == 0.0f) return false;                    // 0x695f4a
     } else if (denom >= 0.0f) {
-        return false;                                       // 0x695f30 : une seule face
+        return false;                                       // 0x695f30: single-sided face
     }
     // t = (d - n·start) / (n·dir) — 0x695f77.
     const float t = (f.plane[3]
@@ -816,45 +488,45 @@ bool RayPlaneTriHit(const asset::CollisionMesh& mesh, uint32_t faceIndex,
     return RayHitTriangle(mesh, faceIndex, outHit[0], outHit[1], outHit[2]); // 0x695f32
 }
 
-// Collide_SegmentAABB 0x69fb20 — SAT segment(point p, vecteur dir) vs AABB [bmin,bmax].
-// Les termes « *0.0 » du désassemblage (axes unitaires de l'AABB) valent exactement 0 et
-// sont donc élidés sans perte de fidélité.
+// Collide_SegmentAABB 0x69fb20 — SAT segment(point p, vector dir) vs AABB [bmin,bmax].
+// The disassembly's "*0.0" terms (AABB unit axes) are exactly 0 and are therefore
+// elided without loss of fidelity.
 bool SegmentAABB(const float p[3], const float dir[3],
                  const float bmin[3], const float bmax[3]) {
-    if (p[0] >= bmin[0] && p[0] <= bmax[0] &&               // 0x69fb78 : point dans la boîte
+    if (p[0] >= bmin[0] && p[0] <= bmax[0] &&               // 0x69fb78: point inside the box
         p[1] >= bmin[1] && p[1] <= bmax[1] &&
         p[2] >= bmin[2] && p[2] <= bmax[2])
         return true;
-    const float hx = (bmax[0] - bmin[0]) * 0.5f;            // demi-extents
+    const float hx = (bmax[0] - bmin[0]) * 0.5f;            // half-extents
     const float hy = (bmax[1] - bmin[1]) * 0.5f;
     const float hz = (bmax[2] - bmin[2]) * 0.5f;
-    const float mx = p[0] - (bmin[0] + bmax[0]) * 0.5f;     // centre boîte -> point
+    const float mx = p[0] - (bmin[0] + bmax[0]) * 0.5f;     // box center -> point
     const float my = p[1] - (bmax[1] + bmin[1]) * 0.5f;
     const float mz = p[2] - (bmax[2] + bmin[2]) * 0.5f;
-    // Axes de face de l'AABB (0x69fc60/0x69fcbc/0x69fd06).
+    // AABB face axes (0x69fc60/0x69fcbc/0x69fd06).
     if (std::fabs(mx) > hx && mx * dir[0] >= 0.0f) return false;
     if (std::fabs(my) > hy && my * dir[1] >= 0.0f) return false;
     if (std::fabs(mz) > hz && mz * dir[2] >= 0.0f) return false;
     const float adx = std::fabs(dir[0]);
     const float ady = std::fabs(dir[1]);
     const float adz = std::fabs(dir[2]);
-    // Axes croisés dir × axes-AABB (0x69fd86/0x69fdb9/0x69fde2).
+    // Cross axes dir × AABB-axes (0x69fd86/0x69fdb9/0x69fde2).
     if (std::fabs(mz * dir[1] - my * dir[2]) > adz * hy + ady * hz) return false;
     if (std::fabs(mx * dir[2] - mz * dir[0]) > adz * hx + adx * hz) return false;
     if (ady * hx + adx * hy < std::fabs(my * dir[0] - mx * dir[1])) return false;
     return true;                                            // 0x69fc64
 }
 
-// MapColl_RaycastNearest 0x6960c0 — descente quadtree récursive, impact le plus proche.
+// MapColl_RaycastNearest 0x6960c0 — recursive quadtree descent, nearest impact.
 bool RaycastNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
                     const float start[3], const float dir[3],
                     uint32_t& outFaceIndex, float outHit[3], bool twoSide) {
     if (nodeIndex >= mesh.nodes.size()) return false;       // guard (child == -1 => 0xFFFFFFFF)
     const asset::CollisionQuadNode& node = mesh.nodes[nodeIndex];
-    if (node.trisNum == 0) return false;                    // 0x6960d7 : sous-arbre sans face
+    if (node.trisNum == 0) return false;                    // 0x6960d7: subtree with no face
     if (!SegmentAABB(start, dir, node.bboxMin, node.bboxMax)) return false; // 0x6960fd
     float best = -1.0f;                                     // v34
-    if (node.child[0] == -1) {                              // 0x696123 : feuille
+    if (node.child[0] == -1) {                              // 0x696123: leaf
         for (uint32_t i = 0; i < node.trisNum; ++i) {
             const size_t idx = static_cast<size_t>(node.trisIndex) + i;
             if (idx >= mesh.triIndices.size()) break;       // guard
@@ -872,7 +544,7 @@ bool RaycastNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
                 }
             }
         }
-    } else {                                                // 0x696129 : nœud interne (4 enfants)
+    } else {                                                // 0x696129: internal node (4 children)
         for (int c = 0; c < 4; ++c) {
             uint32_t childFace = 0;
             float childHit[3];
@@ -893,9 +565,9 @@ bool RaycastNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
     return best != -1.0f;                                   // 0x69623f
 }
 
-// MapColl_SlideMoveGround 0x697330 — glisse plaqué à la maille marchable (XZ) + résolution sol.
-// L'original renvoie les bits du y résolu (ou un passthrough) ; on expose un bool propre
-// (sol trouvé ?) + outPos toujours rempli.
+// MapColl_SlideMoveGround 0x697330 — slides pinned to the walkable mesh (XZ) + ground resolve.
+// The original returns the resolved y bits (or a passthrough); we expose a clean bool
+// (ground found?) + outPos always filled.
 bool SlideMoveGround(const asset::CollisionMesh& mesh, const float from[3],
                      const float to[3], float speed, float dt, float outPos[3]) {
     if (!MeshActive(mesh) || speed <= 0.0f || dt <= 0.0f) { // 0x697365
@@ -903,51 +575,51 @@ bool SlideMoveGround(const asset::CollisionMesh& mesh, const float from[3],
         return false;
     }
     const float maxStep = speed * dt;                       // 0x697380
-    outPos[0] = from[0];                                    // 0x697384 (y résolu en fin)
+    outPos[0] = from[0];                                    // 0x697384 (y resolved at the end)
     outPos[2] = from[2];                                    // 0x697392
     float dx = to[0] - outPos[0];
     float dz = to[2] - outPos[2];
     float dist = std::sqrt(dx * dx + dz * dz);              // 0x6973ae
     bool doSnap = (dist <= maxStep);                        // 0x6973b9
     if (!doSnap) {
-        for (;;) {                                          // 0x6973cf : marche par pas maxStep
+        for (;;) {                                          // 0x6973cf: step by maxStep
             const float inv = 1.0f / dist;
             const float sx = dx * inv * maxStep + outPos[0];
             const float sz = dz * inv * maxStep + outPos[2];
-            if (!PointInMeshXZ(mesh, sx, sz)) break;        // 0x6973f8 : pas hors maille -> stop
-            outPos[0] = sx; outPos[2] = sz;                 // 0x697405 : valide le pas
+            if (!PointInMeshXZ(mesh, sx, sz)) break;        // 0x6973f8: step outside mesh -> stop
+            outPos[0] = sx; outPos[2] = sz;                 // 0x697405: commit the step
             dx = to[0] - outPos[0];
             dz = to[2] - outPos[2];
             dist = std::sqrt(dx * dx + dz * dz);            // 0x697426
-            if (dist <= maxStep) { doSnap = true; break; }  // 0x697431 : cible atteignable
+            if (dist <= maxStep) { doSnap = true; break; }  // 0x697431: target reachable
         }
     }
-    if (doSnap && PointInMeshXZ(mesh, to[0], to[2])) {      // 0x69744b : snap direct sur 'to'
+    if (doSnap && PointInMeshXZ(mesh, to[0], to[2])) {      // 0x69744b: direct snap onto 'to'
         outPos[0] = to[0]; outPos[2] = to[2];               // 0x69745c
     }
-    // Hauteur de sol au point final (a5=0,a6=0,a7=0,a8=1) — 0x697476.
+    // Ground height at the final point (a5=0,a6=0,a7=0,a8=1) — 0x697476.
     const bool found = GetGroundHeight(mesh, outPos[0], outPos[2], outPos[1],
                                        false, 0.0f, false, true);
-    if (!found) {                                           // 0x69747d : pas de sol -> reste sur place
+    if (!found) {                                           // 0x69747d: no ground -> stay in place
         outPos[0] = from[0]; outPos[1] = from[1]; outPos[2] = from[2];
     }
     return found;
 }
 
 // ===========================================================================
-// WG-02 — Chaîne de collision CAMÉRA (Camera_UpdateCollision 0x538580) : sweep de sphère vs
-// quadtree du terrain .WG. Portage byte-fidèle (ancre @EA sur chaque bloc). Le sweep opère sur
-// le slot 0 (= g_GameWorld lui-même, prouvé @0x5387b9 `mov ecx, offset g_GameWorld`) = .WG.
+// WG-02 — CAMERA collision chain (Camera_UpdateCollision 0x538580): sphere sweep vs
+// the .WG terrain quadtree. Byte-faithful port (@EA anchor on each block). The sweep operates
+// on slot 0 (= g_GameWorld itself, proven @0x5387b9 `mov ecx, offset g_GameWorld`) = .WG.
 // ===========================================================================
 
-// Collide_AABBOverlap_0 0x6a0600 — boxA=[amin,amax] recouvre boxB=[bmin,bmax] ?
+// Collide_AABBOverlap_0 0x6a0600 — boxA=[amin,amax] overlaps boxB=[bmin,bmax]?
 bool AABBOverlap(const float amin[3], const float amax[3],
                  const float bmin[3], const float bmax[3]) {
     return amin[0] <= bmax[0] && amin[1] <= bmax[1] && amin[2] <= bmax[2]      // 0x6a065f
         && amax[0] >= bmin[0] && amax[1] >= bmin[1] && amax[2] >= bmin[2];
 }
 
-// Collide_ProjectTriOnAxis 0x69f9c0 — min/max de {v0·axis, v1·axis, v2·axis}. tri9 = {v0,v1,v2}.
+// Collide_ProjectTriOnAxis 0x69f9c0 — min/max of {v0·axis, v1·axis, v2·axis}. tri9 = {v0,v1,v2}.
 void ProjectTriOnAxis(const float axis[3], const float tri9[9], float& outMin, float& outMax) {
     const float d0 = tri9[1] * axis[1] + tri9[2] * axis[2] + tri9[0] * axis[0]; // v0·axis 0x69f9e3
     const float d1 = tri9[4] * axis[1] + tri9[3] * axis[0] + tri9[5] * axis[2]; // v1·axis 0x69f9f9
@@ -959,7 +631,7 @@ void ProjectTriOnAxis(const float axis[3], const float tri9[9], float& outMin, f
     else outMin = d2;                                                           // 0x69fa50
 }
 
-// Collide_ProjectBoxOnAxis 0x69fa80 — projette l'OBB (center, axes9=3 lignes 3x3, half) sur axis.
+// Collide_ProjectBoxOnAxis 0x69fa80 — projects the OBB (center, axes9=3 rows 3x3, half) onto axis.
 void ProjectBoxOnAxis(const float axis[3], const float center[3], const float axes9[9],
                       const float half[3], float& outMin, float& outMax) {
     const float c = center[1] * axis[1] + center[2] * axis[2] + center[0] * axis[0]; // 0x69faa2
@@ -970,13 +642,13 @@ void ProjectBoxOnAxis(const float axis[3], const float center[3], const float ax
     outMax = c + r;                                                            // 0x69fb0c
 }
 
-// Collide_TriAABB 0x6a00e0 — SAT triangle vs AABB (1 normale + 3 faces AABB + 9 arête×axe).
-// Sommets lus @+4/+44/+84 (face.v0/v1/v2.position, cf. asset::CollisionFace).
+// Collide_TriAABB 0x6a00e0 — SAT triangle vs AABB (1 normal + 3 AABB faces + 9 edge×axis).
+// Vertices read @+4/+44/+84 (face.v0/v1/v2.position, cf. asset::CollisionFace).
 bool TriAABB(const asset::CollisionFace& face, const float aabbMin[3], const float aabbMax[3]) {
     const float* v0 = face.v0.position;
     const float* v1 = face.v1.position;
     const float* v2 = face.v2.position;
-    // Court-circuit : un sommet dans l'AABB -> recouvrement (0x6a0150/0x6a01a2/0x6a01f4).
+    // Short-circuit: a vertex inside the AABB -> overlap (0x6a0150/0x6a01a2/0x6a01f4).
     if (v0[0] >= aabbMin[0] && v0[0] <= aabbMax[0] && v0[1] >= aabbMin[1] && v0[1] <= aabbMax[1] &&
         v0[2] >= aabbMin[2] && v0[2] <= aabbMax[2]) return true;
     if (v1[0] >= aabbMin[0] && v1[0] <= aabbMax[0] && v1[1] >= aabbMin[1] && v1[1] <= aabbMax[1] &&
@@ -984,7 +656,7 @@ bool TriAABB(const asset::CollisionFace& face, const float aabbMin[3], const flo
     if (v2[0] >= aabbMin[0] && v2[0] <= aabbMax[0] && v2[1] >= aabbMin[1] && v2[1] <= aabbMax[1] &&
         v2[2] >= aabbMin[2] && v2[2] <= aabbMax[2]) return true;
 
-    // Tri à plat + centre/demi-extents de l'AABB + axes identité (0x6a01ff..0x6a02f2).
+    // Flattened triangle + AABB center/half-extents + identity axes (0x6a01ff..0x6a02f2).
     const float tri9[9]   = { v0[0], v0[1], v0[2], v1[0], v1[1], v1[2], v2[0], v2[1], v2[2] };
     const float center[3] = { (aabbMin[0] + aabbMax[0]) * 0.5f,
                               (aabbMin[1] + aabbMax[1]) * 0.5f,
@@ -994,33 +666,33 @@ bool TriAABB(const asset::CollisionFace& face, const float aabbMin[3], const flo
                               (aabbMax[2] - aabbMin[2]) * 0.5f };
     const float axes9[9]  = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f }; // v58
 
-    // Arêtes (0x6a02fe..0x6a0374).
+    // Edges (0x6a02fe..0x6a0374).
     const float e0[3] = { v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2] };
     const float e1[3] = { v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2] };
     const float e2[3] = { v0[0] - v2[0], v0[1] - v2[1], v0[2] - v2[2] };
 
     float triMin, triMax, boxMin, boxMax;
-    // Axe 0 : normale du triangle = cross(e0, e1) (0x6a03a3..0x6a03e1).
+    // Axis 0: triangle normal = cross(e0, e1) (0x6a03a3..0x6a03e1).
     {
         const float n[3] = { e1[2] * e0[1] - e1[1] * e0[2],
                              e1[0] * e0[2] - e1[2] * e0[0],
                              e1[1] * e0[0] - e1[0] * e0[1] };
         ProjectTriOnAxis(n, tri9, triMin, triMax);                    // 0x6a03e5
         ProjectBoxOnAxis(n, center, axes9, half, boxMin, boxMax);     // 0x6a040d
-        if (!(triMin <= boxMax && triMax >= boxMin)) return false;    // 0x6a0432 (sinon return 0)
+        if (!(triMin <= boxMax && triMax >= boxMin)) return false;    // 0x6a0432 (else return 0)
     }
-    // Axes 1-3 : les 3 faces de l'AABB (0x6a0438..0x6a04a9).
+    // Axes 1-3: the 3 AABB faces (0x6a0438..0x6a04a9).
     for (int a = 0; a < 3; ++a) {
         ProjectTriOnAxis(&axes9[3 * a], tri9, triMin, triMax);
         ProjectBoxOnAxis(&axes9[3 * a], center, axes9, half, boxMin, boxMax);
         if (triMin > boxMax || triMax < boxMin) return false;         // 0x6a049c
     }
-    // Axes 4-12 : 9 produits croisés arête_i × axeBoîte_j. Projection boîte INLINE (axes
-    // identité -> termes *0.0 élidés, cf. 0x6a052d..0x6a0595 — même politique que SegmentAABB).
+    // Axes 4-12: 9 cross products edge_i × boxAxis_j. INLINE box projection (identity
+    // axes -> *0.0 terms elided, cf. 0x6a052d..0x6a0595 — same policy as SegmentAABB).
     const float* edges[3] = { e0, e1, e2 };
-    for (int j = 0; j < 3; ++j) {                                     // axe de la boîte (v17)
+    for (int j = 0; j < 3; ++j) {                                     // box axis (v17)
         const float* bax = &axes9[3 * j];
-        for (int i = 0; i < 3; ++i) {                                 // arête du triangle (v19)
+        for (int i = 0; i < 3; ++i) {                                 // triangle edge (v19)
             const float* e = edges[i];
             const float ax[3] = { e[2] * bax[1] - e[1] * bax[2],      // 0x6a04e9
                                   e[0] * bax[2] - e[2] * bax[0],      // 0x6a04fa
@@ -1035,13 +707,13 @@ bool TriAABB(const asset::CollisionFace& face, const float aabbMin[3], const flo
     return true;                                                      // 0x6a05d5
 }
 
-// MapColl_SweepSphereNearest 0x696ad0 — sweep sphère/rayon épais vs quadtree, impact le plus proche.
+// MapColl_SweepSphereNearest 0x696ad0 — thick-ray/sphere sweep vs quadtree, nearest impact.
 bool SweepSphereNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
                         const float from[3], const float to[3], float radius, float outHit[3]) {
-    if (nodeIndex >= mesh.nodes.size()) return false;                 // enfant == -1 (0xFFFFFFFF)
+    if (nodeIndex >= mesh.nodes.size()) return false;                 // child == -1 (0xFFFFFFFF)
     const asset::CollisionQuadNode& node = mesh.nodes[nodeIndex];
-    if (node.trisNum == 0) return false;                              // 0x696ae7 : *(nodes+48*a2+24)==0
-    // AABB du segment [from,to] gonflée de ±radius (0x696b0c..0x696ba5).
+    if (node.trisNum == 0) return false;                              // 0x696ae7: *(nodes+48*a2+24)==0
+    // Segment [from,to] AABB inflated by ±radius (0x696b0c..0x696ba5).
     const float segMin[3] = { std::min(from[0], to[0]) - radius,
                               std::min(from[1], to[1]) - radius,
                               std::min(from[2], to[2]) - radius };
@@ -1050,35 +722,35 @@ bool SweepSphereNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
                               std::max(from[2], to[2]) + radius };
     if (!AABBOverlap(segMin, segMax, node.bboxMin, node.bboxMax)) return false; // 0x696bcd
     float best = -1.0f;                                               // v56
-    if (node.child[0] == -1) {                                        // 0x696be3 : feuille
+    if (node.child[0] == -1) {                                        // 0x696be3: leaf
         const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
-        const float len = std::sqrt(dx * dx + dy * dy + dz * dz);     // 0x696cf2 : v76
+        const float len = std::sqrt(dx * dx + dy * dy + dz * dz);     // 0x696cf2: v76
         if (radius + 1.0f > len) return false;                        // 0x696d09
         const float inv = 1.0f / len;                                 // 0x696d24
         const float dir[3] = { dx * inv, dy * inv, dz * inv };        // 0x696d34..0x696d48
-        const float lenSq = len * len;                               // 0x696e15 : v76*v76 (borne de marche)
+        const float lenSq = len * len;                               // 0x696e15: v76*v76 (walk bound)
         for (uint32_t i = 0; i < node.trisNum; ++i) {                 // 0x696f93
             const size_t idx = static_cast<size_t>(node.trisIndex) + i;
             if (idx >= mesh.triIndices.size()) break;                 // guard
             const uint32_t faceIdx = mesh.triIndices[idx];            // triIndices[node.trisIndex+i]
             if (faceIdx >= mesh.tris.size()) continue;                // guard
             const asset::CollisionFace& face = mesh.tris[faceIdx];
-            if (!TriAABB(face, segMin, segMax)) continue;             // 0x696d73 : coarse (tri vs segAABB)
-            // Boîte de demi-côté radius centrée sur `from` (0x696d80..0x696dec).
+            if (!TriAABB(face, segMin, segMax)) continue;             // 0x696d73: coarse (tri vs segAABB)
+            // Box of half-side radius centered on `from` (0x696d80..0x696dec).
             float boxMin[3] = { from[0] - radius, from[1] - radius, from[2] - radius };
             float boxMax[3] = { from[0] + radius, from[1] + radius, from[2] + radius };
-            float center[3] = { from[0], from[1], from[2] };          // v57/v59/v60 (traceur d'impact)
+            float center[3] = { from[0], from[1], from[2] };          // v57/v59/v60 (impact tracer)
             bool hit = false;
-            if (TriAABB(face, boxMin, boxMax)) {                      // 0x696e08 : boîte à `from`
+            if (TriAABB(face, boxMin, boxMax)) {                      // 0x696e08: box at `from`
                 hit = true;                                           // impact = from (dist²=0)
             } else {
-                for (;;) {                                            // marche par pas `dir` (0x696e21)
+                for (;;) {                                            // step by `dir` (0x696e21)
                     boxMin[0] += dir[0]; boxMin[1] += dir[1]; boxMin[2] += dir[2];
                     boxMax[0] += dir[0]; boxMax[1] += dir[1]; boxMax[2] += dir[2];
                     center[0] += dir[0]; center[1] += dir[1]; center[2] += dir[2];
                     const float cdx = center[0] - from[0], cdy = center[1] - from[1],
                                 cdz = center[2] - from[2];
-                    if (cdx * cdx + cdy * cdy + cdz * cdz > lenSq) break; // 0x696ead : au-delà du segment
+                    if (cdx * cdx + cdy * cdy + cdz * cdz > lenSq) break; // 0x696ead: past the segment
                     if (TriAABB(face, boxMin, boxMax)) { hit = true; break; } // 0x696eea
                 }
             }
@@ -1092,7 +764,7 @@ bool SweepSphereNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
                 }
             }
         }
-    } else {                                                         // nœud interne : 4 enfants (0x696bf1)
+    } else {                                                         // internal node: 4 children (0x696bf1)
         for (int c = 0; c < 4; ++c) {
             float childHit[3];
             if (SweepSphereNearest(mesh, static_cast<uint32_t>(node.child[c]),
@@ -1110,10 +782,10 @@ bool SweepSphereNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
     return best != -1.0f;                                            // 0x696faa
 }
 
-// Terrain_SweepSphereSegment 0x69a1f0 — descend les 4 enfants de la racine, impact le plus proche.
+// Terrain_SweepSphereSegment 0x69a1f0 — descends the root's 4 children, nearest impact.
 bool SweepSphereSegment(const asset::CollisionMesh& mesh, const float from[3], const float to[3],
                         float radius, float outHit[3]) {
-    if (!MeshActive(mesh)) return false;                             // 0x69a1f3 : if (!this[1])
+    if (!MeshActive(mesh)) return false;                             // 0x69a1f3: if (!this[1])
     if (from[0] == to[0] && from[1] == to[1] && from[2] == to[2]) return false; // 0x69a238
     const float segMin[3] = { std::min(from[0], to[0]) - radius,
                               std::min(from[1], to[1]) - radius,
@@ -1121,10 +793,10 @@ bool SweepSphereSegment(const asset::CollisionMesh& mesh, const float from[3], c
     const float segMax[3] = { std::max(from[0], to[0]) + radius,
                               std::max(from[1], to[1]) + radius,
                               std::max(from[2], to[2]) + radius };
-    // Gate sur la bbox de la RACINE (0x69a2fe) — la racine n'est JAMAIS testée comme feuille.
+    // Gate on the ROOT bbox (0x69a2fe) — the root is NEVER tested as a leaf.
     if (!AABBOverlap(segMin, segMax, mesh.nodes[0].bboxMin, mesh.nodes[0].bboxMax)) return false;
     float best = -1.0f;                                              // v36
-    for (int c = 0; c < 4; ++c) {                                    // 4 enfants de la racine (0x69a319)
+    for (int c = 0; c < 4; ++c) {                                    // 4 children of the root (0x69a319)
         float childHit[3];
         if (SweepSphereNearest(mesh, static_cast<uint32_t>(mesh.nodes[0].child[c]),
                                from, to, radius, childHit)) {        // 0x69a336
@@ -1140,16 +812,16 @@ bool SweepSphereSegment(const asset::CollisionMesh& mesh, const float from[3], c
     return best != -1.0f;                                           // 0x69a3e8
 }
 
-// World_IsPointBlocked 0x540da0 — bloqué si (a) pas de sol Main sous plafond p.y+20, OU (b) un
-// sol WJ existe au-dessus du sol Main (couche « eau/interdit »). GetGroundHeight en forme
-// (a5=1, a6=ceiling, a7=0, a8=1) — exactement les args des DEUX sites (0x540de1/0x540e43).
+// World_IsPointBlocked 0x540da0 — blocked if (a) no Main ground under ceiling p.y+20, OR (b) a
+// WJ ground exists above the Main ground ("water/forbidden" layer). GetGroundHeight shaped
+// (a5=1, a6=ceiling, a7=0, a8=1) — exactly the args at BOTH call sites (0x540de1/0x540e43).
 bool IsPointBlocked(const asset::CollisionMesh& main, const asset::CollisionMesh* wj,
                     const float p[3]) {
     const float ceiling = p[1] + 20.0f;                             // 0x540db9
     float groundMain = 0.0f;
     if (!GetGroundHeight(main, p[0], p[2], groundMain, true, ceiling, false, true)) // 0x540de1
-        return true;                                                // 0x540dea : pas de sol -> bloqué
-    if (!wj) return false;                                          // couche WJ absente -> 2e test faux
+        return true;                                                // 0x540dea: no ground -> blocked
+    if (!wj) return false;                                          // WJ layer absent -> 2nd test false
     float groundWJ = 0.0f;
     const float ceiling2 = p[1] + 20.0f;                            // 0x540e01
     return GetGroundHeight(*wj, p[0], p[2], groundWJ, true, ceiling2, false, true) // 0x540e43
@@ -1157,12 +829,12 @@ bool IsPointBlocked(const asset::CollisionMesh& main, const asset::CollisionMesh
 }
 
 // ===========================================================================
-// WG-03 — Picking écran->terrain (Terrain_PickRayScreen 0x699a80).
+// WG-03 — Screen->terrain picking (Terrain_PickRayScreen 0x699a80).
 // ===========================================================================
 
-// Unprojection écran->rayon monde (0x699ae7..0x699b40). Dénominateurs W-1/H-1 (PAS W/H) ;
-// z=1 AVANT transform ; direction NON renormalisée après TransformNormal. Divisions en double
-// (v17/v18 rejoués vers float — fidèle au calcul FPU d'origine).
+// Screen->world ray unprojection (0x699ae7..0x699b40). W-1/H-1 denominators (NOT W/H);
+// z=1 BEFORE transform; direction NOT renormalized after TransformNormal. Divisions in double
+// (v17/v18 replayed to float — faithful to the original FPU computation).
 bool BuildScreenRay(const ScreenPickCamera& cam, int sx, int sy, float outOrigin[3],
                     float outDir[3]) {
     outOrigin[0] = cam.eye[0];                                      // g_CameraPos (0x699aa6)
@@ -1175,8 +847,8 @@ bool BuildScreenRay(const ScreenPickCamera& cam, int sx, int sy, float outOrigin
                               / static_cast<double>(cam.proj11));    // /proj._11 (0x699ae7)
     d[1] = static_cast<float>((static_cast<double>(sy) * -2.0 / h1 + 1.0)
                               / static_cast<double>(cam.proj22));    // /proj._22 (0x699b31)
-    d[2] = 1.0f;                                                     // 0x699b21 (espace vue LH)
-    // D3DXVec3TransformNormal(d, d, invView) — rotation 3x3 (row-vector), translation ignorée.
+    d[2] = 1.0f;                                                     // 0x699b21 (LH view space)
+    // D3DXVec3TransformNormal(d, d, invView) — 3x3 rotation (row-vector), translation ignored.
     outDir[0] = d[0] * cam.invView[0] + d[1] * cam.invView[4] + d[2] * cam.invView[8];  // 0x699b40
     outDir[1] = d[0] * cam.invView[1] + d[1] * cam.invView[5] + d[2] * cam.invView[9];
     outDir[2] = d[0] * cam.invView[2] + d[1] * cam.invView[6] + d[2] * cam.invView[10];
@@ -1186,18 +858,18 @@ bool BuildScreenRay(const ScreenPickCamera& cam, int sx, int sy, float outOrigin
 // Terrain_PickRayScreen 0x699a80.
 bool PickRayScreen(const asset::CollisionMesh& mesh, const ScreenPickCamera& cam,
                    int sx, int sy, uint32_t& outFaceIndex, float outHit[3], bool twoSide) {
-    if (!MeshActive(mesh)) return false;                            // 0x699a86 : if (!this[1])
+    if (!MeshActive(mesh)) return false;                            // 0x699a86: if (!this[1])
     float origin[3], dir[3];
     BuildScreenRay(cam, sx, sy, origin, dir);
     if (!SegmentAABB(origin, dir, mesh.nodes[0].bboxMin, mesh.nodes[0].bboxMax)) return false; // 0x699b5f
     float best = -1.0f;                                             // v16
-    for (int c = 0; c < 4; ++c) {                                   // 4 enfants de la racine (0x699b7f)
+    for (int c = 0; c < 4; ++c) {                                   // 4 children of the root (0x699b7f)
         uint32_t faceIdx = 0;
         float hit[3];
         if (RaycastNearest(mesh, static_cast<uint32_t>(mesh.nodes[0].child[c]),
                            origin, dir, faceIdx, hit, twoSide)) {   // 0x699ba9
             const float dx = hit[0] - origin[0], dy = hit[1] - origin[1], dz = hit[2] - origin[2];
-            const float d = std::sqrt(dx * dx + dy * dy + dz * dz); // 0x699bde : distance euclidienne
+            const float d = std::sqrt(dx * dx + dy * dy + dz * dz); // 0x699bde: Euclidean distance
             if (best == -1.0f || d < best) {                        // 0x699c25
                 best = d;
                 outFaceIndex = faceIdx;
@@ -1211,19 +883,19 @@ bool PickRayScreen(const asset::CollisionMesh& mesh, const ScreenPickCamera& cam
 } // namespace collision
 
 // ===========================================================================
-// Requêtes de sol / collision exposées par WorldMap — délèguent à collision:: sur la maille
-// principale liée (collisionMesh_). Build-safe : false / no-op tant qu'aucune maille n'est liée.
+// Ground/collision queries exposed by WorldMap — delegate to collision:: on the bound
+// main mesh (collisionMesh_). Build-safe: false/no-op as long as no mesh is bound.
 // ===========================================================================
 bool WorldMap::GetGroundHeight(float x, float z, float probeCeilingY, float& outGroundY) const {
-    if (!collisionMesh_) return false;                      // maille non liée -> sol indéterminé
-    // Forme consommateur (Char_Update 0x581e10 / World_IsPointOnGround 0x540d40) :
-    // a5=1 (plafond = probeCeilingY), a7=0, a8=1 (1er hit).
+    if (!collisionMesh_) return false;                      // mesh not bound -> ground undetermined
+    // Consumer shape (Char_Update 0x581e10 / World_IsPointOnGround 0x540d40):
+    // a5=1 (ceiling = probeCeilingY), a7=0, a8=1 (1st hit).
     return collision::GetGroundHeight(*collisionMesh_, x, z, outGroundY, true, probeCeilingY,
                                       false, true);
 }
 bool WorldMap::HasGroundAt(float x, float z) const {
     if (!collisionMesh_) return false;
-    float out = 0.0f;                                       // IsGroundBlocked-shape (plafond défaut)
+    float out = 0.0f;                                       // IsGroundBlocked-shape (default ceiling)
     return collision::GetGroundHeight(*collisionMesh_, x, z, out, false, 0.0f, false, true);
 }
 bool WorldMap::IsPointOnGround(float x, float y, float z) const {
@@ -1237,7 +909,7 @@ bool WorldMap::Raycast(const float start[3], const float dir[3], uint32_t& outFa
 }
 bool WorldMap::SlideMoveGround(const float from[3], const float to[3], float speed, float dt,
                                float outPos[3]) const {
-    if (!collisionMesh_) {                                  // pas de maille : reste sur place
+    if (!collisionMesh_) {                                  // no mesh: stay in place
         outPos[0] = from[0]; outPos[1] = from[1]; outPos[2] = from[2];
         return false;
     }

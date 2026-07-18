@@ -1,47 +1,47 @@
-// Asset/AtmosphereFile.h — parseur du format « .ATM » (état d'atmosphère SilverLining
-// sérialisé RAW, PAR ZONE) : G03_GDATA\D07_GWORLD\Z%03d.ATM. 89 fichiers réels livrés.
+// Asset/AtmosphereFile.h — parser for the ".ATM" format (SilverLining atmosphere state
+// serialized RAW, PER ZONE): G03_GDATA\D07_GWORLD\Z%03d.ATM. 89 real files shipped.
 //
-// === Sources IDA (vérité unique) ===
-//   Atmosphere_Deserialize   0x795A40  — racine du format (5 flags + KfAnim)
-//   KfAnim_Deserialize       0x708160  — corps du désérialiseur (3 pistes de keyframes)
-//   Astro_DeserializeBody    0x6FE960  — corps céleste / couche nuage (76 o)
-//   DateTime_Serialize       0x6FE720  — DateTime (37 o), symétrique lecture/écriture
-//   World_LoadDataFile       0x4118F0  — ouvre Z%03d.ATM, copie en mémoire
-//   World_LoadZoneResource   0x4DCB60  — case 7 = .ATM (zoneId BRUT, pas fileId)
+// === IDA sources (single source of truth) ===
+//   Atmosphere_Deserialize   0x795A40  — format root (5 flags + KfAnim)
+//   KfAnim_Deserialize       0x708160  — deserializer body (3 keyframe tracks)
+//   Astro_DeserializeBody    0x6FE960  — celestial body / cloud layer (76 bytes)
+//   DateTime_Serialize       0x6FE720  — DateTime (37 bytes), symmetric read/write
+//   World_LoadDataFile       0x4118F0  — opens Z%03d.ATM, copies into memory
+//   World_LoadZoneResource   0x4DCB60  — case 7 = .ATM (RAW zoneId, not fileId)
 //
-// Layout binaire exact (cf. Docs/TS2_ASSET_FORMATS.md §2.7 ET Docs/TS2_SILVERLINING_CONFIG.md
-// §3.2 — les deux documents concordent ; RE/asset_parsers/sky_atm.py est la traduction
-// Python VALIDÉE octet-exact sur les 89 fichiers réels du dépôt, EOF exact, ce module en est
-// la traduction C++ FIDÈLE, même ordre de champs, mêmes tailles) :
+// Exact binary layout (cf. Docs/TS2_ASSET_FORMATS.md §2.7 AND Docs/TS2_SILVERLINING_CONFIG.md
+// §3.2 — both documents agree; RE/asset_parsers/sky_atm.py is the VALIDATED byte-exact
+// Python port against the 89 real files in the repo, EOF exact; this module is its
+// FAITHFUL C++ port, same field order, same sizes):
 //
-//   +0x00  5×u8    flags de rendu (cf. RenderFlagSkipCelestial/RenderFlagForceBlackSky/…)
+//   +0x00  5×u8    render flags (cf. RenderFlagSkipCelestial/RenderFlagForceBlackSky/…)
 //   +0x05  3×f64   Location (latitude, longitude, altitude)      — Serialize_WriteVec3d
-//   +0x1D  DateTime courant   (37 o) — heure du jour DE LA ZONE, VARIABLE d'un fichier à l'autre
-//   +0x42  DateTime éphéméride (37 o) — référence éphéméride, CONSTANTE observée (2006-08-15 12:00 tz=-8 dst=1)
-//   +0x67  3×f64   globaux (observés : 2.2 gamma, 30000 visibilité, 0)
-//   ...    u32 nColorKF  ; nColorKF × { i32 key ; 4×f64 }         (keyframes couleur)
-//   ...    u32 nBodies   ; nBodies  × CORPS_CÉLESTE (76 o)        (voir AtmCelestialBody)
-//   ...    u32 nScalarKF ; nScalarKF× { i32 key ; f64 }           (keyframes scalaires)
-//   fin    u8 flag ; 4×f64 queue (observé : 0.001, 1, 1, 1)
+//   +0x1D  Current DateTime    (37 bytes) — time of day OF THE ZONE, VARIES per file
+//   +0x42  Ephemeris DateTime  (37 bytes) — ephemeris reference, observed CONSTANT (2006-08-15 12:00 tz=-8 dst=1)
+//   +0x67  3×f64   globals (observed: 2.2 gamma, 30000 visibility, 0)
+//   ...    u32 nColorKF  ; nColorKF × { i32 key ; 4×f64 }         (color keyframes)
+//   ...    u32 nBodies   ; nBodies  × CELESTIAL BODY (76 bytes)   (see AtmCelestialBody)
+//   ...    u32 nScalarKF ; nScalarKF× { i32 key ; f64 }           (scalar keyframes)
+//   end    u8 flag ; 4×f64 tail (observed: 0.001, 1, 1, 1)
 //
-//   DateTime (37 o) : i32 year,month,day,hour,minute + f64 timezone,second + u8 dst.
-//   CORPS_CÉLESTE (76 o) : i32 key ; i32 type(0-5) ; 7×f64 géométrie ; 4×u8 flags ;
-//                          u32 nInner + nInner×{i32;f64} ; 4 o queue.
-//   Taille totale attendue = 171 + 76*nBodies + 37  →  208/284/360/512 o pour 0/1/2/4 couches
-//   (formule + tailles observées confirmées sur les 89 .ATM réels).
+//   DateTime (37 bytes): i32 year,month,day,hour,minute + f64 timezone,second + u8 dst.
+//   CELESTIAL BODY (76 bytes): i32 key ; i32 type(0-5) ; 7×f64 geometry ; 4×u8 flags ;
+//                              u32 nInner + nInner×{i32;f64} ; 4-byte tail.
+//   Expected total size = 171 + 76*nBodies + 37  →  208/284/360/512 bytes for 0/1/2/4 layers
+//   (formula + observed sizes confirmed against the 89 real .ATM files).
 //
-// === CE QUE CE PARSEUR FAIT ===
-//   Désérialise la structure ENTIÈRE, byte-exact, avec vérification EOF (miroir du validateur
-//   Python `sky_atm.py::parse_atm`, 89/89 OK). Expose la latitude/longitude/altitude, les DEUX
-//   DateTime (dont l'heure RÉELLE du jour de la zone), les flags de rendu, et les 3 pistes de
-//   keyframes BRUTES (couleur/corps célestes/scalaires) — sans les INTERPRÉTER.
+// === WHAT THIS PARSER DOES ===
+//   Deserializes the ENTIRE structure, byte-exact, with EOF verification (mirrors the
+//   Python validator `sky_atm.py::parse_atm`, 89/89 OK). Exposes latitude/longitude/altitude,
+//   BOTH DateTime values (including the zone's REAL time of day), render flags, and the 3
+//   RAW keyframe tracks (color/celestial bodies/scalars) — without INTERPRETING them.
 //
-// === CE QUE CE PARSEUR NE FAIT PAS (honnête, pas simulé) ===
-//   Aucune interprétation physique : pas de calcul d'éphéméride solaire/lunaire réel (position
-//   du soleil, azimut, élévation), pas de diffusion atmosphérique de Perez, pas de nuages/
-//   précipitations/étoiles. Les pistes de keyframes (couleur/corps/scalaires) sont exposées
-//   BRUTES pour une future mission — ce module ne les consomme pas lui-même. La consommation
-//   simplifiée (gradient jour/nuit dérivé de l'heure) vit dans Gfx/SkyRenderer.h, séparément.
+// === WHAT THIS PARSER DOES NOT DO (honest, not simulated) ===
+//   No physical interpretation: no real solar/lunar ephemeris computation (sun position,
+//   azimuth, elevation), no Perez atmospheric scattering, no clouds/precipitation/stars.
+//   The keyframe tracks (color/bodies/scalars) are exposed RAW for a future mission — this
+//   module does not consume them itself. The simplified consumption (day/night gradient
+//   derived from the hour) lives separately in Gfx/SkyRenderer.h.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -49,76 +49,76 @@
 
 namespace ts2::asset {
 
-// DateTime (37 o) — cf. bandeau. Nommé AtmDateTime pour ne pas entrer en collision avec les
-// types DATE/SYSTEMTIME de <windows.h> ni struct tm de <ctime>, déjà inclus ailleurs dans le projet.
+// DateTime (37 bytes) — cf. banner above. Named AtmDateTime to avoid colliding with the
+// DATE/SYSTEMTIME types from <windows.h> or struct tm from <ctime>, already included elsewhere in the project.
 struct AtmDateTime {
     int32_t year = 0, month = 0, day = 0, hour = 0, minute = 0;
     double  timezone = 0.0, second = 0.0;
     uint8_t dst = 0;
 
-    // Heure du jour en heures décimales [0, 24) — hour + minute/60 + second/3600, repliée
-    // modulo 24 (les .ATM réels observés restent dans [0,24) mais on protège les cas limites).
+    // Time of day in decimal hours [0, 24) — hour + minute/60 + second/3600, wrapped
+    // modulo 24 (real .ATM files observed stay within [0,24) but edge cases are guarded).
     double HourOfDay() const;
 };
 
 struct AtmColorKeyframe  { int32_t key = 0; double v[4] = {0, 0, 0, 0}; };
 struct AtmScalarKeyframe { int32_t key = 0; double value = 0.0; };
 
-// CORPS_CÉLESTE / couche nuage (76 o sur disque avec nInner==0, cf. bandeau).
+// CELESTIAL BODY / cloud layer (76 bytes on disk with nInner==0, cf. banner above).
 struct AtmCelestialBody {
     int32_t key = 0;
     int32_t type = 0;                 // 0-5, factory Astro_CreateBodyByType 0x6FE7D0
     double  geom[7] = {0, 0, 0, 0, 0, 0, 0};
     uint8_t flags[4] = {0, 0, 0, 0};
-    std::vector<std::pair<int32_t, double>> inner; // nInnerMap × {clé, valeur} (observé vide)
-    uint8_t tail[4] = {0, 0, 0, 0};   // queue spécifique au type
+    std::vector<std::pair<int32_t, double>> inner; // nInnerMap × {key, value} (observed empty)
+    uint8_t tail[4] = {0, 0, 0, 0};   // type-specific tail
 };
 
-// État d'atmosphère PAR ZONE désérialisé depuis un fichier .ATM (ou Atmosphere.DAT, même
-// format — Atmosphere_Deserialize est commun aux deux, cf. World/WorldMap.h).
+// Atmosphere state PER ZONE deserialized from an .ATM file (or Atmosphere.DAT, same
+// format — Atmosphere_Deserialize is shared by both, cf. World/WorldMap.h).
 class AtmosphereFile {
 public:
-    // Charge + parse le fichier entier. Renvoie false si lecture ou structure invalide
-    // (bornes dépassées, EOF non atteint exactement — miroir strict du validateur Python).
+    // Loads + parses the entire file. Returns false on read failure or invalid structure
+    // (bounds exceeded, EOF not reached exactly — strict mirror of the Python validator).
     bool Load(const std::string& path);
 
-    // Parse un buffer déjà en mémoire (utilisé par Load(), exposé pour les tests).
+    // Parses an already in-memory buffer (used by Load(), exposed for tests).
     bool Parse(const uint8_t* data, size_t size);
 
     bool Valid() const { return valid_; }
 
-    // --- Flags de rendu (+0x00, 5×u8) --------------------------------------------------
-    // @+352 dans l'objet cAtmosphere runtime : si vrai, le moteur d'origine saute TOUT le
-    // rendu soleil/lune/étoiles/anneau-espace (probable "zone sans ciel visible", intérieur).
+    // --- Render flags (+0x00, 5×u8) --------------------------------------------------
+    // @+352 in the runtime cAtmosphere object: if true, the original engine skips ALL
+    // sun/moon/stars/space-ring rendering (likely "zone with no visible sky", indoor).
     bool RenderFlagSkipCelestial() const { return renderFlags_[0] != 0; }
-    // @+642 : si vrai, force la couleur ciel/horizon à noir opaque (0,0,0,1) au lieu du
-    // calcul physique Perez du SDK — override "ciel noir".
+    // @+642: if true, forces the sky/horizon color to opaque black (0,0,0,1) instead of
+    // the SDK's physical Perez calculation — "black sky" override.
     bool RenderFlagForceBlackSky() const { return renderFlags_[1] != 0; }
-    // @+643/@+644 : sémantique non identifiée avec certitude par la RE (cf. doc). Exposés
-    // bruts, non interprétés ici.
+    // @+643/@+644: semantics not identified with certainty by RE (cf. doc). Exposed
+    // raw, not interpreted here.
     uint8_t RawFlag2() const { return renderFlags_[2]; }
     uint8_t RawFlag3() const { return renderFlags_[3]; }
-    // g_SL_ForceToneMapping (0x18C4DEC) : force le tone-mapping HDR indépendamment du réglage
-    // global "disable-tone-mapping".
+    // g_SL_ForceToneMapping (0x18C4DEC): forces HDR tone-mapping independently of the
+    // global "disable-tone-mapping" setting.
     uint8_t ForceToneMapping() const { return renderFlags_[4]; }
 
-    // --- Position géographique (+0x05, 3×f64) ------------------------------------------
+    // --- Geographic position (+0x05, 3×f64) ------------------------------------------
     double Latitude()  const { return lat_; }
     double Longitude() const { return lon_; }
     double Altitude()  const { return alt_; }
 
-    // --- Date/heure (+0x1D / +0x42, 2×37 o) --------------------------------------------
-    const AtmDateTime& CurrentDateTime()     const { return dtCurrent_; }   // heure DU JOUR de la zone (variable)
-    const AtmDateTime& EphemerisReference()  const { return dtEphemeris_; } // référence éphéméride (quasi constante)
+    // --- Date/time (+0x1D / +0x42, 2×37 bytes) --------------------------------------------
+    const AtmDateTime& CurrentDateTime()     const { return dtCurrent_; }   // zone's TIME OF DAY (variable)
+    const AtmDateTime& EphemerisReference()  const { return dtEphemeris_; } // ephemeris reference (near-constant)
 
-    // Heure décimale [0,24) dérivée de CurrentDateTime() — c'est la valeur RÉELLE utilisée
-    // par Gfx/SkyRenderer.h pour dériver le gradient jour/nuit.
+    // Decimal hour [0,24) derived from CurrentDateTime() — this is the REAL value used
+    // by Gfx/SkyRenderer.h to derive the day/night gradient.
     double HourOfDay() const { return dtCurrent_.HourOfDay(); }
 
-    // --- Globaux (+0x67, 3×f64) : observés (2.2 gamma, 30000 visibilité, 0) -------------
+    // --- Globals (+0x67, 3×f64): observed (2.2 gamma, 30000 visibility, 0) -------------
     auto Globals() const -> const double(&)[3] { return globals3_; }
 
-    // --- Pistes de keyframes BRUTES (non interprétées ici, cf. bandeau) -----------------
+    // --- RAW keyframe tracks (not interpreted here, cf. banner above) -----------------
     const std::vector<AtmColorKeyframe>&  ColorKeyframes()  const { return colorKeys_; }
     const std::vector<AtmCelestialBody>&  Bodies()          const { return bodies_; }
     const std::vector<AtmScalarKeyframe>& ScalarKeyframes() const { return scalarKeys_; }
@@ -126,7 +126,7 @@ public:
     uint8_t TailFlag() const { return tailFlag_; }
     auto Tail4() const -> const double(&)[4] { return tail4_; }
 
-    // --- Diagnostics (miroir du validateur Python sky_atm.py) --------------------------
+    // --- Diagnostics (mirrors the Python validator sky_atm.py) --------------------------
     size_t ConsumedBytes() const { return consumed_; }
     size_t TotalBytes()    const { return total_; }
     const std::string& Path() const { return path_; }

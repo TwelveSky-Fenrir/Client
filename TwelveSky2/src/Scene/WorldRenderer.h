@@ -1,326 +1,326 @@
-// Scene/WorldRenderer.h — dessin RÉEL des entités du monde (câblage jalon 4->5).
+// Scene/WorldRenderer.h — REAL drawing of world entities (milestone 4->5 wiring).
 //
-// Ce fichier ne reverse AUCUNE nouvelle fonction : il CÂBLE ensemble trois modules
-// déjà écrits, jusqu'ici non reliés entre eux :
-//   Gfx/MeshRenderer.h    — sait dessiner un gfx::SkinnedModel (VB/IB skinné GPU).
-//   Gfx/Camera.h          — matrices vue/projection de la caméra en orbite.
-//   Game/EntityDrawLogic.h — décision (dessiner/pas) + placement, PAS de rendu D3D.
-//   Game/NameplateLogic.h  — texte + couleur du nom au-dessus de la tête.
-//   Game/GameState.h::g_World — source des entités (players/monsters/npcs, tous
-//                                avec x/y/z depuis ce jalon — cf. NpcEntity).
+// This file reverses NO new function: it WIRES TOGETHER three already-written modules
+// that were not connected to each other until now:
+//   Gfx/MeshRenderer.h    — knows how to draw a gfx::SkinnedModel (GPU-skinned VB/IB).
+//   Gfx/Camera.h          — orbit camera view/projection matrices.
+//   Game/EntityDrawLogic.h — decision (draw/not) + placement, NO D3D rendering.
+//   Game/NameplateLogic.h  — text + color of the name above the head.
+//   Game/GameState.h::g_World — entity source (players/monsters/npcs, all with x/y/z
+//                                since this milestone — cf. NpcEntity).
 //
-// PÉRIMÈTRE DE CETTE MISSION (câblage, pas nouvelle RE) :
-//   - Corps de l'entité : modèle réel via ResolveMonsterModel()/ResolveWeaponModel()
-//     (câblés sur Gfx/ModelCache, cf. bandeau ci-dessous) quand résolvable ; SINON un
-//     placeholder cube coloré (D3DXCreateBox + pipeline fixe) — jamais d'écran vide.
+// SCOPE OF THIS MISSION (wiring, not new RE):
+//   - Entity body: real model via ResolveMonsterModel()/ResolveWeaponModel() (wired to
+//     Gfx/ModelCache, cf. banner below) when resolvable; OTHERWISE a colored placeholder
+//     cube (D3DXCreateBox + fixed pipeline) — never a blank screen.
 //
-// CÂBLAGE ModelCache (mission "câbler ResolveModel() sur Gfx/ModelCache", 2026-07-14,
-// cf. Gfx/ModelCache.h pour les signatures exactes) — TODO(model_cache) ci-dessous
-// RÉSOLU pour deux des trois cas :
-//   - MONSTRES : résolu à 100%. MonsterEntity::body[0] = mob id -> MONSTER_INFO, MÊME
-//     convention que Game/EntityManager.cpp::ResolveMobDef (id brut, sans -1, passé tel
-//     quel à g_World.db.monster.record()) -> ModelCache::GetForMonster(monsterDefId)
-//     résout kindIndex=MONSTER_INFO.field244-1 en interne et renvoie le vrai
-//     gfx::SkinnedModel (M*.SOBJECT). Remplace ENTIÈREMENT le cube quand ça résout.
-//   - JOUEURS : RÉSOLU (mission "câblage corps de base joueur", 2026-07-14, cf.
-//     Gfx/ModelCache.h::GetForPlayerBody + Docs/TS2_PLAYER_BODY_MODEL.md §3ter/§5) :
-//     PlayerEntity::body+68/+72/+76/+80 (race/genre/costumeSlot0/costumeSlot1) ->
-//     ModelCache::GetForPlayerBody(race, gender, costumeSlot0, costumeSlot1) renvoie
-//     les 2 pièces (SLOT0+SLOT1) réellement dessinées par le pipeline joueur d'origine
-//     (Char_DrawWeaponTrailEffect, PAS Char_Draw). Ces 4 offsets sont valables pour
-//     TOUT joueur du tableau (self ET distants) SANS distinction : contrairement à
-//     l'arme (qui a un global self dédié dword_1673248, plus réactif), race/genre/
-//     costume n'ont AUCUN global self séparé connu -- au contraire, le doc §4 montre
-//     que Pkt_ItemActionDispatch réécrit gender/costumeSlot0/costumeSlot1 DIRECTEMENT
-//     dans entity[0]+96/100/104, donc dans CE MÊME `body` (entity et body partagent la
-//     même mémoire, body = entity+0x18) -- p.body est donc déjà la source la plus à
-//     jour pour le joueur local aussi. Remplace ENTIÈREMENT le cube-corps quand au
-//     moins une des 2 pièces résout ; le cube reste un repère de dernier recours si
-//     les DEUX stems échouent (fichier introuvable/hors bornes). Ce qui reste résolvable
-//     en plus du corps : l'arme équipée, câblée pour LE JOUEUR LOCAL *ET* LES JOUEURS
-//     DISTANTS (mission "câblage arme joueur distant", 2026-07-14) :
-//       * Joueur local (index 0) : SelfState::equip[7].itemId (slot 7 = arme,
-//         dword_1673248, cf. Docs/TS2_GAMEPLAY_LOGIC.md §"13 slots ... Slot 7 = arme"
-//         et Game/SkillSystem.cpp:145 "self.equip[7] = dword_1673248") -> GetItemInfo(itemId)
-//         -> ModelCache::GetForItem(item, 0). Source déjà à jour en continu (mise à jour
-//         équipement locale), préférée à la relecture du body réseau pour ce cas.
-//       * Joueurs DISTANTS (i!=0) : offset RÉSOLU dans PlayerEntity::body (600 o, payload
-//         Pkt_SpawnCharacter 0x0f 0x4646c0) -> body+148 (u32 LE) = id d'objet de l'arme
-//         équipée, valable pour TOUTE entité du tableau (self inclus, à l'index 0, mais on
-//         garde SelfState pour ce cas-là — cf. ci-dessus). PREUVE DE DÉCOMPILATION (paire
-//         de fonctions jumelles trouvées dans l'IDB, MCP idaTs2) :
-//           - `Weapon_ClassFromEquip` 0x4cc9f0 (SELF UNIQUEMENT) :
-//             `*(this+7) = MobDb_GetEntry(mITEM, dword_1673248)` — dword_1673248 EST
-//             l'id d'arme self (même global que Game/SkillSystem.cpp:145).
-//           - `Weapon_ClassFromField56` 0x4cc930 (GÉNÉRIQUE, self OU distant) :
-//             `*(this+7) = MobDb_GetEntry(mITEM, *(a2+56))`, appelée
-//             `Weapon_ClassFromField56(g_EquipSnapshotScratch, entity+116)` (vu en clair
-//             dans `Char_AnimEndToIdle_5761A0` 0x57629b, et documenté pour CHAQUE entité
-//             active via `Char_UpdateAnimationFrame` 0x571880 dans
-//             RE/gameplay_findings.json : "WeaponClass = Weapon_ClassFromField56
-//             (dword_8E719C, entity+116)") -> a2=entity+116, donc `*(a2+56)` =
-//             `*(entity+172)`. Corps identique (même MobDb_GetEntry + même switch sur
-//             typeCode@+188) que Weapon_ClassFromEquip => `entity+172` porte
-//             SÉMANTIQUEMENT le même champ "id d'arme" que dword_1673248, mais lu
-//             depuis L'ENTITÉ elle-même (donc valable pour un index distant, jamais
-//             câblé sur un global self). `entity+172` = `body+148` car le body démarre
-//             à `entity+0x18` (24 o) : `Pkt_SpawnCharacter` 0x4646c0 fait
-//             `Crt_Memcpy(&dword_168724C[227*i], v8, 600)` avec `dword_168724C` =
-//             `dword_1687234`(=base)`+0x18`. Donc `entity+172 - 24 = 148`.
-//         PlayerEntity::body contient par ailleurs l'apparence/équipement brut sur
-//         d'autres offsets (nom @+16, weaponTypeId @+64, race/genre/costumeSlot0/
-//         costumeSlot1 @+68/72/76/80 -- RÉSOLUS, cf. paragraphe JOUEURS ci-dessus --,
-//         modelC/D @+84/88 encore NON résolus, base "equipSnapshot" @+92 — cf.
-//         RE/gameplay_findings.json struct CharEntity) mais SEULS l'arme (@+148) et le
-//         corps de base (@+68/72/76/80) ont un résolveur connu côté ClientSource à ce
-//         jour (cf. ModelCache.h) ; modelC/D et le reste de l'equipSnapshot restent hors
-//         périmètre (pas d'invention). GetItemInfo(itemId) -> ModelCache::GetForItem
-//         (item, 0), EXACTEMENT le même chemin que pour le joueur local. Le modèle
-//         d'arme réel, quand résolu, est dessiné en SURIMPRESSION du corps (modèle réel
-//         si résolu, sinon cube) : il n'y a pas de point d'attache de main reversé, donc
-//         pas de vraie transformée relative au squelette -- un simple décalage vertical
-//         fixe (cf. WorldRenderer.cpp::renderOne) sert de repère visuel plutôt que de
-//         laisser un objet flottant sans lien avec l'entité.
-//   - PNJ : DEUX TABLEAUX DISTINCTS, DEUX ÉTATS DE RÉSOLUTION DIFFÉRENTS (mise à jour
-//     mission "PNJ DECOR VISIBLES A L'ÉCRAN", 2026-07-14) :
-//       * PNJ DE DÉCOR (`game::ZoneNpcs()`, Game/StaticNpcLoader.h — ÉQUIVALENT client-source
-//         de `g_NpcRenderArray` 0x1764D14, repeuplé localement depuis la table statique
-//         `mZONENPCINFO`, cf. bandeau de tête de StaticNpcLoader.h pour la preuve complète) :
-//         RÉSOLU. Chaque `StaticNpcSlot::def` porte un `NpcDefRecord*` non-nul (garde à la
-//         source, cf. StaticNpcLoader.cpp) → `ResolveNpcModel()` → `ModelCache::GetForNpc(*def)`
-//         (RÉSOLU dans une mission antérieure : `npc.fieldE` +1324 = kindIndex+1 du modèle
-//         visuel N*.SOBJECT, cf. Docs/TS2_NPC_MESH_DRAW.md §2-3 et Gfx/ModelCache.cpp) — un vrai
-//         modèle remplace le cube dès que `fieldE` résout un fichier sur disque. C'EST LA
-//         SOURCE RÉELLE des PNJ de décor (marchands, gardes...) visibles en jeu dans le binaire
-//         d'origine : `Npc_DrawMesh 0x57FF00` ne lit QUE `g_NpcRenderArray`.
-//       * PNJ GAMEPLAY (`game::g_World.npcs`, alimenté par `Pkt_SpawnNpc` opcode 0x13) :
-//         TOUJOURS NON résolu, intentionnellement. `game::NpcEntity` (Game/GameState.h) ne
-//         porte aucun `NpcDefRecord*`/kindId exploitable (`def` reste `const void*` non typé,
-//         aucune fonction du call-graph de rendu n'appelle `Char_Draw`/`Npc_DrawMesh` sur ce
-//         tableau, cf. Docs/TS2_ENTITY_ARRAY_DUALITY_CHECK.md §2) — brancher `ResolveNpcModel`
-//         ici exigerait d'inventer un mapping id-réseau → `NpcDefRecord`, hors périmètre (pas
-//         d'invention). Cube JAUNE conservé tel quel pour cette boucle, sans changement.
-//     Les deux boucles de `Render()` partagent exactement le même pipeline `renderOne()` (donc
-//     le même repli cube JAUNE si la résolution échoue) — seule la source de données diffère.
-//   - AUDIT DE FIDÉLITÉ 2026-07-14 (re-décompilation intégrale de Char_Draw 0x5805C0
-//     et Npc_DrawMesh 0x57FF00, cf. Docs/TS2_NPC_MESH_DRAW.md) : ÉCART trouvé et
-//     CORRIGÉ dans WorldRenderer.cpp::Render() (boucle PNJ). Npc_DrawMesh contient un
-//     far-cull dur propre aux PNJ -- `Math_Dist3D(pos_pnj, flt_1687330 /* position du
-//     JOUEUR LOCAL */) > 1000.0 -> return immédiat`, AVANT même le near-cull caméra --
-//     qui n'existe PAS dans Char_Draw (vérifié : aucun appel Math_Dist3D dans son
-//     désassemblage/décompilé). game::ComputeEntityDrawFlags ne modélise QUE le
-//     pipeline Char_Draw (near-cull caméra seul, jamais de far-cull) et est réutilisée
-//     telle quelle pour players/monsters/npcs : sans garde supplémentaire, un PNJ à
-//     >1000 unités du joueur local aurait été dessiné (cube placeholder) alors que le
-//     client d'origine ne le fait jamais. Corrigé en ajoutant ce garde AVANT renderOne
-//     dans la boucle NPC (constante `kNpcFarCullDistanceSq`, ts2 anonymous namespace) --
-//     ne touche pas EntityDrawLogic.cpp (hors périmètre d'édition de cette mission,
-//     le garde reste donc localisé au site d'appel plutôt que dans la fonction pure
-//     partagée). Le near-cull caméra (IsBeyondCameraNearCull) et l'absence de far-cull
-//     pour joueurs/monstres sont CONFIRMÉS FIDÈLES tels quels (aucun changement).
-//   - AUDIT CULLING DE DISTANCE / LOD 2026-07-14 (session 2, mission "CULLING DE
-//     DISTANCE ET LOD") : re-vérification que le near-cull caméra (ci-dessus) et le
-//     far-cull PNJ (ci-dessus) s'appliquent bien à TOUTES les entités, pas seulement à
-//     celles proches caméra.
-//       * Near-cull caméra (`IsBeyondCameraNearCull`) : CONFIRMÉ appliqué de façon
-//         UNIFORME aux 3 boucles (joueurs -- self inclus --, monstres, PNJ) via l'appel
-//         commun `game::ComputeEntityDrawFlags()` dans `renderOne()` : aucune des 3
-//         boucles de `Render()` ne le contourne. Fidèle à `Char_Draw` (players/monsters)
-//         ET `Npc_DrawMesh` (PNJ), qui appliquent tous deux ce garde.
-//       * Far-cull 1000 u (PNJ seuls) : CONFIRMÉ toujours correctement SCOPÉ à la seule
-//         boucle PNJ (`kNpcFarCullDistanceSq`) et absent des boucles joueurs/monstres --
-//         c'est la fidélité correcte (`Char_Draw` n'a aucun `Math_Dist3D`, cf. ci-dessus),
-//         PAS une lacune : étendre ce far-cull aux joueurs/monstres serait une régression.
-//       * ÉCART DE FIDÉLITÉ MINEUR TROUVÉ (non corrigé, faible impact) : `EntityRenderState
-//         ::info` n'est JAMAIS peuplé par `WorldRenderer::Render()` (`DrawableEntity` n'a
-//         pas de champ `info`) -> `IsBeyondCameraNearCull` reçoit toujours `radius=0.0`
-//         au lieu du vrai `info.drawSize` par entité. Le garde reste appliqué à TOUTES les
-//         entités de façon identique (donc pas de biais self/distant/monstre/PNJ), mais le
-//         décalage vertical `pos.y + radius*0.5` de la formule d'origine dégénère en
-//         `pos.y` pour tout le monde -- seuil des 10 unités légèrement moins précis
-//         verticalement. Non corrigé ici (nécessiterait de brancher `info.drawSize` par
-//         type d'entité depuis les tables `MONSTER_INFO`/`ITEM_INFO`/corps joueur, hors
-//         périmètre de cette mission de vérification).
-//       * VRAI SYSTÈME DE LOD TROUVÉ DANS LE BINAIRE, AU-DELÀ DU SIMPLE CULLING (cf.
-//         Docs/TS2_GXD_ENGINE.md §2.6/§2.7/§3, EAs déjà relevés lors d'une session RE
-//         antérieure) -- ENTIÈREMENT NON CÂBLÉ dans ClientSource à ce jour :
-//           - `Model_Render 0x40EBB0` (appelé par `ModelObj_Draw 0x4D71B0` pour les
-//             modèles skinnés placés/objets, EN AVAL du dispatcher `Char_Draw`) fait un
-//             frustum-cull sphérique PUIS un « fondu LOD » (fade) piloté par la
-//             distance/le brouillard, avant de choisir le sous-mesh à dessiner
-//             (`Model_DrawSkinnedSubset 0x40CA40`) -- c'est un système de LOD RUNTIME
-//             séparé et complémentaire du near/far-cull d'entité déjà documenté ci-dessus.
-//           - Le format SOBJECT porte RÉELLEMENT plusieurs niveaux de détail géométrique
-//             (1 à 4), générés hors-ligne par `cMesh_BuildProgressiveLOD 0x43BB00`
-//             (D3DXCleanMesh -> WeldVertices -> ValidMesh -> GeneratePMesh -> SetNumFaces,
-//             pipeline "progressive mesh" D3DX classique) et sérialisés par
-//             `cMesh_SaveToFileWithLOD 0x43AC10`. Ce ne sont donc pas des cubes/LOD
-//             inventés : le fichier `.SOBJECT` d'un modèle a vraiment plusieurs maillages
-//             de détail décroissant embarqués.
-//           - Côté ClientSource, `Gfx/MeshRenderer.h::SkinnedModel/SkinnedMesh` PORTE déjà
-//             la structure de données (`std::vector<SkinnedLod> lods`, un niveau par
-//             "subset" du parseur `Mesh_ReadFromFile`) et `MeshRenderer::DrawModel()`
-//             accepte un paramètre `int lod` -- MAIS **aucun appelant ne le renseigne**.
-//             `WorldRenderer::renderOne()` appelle systématiquement
-//             `meshRenderer_.DrawModel(*model, pos, rotDeg, scaleVec, palette)` SANS 5e
-//             argument -> `lod` vaut toujours 0 (le niveau le PLUS détaillé), quelle que
-//             soit la distance caméra/joueur de l'entité (locale, distante, monstre ou
-//             PNJ). Concrètement : la géométrie ne se simplifie JAMAIS à distance dans
-//             ClientSource, contrairement au binaire d'origine.
-//           - NON câblé intentionnellement dans cette mission (vérification/documentation,
-//             pas de nouvelle RE) : la formule exacte du "fondu LOD" de `Model_Render`
-//             (seuils de distance par palier, éventuelle dépendance au brouillard/à
-//             `g_Opt_GfxDetailShadows`) n'a PAS pu être re-décompilée en direct cette
-//             session (serveur MCP `idaTs2` indisponible/saturé -- accès concurrent
-//             d'autres agents de la même vague). Câbler une sélection de LOD par distance
-//             sans cette formule exacte serait une INVENTION de seuils, contraire à la
-//             règle "IDA = unique vérité" -- laissé en TODO explicite pour une session
-//             avec accès IDA disponible : décompiler `Model_Render 0x40EBB0` pour extraire
-//             la formule de seuil/fondu, puis calculer `lod` dans `renderOne()` à partir
-//             de `Distance3D(pos, cull.cameraPos)` avant l'appel à `DrawModel()`.
-//           - Distinct : LOD TEXTURE (`g_TexLodLevel` / `dword_18C4EFC`, 0..3, saut de
-//             mips dans `Tex_ReadPacked 0x417740`) est un réglage GLOBAL de qualité
-//             (menu graphique), pas une bascule par distance/par entité -- hors périmètre
-//             de cette mission.
-//   - Nameplate : appel réel de game::ComputeNameplateInfo, dessiné via gfx::Font
-//     (police propre à WorldRenderer, même pattern que UI/GameHud.h::font_).
-//   - Ombre/reflet (EntityDrawLogic::ComputeEntityDrawFlags.showShadow/showReflection).
+// ModelCache WIRING (mission "wire ResolveModel() to Gfx/ModelCache", 2026-07-14, cf.
+// Gfx/ModelCache.h for the exact signatures) — TODO(model_cache) below RESOLVED for two
+// of the three cases:
+//   - MONSTERS: 100% resolved. MonsterEntity::body[0] = mob id -> MONSTER_INFO, SAME
+//     convention as Game/EntityManager.cpp::ResolveMobDef (raw id, no -1, passed as-is
+//     to g_World.db.monster.record()) -> ModelCache::GetForMonster(monsterDefId)
+//     resolves kindIndex=MONSTER_INFO.field244-1 internally and returns the real
+//     gfx::SkinnedModel (M*.SOBJECT). ENTIRELY replaces the cube when it resolves.
+//   - PLAYERS: RESOLVED (mission "base player body wiring", 2026-07-14, cf.
+//     Gfx/ModelCache.h::GetForPlayerBody + Docs/TS2_PLAYER_BODY_MODEL.md §3ter/§5):
+//     PlayerEntity::body+68/+72/+76/+80 (race/gender/costumeSlot0/costumeSlot1) ->
+//     ModelCache::GetForPlayerBody(race, gender, costumeSlot0, costumeSlot1) returns the
+//     2 pieces (SLOT0+SLOT1) actually drawn by the original player pipeline
+//     (Char_DrawWeaponTrailEffect, NOT Char_Draw). These 4 offsets are valid for ANY
+//     player in the array (self AND remotes) WITHOUT distinction: unlike the weapon
+//     (which has a dedicated, more reactive self global dword_1673248), race/gender/
+//     costume have NO separate self global known -- on the contrary, doc §4 shows that
+//     Pkt_ItemActionDispatch rewrites gender/costumeSlot0/costumeSlot1 DIRECTLY in
+//     entity[0]+96/100/104, hence in this SAME `body` (entity and body share the same
+//     memory, body = entity+0x18) -- p.body is therefore already the most up-to-date
+//     source for the local player too. ENTIRELY replaces the body cube once at least one
+//     of the 2 pieces resolves; the cube remains a last-resort marker if BOTH stems fail
+//     (file not found/out of bounds). What remains resolvable in addition to the body:
+//     the equipped weapon, wired for BOTH THE LOCAL PLAYER *AND* REMOTE PLAYERS (mission
+//     "remote player weapon wiring", 2026-07-14):
+//       * Local player (index 0): SelfState::equip[7].itemId (slot 7 = weapon,
+//         dword_1673248, cf. Docs/TS2_GAMEPLAY_LOGIC.md §"13 slots ... Slot 7 = weapon"
+//         and Game/SkillSystem.cpp:145 "self.equip[7] = dword_1673248") -> GetItemInfo(itemId)
+//         -> ModelCache::GetForItem(item, 0). Source already continuously up to date
+//         (local equipment updates), preferred over re-reading the network body for this case.
+//       * REMOTE players (i!=0): offset RESOLVED in PlayerEntity::body (600 bytes, payload
+//         Pkt_SpawnCharacter 0x0f 0x4646c0) -> body+148 (LE u32) = equipped weapon item id,
+//         valid for ANY entity in the array (self included, at index 0, but SelfState is
+//         kept for that case — cf. above). DECOMPILATION EVIDENCE (twin function pair
+//         found in the IDB, MCP idaTs2):
+//           - `Weapon_ClassFromEquip` 0x4cc9f0 (SELF ONLY):
+//             `*(this+7) = MobDb_GetEntry(mITEM, dword_1673248)` — dword_1673248 IS the
+//             self weapon id (same global as Game/SkillSystem.cpp:145).
+//           - `Weapon_ClassFromField56` 0x4cc930 (GENERIC, self OR remote):
+//             `*(this+7) = MobDb_GetEntry(mITEM, *(a2+56))`, called as
+//             `Weapon_ClassFromField56(g_EquipSnapshotScratch, entity+116)` (seen plainly
+//             in `Char_AnimEndToIdle_5761A0` 0x57629b, and documented for EVERY active
+//             entity via `Char_UpdateAnimationFrame` 0x571880 in RE/gameplay_findings.json:
+//             "WeaponClass = Weapon_ClassFromField56 (dword_8E719C, entity+116)") ->
+//             a2=entity+116, so `*(a2+56)` = `*(entity+172)`. Identical body (same
+//             MobDb_GetEntry + same switch on typeCode@+188) as Weapon_ClassFromEquip =>
+//             `entity+172` carries SEMANTICALLY the same "weapon id" field as
+//             dword_1673248, but read from the ENTITY itself (hence valid for a remote
+//             index, never wired to a self global). `entity+172` = `body+148` since the
+//             body starts at `entity+0x18` (24 bytes): `Pkt_SpawnCharacter` 0x4646c0 does
+//             `Crt_Memcpy(&dword_168724C[227*i], v8, 600)` with `dword_168724C` =
+//             `dword_1687234`(=base)`+0x18`. Hence `entity+172 - 24 = 148`.
+//         PlayerEntity::body otherwise contains raw appearance/equipment data at other
+//         offsets (name @+16, weaponTypeId @+64, race/gender/costumeSlot0/costumeSlot1
+//         @+68/72/76/80 -- RESOLVED, cf. PLAYERS paragraph above --, modelC/D @+84/88
+//         still NOT resolved, "equipSnapshot" base @+92 — cf. RE/gameplay_findings.json
+//         struct CharEntity) but ONLY the weapon (@+148) and the base body
+//         (@+68/72/76/80) have a known resolver on the ClientSource side to date (cf.
+//         ModelCache.h); modelC/D and the rest of the equipSnapshot remain out of scope
+//         (no invention). GetItemInfo(itemId) -> ModelCache::GetForItem(item, 0), the
+//         EXACT same path as for the local player. The real weapon model, when resolved,
+//         is drawn as an OVERLAY on the body (real model if resolved, otherwise cube):
+//         there's no reversed hand attachment point, so no real skeleton-relative
+//         transform -- a simple fixed vertical offset (cf.
+//         WorldRenderer_Entities.cpp::renderOne) serves as a visual marker rather than
+//         leaving a floating object with no link to the entity.
+//   - NPC: TWO DISTINCT ARRAYS, TWO DIFFERENT RESOLUTION STATES (updated for mission
+//     "PNJ DECOR VISIBLES A L'ÉCRAN", 2026-07-14):
+//       * DECOR NPC (`game::ZoneNpcs()`, Game/StaticNpcLoader.h — client-source EQUIVALENT
+//         of `g_NpcRenderArray` 0x1764D14, repopulated locally from the static table
+//         `mZONENPCINFO`, cf. StaticNpcLoader.h header banner for the full evidence):
+//         RESOLVED. Every `StaticNpcSlot::def` carries a non-null `NpcDefRecord*` (guarded
+//         at the source, cf. StaticNpcLoader.cpp) → `ResolveNpcModel()` →
+//         `ModelCache::GetForNpc(*def)` (RESOLVED in an earlier mission: `npc.fieldE`
+//         +1324 = kindIndex+1 of the visual model N*.SOBJECT, cf. Docs/TS2_NPC_MESH_DRAW.md
+//         §2-3 and Gfx/ModelCache.cpp) — a real model replaces the cube as soon as `fieldE`
+//         resolves a file on disk. THIS IS THE REAL SOURCE of the decor NPCs (merchants,
+//         guards...) visible in-game in the original binary: `Npc_DrawMesh 0x57FF00` reads
+//         ONLY `g_NpcRenderArray`.
+//       * GAMEPLAY NPC (`game::g_World.npcs`, fed by `Pkt_SpawnNpc` opcode 0x13): ALWAYS
+//         unresolved, intentionally. `game::NpcEntity` (Game/GameState.h) carries no usable
+//         `NpcDefRecord*`/kindId (`def` stays an untyped `const void*`, no function of the
+//         render call graph calls `Char_Draw`/`Npc_DrawMesh` on this array, cf.
+//         Docs/TS2_ENTITY_ARRAY_DUALITY_CHECK.md §2) — wiring `ResolveNpcModel` here would
+//         require inventing a network-id → `NpcDefRecord` mapping, out of scope (no
+//         invention). YELLOW cube kept as-is for this loop, unchanged.
+//     Both `Render()` loops share the exact same `renderOne()` pipeline (hence the same
+//     YELLOW cube fallback if resolution fails) — only the data source differs.
+//   - FIDELITY AUDIT 2026-07-14 (full re-decompilation of Char_Draw 0x5805C0 and
+//     Npc_DrawMesh 0x57FF00, cf. Docs/TS2_NPC_MESH_DRAW.md): gap found and FIXED in
+//     WorldRenderer.cpp::Render() (NPC loop). Npc_DrawMesh contains a hard far-cull
+//     specific to NPCs -- `Math_Dist3D(pos_npc, flt_1687330 /* LOCAL PLAYER position */)
+//     > 1000.0 -> immediate return`, BEFORE even the camera near-cull -- which does NOT
+//     exist in Char_Draw (verified: no Math_Dist3D call in its disassembly/decompile).
+//     game::ComputeEntityDrawFlags only models the Char_Draw pipeline (camera near-cull
+//     only, never a far-cull) and is reused as-is for players/monsters/npcs: without an
+//     extra guard, an NPC >1000 units from the local player would have been drawn
+//     (placeholder cube) even though the original client never does. Fixed by adding this
+//     guard BEFORE renderOne in the NPC loop (`kNpcFarCullDistanceSq` constant, ts2
+//     anonymous namespace) -- does not touch EntityDrawLogic.cpp (out of this mission's
+//     edit scope, so the guard stays localized at the call site rather than in the shared
+//     pure function). The camera near-cull (IsBeyondCameraNearCull) and the absence of a
+//     far-cull for players/monsters are CONFIRMED FAITHFUL as-is (no change).
+//   - DISTANCE CULLING / LOD AUDIT 2026-07-14 (session 2, mission "CULLING DE DISTANCE ET
+//     LOD"): re-verification that the camera near-cull (above) and the NPC far-cull
+//     (above) do apply to ALL entities, not just the ones near the camera.
+//       * Camera near-cull (`IsBeyondCameraNearCull`): CONFIRMED applied UNIFORMLY to the
+//         3 loops (players -- self included --, monsters, NPC) via the common
+//         `game::ComputeEntityDrawFlags()` call in `renderOne()`: none of `Render()`'s 3
+//         loops bypasses it. Faithful to both `Char_Draw` (players/monsters) AND
+//         `Npc_DrawMesh` (NPC), which both apply this guard.
+//       * 1000-unit far-cull (NPC only): CONFIRMED still correctly SCOPED to the NPC loop
+//         alone (`kNpcFarCullDistanceSq`) and absent from the player/monster loops -- this
+//         is the correct fidelity (`Char_Draw` has no `Math_Dist3D`, cf. above), NOT a
+//         gap: extending this far-cull to players/monsters would be a regression.
+//       * MINOR FIDELITY GAP FOUND (not fixed, low impact): `EntityRenderState::info` is
+//         NEVER populated by `WorldRenderer::Render()` (`DrawableEntity` has no `info`
+//         field) -> `IsBeyondCameraNearCull` always receives `radius=0.0` instead of the
+//         real per-entity `info.drawSize`. The guard is still applied identically to ALL
+//         entities (so no self/remote/monster/NPC bias), but the original formula's
+//         `pos.y + radius*0.5` vertical offset degenerates to `pos.y` for everyone -- the
+//         10-unit threshold is slightly less precise vertically. Not fixed here (would
+//         require wiring `info.drawSize` per entity type from the `MONSTER_INFO`/
+//         `ITEM_INFO`/player-body tables, out of scope for this verification mission).
+//       * REAL LOD SYSTEM FOUND IN THE BINARY, BEYOND SIMPLE CULLING (cf.
+//         Docs/TS2_GXD_ENGINE.md §2.6/§2.7/§3, EAs already noted in an earlier RE
+//         session) -- ENTIRELY NOT WIRED in ClientSource to date:
+//           - `Model_Render 0x40EBB0` (called by `ModelObj_Draw 0x4D71B0` for placed
+//             skinned models/objects, DOWNSTREAM of the `Char_Draw` dispatcher) does a
+//             spherical frustum-cull THEN an LOD "fade" driven by distance/fog, before
+//             choosing the sub-mesh to draw (`Model_DrawSkinnedSubset 0x40CA40`) -- this
+//             is a RUNTIME LOD system separate from and complementary to the entity
+//             near/far-cull already documented above.
+//           - The SOBJECT format REALLY carries several geometric detail levels (1 to 4),
+//             generated offline by `cMesh_BuildProgressiveLOD 0x43BB00` (D3DXCleanMesh ->
+//             WeldVertices -> ValidMesh -> GeneratePMesh -> SetNumFaces, classic D3DX
+//             "progressive mesh" pipeline) and serialized by `cMesh_SaveToFileWithLOD
+//             0x43AC10`. So these are not invented cubes/LOD: a model's `.SOBJECT` file
+//             really embeds several meshes of decreasing detail.
+//           - On the ClientSource side, `Gfx/MeshRenderer.h::SkinnedModel/SkinnedMesh`
+//             already carries the data structure (`std::vector<SkinnedLod> lods`, one
+//             level per "subset" of the `Mesh_ReadFromFile` parser) and
+//             `MeshRenderer::DrawModel()` accepts an `int lod` parameter -- BUT **no
+//             caller supplies it**. `WorldRenderer_Entities.cpp::renderOne()`
+//             systematically calls
+//             `meshRenderer_.DrawModel(*model, pos, rotDeg, scaleVec, palette)` WITHOUT a
+//             5th argument -> `lod` is always 0 (the MOST detailed level), regardless of
+//             the entity's camera/player distance (local, remote, monster or NPC).
+//             Concretely: geometry NEVER simplifies with distance in ClientSource, unlike
+//             the original binary.
+//           - NOT wired intentionally in this mission (verification/documentation, not
+//             new RE): the exact formula of `Model_Render`'s LOD "fade" (per-tier
+//             distance thresholds, possible dependency on fog/`g_Opt_GfxDetailShadows`)
+//             could NOT be re-decompiled live this session (the `idaTs2` MCP server was
+//             unavailable/saturated -- concurrent access by other agents of the same
+//             wave). Wiring a distance-based LOD selection without this exact formula
+//             would be an INVENTED threshold, contrary to the "IDA is the sole source of
+//             truth" rule -- left as an explicit TODO for a session with IDA access
+//             available: decompile `Model_Render 0x40EBB0` to extract the
+//             threshold/fade formula, then compute `lod` in `renderOne()` from
+//             `Distance3D(pos, cull.cameraPos)` before the `DrawModel()` call.
+//           - Distinct: TEXTURE LOD (`g_TexLodLevel` / `dword_18C4EFC`, 0..3, mip skip in
+//             `Tex_ReadPacked 0x417740`) is a GLOBAL quality setting (graphics menu), not
+//             a per-distance/per-entity switch -- out of scope for this mission.
+//   - Nameplate: real call to game::ComputeNameplateInfo, drawn via gfx::Font
+//     (a font owned by WorldRenderer, same pattern as UI/GameHud.h::font_).
+//   - Shadow/reflection (EntityDrawLogic::ComputeEntityDrawFlags.showShadow/showReflection).
 //
-//     ///// RÉÉCRIT — Passe 4 / vague W5, front shadow-wiring (2026-07-16) /////
-//     L'analyse précédente s'était arrêtée UN NIVEAU TROP TÔT et concluait « aucune ombre
-//     portée n'est réellement dessinée par le client d'origine ». C'est FAUX, et c'est
-//     corrigé ici. IDA (re-vérifié de bout en bout cette session) prouve DEUX chaînes
-//     jumelles DU VOLUME 0x40DC70, l'une morte, l'autre vivante :
+//     ///// REWRITTEN — Pass 4 / wave W5, front shadow-wiring (2026-07-16) /////
+//     The previous analysis stopped ONE LEVEL TOO EARLY and concluded "no cast shadow is
+//     actually drawn by the original client". This is WRONG, and is fixed here. IDA
+//     (re-checked end to end this session) proves TWO twin chains of VOLUME 0x40DC70, one
+//     dead, one live:
 //
-//     PRÉCISION (Passe 4 / W5b, front shadow-fidelity) : « deux chaînes » ne compte QUE les
-//     jumelles du volume 0x40DC70 ci-dessous. Le binaire contient AU MOINS deux AUTRES
-//     implémentations d'ombre, elles aussi MORTES et non comptées ici :
-//         cSObject_RenderWithShadow     0x43D530  (0xA21 o, 0 xref)
-//         cSObject_RenderWithShadow_Alt 0x43DF60  (0xA21 o, 0 xref)
-//     — toutes deux lectrices du cache de direction flt_18C53C0/C4/C8 (@0x43D9E0/@0x43DC83 et
-//     @0x43E410/@0x43E6B3). Jumelles entre elles (tailles identiques), sans aucun appelant :
-//     vestiges d'une 3e/4e variante abandonnée. Ne rien câbler depuis elles non plus.
+//     PRECISION (Pass 4 / W5b, front shadow-fidelity): "two chains" only counts the twins
+//     of volume 0x40DC70 below. The binary contains AT LEAST two OTHER shadow
+//     implementations, also DEAD and not counted here:
+//         cSObject_RenderWithShadow     0x43D530  (0xA21 bytes, 0 xref)
+//         cSObject_RenderWithShadow_Alt 0x43DF60  (0xA21 bytes, 0 xref)
+//     — both readers of the direction cache flt_18C53C0/C4/C8 (@0x43D9E0/@0x43DC83 and
+//     @0x43E410/@0x43E6B3). Twins of each other (identical sizes), with no caller at all:
+//     remnants of an abandoned 3rd/4th variant. Wire nothing from them either.
 //
-//     [A] VOLUME D'OMBRE STENCIL — MORT, INATTEIGNABLE DANS LE BINAIRE.
+//     [A] STENCIL SHADOW VOLUME — DEAD, UNREACHABLE IN THE BINARY.
 //         Char_DrawShadow 0x580CE0 / Npc_DrawMeshShadow 0x5800E0 /
 //         Char_DrawWeaponEffectVariantA 0x568FE0 -> SObject_DrawAnimated 0x4D9050 ->
 //         Model_RenderWithShadow 0x40EEE0 -> Model_BuildShadowVolume 0x40DC70.
-//         Les 3 têtes ont 0 xref CHACUNE, et `find_bytes` de leurs adresses en
-//         little-endian rend 0 occurrence dans TOUTE l'image (donc pas d'appel indirect
-//         par vtable/table de pointeurs). Preuves détaillées : Gfx/MeshRenderer.cpp,
-//         bandeau au-dessus de DrawModelShadow(). -> jamais dessiné : CORRECT de ne pas
-//         le câbler (gfx::MeshRenderer::DrawModelShadow reste sans appelant, exprès).
+//         All 3 heads have 0 xref EACH, and `find_bytes` of their addresses in
+//         little-endian yields 0 occurrences across the WHOLE image (hence no indirect
+//         call via vtable/pointer table). Detailed evidence: Gfx/MeshRenderer.cpp, banner
+//         above DrawModelShadow(). -> never drawn: CORRECT to not wire it
+//         (gfx::MeshRenderer::DrawModelShadow stays without a caller, on purpose).
 //
-//     [B] OMBRE PLANAIRE PROJETÉE — VIVANTE, et c'est la vraie ombre du jeu.
-//         Model_RenderPlanarShadow 0x40F720 aplatit le modèle sur le plan du sol via
-//         j_D3DXMatrixShadow @0x40FB28 (le commentaire de l'IDB sur la fonction dit
-//         lui-même « render projected ground shadow via D3DXMatrixShadow »), en PASSE 5
-//         = VS09 (g_GxdSh09_VS) + PS NULL. Plan sol (a,b,c,d) = floats +124/+128/+132/+136
-//         de `a8[40] + 156*hitIdx`, issu de Collision_SegPickA 0x420D60.
-//         `reaches(Scene_InGameRender 0x52D0B0 -> 0x40F720)` = true, profondeur 3.
-//         Les devs ont DUPLIQUÉ la chaîne [A] puis basculé sur le planaire, orphelinant
-//         le volume (fonctions jumelles, tailles identiques deux à deux) :
-//              MORT [A]                                VIVANT [B]                     taille
+//     [B] PROJECTED PLANAR SHADOW — LIVE, and it's the game's real shadow.
+//         Model_RenderPlanarShadow 0x40F720 flattens the model onto the ground plane via
+//         j_D3DXMatrixShadow @0x40FB28 (the IDB's comment on the function itself says
+//         "render projected ground shadow via D3DXMatrixShadow"), in PASS 5 = VS09
+//         (g_GxdSh09_VS) + PS NULL. Ground plane (a,b,c,d) = floats +124/+128/+132/+136 of
+//         `a8[40] + 156*hitIdx`, coming from Collision_SegPickA 0x420D60.
+//         `reaches(Scene_InGameRender 0x52D0B0 -> 0x40F720)` = true, depth 3.
+//         The devs DUPLICATED chain [A] then switched to the planar one, orphaning the
+//         volume (twin functions, pairwise identical sizes):
+//              DEAD [A]                                LIVE [B]                       size
 //              Char_DrawShadow 0x580CE0                Char_DrawReflection 0x581090   0x3A4
 //              Npc_DrawMeshShadow 0x5800E0             Npc_DrawMeshGlow 0x5801D0      0xE2
 //              Char_DrawWeaponEffectVariantA 0x568FE0  Char_DrawWeaponEffectVariantB 0x56BF90  0x2AFF
-//         SObject_DrawAnimated 0x4D9050 et SObject_DrawAnimated2 0x4D91C0 sont eux-mêmes
-//         jumeaux (0x16F chacun) et ne diffèrent QUE par Model_RenderWithShadow vs
-//         Model_RenderPlanarShadow (décompilation vérifiée : 0x4D91C0 n'appelle QUE 0x40F720).
-//         => CONSÉQUENCE DE NOMMAGE : `Char_DrawReflection` / `Npc_DrawMeshGlow` sont MAL
-//         NOMMÉES dans l'IDB. Ce ne sont ni un reflet ni un glow : ce sont les DESSINS
-//         D'OMBRE (planaire) respectivement du monstre et du PNJ. (Renommage IDB non fait :
-//         IDA est en lecture seule pour ce front.)
+//         SObject_DrawAnimated 0x4D9050 and SObject_DrawAnimated2 0x4D91C0 are themselves
+//         twins (0x16F each) and differ ONLY by Model_RenderWithShadow vs
+//         Model_RenderPlanarShadow (decompilation verified: 0x4D91C0 calls ONLY 0x40F720).
+//         => NAMING CONSEQUENCE: `Char_DrawReflection` / `Npc_DrawMeshGlow` are MISNAMED
+//         in the IDB. They are neither a reflection nor a glow: they are the (planar)
+//         SHADOW DRAWS of the monster and the NPC respectively. (IDB rename not done: IDA
+//         is read-only for this front.)
 //
-//     BRACKET DE SCÈNE (Scene_InGameRender 0x52D0B0, désassemblage relu ligne à ligne) —
-//     la passe d'ombre est un bracket explicite, AVANT le rendu opaque :
-//         0x52D9DC  GXD_SetupStencilShadowState(g_GxdRenderer)   <-- DÉBUT passe ombre
-//           boucle i<g_EntityCount  : Char_DrawWeaponEffectVariantB(&g_EntityArray[908*i]) @0x52DA41
-//           boucle i<g_NpcCount     : Npc_DrawMeshGlow(&g_NpcRenderArray[88*i])            @0x52DAA2
-//           boucle i<g_MonsterCount : Char_DrawReflection(&dword_1766F74[280*i])           @0x52DB09
-//         0x52DB15  GXD_EndStencilShadowState(g_GxdRenderer)     <-- FIN, puis l'opaque
+//     SCENE BRACKET (Scene_InGameRender 0x52D0B0, disassembly re-read line by line) — the
+//     shadow pass is an explicit bracket, BEFORE the opaque render:
+//         0x52D9DC  GXD_SetupStencilShadowState(g_GxdRenderer)   <-- START shadow pass
+//           loop i<g_EntityCount  : Char_DrawWeaponEffectVariantB(&g_EntityArray[908*i]) @0x52DA41
+//           loop i<g_NpcCount     : Npc_DrawMeshGlow(&g_NpcRenderArray[88*i])            @0x52DAA2
+//           loop i<g_MonsterCount : Char_DrawReflection(&dword_1766F74[280*i])           @0x52DB09
+//         0x52DB15  GXD_EndStencilShadowState(g_GxdRenderer)     <-- END, then the opaque pass
 //           (Char_DrawWeaponTrailEffect @0x52DB7C, Npc_DrawMesh @0x52DBDF, ...)
-//     Donc : ombres planaires pour JOUEURS **et** PNJ **et** MONSTRES — pas seulement les
-//     monstres comme le supposait la rédaction précédente.
+//     So: planar shadows for PLAYERS **and** NPC **and** MONSTERS — not just monsters as
+//     the previous writeup assumed.
 //
-//     CŒUR DE GXD_SetupStencilShadowState 0x404F20 — DÉRIVATION DE LA DIRECTION D'OMBRE.
-//     (Passe 4 / W5b, front shadow-fidelity : le bandeau annonçait « décompilé, vérifié » mais
-//      n'en transcrivait que les SetRenderState, escamotant ses 6 PREMIÈRES lignes, qui sont
-//      justement l'essentiel — elles CALCULENT flt_18C53C0/C4/C8 à chaque frame.)
-//     this = ecx = g_GxdRenderer 0x18C4EF8 (posé par `mov ecx, offset g_GxdRenderer` @0x52D9D7,
-//     appelant unique @0x52D9DC) -> esi+4C8h = 0x18C53C0 / +4CCh = 0x18C53C4 / +4D0h = 0x18C53C8.
+//     CORE OF GXD_SetupStencilShadowState 0x404F20 — SHADOW DIRECTION DERIVATION.
+//     (Pass 4 / W5b, front shadow-fidelity: the banner claimed "decompiled, verified" but
+//      only transcribed its SetRenderState calls, skipping its 6 FIRST lines, which are
+//      precisely the essential part — they COMPUTE flt_18C53C0/C4/C8 every frame.)
+//     this = ecx = g_GxdRenderer 0x18C4EF8 (set by `mov ecx, offset g_GxdRenderer` @0x52D9D7,
+//     single caller @0x52D9DC) -> esi+4C8h = 0x18C53C0 / +4CCh = 0x18C53C4 / +4D0h = 0x18C53C8.
 //       0x404F26  fld  [esi+4A0h]  -> 0x404F2D  fstp [esi+4C8h]   ; x := light.Direction.x
 //       0x404F39  fldz             -> 0x404F3C  fstp [esi+4CCh]   ; y := 0.0
 //       0x404F43  fld  [esi+4A8h]  -> 0x404F49  fstp [esi+4D0h]   ; z := light.Direction.z
 //       0x404F4F  call Vec3_Normalize (0x6BB60C = jmp [0x7A64C8] = D3DXVec3Normalize, in=out=edi)
-//       0x404F54  fld  ds:flt_7EDA10 (= 0xBF800000 = -1.0, octets relus : 00 00 80 bf)
+//       0x404F54  fld  ds:flt_7EDA10 (= 0xBF800000 = -1.0, bytes re-read: 00 00 80 bf)
 //                                  -> 0x404F5B  fstp [esi+4CCh]   ; y := -1.0
 //       0x404F62  call Vec3_Normalize
-//     Soit :  shadowLightDir = normalize( normalize(L.x, 0, L.z) puis .y := -1 )
-//     La 1re normalisation rendant l'horizontale unitaire, la norme avant la 2nde vaut TOUJOURS
-//     sqrt(2) -> y ≡ -1/sqrt(2) ≈ -0.7071 : ombre à 45° vers le bas quelle que soit l'heure.
-//     SOURCE (esi+4A0h) : le light du renderer est un D3DLIGHT9 à esi+460h (= +1120, cf.
-//     Gfx/MeshRenderer.h) ; layout D3DLIGHT9 -> Direction@+64, donc 0x18C5358+64 = 0x18C5398
-//     = esi+4A0h (Direction.x) et esi+4A8h = 0x18C53A0 (Direction.z). Seul le PLAN HORIZONTAL
-//     de la lumière est repris (y est écrasé) : l'azimut du soleil oriente l'ombre, pas son
-//     élévation. Writer de ce light : Env_UpdateSunLight 0x412210 (@0x412339/@0x412343 :
-//     light.Direction = -normalize(sunDir), depuis cAtmosphere_GetSunDirectionA 0x7904D0),
-//     lui aussi recalculé chaque frame.
-//     POURQUOI xrefs_to(0x18C53C0) NE MONTRE AUCUN WRITER (piège à ne pas retomber dedans) :
-//     ses 7 xrefs sont TOUTES des lectures (0x40F585, 0x40F9A4, 0x40FB00, 0x43D9E0, 0x43DC83,
-//     0x43E410, 0x43E6B3) parce que l'écriture est relative au registre esi -> INVISIBLE en
-//     xref absolue. flt_18C53C0/C4/C8 est donc un CACHE recalculé, pas une constante figée.
+//     I.e.:  shadowLightDir = normalize( normalize(L.x, 0, L.z) then .y := -1 )
+//     Since the 1st normalization makes the horizontal component unit-length, the norm
+//     before the 2nd is ALWAYS sqrt(2) -> y ≡ -1/sqrt(2) ≈ -0.7071: the shadow always falls
+//     at 45° regardless of time of day.
+//     SOURCE (esi+4A0h): the renderer's light is a D3DLIGHT9 at esi+460h (= +1120, cf.
+//     Gfx/MeshRenderer.h); D3DLIGHT9 layout -> Direction@+64, so 0x18C5358+64 = 0x18C5398
+//     = esi+4A0h (Direction.x) and esi+4A8h = 0x18C53A0 (Direction.z). Only the light's
+//     HORIZONTAL PLANE is reused (y is overwritten): the sun's azimuth orients the shadow,
+//     not its elevation. Writer of this light: Env_UpdateSunLight 0x412210
+//     (@0x412339/@0x412343: light.Direction = -normalize(sunDir), from
+//     cAtmosphere_GetSunDirectionA 0x7904D0), itself also recomputed every frame.
+//     WHY xrefs_to(0x18C53C0) SHOWS NO WRITER (a trap not to fall back into): its 7 xrefs
+//     are ALL reads (0x40F585, 0x40F9A4, 0x40FB00, 0x43D9E0, 0x43DC83, 0x43E410, 0x43E6B3)
+//     because the write is register-relative to esi -> INVISIBLE in an absolute xref.
+//     flt_18C53C0/C4/C8 is therefore a recomputed CACHE, not a frozen constant.
 //
-//     États réels posés ENSUITE par GXD_SetupStencilShadowState 0x404F20 (décompilé, vérifié) :
+//     Real states set NEXT by GXD_SetupStencilShadowState 0x404F20 (decompiled, verified):
 //       LIGHTING(137)=0, SHADEMODE(9)=FLAT, ZWRITEENABLE(14)=0, STENCILENABLE(52)=1,
-//       STENCILFUNC(56)=EQUAL(3), STENCILPASS(55)=INCR(7) (masque anti-double-blend),
+//       STENCILFUNC(56)=EQUAL(3), STENCILPASS(55)=INCR(7) (anti-double-blend mask),
 //       ALPHABLENDENABLE(27)=1, SRCBLEND(19)=SRCALPHA(5), DESTBLEND(20)=INVSRCALPHA(6),
-//       TEXTUREFACTOR(60)=(moyenne diffuse ×128)<<24, TSS0: COLOROP=SELECTARG1,
+//       TEXTUREFACTOR(60)=(diffuse average ×128)<<24, TSS0: COLOROP=SELECTARG1,
 //       COLORARG1=TFACTOR, ALPHAARG1=TFACTOR.
-//     (Rectification au passage : la rédaction précédente donnait « DESTBLEND=INVSRCCOLOR » —
-//      c'est INVSRCALPHA(6). Et le fondu v37 de 0x40F720, avec fogNear=999999/fogFar=1000000,
-//      sature TOUJOURS à 1.0 -> LOD 0 systématique.)
+//     (Correction in passing: the previous writeup gave "DESTBLEND=INVSRCCOLOR" — it's
+//      actually INVSRCALPHA(6). And 0x40F720's v37 fade, with fogNear=999999/fogFar=1000000,
+//      ALWAYS saturates to 1.0 -> systematic LOD 0.)
 //
-//     ÉTAT DU CÂBLAGE — MISE À JOUR front F_ENTITY3D / branchement B8 (ombre planaire RÉELLE) :
-//       * showShadow -> toujours PAS de volume stencil : [A] est mort, cf. ci-dessus.
-//       * OMBRE PLANAIRE [B] -> DÉSORMAIS IMPLÉMENTÉE (ce front). La source du plan sol existe
-//         maintenant (Vague B4 : WorldAssets::GetGroundPlaneForShadow 0x40F720 -> collision::
-//         GroundPlane, via Collision_SegPickA 0x420D60). Le rendu vit dans une passe DÉDIÉE
-//         WorldRenderer::renderPlanarShadows() : bracket d'états ouvert UNE fois (Begin/End =
-//         GXD_Setup/EndStencilShadowState 0x404F20/0x4050D0), plan-sol interrogé par entité,
-//         aplatissement + VS09 dans gfx::MeshRenderer::DrawModelPlanarShadow (D3DXMatrixShadow
-//         @0x40FB28, PASSE 5, PS NULL). ÉTENDUE AUX 3 CATÉGORIES du bracket : JOUEURS (@0x52DA41,
-//         paperdoll aplati pièce par pièce), MONSTRES (@0x52DB09), PNJ DE DÉCOR (@0x52DAA2, via
-//         game::ZoneNpcs() = équivalent client-source de g_NpcRenderArray). L'ancienne
-//         approximation drawReflectionOverlay() (monstres seuls, sans aplatissement ni bracket)
-//         est SUPPRIMÉE. Repli propre si le plan ne résout pas OU si SetCollisionSource() n'a pas
-//         été posée (aucun dessin, aucun plan y=constante inventé). `reflectionEligible` n'est
-//         plus lu (la garde de visibilité showReflection est ré-évaluée dans la passe d'ombre).
-//         CÂBLAGE MAIN REQUIS : WorldRenderer::SetCollisionSource(worldAssets_) depuis
-//         Scene/SceneManager.cpp (cf. rapport de front). Sans lui, la passe est un no-op propre.
-//       * B7 — LOD d'ombre par distance : NON implémenté À DESSEIN. Le fondu v37 de 0x40F720
-//         sature à 1.0 (fogNear/fogFar = 999999/1000000) -> LOD 0 systématique ; lod=0 est DÉJÀ
-//         fidèle (cf. §LOD ci-dessus). L'activer serait infidèle.
-//       * [NON VÉRIFIÉ / APPROXIMATION DOCUMENTÉE] Gate de visibilité de l'ombre JOUEUR/PNJ : on
-//         réutilise showReflection (active && dist(self)<=300 && near-cull), PROUVÉ pour l'ombre
-//         MONSTRE (Char_DrawReflection). Le gate exact des ombres joueur (champ +0xDC, méga-switch
-//         11 Ko de Char_DrawWeaponEffectVariantB 0x56BF90 non décompilé) et PNJ n'est pas reversé
-//         -> approximation assumée, pas une invention de seuil.
-//       * [NON VÉRIFIÉ] Hauteur de modèle (a2) : EntityRenderInfo::drawSize reste 0 (non porté) ->
-//         repli kShadowModelHeight (GAP documenté dans WorldRenderer.cpp). Sert uniquement au
-//         segment de pick / maxDist ; le plan trouvé (donc la projection) n'en dépend pas.
-//       * [NON VÉRIFIÉ] STENCILREF pendant le bracket : jamais posé par 0x404F20 -> hérité
-//         (probablement 0 par défaut D3D9) — NON inventé (non posé). Anti-double-blend par
-//         STENCILFUNC=EQUAL/STENCILPASS=INCR : inerte si le depth-stencil n'a pas de bits stencil
-//         (dégradation propre : léger sur-assombrissement aux recouvrements, pas de crash).
+//     WIRING STATE — UPDATE for front F_ENTITY3D / branch B8 (REAL planar shadow):
+//       * showShadow -> STILL no stencil volume: [A] is dead, cf. above.
+//       * PLANAR SHADOW [B] -> NOW IMPLEMENTED (this front). The ground-plane source now
+//         exists (Wave B4: WorldAssets::GetGroundPlaneForShadow 0x40F720 -> collision::
+//         GroundPlane, via Collision_SegPickA 0x420D60). The rendering lives in a
+//         DEDICATED pass WorldRenderer::renderPlanarShadows(): state bracket opened once
+//         (Begin/End = GXD_Setup/EndStencilShadowState 0x404F20/0x4050D0), ground plane
+//         queried per entity, flattening + VS09 in
+//         gfx::MeshRenderer::DrawModelPlanarShadow (D3DXMatrixShadow @0x40FB28, PASS 5, PS
+//         NULL). EXTENDED TO THE 3 CATEGORIES of the bracket: PLAYERS (@0x52DA41,
+//         paperdoll flattened piece by piece), MONSTERS (@0x52DB09), DECOR NPC (@0x52DAA2,
+//         via game::ZoneNpcs() = client-source equivalent of g_NpcRenderArray). The old
+//         drawReflectionOverlay() approximation (monsters only, no flattening or bracket)
+//         is REMOVED. Clean fallback if the plane doesn't resolve OR if
+//         SetCollisionSource() hasn't been set (no drawing, no invented y=constant plane).
+//         `reflectionEligible` is no longer read (the showReflection visibility gate is
+//         re-evaluated in the shadow pass). MAIN WIRING REQUIRED:
+//         WorldRenderer::SetCollisionSource(worldAssets_) from Scene/SceneManager.cpp (cf.
+//         front report). Without it, the pass is a clean no-op.
+//       * B7 — distance-based shadow LOD: NOT implemented BY DESIGN. 0x40F720's v37 fade
+//         saturates at 1.0 (fogNear/fogFar = 999999/1000000) -> systematic LOD 0; lod=0 is
+//         ALREADY faithful (cf. §LOD above). Enabling it would be unfaithful.
+//       * [NOT VERIFIED / DOCUMENTED APPROXIMATION] PLAYER/NPC shadow visibility gate:
+//         showReflection is reused (active && dist(self)<=300 && near-cull), PROVEN for
+//         the MONSTER shadow (Char_DrawReflection). The exact player (field +0xDC,
+//         undecompiled 11 KB mega-switch of Char_DrawWeaponEffectVariantB 0x56BF90) and
+//         NPC shadow gates aren't reversed -> an assumed approximation, not an invented
+//         threshold.
+//       * [NOT VERIFIED] Model height (a2): EntityRenderInfo::drawSize stays 0 (not
+//         ported) -> kShadowModelHeight fallback (GAP documented in
+//         WorldRenderer_Shadows.cpp). Only used for the pick segment/maxDist; the plane
+//         found (hence the projection) doesn't depend on it.
+//       * [NOT VERIFIED] STENCILREF during the bracket: never set by 0x404F20 ->
+//         inherited (likely 0, the D3D9 default) — NOT invented (not set). Anti-double-
+//         blend via STENCILFUNC=EQUAL/STENCILPASS=INCR: inert if the depth-stencil has no
+//         stencil bits (clean degradation: slight over-darkening at overlaps, no crash).
 //
-// TODO(fidélité) : PlayerEntity/MonsterEntity (Game/GameState.h) ne portent pas
-// encore le nom/niveau/échelle/angle réels (payload réseau pas entièrement décodé
-// côté GameState) — NameplateActor/EntityRenderState sont peuplés avec les seuls
-// champs disponibles (position, PV) + des valeurs de repli documentées au site
-// d'appel (WorldRenderer.cpp). Aucune valeur inventée n'est présentée comme
-// certaine : les repères visuels (couleur/texte placeholder) restent identifiables
-// comme tels.
+// TODO(fidelity): PlayerEntity/MonsterEntity (Game/GameState.h) don't yet carry the real
+// name/level/scale/angle (network payload not fully decoded on the GameState side) —
+// NameplateActor/EntityRenderState are populated with only the available fields
+// (position, HP) + fallback values documented at the call site (the relevant
+// WorldRenderer*.cpp file). No invented value is ever presented as certain: the visual
+// markers (placeholder color/text) stay identifiable as such.
 #pragma once
 #include <cstdint>
 #include <memory>
@@ -336,48 +336,49 @@
 #include "Gfx/Font.h"
 #include "Gfx/ModelCache.h"
 #include "Game/EntityDrawLogic.h"
-#include "Game/ExtraDatabases.h" // game::NpcDefRecord (PNJ de decor, cf. DrawableEntity::npcDef)
-#include "Game/AnimationTick.h"  // game::IMotionFrameCountOracle (oracle expose ci-dessous) — W7
+#include "Game/ExtraDatabases.h" // game::NpcDefRecord (decor NPC, cf. DrawableEntity::npcDef)
+#include "Game/AnimationTick.h"  // game::IMotionFrameCountOracle (oracle exposed below) — W7
 
 namespace ts2 {
 
 namespace gfx { class Renderer; }
-// F_ENTITY3D (branchement B8) : source du PLAN-SOL de l'ombre planaire. Forward-declaré ici
-// (pointeur non possédant, membre collisionSource_) ; le .cpp inclut World/WorldIntegration.h.
+// F_ENTITY3D (branch B8): source of the planar shadow's GROUND PLANE. Forward-declared
+// here (non-owning pointer, collisionSource_ member); the .cpp includes World/WorldIntegration.h.
 namespace world { class WorldAssets; }
 
-// Oracle de nombre de frames d'animation (Passe 4 / vague W7, front motion-anim) — miroir de
-// Model_GetMotionFrameCount 0x4E5A70 (monstre) / Model_GetWeaponEffectFrameCount 0x4E5A40 (PNJ
-// de decor). Les deux resolvent le MEME slot que le dessin, donc le count doit venir du MEME
-// cache que la palette dessinee : ce cache (gfx::MotionCache) est un statique de fichier de
-// Scene/WorldRenderer.cpp (WorldRenderer.h ne pouvant recevoir de membre a l'epoque de son
-// introduction, cf. WorldRenderer.cpp::Motions()) -- d'ou cet accesseur libre, seul point
-// d'entree legitime pour les ticks de Game/AnimationTick.h qui vivent hors de la couche gfx.
-// Reference vers un singleton a duree de vie process : ne jamais la stocker au-dela.
-// A CABLER (hors de mes fichiers) : Scene/SceneManager.cpp doit le passer a
-// game::Monster_DispatchMotionTick et game::ZoneNpc_TickAnim -- sans quoi les curseurs
-// avancent sans jamais reboucler (degradation propre, cf. Game/AnimationTick.h).
+// Animation frame-count oracle (Pass 4 / wave W7, front motion-anim) — mirrors
+// Model_GetMotionFrameCount 0x4E5A70 (monster) / Model_GetWeaponEffectFrameCount 0x4E5A40
+// (decor NPC). Both resolve the SAME slot as the draw, so the count must come from the
+// SAME cache as the drawn palette: this cache (gfx::MotionCache) is a file-static of the
+// WorldRenderer.cpp split family (WorldRenderer.h couldn't receive a member at the time
+// this was introduced, cf. Scene/WorldRenderer_Internal.h::Motions()) -- hence this free
+// accessor, the only legitimate entry point for the ticks of Game/AnimationTick.h which
+// live outside the gfx layer.
+// Reference to a process-lifetime singleton: never store it beyond that.
+// TO BE WIRED (outside my files): Scene/SceneManager.cpp must pass it to
+// game::Monster_DispatchMotionTick and game::ZoneNpc_TickAnim -- without which the
+// cursors advance without ever wrapping (clean degradation, cf. Game/AnimationTick.h).
 const game::IMotionFrameCountOracle& WorldMotionFrameCountOracle();
 
-// Nombre de frames du CLIP COURANT d'un JOUEUR (front F_PLAYERANIM, 2026-07-17) — miroir de
-// Motion_GetFrameCount 0x4D7830 retourne par PcModel_ResolveSlotAndApply 0x4E5A00, qui borne le
-// wrap du curseur (Char_TickMoveState 0x574830 @0x574922). Adosse au MEME MotionCache (Motions())
-// que le dessin : le frameCount du wrap == frameCount de la palette echantillonnee (fidelite —
-// sinon wrap et rendu divergeraient). weaponType laisse a 0 par l'appelant (a8 = switch ~500 cas
-// non reverse, TODO ancre 0x4E46A0). Renvoie 0 si le slot ne resout pas (fichier absent / borne
-// depassee) -> game::Player_AdvanceAnimCursor avance alors sans wrap (duree inconnue, degradation
-// propre). Il n'existe PAS de methode "joueur" sur IMotionFrameCountOracle (interface non
-// possedee) : d'ou cet accesseur libre dedie, seul point d'entree pour l'avance de curseur joueur
-// de Game/PlayerAnimCursorTick.h qui vit hors de la couche gfx.
-// A CABLER (hors de mes fichiers) : Scene/SceneManager.cpp l'appelle en UPDATE pour fournir le
-// frameCount a game::Player_AdvanceAnimCursor (cf. rapport de front, integrationForMain).
+// Frame count of a PLAYER's CURRENT CLIP (front F_PLAYERANIM, 2026-07-17) — mirrors
+// Motion_GetFrameCount 0x4D7830 returned by PcModel_ResolveSlotAndApply 0x4E5A00, which
+// bounds the cursor wrap (Char_TickMoveState 0x574830 @0x574922). Backed by the SAME
+// MotionCache (Motions()) as the draw: the wrap's frameCount == the sampled palette's
+// frameCount (fidelity — otherwise wrap and render would diverge). weaponType is left at
+// 0 by the caller (a8 = an unreversed ~500-case switch, TODO anchor 0x4E46A0). Returns 0
+// if the slot doesn't resolve (file absent / bound exceeded) -> game::Player_AdvanceAnimCursor
+// then advances without wrapping (unknown duration, clean degradation). There is NO
+// "player" method on IMotionFrameCountOracle (interface not owned): hence this dedicated
+// free accessor, the sole entry point for the player cursor advance of
+// Game/PlayerAnimCursorTick.h which lives outside the gfx layer.
+// TO BE WIRED (outside my files): Scene/SceneManager.cpp calls it in UPDATE to supply the
+// frameCount to game::Player_AdvanceAnimCursor (cf. front report, integrationForMain).
 int WorldPlayerMotionFrameCount(int race, int gender, int weaponType, int animState);
 
-// WorldRenderer — dessine chaque frame InGame le contenu de game::g_World
-// (joueurs + monstres + npcs, cf. bandeau) : corps (modèle ou placeholder)
-// + nameplate. Un seul MeshRenderer/Font est partagé entre toutes les entités de
-// la frame (même pattern que ts2::ui::GameHud : une police par composant, pas de
-// singleton global de police).
+// WorldRenderer — draws the content of game::g_World every InGame frame (players +
+// monsters + npcs, cf. banner): body (model or placeholder) + nameplate. A single
+// MeshRenderer/Font is shared across every entity of the frame (same pattern as
+// ts2::ui::GameHud: one font per component, no global font singleton).
 class WorldRenderer {
 public:
     ~WorldRenderer() { Shutdown(); }
@@ -385,68 +386,66 @@ public:
     WorldRenderer(const WorldRenderer&) = delete;
     WorldRenderer& operator=(const WorldRenderer&) = delete;
 
-    // Construit MeshRenderer (décl. vertex + shaders skinnés), le placeholder cube
-    // (D3DXCreateBox) et la police des nameplates. Renvoie false si le device est nul
-    // ou si MeshRenderer::Init échoue (le placeholder cube/police restent best-effort :
-    // leur échec dégrade le rendu mais ne bloque pas l'init globale).
+    // Builds the MeshRenderer (vertex decl + skinned shaders), the placeholder cube
+    // (D3DXCreateBox) and the nameplate font. Returns false if the device is null or if
+    // MeshRenderer::Init fails (the placeholder cube/font stay best-effort: their failure
+    // degrades rendering but doesn't block the overall init).
     bool Init(gfx::Renderer& renderer, int screenW, int screenH);
     void Shutdown();
 
     void OnDeviceLost();
     void OnDeviceReset();
 
-    // Dessine toutes les entités actives de game::g_World (players puis monsters
-    // puis npcs) + leurs nameplates, avec les matrices de `camera`. Ne fait rien
-    // si non prêt.
+    // Draws every active entity of game::g_World (players then monsters then npcs) +
+    // their nameplates, using `camera`'s matrices. Does nothing if not ready.
     void Render(const gfx::Camera& camera);
 
-    // (GXD_RenderPostBlur 0x4053E0) Le bloom/post-blur lit les pixel shaders PS12/PS14 du
-    // npk GXDEffect (this+527404/+527468). Ce ShaderSet — les 12 shaders, chargés par Init()
-    // et attachés au MeshRenderer via AttachShaderSet — en est la seule source côté ClientSource.
-    // MAIN le passe à GxdRenderer::RenderPostBlur depuis SceneManager (site d'origine UNIQUE
-    // @0x52FB53 dans Scene_InGameRender 0x52D0B0, après tout le 3D, avant Gfx_Begin2D @0x52FB89).
-    // Référence NON possédante : valide tant que ce WorldRenderer vit (durée de vie scène InGame).
+    // (GXD_RenderPostBlur 0x4053E0) The bloom/post-blur reads pixel shaders PS12/PS14 of
+    // the GXDEffect npk (this+527404/+527468). This ShaderSet — the 12 shaders, loaded by
+    // Init() and attached to the MeshRenderer via AttachShaderSet — is its only source on
+    // the ClientSource side. MAIN passes it to GxdRenderer::RenderPostBlur from
+    // SceneManager (SINGLE original call site @0x52FB53 in Scene_InGameRender 0x52D0B0,
+    // after all the 3D, before Gfx_Begin2D @0x52FB89). NON-owning reference: valid as long
+    // as this WorldRenderer lives (InGame scene lifetime).
     const gfx::ShaderSet& BloomShaderSet() const { return shaderSet_; }
 
-    // F_ENTITY3D (branchement B8) — source du PLAN-SOL pour l'ombre planaire projetée
-    // (WorldAssets::GetGroundPlaneForShadow 0x40F720). Référence NON possédante, valide tant que
-    // le WorldAssets de la scène InGame vit (même durée de vie que ce WorldRenderer). Tant qu'elle
-    // n'est PAS posée (nullptr), la passe d'ombre planaire est un no-op propre (aucun dessin, aucun
-    // plan inventé). MÊME motif que host.GetGroundHeight : à câbler depuis Scene/SceneManager.cpp
-    // (worldAssets_). Cf. le rapport de front pour le site exact.
+    // F_ENTITY3D (branch B8) — source of the GROUND PLANE for the projected planar shadow
+    // (WorldAssets::GetGroundPlaneForShadow 0x40F720). NON-owning reference, valid as long
+    // as the InGame scene's WorldAssets lives (same lifetime as this WorldRenderer). As
+    // long as it's NOT set (nullptr), the planar shadow pass is a clean no-op (no drawing,
+    // no invented plane). SAME pattern as host.GetGroundHeight: to be wired from
+    // Scene/SceneManager.cpp (worldAssets_). Cf. the front report for the exact site.
     void SetCollisionSource(const world::WorldAssets* src) { collisionSource_ = src; }
 
 private:
     // -----------------------------------------------------------------------
-    // Point d'extension modèle réel — CÂBLÉ sur Gfx/ModelCache (mission
-    // "câbler ResolveModel()", 2026-07-14, cf. bandeau de tête pour le détail
-    // complet par type d'entité). L'ancienne signature unique
-    // ResolveModel(modelCategoryId, motionIndex) ne correspondait à AUCUNE API
-    // réelle de ModelCache (qui résout par itemId ITEM_INFO pour un item, ou par
-    // monsterDefId/MONSTER_INFO pour un monstre — jamais par un couple générique
-    // catégorie/motion) : remplacée par deux points d'entrée alignés sur les
-    // signatures RÉELLES du cache (cf. Gfx/ModelCache.h::GetForItem/GetForMonster).
+    // Real model extension point — WIRED to Gfx/ModelCache (mission "wire
+    // ResolveModel()", 2026-07-14, cf. header banner for the full per-entity-type
+    // detail). The old single signature ResolveModel(modelCategoryId, motionIndex)
+    // matched NO real ModelCache API (which resolves by ITEM_INFO itemId for an
+    // item, or by monsterDefId/MONSTER_INFO for a monster — never by a generic
+    // category/motion pair): replaced by two entry points aligned on the cache's
+    // REAL signatures (cf. Gfx/ModelCache.h::GetForItem/GetForMonster).
     // -----------------------------------------------------------------------
-    const gfx::SkinnedModel* ResolveMonsterModel(uint32_t monsterDefId); // corps monstre
-    const gfx::SkinnedModel* ResolveWeaponModel(uint32_t weaponItemId);  // arme joueur (self + distant, cf. bandeau)
-    // Corps PNJ DE DECOR (mission "PNJ DECOR VISIBLES A L'ECRAN", 2026-07-14, cf. bandeau
-    // de tete §"PNJ" pour la distinction avec le tableau gameplay) : delegue a
-    // Gfx/ModelCache.h::GetForNpc(NpcDefRecord&), RESOLU depuis une mission anterieure
-    // (npc.fieldE +1324 = kindIndex+1, cf. ModelCache.cpp). nullptr si npcDef est nul ou si
-    // fieldE est hors bornes [1,66] (repli cube dans renderOne, jamais d'exception).
+    const gfx::SkinnedModel* ResolveMonsterModel(uint32_t monsterDefId); // monster body
+    const gfx::SkinnedModel* ResolveWeaponModel(uint32_t weaponItemId);  // player weapon (self + remote, cf. banner)
+    // DECOR NPC body (mission "PNJ DECOR VISIBLES A L'ECRAN", 2026-07-14, cf. header
+    // banner §"NPC" for the distinction from the gameplay array): delegates to
+    // Gfx/ModelCache.h::GetForNpc(NpcDefRecord&), RESOLVED in an earlier mission
+    // (npc.fieldE +1324 = kindIndex+1, cf. ModelCache.cpp). nullptr if npcDef is null or if
+    // fieldE is out of bounds [1,66] (cube fallback in renderOne, never an exception).
     const gfx::SkinnedModel* ResolveNpcModel(const game::NpcDefRecord* npcDef);
-    // Corps de base joueur (SLOT0+SLOT1, cf. bandeau "JOUEURS" + Gfx/ModelCache.h::
+    // Base player body (SLOT0+SLOT1, cf. "PLAYERS" banner + Gfx/ModelCache.h::
     // GetForPlayerBody). race/gender/costumeSlot0/costumeSlot1 = PlayerEntity::body+68/72/76/80,
-    // valables pour self ET distants sans distinction (cf. bandeau).
+    // valid for self AND remotes without distinction (cf. banner).
     gfx::PlayerBodyModel ResolvePlayerBodyModel(int race, int gender, int costumeSlot0, int costumeSlot1);
 
     bool buildPlaceholderCube(IDirect3DDevice9* dev);
-    // rotYDeg (mission ROTATION/ORIENTATION, 2026-07-14) : cap horizontal en degrés,
-    // MÊME convention que MeshRenderer::DrawModel (rotationDeg.y, matrice
-    // S*Rz*Ry*Rx*T) -- appliqué même au cube placeholder pour que le repère visuel
-    // reste cohérent en orientation avec le vrai modèle qui pourra le remplacer plus
-    // tard (pas d'effet visuel notable sur un cube symétrique en Y, mais évite un
-    // écart de matrice monde entre les deux chemins de dessin).
+    // rotYDeg (mission ROTATION/ORIENTATION, 2026-07-14): horizontal heading in degrees,
+    // SAME convention as MeshRenderer::DrawModel (rotationDeg.y, matrix S*Rz*Ry*Rx*T) --
+    // applied even to the placeholder cube so the visual marker stays orientation-
+    // consistent with the real model that may later replace it (no notable visual effect
+    // on a Y-symmetric cube, but avoids a world-matrix mismatch between the two draw paths).
     void drawPlaceholderCube(const D3DXVECTOR3& pos, float scale, D3DCOLOR color,
                              float rotYDeg, const D3DXMATRIX& view, const D3DXMATRIX& proj);
 
@@ -456,205 +455,210 @@ private:
                          D3DCOLOR color, const D3DXMATRIX& viewProj);
 
     // =======================================================================
-    // Passe « libellé de l'entité survolée » — Passe 4 / vague W9, front nameplate-entity.
+    // "Hovered entity label" pass — Pass 4 / wave W9, front nameplate-entity.
     //
-    // REMPLACE l'ancien bloc nameplate de renderOne() (une plaque PAR ENTITÉ et PAR FRAME,
-    // drawMode=1), qui reproduisait un CHEMIN MORT du binaire et, de surcroît, ne
-    // dessinait RIEN (NameplateViewerContext vide -> garde @0x56F679 fausse -> mainLine
-    // vide). Cf. le §DRAWMODE de Game/NameplateLogic.h pour la preuve complète.
+    // REPLACES the old nameplate block in renderOne() (one plate PER ENTITY and PER
+    // FRAME, drawMode=1), which reproduced a DEAD PATH of the binary and, on top of that,
+    // drew NOTHING (empty NameplateViewerContext -> false @0x56F679 gate -> empty
+    // mainLine). Cf. Game/NameplateLogic.h's §DRAWMODE for the full evidence.
     //
-    // STRUCTURE FIDÈLE : dans Scene_InGameRender 0x52D0B0, le corps (Char_Draw 0x5805C0)
-    // et le libellé (Char_DrawNameplate 0x56EF40 / Char_DrawOverheadName 0x581440 /
-    // Fx_MeleeSwingDrawMarker 0x5802C0 / Obj_DrawNameLabel 0x5840B0) sont dessinés par des
-    // fonctions DIFFÉRENTES, à des endroits DIFFÉRENTS : les corps dans les passes 3D, les
-    // libellés dans le bloc 2D ouvert par Gfx_Begin2D @0x52FB89. renderOne() ne fait donc
-    // plus QUE le corps, et cette passe unique (appelée après les 4 boucles de Render())
-    // reproduit le bloc 2D @0x52FB58..0x53120B :
+    // FAITHFUL STRUCTURE: in Scene_InGameRender 0x52D0B0, the body (Char_Draw 0x5805C0)
+    // and the label (Char_DrawNameplate 0x56EF40 / Char_DrawOverheadName 0x581440 /
+    // Fx_MeleeSwingDrawMarker 0x5802C0 / Obj_DrawNameLabel 0x5840B0) are drawn by
+    // DIFFERENT functions, at DIFFERENT places: bodies in the 3D passes, labels in the 2D
+    // block opened by Gfx_Begin2D @0x52FB89. renderOne() therefore now draws ONLY the
+    // body, and this single pass (called after Render()'s 4 loops) reproduces the 2D
+    // block @0x52FB58..0x53120B:
     //     GetPhysicalCursorPos(&pt) @0x52FB5C ; ScreenToClient(hWndParent, &pt) @0x52FB6C
     //     World_PickEntityAtCursor(..., g_Opt_ShowHitMarkers ? 1 : 0) @0x530F7E / @0x530FA6
-    //     switch (kind) 8 cas @0x530FC7 -> AU PLUS UN libellé par frame
+    //     switch (kind) 8 cases @0x530FC7 -> AT MOST ONE label per frame
     // =======================================================================
     void drawNameplatePass(const gfx::Camera& camera, const game::DrawCullContext& cull,
                            const D3DXMATRIX& viewProj);
 
-    // Une entité déjà normalisée pour la boucle de rendu (players/monsters/npcs
-    // convergent tous ici, cf. WorldRenderer.cpp).
+    // An entity already normalized for the render loop (players/monsters/npcs all
+    // converge here, cf. WorldRenderer.cpp).
     struct DrawableEntity {
-        game::EntityRenderState renderState; // vue EntityDrawLogic (pos/hp/scaleY/...)
-        bool        notSelf = true;          // a3 d'origine (index de boucle != 0)
-        std::string name;                    // nom REEL pour les joueurs (PlayerEntity::name,
-                                              // cf. WorldRenderer.cpp::Render) ; placeholder
-                                              // "Monster#i"/"Npc#i" pour monstres/PNJ (noms
-                                              // reels hors perimetre, cf. bandeau)
+        game::EntityRenderState renderState; // EntityDrawLogic view (pos/hp/scaleY/...)
+        bool        notSelf = true;          // original a3 (loop index != 0)
+        std::string name;                    // REAL name for players (PlayerEntity::name,
+                                              // cf. WorldRenderer.cpp::Render); placeholder
+                                              // "Monster#i"/"Npc#i" for monsters/NPC (real
+                                              // names out of scope, cf. banner)
         D3DCOLOR    placeholderColor = 0xFFFFFFFFu;
 
-        // Entrées de résolution modèle réel (mission ModelCache, cf. bandeau de tête) :
-        // 0 = non résolu -> cube placeholder pour la partie correspondante. Un monstre
-        // avec monsterDefId!=0 remplace ENTIÈREMENT le cube ; un joueur avec hasBody=true
-        // remplace le cube-corps par les pièces SLOT0/SLOT1 résolues (cf. bandeau
-        // "JOUEURS") ; weaponItemId!=0 AJOUTE l'arme par-dessus le corps (modèle réel ou
-        // cube, cf. renderOne). Jamais monsterDefId ET hasBody à la fois en pratique (un
-        // monstre n'a pas de race/genre/costume, un joueur n'a pas de monsterDefId).
-        // weaponItemId est peuplé pour TOUT joueur actif (self ET distant, cf. bandeau
-        // "câblage arme joueur distant" -> PlayerEntity::body+148 pour les distants).
+        // Real model resolution inputs (mission ModelCache, cf. header banner): 0 = not
+        // resolved -> placeholder cube for the corresponding part. A monster with
+        // monsterDefId!=0 ENTIRELY replaces the cube; a player with hasBody=true replaces
+        // the body-cube with the resolved SLOT0/SLOT1 pieces (cf. "PLAYERS" banner);
+        // weaponItemId!=0 ADDS the weapon on top of the body (real model or cube, cf.
+        // renderOne). Never both monsterDefId AND hasBody in practice (a monster has no
+        // race/gender/costume, a player has no monsterDefId). weaponItemId is populated
+        // for EVERY active player (self AND remote, cf. "remote player weapon wiring"
+        // banner -> PlayerEntity::body+148 for remotes).
         uint32_t    monsterDefId = 0;
         uint32_t    weaponItemId = 0;
-        // G3 (DEEP IDA #5) — armure de CORPS equipee (joueurs) : id d'item ITEM_INFO du torse
-        // (equip[2]=body+108, token 003) et des jambes (equip[5]=body+132, token 004). 0 = corps de
-        // base. PlayerPaperdoll::Resolve resout le variant via ITEM_INFO+196.
+        // G3 (DEEP IDA #5) — equipped BODY armor (players): ITEM_INFO item id of the torso
+        // (equip[2]=body+108, token 003) and legs (equip[5]=body+132, token 004). 0 = base
+        // body. PlayerPaperdoll::Resolve resolves the variant via ITEM_INFO+196.
         uint32_t    torsoItemId  = 0;
         uint32_t    legsItemId   = 0;
 
-        // TRAINEE D'ARME (front F_WEAPONTRAIL, 2026-07-17) — effet de swoosh/lueur skinné dessiné
-        // pendant un cast, JOUEURS UNIQUEMENT (Char_DrawWeaponTrailEffect 0x55E9D0 opaque /
-        // Char_DrawWeaponEffectVariantB 0x56BF90 ombre, tous deux sur g_EntityArray). Gate maître
-        // @0x56c01b : dessiné seulement si weaponAnimSlot != 0 ET !altWeaponSet.
-        //   weaponAnimSlot = CharAnimState::weaponAnimSlot (entity+220 = this+55), id d'anim de
-        //                    skill/arme actif -> switch game::ResolveWeaponTrailIndex -> v6 ∈ [0,41].
+        // WEAPON TRAIL (front F_WEAPONTRAIL, 2026-07-17) — skinned swoosh/glow effect drawn
+        // during a cast, PLAYERS ONLY (Char_DrawWeaponTrailEffect 0x55E9D0 opaque /
+        // Char_DrawWeaponEffectVariantB 0x56BF90 shadow, both on g_EntityArray). Master
+        // gate @0x56c01b: drawn only if weaponAnimSlot != 0 AND !altWeaponSet.
+        //   weaponAnimSlot = CharAnimState::weaponAnimSlot (entity+220 = this+55), active
+        //                    skill/weapon anim id -> switch game::ResolveWeaponTrailIndex
+        //                    -> v6 ∈ [0,41].
         //   altWeaponSet   = CharAnimState::altWeaponSet   (entity+576 = this+144).
-        // Renseignés pour les joueurs (hasBody) ; 0/false pour monstres/PNJ (pas de traînée).
-        // ⚠ À CE JOUR weaponAnimSlot/altWeaponSet ne sont PAS alimentés depuis le réseau côté
-        // ClientSource (cf. rapport de front / integrationForMain) -> weaponAnimSlot vaut 0 ->
-        // le gate échoue -> AUCUNE traînée n'est émise (dégradation propre, pas de crash). Le
-        // câblage devient effectif dès que MAIN peuple ces champs (EntityManager, body+196/+552).
+        // Populated for players (hasBody); 0/false for monsters/NPC (no trail).
+        // Warning: TO DATE weaponAnimSlot/altWeaponSet are NOT fed from the network on the
+        // ClientSource side (cf. front report / integrationForMain) -> weaponAnimSlot is 0
+        // -> the gate fails -> NO trail is ever emitted (clean degradation, no crash). The
+        // wiring becomes effective as soon as MAIN populates these fields (EntityManager,
+        // body+196/+552).
         int         weaponAnimSlot = 0;
         bool        altWeaponSet   = false;
 
-        // PNJ DE DÉCOR (mission "PNJ DECOR VISIBLES A L'ÉCRAN", 2026-07-14, cf. bandeau de
-        // tête §"PNJ") : non-nul UNIQUEMENT pour les entrées de `game::ZoneNpcs()`
-        // (StaticNpcLoader) — jamais pour joueurs/monstres/PNJ gameplay. Consommé par
-        // `ResolveNpcModel()` dans `renderOne()`, EN PLACE de `monsterDefId` (les deux ne
-        // sont jamais renseignés simultanément) : `monsterDefId != 0` a priorité, sinon on
-        // tente `npcDef`, sinon repli cube.
+        // DECOR NPC (mission "PNJ DECOR VISIBLES A L'ÉCRAN", 2026-07-14, cf. header banner
+        // §"NPC"): non-null ONLY for entries of `game::ZoneNpcs()` (StaticNpcLoader) —
+        // never for players/monsters/gameplay NPC. Consumed by `ResolveNpcModel()` in
+        // `renderOne()`, IN PLACE of `monsterDefId` (the two are never both set at once):
+        // `monsterDefId != 0` takes priority, otherwise `npcDef` is tried, otherwise cube
+        // fallback.
         const game::NpcDefRecord* npcDef = nullptr;
 
-        // Corps de base joueur (mission "câblage corps de base joueur", 2026-07-14, cf.
-        // bandeau "JOUEURS") : hasBody=true pour toute entité PlayerEntity active (self
-        // ET distants, jamais pour monstres/PNJ) ; race/gender/costumeSlot0/costumeSlot1
-        // = lecture brute de PlayerEntity::body+68/72/76/80 (cf. WorldRenderer.cpp::Render).
+        // Base player body (mission "base player body wiring", 2026-07-14, cf. "PLAYERS"
+        // banner): hasBody=true for every active PlayerEntity (self AND remotes, never for
+        // monsters/NPC); race/gender/costumeSlot0/costumeSlot1 = raw read of
+        // PlayerEntity::body+68/72/76/80 (cf. WorldRenderer.cpp::Render).
         bool hasBody         = false;
         int  bodyRace        = 0;
         int  bodyGender      = 0;
         int  bodyCostumeSlot0 = 0;
         int  bodyCostumeSlot1 = 0;
 
-        // ANIMATION PAR ENTITÉ (Passe 4 / vague W7, front motion-anim — gaps as-motion-01
-        // « animType figé à idle » et as-motion-02 « curseur par entité jamais consommé »).
-        // Avant : `GetForMonster(defId, /*idle*/0)` + une horloge GLOBALE partagée -> aucune
-        // entité ne changeait jamais d'animation, et toutes étaient animées EN PHASE.
-        //   animType   = slot monstre +24 (Char_Draw 0x5805C0 @0x580770, arg 3 de
-        //                Model_GetNpcMotionSlot) / slot PNJ +12 (Npc_DrawMesh 0x57FF00
-        //                @0x57ffa0, arg 3 de Model_GetNpcMeshSlot).
-        //   animCursor = slot monstre +28 (Char_Draw @0x580828, animTime de SObject_DrawEx) /
-        //                slot PNJ +16 (Npc_DrawMesh @0x57fff1, idem).
-        // hasAnimCursor=false -> repli SampleByGameTime (clip correct via animType, cadence
-        // horloge globale). Sources C++ par famille d'entité :
-        //   MONSTRES     : game::g_MonsterTickExt[i] (.motionState = slot+24 / .animFrame = slot+28) ;
-        //   PNJ DE DÉCOR : g_World.npcRenderEntries[i] (.mode = slot+12 / .frameAcc = slot+16,
-        //                  pool unique W7, cf. Game/AnimationTick.h §6) ;
-        //   JOUEURS      : CharAnimState p.anim.state (entity+244, sélecteur de clip, réseau) /
-        //                  p.anim.animFrame (entity+248, curseur avancé par
-        //                  game::Player_AdvanceAnimCursor — front F_PLAYERANIM, Game/PlayerAnimCursorTick.h).
+        // PER-ENTITY ANIMATION (Pass 4 / wave W7, front motion-anim — gaps as-motion-01
+        // "animType frozen at idle" and as-motion-02 "per-entity cursor never consumed").
+        // Before: `GetForMonster(defId, /*idle*/0)` + a shared GLOBAL clock -> no entity
+        // ever changed animation, and all were animated IN PHASE.
+        //   animType   = monster slot +24 (Char_Draw 0x5805C0 @0x580770, arg 3 of
+        //                Model_GetNpcMotionSlot) / NPC slot +12 (Npc_DrawMesh 0x57FF00
+        //                @0x57ffa0, arg 3 of Model_GetNpcMeshSlot).
+        //   animCursor = monster slot +28 (Char_Draw @0x580828, SObject_DrawEx animTime) /
+        //                NPC slot +16 (Npc_DrawMesh @0x57fff1, same).
+        // hasAnimCursor=false -> SampleByGameTime fallback (correct clip via animType, but
+        // a global clock cadence). C++ sources per entity family:
+        //   MONSTERS  : game::g_MonsterTickExt[i] (.motionState = slot+24 / .animFrame = slot+28);
+        //   DECOR NPC : g_World.npcRenderEntries[i] (.mode = slot+12 / .frameAcc = slot+16,
+        //               unified W7 pool, cf. Game/AnimationTick.h §6);
+        //   PLAYERS   : CharAnimState p.anim.state (entity+244, clip selector, network) /
+        //               p.anim.animFrame (entity+248, cursor advanced by
+        //               game::Player_AdvanceAnimCursor — front F_PLAYERANIM, Game/PlayerAnimCursorTick.h).
         // hasAnimCursor = game::Monster_MotionTickIsWired / ZoneNpc_AnimTickIsWired /
-        // Player_AnimCursorTickIsWired selon la famille (garde anti-régression : n'active
-        // SampleByCursor que si le tick de curseur correspondant a réellement tourné).
+        // Player_AnimCursorTickIsWired depending on the family (anti-regression guard:
+        // only enables SampleByCursor if the matching cursor tick has actually run).
         int   animType      = 0;
-        // Pose d'arme (G5, DEEP IDA render) : entity+240 = body+216 = move-state+0 = 2*weaponClass.
-        // 3e param (weaponType) de MotionCache::GetForPlayer / PcModel_ResolveEquipSlot 0x4E46A0
-        // (base + 19968*animSlot). 0 pour monstres/PNJ. Joueur armé -> clip de la pose d'arme.
+        // Weapon pose (G5, DEEP IDA render): entity+240 = body+216 = move-state+0 = 2*weaponClass.
+        // 3rd param (weaponType) of MotionCache::GetForPlayer / PcModel_ResolveEquipSlot 0x4E46A0
+        // (base + 19968*animSlot). 0 for monsters/NPC. Armed player -> weapon-pose clip.
         int   animSlot      = 0;
         float animCursor    = 0.0f;
         bool  hasAnimCursor = false;
 
-        // Éligibilité au reflet (mission "EXTENSION OMBRE/REFLET", 2026-07-14, cf.
-        // bandeau de tête § Ombre/reflet) : true UNIQUEMENT pour les monstres.
-        // `Char_DrawReflection` 0x581090 n'a, dans tout le binaire, qu'un seul
-        // appelant (`xrefs_to` confirmé), lui-même dans la boucle MONSTRE de
-        // `Scene_InGameRender` -- jamais sur le tableau joueurs ni PNJ. Poser ce
-        // drapeau à true pour un joueur ou un PNJ serait une invention (aucun appel
-        // correspondant dans le désassemblage) : NE PAS l'étendre sans nouvelle
-        // preuve de décompilation contraire.
+        // Reflection eligibility (mission "SHADOW/REFLECTION EXTENSION", 2026-07-14, cf.
+        // header banner § Shadow/reflection): true ONLY for monsters. `Char_DrawReflection`
+        // 0x581090 has, in the entire binary, a single caller (`xrefs_to` confirmed),
+        // itself in the MONSTER loop of `Scene_InGameRender` -- never on the player or NPC
+        // array. Setting this flag to true for a player or NPC would be an invention (no
+        // matching call in the disassembly): DO NOT extend it without new contrary
+        // decompilation evidence.
         bool reflectionEligible = false;
 
-        // Éligibilité au CORPS 3D (mission "PNJ GAMEPLAY SANS CORPS", RE 2026-07-15) :
-        // true par défaut. Posé à false UNIQUEMENT pour les PNJ GAMEPLAY (g_World.npcs,
-        // tableau réseau dword_17AB534) — PROUVÉ par RE idaTs2 : leur champ `def`
-        // (dword_17AB598 = record ITEM_INFO) n'est lu par AUCUNE fonction de rendu
-        // (data_refs 0x17AB598 = interaction/autoplay uniquement), et les 3 boucles PNJ
-        // réseau de Scene_InGameRender 0x52D0B0 (0x52dc84/0x52ec5b/0x52fcae) n'appellent
-        // que Char_DrawAura / Fx_DrawZoneAura / ModelObj_Draw(marqueur de quête) /
-        // Char_DrawNameTag — JAMAIS SObject_DrawEx ni Char_Draw (aucun corps de mesh).
-        // Le corps 3D des PNJ est EXCLUSIVEMENT dessiné par Npc_DrawMesh 0x57FF00 sur le
-        // tableau SÉPARÉ g_NpcRenderArray 0x1764D14 (peuplé par Pkt_EnterWorld depuis les
-        // PNJ de décor de zone => boucle ZoneNpcs ci-dessous). Dessiner un corps (a
-        // fortiori un cube) pour un PNJ gameplay serait donc une INFIDÉLITÉ : quand ce
-        // drapeau est false, renderOne() n'émet ni modèle ni cube (ni reflet), seulement
-        // la nameplate.
+        // 3D BODY eligibility (mission "PNJ GAMEPLAY SANS CORPS", RE 2026-07-15): true by
+        // default. Set to false ONLY for GAMEPLAY NPC (g_World.npcs, network array
+        // dword_17AB534) — PROVEN by RE idaTs2: their `def` field (dword_17AB598 =
+        // ITEM_INFO record) is read by NO rendering function (data_refs 0x17AB598 =
+        // interaction/autoplay only), and the 3 network NPC loops of Scene_InGameRender
+        // 0x52D0B0 (0x52dc84/0x52ec5b/0x52fcae) only call Char_DrawAura / Fx_DrawZoneAura /
+        // ModelObj_Draw(quest marker) / Char_DrawNameTag — NEVER SObject_DrawEx or
+        // Char_Draw (no mesh body). The 3D body of NPCs is EXCLUSIVELY drawn by
+        // Npc_DrawMesh 0x57FF00 on the SEPARATE array g_NpcRenderArray 0x1764D14 (populated
+        // by Pkt_EnterWorld from zone decor NPCs => ZoneNpcs loop below). Drawing a body
+        // (let alone a cube) for a gameplay NPC would therefore be an INFIDELITY: when this
+        // flag is false, renderOne() emits neither model nor cube (nor reflection), only
+        // the nameplate.
         bool bodyMeshEligible = true;
     };
     void renderOne(const DrawableEntity& ent, const game::DrawCullContext& cull,
                   const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXMATRIX& viewProj);
 
-    // TRAINEE D'ARME (front F_WEAPONTRAIL) — résolution PARTAGÉE entre la passe opaque (renderOne,
-    // Char_DrawWeaponTrailEffect 0x55E9D0 -> DrawModel) et la passe d'ombre planaire
-    // (renderPlanarShadows, Char_DrawWeaponEffectVariantB 0x56BF90 -> DrawModelPlanarShadow), pour
-    // que la silhouette aplatie corresponde exactement à la traînée opaque (même SObject, même
-    // palette, même transformée que le corps). Applique le gate complet du binaire :
-    //   1. joueur (hasBody) + modelCache_ prêt,
+    // WEAPON TRAIL (front F_WEAPONTRAIL) — resolution SHARED between the opaque pass
+    // (renderOne, Char_DrawWeaponTrailEffect 0x55E9D0 -> DrawModel) and the planar shadow
+    // pass (renderPlanarShadows, Char_DrawWeaponEffectVariantB 0x56BF90 ->
+    // DrawModelPlanarShadow), so the flattened silhouette exactly matches the opaque trail
+    // (same SObject, same palette, same transform as the body). Applies the binary's full
+    // gate:
+    //   1. player (hasBody) + modelCache_ ready,
     //   2. weaponAnimSlot != 0 && !altWeaponSet (@0x56c01b),
     //   3. v6 = ResolveWeaponTrailIndex(weaponAnimSlot) != -1,
     //   4. motionSub = ResolveWeaponTrailMotionSub(animType=state) != -1,
-    //   5. sous-bloc 2 : garde frameCount>=1 (Motion_GetFrameCount @0x56c43e).
-    // Renvoie true + (outModel, outPalette) prêts à dessiner ; false = aucune traînée (skip propre).
-    // outPalette : SampleByCursor(animCursor) si hasAnimCursor, sinon repli SampleByGameTime — même
-    // curseur (entity+248 = this+62) que le corps.
+    //   5. sub-block 2: guarded by frameCount>=1 (Motion_GetFrameCount @0x56c43e).
+    // Returns true + (outModel, outPalette) ready to draw; false = no trail (clean skip).
+    // outPalette: SampleByCursor(animCursor) if hasAnimCursor, otherwise SampleByGameTime
+    // fallback — same cursor (entity+248 = this+62) as the body.
     bool resolveWeaponTrail(const DrawableEntity& ent,
                             const gfx::SkinnedModel*& outModel,
                             gfx::BonePalette& outPalette);
 
     // =======================================================================
-    // Passe OMBRE PLANAIRE PROJETÉE — Vague B / branchement B8 (front F_ENTITY3D).
-    // Reproduit le bracket d'ombre de Scene_InGameRender 0x52D0B0 (0x52D9DC..0x52DB15) : ouvre
-    // les états d'ombre UNE fois, interroge le plan-sol par entité (collisionSource_->
-    // GetGroundPlaneForShadow 0x40F720) et, si le plan résout, aplatit le corps skinné via
-    // meshRenderer_.DrawModelPlanarShadow ; referme les états. Étendue aux 3 catégories ombrées
-    // par le binaire (JOUEURS @0x52DA41 / MONSTRES @0x52DB09 / PNJ DE DÉCOR @0x52DAA2) — les PNJ
-    // gameplay (bodyMeshEligible=false) n'ont pas de corps -> pas d'ombre. Remplace l'ancienne
-    // approximation drawReflectionOverlay (monstres seuls, sans aplatissement ni bracket).
-    // No-op propre si collisionSource_==nullptr (repli : pas de dessin, pas de plan inventé).
+    // PROJECTED PLANAR SHADOW pass — Wave B / branch B8 (front F_ENTITY3D).
+    // Reproduces the shadow bracket of Scene_InGameRender 0x52D0B0 (0x52D9DC..0x52DB15):
+    // opens the shadow states once, queries the ground plane per entity (collisionSource_->
+    // GetGroundPlaneForShadow 0x40F720) and, if the plane resolves, flattens the skinned
+    // body via meshRenderer_.DrawModelPlanarShadow; restores the states afterward.
+    // Extended to the 3 categories shadowed by the binary (PLAYERS @0x52DA41 / MONSTERS
+    // @0x52DB09 / DECOR NPC @0x52DAA2) — gameplay NPC (bodyMeshEligible=false) have no body
+    // -> no shadow. Replaces the old drawReflectionOverlay approximation (monsters only,
+    // no flattening or bracket).
+    // Clean no-op if collisionSource_==nullptr (fallback: no drawing, no invented plane).
     void renderPlanarShadows(const std::vector<DrawableEntity>& drawables,
                              const game::DrawCullContext& cull);
-    // GXD_SetupStencilShadowState 0x404F20 / GXD_EndStencilShadowState 0x4050D0 — états D3D du
-    // bracket (byte-exact, cf. Docs/TS2_EXTRACT_PLANAR_SHADOW.md §3.b/§5). Posés/restaurés UNE
-    // fois autour de la boucle d'ombre. STENCILREF non posé par 0x404F20 -> hérité (non inventé).
+    // GXD_SetupStencilShadowState 0x404F20 / GXD_EndStencilShadowState 0x4050D0 — D3D
+    // states of the bracket (byte-exact, cf. Docs/TS2_EXTRACT_PLANAR_SHADOW.md §3.b/§5).
+    // Set/restored ONCE around the shadow loop. STENCILREF not set by 0x404F20 -> inherited
+    // (not invented).
     void beginPlanarShadowBracket();
     void endPlanarShadowBracket();
 
-    // FRONT FX-F4 (M1) : slots shaders REELS du npk GXDEffect (Shader03 VS03_SkinnedLit 0x409AB0
-    // + Shader04 PS04_Tex 0x409CC0 + VS15 volume d'ombre 0x40ACB0), charges depuis
-    // "./GXDEFFECT/GXDEffect.npk" (cle XTEA {1,4,4,1}, cf. Shader_LoadVS03 0x409AB0 : Npk_OpenFile
-    // + Npk_FindEntryByName("Shader03.fx") + j_D3DXCompileShader "Main"/"vs_2_0" + GetConstantByName
-    // mKeyMatrix/mWorldViewProjMatrix/mLightDirection/mLightAmbient/mLightDiffuse). POSSEDE ici
-    // (duree de vie = WorldRenderer) ; meshRenderer_.AttachShaderSet(&shaderSet_) n'en prend qu'une
-    // reference NON possedante. Sans ce cablage, DrawSkinnedSubset retombe sur le HLSL reconstruit
-    // (fallback) et les vrais Shader03/04 du npk ne sont jamais utilises (cf. MeshRenderer.cpp:510).
-    // DECLARE AVANT meshRenderer_ : les membres etant detruits en ordre inverse de declaration,
-    // ceci garantit que ~MeshRenderer (qui lache sa reference) s'execute AVANT ~ShaderSet (qui
-    // libere VS/PS/CT/decl) meme sans Shutdown() explicite.
+    // FRONT FX-F4 (M1): REAL shader slots of the GXDEffect npk (Shader03 VS03_SkinnedLit
+    // 0x409AB0 + Shader04 PS04_Tex 0x409CC0 + VS15 shadow volume 0x40ACB0), loaded from
+    // "./GXDEFFECT/GXDEffect.npk" (XTEA key {1,4,4,1}, cf. Shader_LoadVS03 0x409AB0:
+    // Npk_OpenFile + Npk_FindEntryByName("Shader03.fx") + j_D3DXCompileShader "Main"/"vs_2_0"
+    // + GetConstantByName mKeyMatrix/mWorldViewProjMatrix/mLightDirection/mLightAmbient/
+    // mLightDiffuse). OWNED here (lifetime = WorldRenderer);
+    // meshRenderer_.AttachShaderSet(&shaderSet_) only takes a NON-owning reference to it.
+    // Without this wiring, DrawSkinnedSubset falls back to the reconstructed HLSL
+    // (fallback) and the real npk Shader03/04 are never used (cf. MeshRenderer.cpp:510).
+    // DECLARED BEFORE meshRenderer_: since members are destroyed in reverse declaration
+    // order, this guarantees ~MeshRenderer (which releases its reference) runs BEFORE
+    // ~ShaderSet (which frees VS/PS/CT/decl) even without an explicit Shutdown() call.
     gfx::ShaderSet    shaderSet_;
     gfx::MeshRenderer meshRenderer_;
     gfx::Font         font_;
-    std::unique_ptr<gfx::ModelCache> modelCache_; // cf. Init() pour le choix de gameDataDir="."
-    // F_ENTITY3D (B8) — source du plan-sol de l'ombre planaire (SetCollisionSource, posée par MAIN
-    // depuis SceneManager). NON possédante. nullptr -> passe d'ombre planaire désactivée (repli propre).
+    std::unique_ptr<gfx::ModelCache> modelCache_; // cf. Init() for the gameDataDir="." choice
+    // F_ENTITY3D (B8) — source of the planar shadow's ground plane (SetCollisionSource,
+    // set by MAIN from SceneManager). NON-owning. nullptr -> planar shadow pass disabled
+    // (clean fallback).
     const world::WorldAssets* collisionSource_ = nullptr;
     IDirect3DDevice9* device_    = nullptr;
-    // hWndParent 0x815184 (fenêtre principale) — nécessaire au ScreenToClient de
-    // drawNameplatePass (@0x52FB6C). PAS de nouveau paramètre d'Init() ni de hook à poser
-    // par l'orchestrateur : la fenêtre est récupérée depuis le device lui-même
-    // (IDirect3DDevice9::GetCreationParameters().hFocusWindow == le HWND passé à
-    // CreateDevice par gfx::Renderer::Init), donc ce front reste auto-suffisant. nullptr
-    // -> ScreenToClient est sauté (mêmes coordonnées écran), comme UI/UIManager.cpp:294.
+    // hWndParent 0x815184 (main window) — needed by drawNameplatePass's ScreenToClient
+    // (@0x52FB6C). NO new Init() parameter nor hook for the orchestrator to set: the
+    // window is retrieved from the device itself
+    // (IDirect3DDevice9::GetCreationParameters().hFocusWindow == the HWND passed to
+    // CreateDevice by gfx::Renderer::Init), so this front stays self-sufficient. nullptr
+    // -> ScreenToClient is skipped (same screen coordinates), like UI/UIManager.cpp:294.
     HWND              hwnd_      = nullptr;
     ID3DXMesh*        cubeMesh_  = nullptr; // placeholder (D3DXCreateBox 1x1x1)
     int  screenW_ = 0, screenH_ = 0;

@@ -1,18 +1,18 @@
-// Game/BitPacking.h — utilitaires de manipulation octet-par-octet d'un mot 32 bits
-// « packé » (durabilité/attributs d'objet, stats combinées talisman, etc.).
+// Game/BitPacking.h — byte-by-byte manipulation utilities for a "packed" 32-bit
+// word (durability/item attributes, combined talisman stats, etc.).
 //
-// Module UTILITAIRE PUR : aucun état global, fonctions libres, byte-exact au
-// désassemblage de TwelveSky2.exe. Toutes les fonctions d'origine partagent le
-// même idiome : le mot 32 bits est passé par valeur sur la pile (poussé sur
-// 4 octets même quand IDA type l'argument en `char`, car __stdcall aligne
-// chaque argument sur un dword), copié via memcpy(4) dans un buffer local,
-// modifié octet à octet, puis re-copié dans le dword de retour. Cet idiome
-// est reproduit ici par de simples opérations de masquage/décalage,
-// numériquement identiques (l'aller-retour memcpy ne fait qu'émuler un accès
-// non-aligné, sans incidence sur le résultat). Fonctions `constexpr` (triviales,
-// sans état) : voir Game/BitPacking.cpp pour les static_assert de non-régression.
+// PURE UTILITY module: no global state, free functions, byte-exact to the
+// TwelveSky2.exe disassembly. All original functions share the same idiom:
+// the 32-bit word is passed by value on the stack (pushed as 4 bytes even
+// when IDA types the argument as `char`, because __stdcall aligns each
+// argument on a dword), copied via memcpy(4) into a local buffer, modified
+// byte by byte, then copied back into the return dword. This idiom is
+// reproduced here with simple mask/shift operations, numerically identical
+// (the memcpy round-trip only emulates an unaligned access, with no effect
+// on the result). `constexpr` functions (trivial, stateless): see
+// Game/BitPacking.cpp for the non-regression static_asserts.
 //
-// Correspondance fonction <-> adresse d'origine :
+// Function <-> original address mapping:
 //   Bits_AddByte0     0x5456D0   Bits_AddByte1    0x545720   Bits_AddByte2  0x545870
 //   Bits_ClearByte0   0x545770   Bits_ClearByte1  0x5457B0   Bits_ClearByte2 0x5457F0
 //   Bits_ClearByte3   0x545940
@@ -22,34 +22,34 @@
 //   Bits_Unpack8Bytes 0x54C5D0
 //   Stat_PackCombined 0x54CEB0   Stat_UnpackCombined 0x54CE40
 //
-// Cohérence avec Game/ItemSystem.h (Item_GetAttribByte0..3, 0x545610/40/70/A0) :
-// CE SONT DES PRIMITIVES SŒURS mais PAS DES DOUBLONS. Item_GetAttribByte0..3
-// sont de purs LECTEURS (extraction d'un octet du mot, sans modification,
-// immédiatement en amont dans le binaire : 0x545610..0x5456A0). Les fonctions
-// de ce fichier (0x5456D0 et suivantes) sont les ÉCRIVAINS de la même famille
-// (add/clear/set/pack un octet du mot) — même convention d'encodage, rôle
-// disjoint. Aucune duplication : on réutilise ici la même idée d'octet N du
-// mot 32 bits, sans réimplémenter les lecteurs (cf. Item_GetAttribByteN).
+// Relationship with Game/ItemSystem.h (Item_GetAttribByte0..3, 0x545610/40/70/A0):
+// THESE ARE SIBLING PRIMITIVES, NOT DUPLICATES. Item_GetAttribByte0..3 are
+// pure READERS (extract one byte of the word, no modification, immediately
+// preceding in the binary: 0x545610..0x5456A0). The functions in this file
+// (0x5456D0 and following) are the WRITERS of the same family (add/clear/
+// set/pack one byte of the word) — same encoding convention, disjoint role.
+// No duplication: the "byte N of the 32-bit word" idea is reused here
+// without reimplementing the readers (cf. Item_GetAttribByteN).
 //
-// NB : plusieurs sites d'appel (Net/GameHandlers_InvDispatch.cpp,
-// Net/GameHandlers_Misc.cpp, Game/AutoPlaySystem.cpp) contiennent déjà des
-// réimplémentations locales ad hoc de certaines de ces primitives (imposées
-// par la règle « n'éditer aucun fichier existant »). Elles ont été vérifiées
-// bit-exactes avec les fonctions ci-dessous lors de l'écriture de ce module ;
-// ce fichier constitue la version canonique/réutilisable pour tout nouveau code.
+// NB: several call sites (Net/GameHandlers_InvDispatch.cpp,
+// Net/GameHandlers_Misc.cpp, Game/AutoPlaySystem.cpp) already contain ad hoc
+// local reimplementations of some of these primitives (forced by the "do
+// not edit any existing file" rule). They were verified bit-exact against
+// the functions below while writing this module; this file is the
+// canonical/reusable version for any new code.
 #pragma once
 #include <cstdint>
 
 namespace ts2::game {
 
 // =====================================================================
-// Bits_AddByteN — ajoute (modulo 256) un delta signé à l'octet N du mot.
-// Le binaire d'origine sign-étend l'octet lu ET le delta avant l'addition
-// 32 bits, puis tronque le résultat sur 8 bits (mov [..], al) : le résultat
-// tronqué est strictement identique à une addition non signée mod 256,
-// quelle que soit l'extension de signe utilisée en amont.
-//   Bits_AddByte0 0x5456D0 (octet 0) · Bits_AddByte1 0x545720 (octet 1)
-//   Bits_AddByte2 0x545870 (octet 2)
+// Bits_AddByteN — adds (modulo 256) a signed delta to byte N of the word.
+// The original binary sign-extends the read byte AND the delta before the
+// 32-bit addition, then truncates the result to 8 bits (mov [..], al): the
+// truncated result is strictly identical to an unsigned mod-256 addition,
+// regardless of the sign extension used upstream.
+//   Bits_AddByte0 0x5456D0 (byte 0) · Bits_AddByte1 0x545720 (byte 1)
+//   Bits_AddByte2 0x545870 (byte 2)
 // =====================================================================
 constexpr uint32_t Bits_AddByte0(uint32_t packed, int8_t delta) {
     const uint8_t b0 = static_cast<uint8_t>((packed & 0xFFu) + static_cast<uint8_t>(delta));
@@ -65,7 +65,7 @@ constexpr uint32_t Bits_AddByte2(uint32_t packed, int8_t delta) {
 }
 
 // =====================================================================
-// Bits_ClearByteN — met l'octet N du mot à zéro, les 3 autres inchangés.
+// Bits_ClearByteN — zeroes byte N of the word, the other 3 unchanged.
 //   Bits_ClearByte0 0x545770 · Bits_ClearByte1 0x5457B0
 //   Bits_ClearByte2 0x5457F0 · Bits_ClearByte3 0x545940
 // =====================================================================
@@ -75,9 +75,9 @@ constexpr uint32_t Bits_ClearByte2(uint32_t packed) { return packed & 0xFF00FFFF
 constexpr uint32_t Bits_ClearByte3(uint32_t packed) { return packed & 0x00FFFFFFu; }
 
 // =====================================================================
-// Bits_SetByteN — écrase l'octet N du mot avec `value` (8 bits), les 3
-// autres octets inchangés.
-//   Bits_SetByte2 0x545830 (octet 2) · Bits_SetByte3 0x545900 (octet 3)
+// Bits_SetByteN — overwrites byte N of the word with `value` (8 bits), the
+// other 3 bytes unchanged.
+//   Bits_SetByte2 0x545830 (byte 2) · Bits_SetByte3 0x545900 (byte 3)
 // =====================================================================
 constexpr uint32_t Bits_SetByte2(uint32_t packed, int8_t value) {
     return (packed & 0xFF00FFFFu) | (static_cast<uint32_t>(static_cast<uint8_t>(value)) << 16);
@@ -87,46 +87,45 @@ constexpr uint32_t Bits_SetByte3(uint32_t packed, int8_t value) {
 }
 
 // =====================================================================
-// Bits_PackByte012 0x5458C0 — construit un mot 32 bits à partir de 3 octets
-// (octet0=a1, octet1=a2, octet2=a3), octet3 explicitement mis à 0.
+// Bits_PackByte012 0x5458C0 — builds a 32-bit word from 3 bytes
+// (byte0=a1, byte1=a2, byte2=a3), byte3 explicitly set to 0.
 // =====================================================================
 constexpr uint32_t Bits_PackByte012(int8_t b0, int8_t b1, int8_t b2) {
     return (static_cast<uint32_t>(static_cast<uint8_t>(b0)))
          | (static_cast<uint32_t>(static_cast<uint8_t>(b1)) << 8)
          | (static_cast<uint32_t>(static_cast<uint8_t>(b2)) << 16);
-    // octet3 = 0 implicitement (bits 24..31 non positionnés).
+    // byte3 = 0 implicitly (bits 24..31 left unset).
 }
 
 // =====================================================================
-// Bits_SetByteN 0x54BF30 — écrase l'octet d'INDICE VARIABLE `byteIndex`
-// (0..3) du mot avec `value`.
-// ⚠ FIDÉLITÉ : le binaire d'origine n'effectue AUCUNE validation de
-// `byteIndex` (écriture directe `[ebp+edx+var_4], al` dans un buffer pile de
-// 4 octets) — un index hors [0..3] y corromprait la pile. Reproduire cette
-// UB en C++ est impossible/dangereux ; cette implémentation suppose
-// byteIndex ∈ [0..3] (contrat respecté par tous les appelants identifiés
-// dans le désassemblage) et n'écrit que dans ce cas, sans effet si hors
-// bornes (défense minimale, ne change pas le comportement pour les appels
-// valides — seule différence avec l'original : pas de corruption silencieuse
-// hors bornes).
+// Bits_SetByteN 0x54BF30 — overwrites the byte at VARIABLE INDEX `byteIndex`
+// (0..3) of the word with `value`.
+// FIDELITY WARNING: the original binary performs NO validation of
+// `byteIndex` (direct write `[ebp+edx+var_4], al` into a 4-byte stack
+// buffer) — an index outside [0..3] would corrupt the stack there.
+// Reproducing this UB in C++ is impossible/dangerous; this implementation
+// assumes byteIndex in [0..3] (contract honored by every caller identified
+// in the disassembly) and only writes in that case, with no effect out of
+// bounds (minimal defense, does not change behavior for valid calls — the
+// only difference from the original: no silent out-of-bounds corruption).
 // =====================================================================
 constexpr uint32_t Bits_SetByteN(int32_t byteIndex, int8_t value, uint32_t packed) {
     if (byteIndex < 0 || byteIndex > 3)
-        return packed; // hors contrat d'origine (UB pile) — no-op défensif.
+        return packed; // outside original contract (stack UB) — defensive no-op.
     const uint32_t shift = static_cast<uint32_t>(byteIndex) * 8u;
     const uint32_t mask = ~(0xFFu << shift);
     return (packed & mask) | (static_cast<uint32_t>(static_cast<uint8_t>(value)) << shift);
 }
 
 // =====================================================================
-// Bits_Unpack8Bytes 0x54C5D0 — extrait 8 octets (sign-étendus en int32)
-// depuis 3 mots packés :
-//   packed1 -> octet2 (out.p1b2), octet3 (out.p1b3)
-//   packed2 -> octet0 (out.p2b0), octet1 (out.p2b1), octet2 (out.p2b2), octet3 (out.p2b3)
-//   packed3 -> octet0 (out.p3b0), octet1 (out.p3b1)
-// (2 + 4 + 2 = 8 octets, d'où le nom d'origine). Chaque sortie reproduit le
-// `movsx` du binaire : l'octet est interprété comme int8_t puis étendu en
-// int32_t (et non simplement zéro-étendu).
+// Bits_Unpack8Bytes 0x54C5D0 — extracts 8 bytes (sign-extended to int32)
+// from 3 packed words:
+//   packed1 -> byte2 (out.p1b2), byte3 (out.p1b3)
+//   packed2 -> byte0 (out.p2b0), byte1 (out.p2b1), byte2 (out.p2b2), byte3 (out.p2b3)
+//   packed3 -> byte0 (out.p3b0), byte1 (out.p3b1)
+// (2 + 4 + 2 = 8 bytes, hence the original name). Each output reproduces the
+// binary's `movsx`: the byte is interpreted as int8_t then sign-extended to
+// int32_t (not simply zero-extended).
 // =====================================================================
 struct Bits_Unpack8BytesResult {
     int32_t p1b2 = 0, p1b3 = 0;
@@ -148,13 +147,13 @@ constexpr Bits_Unpack8BytesResult Bits_Unpack8Bytes(uint32_t packed1, uint32_t p
 }
 
 // =====================================================================
-// Stat_PackCombined 0x54CEB0 — encode (hi, lo) en un entier combiné
-// hi*1000000 + lo, utilisé pour les stats/talismans « valeur combinée ».
-//   hi (a1) doit être dans [0, 100]      (sinon échec)
-//   lo (a2) doit être dans [0, 100000]   (sinon échec)
-// Retourne true et écrit *out = lo + 1000000*hi en cas de succès ; sinon
-// écrit *out = 0 et retourne false (le binaire d'origine écrit aussi 0 dans
-// ce cas — cf. disasm 0x54ced2/0x54ced5).
+// Stat_PackCombined 0x54CEB0 — encodes (hi, lo) into a combined integer
+// hi*1000000 + lo, used for "combined value" stats/talismans.
+//   hi (a1) must be in [0, 100]      (otherwise fails)
+//   lo (a2) must be in [0, 100000]   (otherwise fails)
+// Returns true and writes *out = lo + 1000000*hi on success; otherwise
+// writes *out = 0 and returns false (the original binary also writes 0 in
+// this case — cf. disasm 0x54ced2/0x54ced5).
 // =====================================================================
 constexpr bool Stat_PackCombined(int32_t hi, int32_t lo, int32_t& out) {
     if (hi < 0 || hi > 100 || lo < 0 || lo > 100000) {
@@ -166,10 +165,10 @@ constexpr bool Stat_PackCombined(int32_t hi, int32_t lo, int32_t& out) {
 }
 
 // =====================================================================
-// Stat_UnpackCombined 0x54CE40 — inverse de Stat_PackCombined : découpe une
-// valeur combinée `v` en (hi, lo) = (v/1000000, v%1000000) [division/reste
-// SIGNÉS, idiv], puis plafonne : hi>100 -> 0, lo>100000 -> 0.
-// Si v<0, hi=lo=0 directement (pas de division).
+// Stat_UnpackCombined 0x54CE40 — inverse of Stat_PackCombined: splits a
+// combined value `v` into (hi, lo) = (v/1000000, v%1000000) [SIGNED
+// division/remainder, idiv], then clamps: hi>100 -> 0, lo>100000 -> 0.
+// If v<0, hi=lo=0 directly (no division).
 // =====================================================================
 constexpr void Stat_UnpackCombined(int32_t v, int32_t& hi, int32_t& lo) {
     if (v < 0) {

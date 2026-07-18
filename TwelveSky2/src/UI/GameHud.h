@@ -1,34 +1,33 @@
-// UI/GameHud.h — HUD principal en jeu (cGameHud).
+// UI/GameHud.h — main in-game HUD (cGameHud).
 //
-// Réécriture SQUELETTE, fidèle dans l'esprit au binaire TwelveSky2 :
-//   cGameHud_InitLayout  0x62A5B0  -> Init()/InitLayout()  (ancre + rects dérivés)
-//   cGameHud_Render      0x64A900  -> Render()             (~16 Ko d'origine)
-//   cGameHud_OnMouseDown 0x62B080  -> OnMouseDown()         (dispatcher clic-gauche)
+// SKELETON REWRITE, faithful in spirit to the TwelveSky2 binary:
+//   cGameHud_InitLayout  0x62A5B0  -> Init()/InitLayout()  (anchor + derived rects)
+//   cGameHud_Render      0x64A900  -> Render()             (~16 KB original)
+//   cGameHud_OnMouseDown 0x62B080  -> OnMouseDown()         (left-click dispatcher)
 //   QuickSlot singleton  dword_18392C0 / UI_QuickSlot_AssignHotkey 0x5bdf00
 //
-// Le cGameHud d'origine est la grande fenêtre « personnage » (inventaire/équipement).
-// Ici on implémente la partie TOUJOURS AFFICHÉE du HUD : barres HP/MP (lues sur
-// game::g_World.self), barre de quickslots et un mini-cadre portrait. Dessin via
-// gfx::SpriteBatch (rects pleins teintés) + gfx::Font (libellés).
+// The original cGameHud is the big "character" window (inventory/equipment). Here we
+// implement the ALWAYS-VISIBLE part of the HUD: HP/MP bars (read from
+// game::g_World.self), the quickslot bar, and a small portrait frame. Drawn via
+// gfx::SpriteBatch (tinted flat rects) + gfx::Font (labels).
 //
-// Voir Docs/TS2_CLIENT_SHELL.md §2.3 (HUD) et §4 (quickslots DIK 0x02..0x0B).
+// See Docs/TS2_CLIENT_SHELL.md §2.3 (HUD) and §4 (quickslots DIK 0x02..0x0B).
 //
-// ⚠️ AUDIT DE COMPLÉTUDE vs Docs/TS2_UI_GAMEHUD_RENDER.md (mission du 2026-07-14,
-// idaTs2 déjà décompilé lors d'une session antérieure — ce fichier ne refait PAS de
-// RE, il consomme le doc existant + l'état réel du code) : tableau complet et
-// écarts documentés dans le rapport de mission (voir réponse de l'agent). Deux
-// widgets déjà écrits mais JAMAIS instanciés nulle part dans ClientSource ont été
-// câblés ici lors de cette passe :
-//   - UI/ChatWindow.h (§13 fenêtre de chat & messages système, bas-gauche) — le
-//     pipeline de données existait déjà (game::g_Client.msg, alimenté par les
-//     handlers réseau) mais rien ne l'affichait.
-//   - UI/ConsumableBarWindow.h (§14 quickbar, contrepartie pixel de
-//     Game/ConsumableBarLogic.h) — remplace l'ancien remplissage de rects placeholder
-//     de DrawQuickSlotFrames() par un rendu piloté par l'inventaire réel (compteur
-//     de stock, teinte « objet manquant »), conservé en repli si l'instanciation
-//     échoue. Voir bandeau de UI/GameHud.cpp pour le détail des accroches et des
-//     limites (pas d'événement souris-relâché ni clavier routé depuis SceneManager
-//     dans cette passe — TODO précis documenté au .cpp).
+// COMPLETENESS AUDIT vs Docs/TS2_UI_GAMEHUD_RENDER.md (mission 2026-07-14, idaTs2
+// already decompiled in an earlier session — this file does NOT redo RE, it consumes
+// the existing doc + the code's actual state): full table and deltas documented in
+// the mission report (see agent's reply). Two widgets already written but NEVER
+// instantiated anywhere in ClientSource were wired here in this pass:
+//   - UI/ChatWindow.h (§13 chat & system message window, bottom-left) — the data
+//     pipeline already existed (game::g_Client.msg, fed by network handlers) but
+//     nothing displayed it.
+//   - UI/ConsumableBarWindow.h (§14 quickbar, pixel counterpart of
+//     Game/ConsumableBarLogic.h) — replaces the old placeholder-rect fill of
+//     DrawQuickSlotFrames() with rendering driven by real inventory (stock count,
+//     "missing item" tint), kept as a fallback if instantiation fails. See the
+//     UI/GameHud.cpp banner for anchor/limitation detail (no mouse-up or keyboard
+//     event routed from SceneManager in this pass — precise TODO documented in the
+//     .cpp).
 #pragma once
 #include <windows.h>
 #include <d3d9.h>
@@ -42,7 +41,7 @@
 #include "Gfx/SpriteBatch.h"
 #include "Gfx/Font.h"
 #include "Gfx/GpuTexture.h"
-#include "Gfx/IconTextureCache.h" // cache d'atlas des 4 barres vitales (vague W9, cf. vitalsAtlasCache_)
+#include "Gfx/IconTextureCache.h" // atlas cache for the 4 vitals bars (wave W9, cf. vitalsAtlasCache_)
 #include "UI/MinimapWidget.h"
 #include "UI/BuffStatusPanel.h"
 #include "UI/ChatWindow.h"
@@ -50,33 +49,33 @@
 
 namespace ts2::ui {
 
-// Défini dans UI/ConsumableBarWindow.h, qui inclut LUI-MÊME UI/GameHud.h (pour
-// ts2::ui::QuickSlot/kQuickSlotCount) : une inclusion directe ici créerait un cycle
-// d'en-têtes. Forward-declare + std::unique_ptr, implémentation complète dans
-// GameHud.cpp (seul traducteur qui a besoin du type complet). Voir bandeau de
-// tête ci-dessus et de GameHud.cpp.
+// Defined in UI/ConsumableBarWindow.h, which ITSELF includes UI/GameHud.h (for
+// ts2::ui::QuickSlot/kQuickSlotCount): including it directly here would create a
+// header cycle. Forward-declare + std::unique_ptr, full implementation in
+// GameHud.cpp (the only translation unit that needs the complete type). See the
+// banner above and in GameHud.cpp.
 class ConsumableBarWindow;
 
-// Nombre de quickslots de la barre principale : touches 1..0 = scancodes DIK
-// 0x02..0x0B (Docs/TS2_CLIENT_SHELL.md §4). Les slots étendus Q/W/E/R (DIK
-// 0x10..0x13) existent dans l'original mais ne sont pas dessinés ici.
+// Number of quickslots in the main bar: keys 1..0 = DIK scancodes 0x02..0x0B
+// (Docs/TS2_CLIENT_SHELL.md §4). The extended Q/W/E/R slots (DIK 0x10..0x13) exist
+// in the original but are not drawn here.
 inline constexpr int kQuickSlotCount = 10;
 
-// Type de contenu lié à un quickslot (UI_QuickSlot_AssignHotkey 0x5bdf00).
+// Content type bound to a quickslot (UI_QuickSlot_AssignHotkey 0x5bdf00).
 enum class QuickSlotType : uint8_t {
     Empty = 0,
-    Item  = 1,   // objet consommable/autoplay
-    Skill = 2,   // compétence
+    Item  = 1,   // consumable/autoplay object
+    Skill = 2,   // skill
 };
 
-// Un quickslot : ce qui lui est assigné (aucune donnée de rendu ici).
+// A quickslot: what is assigned to it (no rendering data here).
 struct QuickSlot {
     QuickSlotType type  = QuickSlotType::Empty;
-    uint32_t      refId = 0;   // itemId ou skillId lié
+    uint32_t      refId = 0;   // linked itemId or skillId
     bool empty() const { return type == QuickSlotType::Empty; }
 };
 
-// Rectangle écran simple (les rects d'origine sont des quadruplets d'int).
+// Simple screen rectangle (the original rects are int quadruplets).
 struct HudRect {
     int x = 0, y = 0, w = 0, h = 0;
     bool Contains(int px, int py) const {
@@ -85,221 +84,224 @@ struct HudRect {
 };
 
 // -----------------------------------------------------------------------------
-// GameHud — HUD toujours affiché (barres vitales + quickslots + mini-cadre).
-// Possède son propre SpriteBatch et sa propre Font (aucune instance partagée
-// n'existe encore dans App). À rendre chaque frame quand la scène == InGame.
+// GameHud — always-visible HUD (vitals bars + quickslots + portrait frame).
+// Owns its own SpriteBatch and Font (no shared instance exists in App yet). To be
+// rendered every frame when scene == InGame.
 class GameHud {
 public:
-    // Constructeur ET destructeur déclarés ici, DÉFINIS dans GameHud.cpp (pas
-    // `= default` inline) : quickBarWindow_ ci-dessous est un
-    // std::unique_ptr<ConsumableBarWindow> sur un type SEULEMENT forward-déclaré
-    // dans ce header (cf. commentaire de tête ci-dessus, cycle d'inclusion avec
-    // UI/ConsumableBarWindow.h). Même un constructeur par défaut trivial a besoin
-    // du type complet ici (le ménage d'exception implicite du constructeur généré
-    // doit savoir détruire quickBarWindow_ si un membre suivant lève) : le laisser
-    // `= default` dans CHAQUE traducteur qui construit un GameHud (ex.
-    // Scene/SceneManager.cpp, qui n'inclut pas ConsumableBarWindow.h) donne la
-    // même erreur C2338 que pour le destructeur. Un destructeur inline ici
-    // instant­cierait ~unique_ptr<ConsumableBarWindow>() avec un type incomplet dans
-    // CHAQUE traducteur qui inclut GameHud.h (C2338 « can't delete an incomplete
-    // type ») ; seul GameHud.cpp inclut le type complet.
+    // Constructor AND destructor declared here, DEFINED in GameHud.cpp (not
+    // `= default` inline): quickBarWindow_ below is a
+    // std::unique_ptr<ConsumableBarWindow> over a type ONLY forward-declared in
+    // this header (cf. banner above, include cycle with UI/ConsumableBarWindow.h).
+    // Even a trivial default constructor needs the complete type here (the
+    // generated constructor's implicit exception cleanup must know how to destroy
+    // quickBarWindow_ if a later member throws): leaving it `= default` in EVERY
+    // translation unit that constructs a GameHud (e.g. Scene/SceneManager.cpp,
+    // which doesn't include ConsumableBarWindow.h) gives the same C2338 error as
+    // for the destructor. An inline destructor here would instantiate
+    // ~unique_ptr<ConsumableBarWindow>() with an incomplete type in EVERY
+    // translation unit that includes GameHud.h (C2338 "can't delete an incomplete
+    // type"); only GameHud.cpp includes the complete type.
     GameHud();
     ~GameHud();
     GameHud(const GameHud&)            = delete;
     GameHud& operator=(const GameHud&) = delete;
 
-    // cGameHud_InitLayout 0x62A5B0 : crée le sprite/police + la texture blanche,
-    // puis pré-remplit les rects du layout à partir des dimensions écran.
-    // Renvoie false si le device est nul ou si une ressource GPU échoue.
+    // cGameHud_InitLayout 0x62A5B0: creates the sprite/font + white texture, then
+    // pre-fills the layout rects from the screen dimensions. Returns false if the
+    // device is null or a GPU resource fails.
     bool Init(gfx::Renderer& renderer, int screenW, int screenH);
 
-    // Libère sprite/police/texture (App_Shutdown / teardown UI).
+    // Releases sprite/font/texture (App_Shutdown / UI teardown).
     void Shutdown();
 
-    // cGameHud_Render 0x64A900 : dessine cadre + barres HP/MP (game::g_World.self)
-    // + barre de quickslots. Ne fait rien si masqué ou non initialisé.
+    // cGameHud_Render 0x64A900: draws frame + HP/MP bars (game::g_World.self)
+    // + quickslot bar. No-op if hidden or uninitialized.
     void Render();
 
-    // cGameHud_OnMouseDown 0x62B080 : hit-test des quickslots (et du cadre).
-    // Renvoie true si l'événement est consommé (« premier consommateur gagne »).
+    // cGameHud_OnMouseDown 0x62B080: hit-tests the quickslots (and the frame).
+    // Returns true if the event was consumed ("first consumer wins").
     bool OnMouseDown(int x, int y);
 
-    // Autour d'un Reset() de device D3D9.
+    // Around a D3D9 device Reset().
     void OnDeviceLost();
     void OnDeviceReset();
 
-    // État visible (this[175] / bVisible dans l'original).
+    // Visible state (this[175] / bVisible in the original).
     void SetVisible(bool v) { visible_ = v; }
     bool Visible() const    { return visible_; }
 
-    // Accès aux quickslots (assignation par le système de hotkeys).
+    // Quickslot access (assigned by the hotkey system).
     QuickSlot&       Slot(int i)       { return slots_[static_cast<size_t>(i)]; }
     const QuickSlot& Slot(int i) const { return slots_[static_cast<size_t>(i)]; }
 
-    // Dernier slot cliqué (-1 si aucun) — point d'accroche pour l'action d'usage.
+    // Last clicked slot (-1 if none) — hook point for the use action.
     int LastClickedSlot() const { return lastClickedSlot_; }
 
-    // Mini-carte (§12 de Docs/TS2_UI_GAMEHUD_RENDER.md) — accès direct pour un
-    // câblage externe futur (ex. touche raccourcie bascule taille, système de
-    // quête -> SetQuestHighlightMonster). Câblée dans Init/Render/OnMouseDown
-    // ci-dessous ; voir UI/MinimapWidget.h.
+    // Minimap (§12 of Docs/TS2_UI_GAMEHUD_RENDER.md) — direct access for future
+    // external wiring (e.g. shortcut key toggling size, quest system ->
+    // SetQuestHighlightMonster). Wired in Init/Render/OnMouseDown below; see
+    // UI/MinimapWidget.h.
     MinimapWidget&       Minimap()       { return minimap_; }
     const MinimapWidget& Minimap() const { return minimap_; }
 
-    // Grille de buffs/debuffs (§9) + panneau de statut bas-droite (§16) — accès
-    // direct pour un câblage externe futur (ex. système de buffs poussant dans
-    // game::PlayerEntity::buffs, hooks SetStatusFlag/SetCasting). Câblée dans
-    // Init/Render/OnMouseDown/OnDeviceLost/OnDeviceReset ci-dessous ; voir
-    // UI/BuffStatusPanel.h et Docs/TS2_UI_GAMEHUD_RENDER.md §9/§16.
+    // Buff/debuff grid (§9) + bottom-right status panel (§16) — direct access for
+    // future external wiring (e.g. a buff system pushing into
+    // game::PlayerEntity::buffs, SetStatusFlag/SetCasting hooks). Wired in
+    // Init/Render/OnMouseDown/OnDeviceLost/OnDeviceReset below; see
+    // UI/BuffStatusPanel.h and Docs/TS2_UI_GAMEHUD_RENDER.md §9/§16.
     BuffStatusPanel&       Buffs()       { return buffPanel_; }
     const BuffStatusPanel& Buffs() const { return buffPanel_; }
 
-    // Fenêtre de chat & messages système (§13) — câblée mission 2026-07-14 (voir
-    // bandeau de tête). Accès direct exposé pour un futur câblage externe :
-    //   - Chat().Bind(netClient) : requiert que SceneManager possède/expose un
-    //     net::NetClient& à passer ici (aucune instance accessible depuis GameHud
-    //     aujourd'hui) — TODO précis, cf. bandeau .cpp.
-    //   - Chat().OnKey(vk) / Chat().OnChar(c) : requiert que
-    //     SceneManager::OnKeyDown/OnChar routent vers hud_ en scène InGame (ces
-    //     deux méthodes ne routent aujourd'hui QUE vers `login_`, scène Login) —
-    //     TODO précis, cf. bandeau .cpp. Sans ce câblage, la fenêtre de chat
-    //     AFFICHE les messages entrants mais ne peut pas recevoir de saisie clavier.
+    // Chat & system message window (§13) — wired mission 2026-07-14 (see banner
+    // above). Direct access exposed for future external wiring:
+    //   - Chat().Bind(netClient): requires SceneManager to own/expose a
+    //     net::NetClient& to pass here (no instance reachable from GameHud today)
+    //     — precise TODO, cf. .cpp banner.
+    //   - Chat().OnKey(vk) / Chat().OnChar(c): requires
+    //     SceneManager::OnKeyDown/OnChar to route to hud_ in the InGame scene
+    //     (today these two methods route ONLY to `login_`, the Login scene) —
+    //     precise TODO, cf. .cpp banner. Without this wiring the chat window
+    //     DISPLAYS incoming messages but cannot receive keyboard input.
     ChatWindow&       Chat()       { return chatWindow_; }
     const ChatWindow& Chat() const { return chatWindow_; }
 
-    // Cadres alliance/groupe (§8, EA 0x67B891-0x67BD54, cf. Docs/TS2_UI_GAMEHUD_RENDER.md
-    // §8) — câblés mission 2026-07-14 (voir bandeau de tête de GameHud.cpp). PAS d'accès
-    // externe nécessaire à ce jour (source de données = game::g_World.allianceRoster +
-    // game::g_World.players, déjà globales) : pas de méthode publique dédiée.
+    // Alliance/party frames (§8, EA 0x67B891-0x67BD54, cf. Docs/TS2_UI_GAMEHUD_RENDER.md
+    // §8) — wired mission 2026-07-14 (see GameHud.cpp banner). No external access
+    // needed to date (data source = game::g_World.allianceRoster +
+    // game::g_World.players, already global): no dedicated public method.
 
 private:
-    // Rects calculés une fois par Init (recalculés si les dims changent).
+    // Rects computed once by Init (recomputed if the dims change).
     struct Layout {
-        HudRect frame;     // cadre vitales (fond translucide)
-        HudRect portrait;  // mini-cadre portrait
-        HudRect hpBar;     // barre de vie
-        HudRect mpBar;     // barre de mana
-        HudRect quickBar;  // fond de la barre de quickslots
-        std::array<HudRect, kQuickSlotCount> slots{}; // cases individuelles
-        HudRect questMarker; // §17 callout marqueur de quête (Quest_DrawTracker 0x510FC0)
+        HudRect frame;     // vitals frame (translucent background)
+        HudRect portrait;  // small portrait frame
+        HudRect hpBar;     // HP bar
+        HudRect mpBar;     // MP bar
+        HudRect quickBar;  // quickslot bar background
+        std::array<HudRect, kQuickSlotCount> slots{}; // individual slots
+        HudRect questMarker; // §17 quest marker callout (Quest_DrawTracker 0x510FC0)
     };
 
     void InitLayout();
 
-    // Primitives de dessin (à appeler entre sprite_.Begin()/End()).
+    // Drawing primitives (call between sprite_.Begin()/End()).
     void DrawFilledRect(const HudRect& r, D3DCOLOR color);
     void DrawBorder(const HudRect& r, int thickness, D3DCOLOR color);
     void DrawBarFill(const HudRect& r, int cur, int max,
                      D3DCOLOR bg, D3DCOLOR fill);
-    // Variante à paliers discrets — REPLI des 4 barres vitales quand l'atlas .IMG manque
-    // (vague W9). Le binaire ne connaît QUE 41 paliers : `Crt_ftol(cur*41.0/max)`
-    // (UI_GameHud_Render 0x67A44B-0x67A45D), jamais un ratio continu. Volontairement
-    // SÉPARÉE de DrawBarFill ci-dessus, qui reste continue pour les §7/§8 (plaques de
-    // cible / cadres alliance : 36 paliers dans le binaire, hors périmètre de W9).
+    // Discrete-step variant — FALLBACK for the 4 vitals bars when the atlas .IMG is
+    // missing (wave W9). The binary only ever knows 41 steps:
+    // `Crt_ftol(cur*41.0/max)` (UI_GameHud_Render 0x67A44B-0x67A45D), never a
+    // continuous ratio. Deliberately SEPARATE from DrawBarFill above, which stays
+    // continuous for §7/§8 (target plates / alliance frames: 36 steps in the
+    // binary, out of scope for W9).
     void DrawBarFillQuantized(const HudRect& r, int cur, int max, int steps,
                               D3DCOLOR bg, D3DCOLOR fill);
 
-    // --- Barres vitales en frames d'atlas (vague W9, HUD-02) -------------------
-    // Le binaire ne dessine JAMAIS de rect plein pour les barres : il blitte la frame
-    // `base + ftol(cur*41.0/max)` (clampée à base+41) du tableau Sprite2D partagé
-    // g_AssetMgr_UiAtlasSlots 0x8E8B50 (stride 148), à sa taille native.
-    // Bases prouvées (UI_GameHud_Render 0x67A3C0) : PV 95 @0x67A462, PM 137 @0x67A515,
-    // EXP 179 @0x67A65A, Maîtrise 3543 @0x67A707.
-    // DrawAtlasFrame : blitte l'élément `frame` (fichier 001_%05d.IMG, index frame+1 —
-    // même convention que kVitalsFrameImgPath, cf. AssetMgr_InitAllSlots 0x4DEB50).
-    // DrawAtlasBar   : calcule la frame puis délègue. Toutes deux renvoient false si la
-    // texture manque -> l'appelant retombe sur DrawBarFillQuantized.
+    // --- Vitals bars as atlas frames (wave W9, HUD-02) -------------------------
+    // The binary never draws a flat rect for the bars: it blits frame
+    // `base + ftol(cur*41.0/max)` (clamped to base+41) from the shared Sprite2D
+    // array g_AssetMgr_UiAtlasSlots 0x8E8B50 (stride 148), at its native size.
+    // Proven bases (UI_GameHud_Render 0x67A3C0): HP 95 @0x67A462, MP 137 @0x67A515,
+    // EXP 179 @0x67A65A, Mastery 3543 @0x67A707.
+    // DrawAtlasFrame: blits array element `frame` (file 001_%05d.IMG, index frame+1
+    // — same convention as kVitalsFrameImgPath, cf. AssetMgr_InitAllSlots 0x4DEB50).
+    // DrawAtlasBar: computes the frame, then delegates. Both return false if the
+    // texture is missing -> the caller falls back to DrawBarFillQuantized.
     bool DrawAtlasFrame(int frame, int x, int y);
     bool DrawAtlasBar(int baseFrame, int cur, int max, int x, int y);
 
-    // Sous-passes de rendu.
-    void DrawVitalsFrame();     // cadre + portrait + remplissage des 4 barres
-    void DrawQuickSlotFrames(); // cases de la barre de quickslots
-    // Lit ses valeurs (PV/PM/devise) elle-même depuis game::g_World — NE PAS repasser à
-    // une signature à paramètres (vague W9) : le binaire RÉÉCRIT la source des PV entre
-    // la barre et le texte (`if (dword_1687370 < 0) dword_1687370 = 0` @0x67A499), donc
-    // tout snapshot pris avant DrawVitalsFrame() afficherait la valeur PRÉ-clamp.
+    // Rendering sub-passes.
+    void DrawVitalsFrame();     // frame + portrait + fill of the 4 bars
+    void DrawQuickSlotFrames(); // quickslot bar cells
+    // Reads its own HP/MP/currency values from game::g_World — do NOT revert to a
+    // parameterized signature (wave W9): the binary REWRITES the HP source between
+    // the bar and the text (`if (dword_1687370 < 0) dword_1687370 = 0` @0x67A499),
+    // so any snapshot taken before DrawVitalsFrame() would show the pre-clamp value.
     void DrawTextPass();
-    // §15 rangée de boutons de menu (UI_GameHud_Render 0x685177+) — vague W9, HUD-03.
+    // §15 row of menu buttons (UI_GameHud_Render 0x685177+) — wave W9, HUD-03.
     void DrawMenuButtons();
-    // §4 pastille talisman (UI_GameHud_Render 0x67A787-0x67A826) — vague W9, HUD-09 partiel.
-    // Appelée depuis DrawVitalsFrame() (même passe sprites) ; voir GameHud.cpp pour la
-    // structure réelle du bloc (celle du dossier de gaps était inversée) et le TODO sur les
-    // blocs devise/durabilité laissés hors périmètre.
+    // §4 talisman badge (UI_GameHud_Render 0x67A787-0x67A826) — wave W9, HUD-09 partial.
+    // Called from DrawVitalsFrame() (same sprite pass); see GameHud.cpp for the real
+    // block structure (the gap folder's was inverted) and the TODO on the
+    // currency/durability blocks left out of scope.
     void DrawTalismanBadge();
 
-    // §17 overlay debug temps réservé aux GM (EA 0x686942, dans UI_GameHud_Render,
-    // condition binaire `dword_1676108 > 0 && g_GmAuthLevel > 0` @0x6868e8-0x6868f8).
-    // Lot de police AUTONOME (BeginBatch/EndBatch propres, comme buffPanel_/chatWindow_
-    // ci-dessous) : no-op silencieux (aucun coût de rendu) si l'une des deux conditions
-    // est fausse. Voir GameHud.cpp pour le détail des 5 globals sources.
+    // §17 GM-only debug time overlay (EA 0x686942, inside UI_GameHud_Render,
+    // binary condition `dword_1676108 > 0 && g_GmAuthLevel > 0` @0x6868e8-0x6868f8).
+    // AUTONOMOUS font batch (own BeginBatch/EndBatch, like buffPanel_/chatWindow_
+    // below): silent no-op (zero render cost) if either condition is false. See
+    // GameHud.cpp for the 5 source globals.
     void DrawDebugTimeOverlay();
 
-    // §17 callout de marqueur de quête — Quest_DrawTracker 0x510FC0, appelé par
-    // UI_GameHud_Render juste après le panneau bas-droite (EA 0x6868AB, cf. Docs/
-    // TS2_UI_GAMEHUD_RENDER.md §17). DISTINCT de UI/QuestTrackerWindow.h (panneau
-    // permanent haut-droite, câblé via UI/GameWindows.h) : cette pastille ne
-    // s'affiche que le temps où `questMarker_.active` est vrai (armé par
-    // game::Quest_UpdateMarkerTimer sur détection d'un nouvel objectif / objectif
-    // rempli, retombe après ~30s ou fermeture de l'entrepôt cible, cf.
-    // Game/ComboPickupTick.h). Voir GameHud.cpp pour le détail du câblage (état
-    // tiqué localement, cf. bandeau — Scene/SceneManager.cpp n'est PAS modifié).
-    void DrawQuestMarkerPanel(); // passe sprites (pastille + cadre)
-    void DrawQuestMarkerText();  // passe police AUTONOME (comme DrawDebugTimeOverlay)
+    // §17 quest marker callout — Quest_DrawTracker 0x510FC0, called by
+    // UI_GameHud_Render right after the bottom-right panel (EA 0x6868AB, cf. Docs/
+    // TS2_UI_GAMEHUD_RENDER.md §17). DISTINCT from UI/QuestTrackerWindow.h (the
+    // permanent top-right panel, wired via UI/GameWindows.h): this callout shows
+    // only while `questMarker_.active` is true (armed by
+    // game::Quest_UpdateMarkerTimer on a new or completed objective, decaying
+    // after ~30s or when the target warehouse closes, cf. Game/ComboPickupTick.h).
+    // See GameHud.cpp for the wiring detail (state ticked locally — Scene/
+    // SceneManager.cpp is NOT modified, cf. the member's banner).
+    void DrawQuestMarkerPanel(); // sprite pass (dot + frame)
+    void DrawQuestMarkerText();  // standalone font pass (like DrawDebugTimeOverlay)
 
-    // --- Cadres alliance/groupe (§8, mission 2026-07-14) ---------------------
-    // Une ligne résolue = un slot non vide de game::g_World.allianceRoster.memberNames
-    // (0..4, EA 0x67B891 : `Crt_Strcmp(g_AllianceRosterNames, &String) != 0`) recoupé par
-    // NOM avec game::g_World.players[] (même méthode que la plaque de cible §7 : recherche
-    // par nom dans le tableau d'entités, PAS par index de roster — les deux tableaux sont
-    // indépendants, cf. Game/GameState.h::PartyRoster pour la même mise en garde sur le
-    // groupe). Voir GameHud.cpp pour le détail des limites (pas de maxHp/maxMp modélisé
-    // pour une entité distante -> jauge grisée "sans donnée" plutôt qu'un ratio inventé).
+    // --- Alliance/party frames (§8, mission 2026-07-14) -----------------------
+    // A resolved row = a non-empty slot of game::g_World.allianceRoster.memberNames
+    // (0..4, EA 0x67B891: `Crt_Strcmp(g_AllianceRosterNames, &String) != 0`) cross-
+    // referenced BY NAME with game::g_World.players[] (same method as the §7
+    // target plate: lookup by name in the entity array, NOT by roster index — the
+    // two arrays are independent, cf. Game/GameState.h::PartyRoster for the same
+    // caveat on the party). See GameHud.cpp for the detail of the limits (no
+    // maxHp/maxMp modeled for a remote entity -> gauge grayed "no data" rather
+    // than an invented ratio).
     struct AllianceFrameRow {
         std::string name;
-        bool resolved   = false; // entité trouvée par nom dans game::g_World.players
+        bool resolved   = false; // entity found by name in game::g_World.players
         int  hp = 0, hpMax = 0; bool hpMaxKnown = false;
         int  mp = 0, mpMax = 0; bool mpMaxKnown = false;
     };
     std::vector<AllianceFrameRow> BuildAllianceFrames() const;
     void DrawAllianceFramePanels(const std::vector<AllianceFrameRow>& rows);
     void DrawAllianceFrameText(const std::vector<AllianceFrameRow>& rows);
-    // Hit-test grossier (zone rectangulaire couvrant les lignes actuellement peuplées) —
-    // même politique que layout_.frame/quickBar dans OnMouseDown (clic consommé, bloque
-    // le passage à la scène 3D derrière le HUD), pas de sous-hit-test par ligne (pas
-    // d'action associée, panneau d'information pure comme UI/PartyWindow.cpp).
+    // Coarse hit-test (rectangular zone covering the currently populated rows) —
+    // same policy as layout_.frame/quickBar in OnMouseDown (click consumed, blocks
+    // the click from reaching the 3D scene behind the HUD), no per-row sub-hit-test
+    // (no associated action, pure info panel like UI/PartyWindow.cpp).
     bool AllianceFramesContains(int x, int y) const;
 
     IDirect3DDevice9*  device_ = nullptr;
-    // Pointeur NON POSSÉDÉ vers le gfx::Renderer passé à Init() — mémorisé pour peupler
-    // UiContext::renderer dans Render() (cf. bandeau .cpp, audit 2026-07-14). AUDIT :
-    // aucun consommateur actuel de ce ctx local (quickBarWindow_ -> ConsumableBarWindow::
-    // Render) ne déréférence ctx.renderer aujourd'hui (il n'utilise que ctx.FillRect/
-    // DrawFrame/Text/MeasureText, qui reposent sur ctx.sprites/whiteTex/font) — donc PAS
-    // le même bug silencieux que LoginScene (aucun rendu réel n'était supprimé). Peuplé
-    // quand même par cohérence avec UIManager::Init (ctx_.renderer = renderer) et pour
-    // ne pas piéger une future extension de ConsumableBarWindow qui chargerait de vraies
-    // icônes d'objet via le pattern PanelSkin (EnchantWindow/WarehouseWindow/
-    // SkillTreeWindow/VendorShopWindow l'utilisent déjà tous via ctx.renderer).
+    // NON-OWNING pointer to the gfx::Renderer passed to Init() — kept to populate
+    // UiContext::renderer in Render() (cf. .cpp banner, audit 2026-07-14). AUDIT:
+    // no current consumer of this local ctx (quickBarWindow_ ->
+    // ConsumableBarWindow::Render) dereferences ctx.renderer today (it only uses
+    // ctx.FillRect/DrawFrame/Text/MeasureText, which rely on
+    // ctx.sprites/whiteTex/font) — so this is NOT the same silent bug as
+    // LoginScene (no real rendering was suppressed). Populated anyway for
+    // consistency with UIManager::Init (ctx_.renderer = renderer) and so as not to
+    // trap a future ConsumableBarWindow extension that would load real item icons
+    // via the PanelSkin pattern (EnchantWindow/WarehouseWindow/SkillTreeWindow/
+    // VendorShopWindow already all use it via ctx.renderer).
     gfx::Renderer*     rendererPtr_ = nullptr;
     gfx::SpriteBatch   sprite_;
     gfx::Font          font_;
-    IDirect3DTexture9* white_  = nullptr; // 1x1 blanc, teinté pour les rects pleins
+    IDirect3DTexture9* white_  = nullptr; // 1x1 white, tinted for flat rects
 
-    // Vrai sprite de fond du cadre vitales (Sprite2D_Draw &unk_8EC114 @0x67A43D,
-    // identifié par IDA comme l'entrée #93 du tableau Sprite2D partagé unk_8E8B50 ->
-    // G03_GDATA/D01_GIMAGE2D/001/001_00094.IMG, cf. commentaire de tête de
-    // GameHud.cpp et GameHud::Init). D3DPOOL_MANAGED (GpuTexture) : survit au
-    // device reset, pas de traitement particulier dans OnDeviceLost/Reset.
+    // Real vitals-frame background sprite (Sprite2D_Draw &unk_8EC114 @0x67A43D,
+    // identified as entry #93 of the shared Sprite2D array unk_8E8B50 ->
+    // G03_GDATA/D01_GIMAGE2D/001/001_00094.IMG, cf. GameHud.cpp banner and
+    // GameHud::Init). D3DPOOL_MANAGED (GpuTexture): survives device reset, no
+    // special handling in OnDeviceLost/Reset.
     gfx::GpuTexture    vitalsFrameTex_;
 
-    // Cache des frames d'atlas des 4 barres vitales (vague W9, HUD-02) — clé = chemin
-    // "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG". Chaque barre parcourt jusqu'à 42 frames
-    // distinctes selon le remplissage (bases 95/137/179/3543, 41 paliers) : sans cache,
-    // chaque frame serait re-décodée et ré-uploadée à CHAQUE image. Les échecs de
-    // chargement sont mémorisés par IconTextureCache (pas de retente par image), ce qui
-    // rend le repli DrawBarFillQuantized gratuit quand les .IMG sont absents.
-    // D3DPOOL_MANAGED (GpuTexture) : survit au device reset, comme vitalsFrameTex_.
+    // Cache of the 4 vitals bars' atlas frames (wave W9, HUD-02) — key = path
+    // "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG". Each bar can hit up to 42 distinct
+    // frames depending on fill level (bases 95/137/179/3543, 41 steps): without a
+    // cache, every frame would be re-decoded and re-uploaded EVERY frame. Load
+    // failures are memoized by IconTextureCache (no retry per frame), which makes
+    // the DrawBarFillQuantized fallback free when the .IMG files are missing.
+    // D3DPOOL_MANAGED (GpuTexture): survives device reset, like vitalsFrameTex_.
     gfx::IconTextureCache vitalsAtlasCache_;
 
     int  screenW_ = 0;
@@ -310,47 +312,45 @@ private:
     Layout layout_;
     std::array<QuickSlot, kQuickSlotCount> slots_{};
 
-    // Mini-carte (§12) — widget autonome, dessine à travers sprite_/font_/white_
-    // ci-dessus (aucune ressource GPU propre). Voir UI/MinimapWidget.h/.cpp.
+    // Minimap (§12) — standalone widget, draws through sprite_/font_/white_ above
+    // (no GPU resource of its own). See UI/MinimapWidget.h/.cpp.
     MinimapWidget minimap_;
 
-    // Grille de buffs (§9) + panneau de statut bas-droite (§16) — widget AUTONOME
-    // (son propre SpriteBatch/cache de textures, cf. UI/BuffStatusPanel.h), à la
-    // différence de la mini-carte ci-dessus qui réutilise sprite_/font_/white_ de
-    // GameHud. Nécessite son propre Init(renderer, &font_) : BuffStatusPanel.cpp.
+    // Buff grid (§9) + bottom-right status panel (§16) — AUTONOMOUS widget (its own
+    // SpriteBatch/texture cache, cf. UI/BuffStatusPanel.h), unlike the minimap
+    // above which reuses GameHud's sprite_/font_/white_. Needs its own
+    // Init(renderer, &font_): BuffStatusPanel.cpp.
     BuffStatusPanel buffPanel_;
 
-    // Fenêtre de chat (§13) — widget léger (ChatWindow.h n'inclut ni <windows.h>
-    // ni <d3d9.h>, pas de cycle avec ce header), dessine à travers son PROPRE
-    // ID3DXSprite interne paresseux (pas sprite_/white_ ci-dessus) mais partage
-    // font_ (paramètre de Render, pas de ressource propre). Câblée mission
-    // 2026-07-14, voir bandeau de tête et GameHud.cpp.
+    // Chat window (§13) — lightweight widget (ChatWindow.h includes neither
+    // <windows.h> nor <d3d9.h>, no cycle with this header), draws through its OWN
+    // lazy internal ID3DXSprite (not sprite_/white_ above) but shares font_
+    // (a Render parameter, not an owned resource). Wired mission 2026-07-14, see
+    // banner above and in GameHud.cpp.
     ChatWindow chatWindow_;
 
-    // §17 callout de marqueur de quête (Quest_DrawTracker 0x510FC0) — état PROPRE à
-    // GameHud, tiqué à chaque Render() via game::Quest_UpdateMarkerTimer (Game/
-    // ComboPickupTick.h, déjà porté fidèlement). NE PARTAGE PAS l'instance
-    // `s_questMarker` locale à la lambda de Scene/SceneManager.cpp (celle-ci reste
-    // la source « logique » du jeu — timer 600s d'apparition, son de notification —
-    // mais elle est `static` à portée de fonction dans un fichier volontairement non
-    // modifié par cette mission, donc invisible d'ici). Les deux instances
-    // convergent vers le MÊME état (active/markerVariant) car elles lisent les
-    // mêmes entrées déterministes (game::g_QuestProgress + game::g_World.gameTimeSec,
-    // isArenaZone=false ici comme là-bas) ; seul écart assumé : la branche
-    // "objectif rempli->rien à faire" consomme un tirage Rng_Next() supplémentaire
-    // une fois toutes les 600s (net::DefaultRng(), cf. bandeau Net/Rng.h — le
-    // serveur ne valide pas ces nonces, donc sans impact protocole ; l'unique effet
-    // visible est un choix de variante de pastille éventuellement différent de la
-    // copie de SceneManager, cosmétique uniquement).
+    // §17 quest marker callout (Quest_DrawTracker 0x510FC0) — state OWNED by
+    // GameHud, ticked every Render() via game::Quest_UpdateMarkerTimer (Game/
+    // ComboPickupTick.h, already ported faithfully). Does NOT share the
+    // `s_questMarker` instance local to the Scene/SceneManager.cpp lambda (that one
+    // stays the "logic" source of truth — 600s spawn timer, notification sound —
+    // but it is function-scope `static` in a file deliberately not modified by
+    // this mission, hence invisible from here). Both instances converge to the
+    // SAME state (active/markerVariant) because they read the same deterministic
+    // inputs (game::g_QuestProgress + game::g_World.gameTimeSec, isArenaZone=false
+    // here as there); the only accepted divergence: the "objective complete ->
+    // nothing to do" branch consumes one extra Rng_Next() draw every 600s
+    // (net::DefaultRng(), cf. Net/Rng.h banner — the server does not validate
+    // these nonces, so no protocol impact; the only visible effect is a possibly
+    // different callout-variant pick vs. the SceneManager copy, cosmetic only).
     game::QuestMarkerState questMarker_;
 
-    // Barre de quickslots réelle (§14, contrepartie pixel de
-    // Game/ConsumableBarLogic.h) — remplace le rendu placeholder de
-    // DrawQuickSlotFrames() ci-dessus (conservée en repli). Pointeur car
-    // ConsumableBarWindow.h ne peut pas être inclus ici (cycle, cf. forward
-    // declaration en tête de fichier) ; alloué dans Init(), jamais nul après un
-    // Init() réussi. slots_ ci-dessous reste la source de vérité qu'il consomme
-    // (aucune donnée dupliquée).
+    // Real quickslot bar (§14, pixel counterpart of Game/ConsumableBarLogic.h) —
+    // replaces the placeholder rendering of DrawQuickSlotFrames() above (kept as
+    // fallback). Pointer because ConsumableBarWindow.h cannot be included here
+    // (cycle, cf. forward declaration at the top of the file); allocated in
+    // Init(), never null after a successful Init(). slots_ below stays the source
+    // of truth it consumes (no duplicated data).
     std::unique_ptr<ConsumableBarWindow> quickBarWindow_;
 };
 

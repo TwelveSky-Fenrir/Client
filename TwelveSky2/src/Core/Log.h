@@ -1,15 +1,15 @@
-// Core/Log.h — journalisation minimale (header-only) pour le client réécrit.
-// Écrit sur stdout ET dans un fichier "TwelveSky2.log" (CWD) : indispensable au diagnostic,
-// car le client est une app WinMain (sous-système WINDOWS) dont le stdout n'est PAS rattaché
-// à la console de lancement — sans le fichier, aucune trace runtime n'est visible.
+// Core/Log.h — minimal (header-only) logging for the rewritten client.
+// Writes to stdout AND to a "TwelveSky2.log" file (CWD): essential for diagnostics,
+// since the client is a WinMain app (WINDOWS subsystem) whose stdout is NOT attached
+// to the launching console — without the file, no runtime trace would be visible.
 #pragma once
 #include <cstdio>
 #include <cstdarg>
 
 namespace ts2 {
 
-// Fichier de log ouvert paresseusement à la 1re trace (mode "w" = journal frais par lancement).
-// Static local d'une fonction inline => une seule instance partagée par toutes les TU.
+// Log file opened lazily on the 1st trace ("w" mode = fresh log per launch).
+// Local static of an inline function => a single instance shared across all TUs.
 inline std::FILE* LogFile() {
     static std::FILE* f = std::fopen("TwelveSky2.log", "w");
     return f;

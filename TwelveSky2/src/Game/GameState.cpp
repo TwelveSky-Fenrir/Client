@@ -1,4 +1,4 @@
-// Game/GameState.cpp — recherche/allocation de slots d'entités (scan linéaire + 1er libre).
+// Game/GameState.cpp — entity slot lookup/allocation (linear scan + first free slot).
 #include "Game/GameState.h"
 
 namespace ts2::game {
@@ -6,15 +6,15 @@ namespace ts2::game {
 template <class Vec>
 static typename Vec::value_type* FindOrAdd(Vec& v, EntityId id) {
     for (auto& e : v)
-        if (e.active && e.id == id) return &e;      // slot existant actif
+        if (e.active && e.id == id) return &e;      // existing active slot
     for (auto& e : v)
-        if (!e.active) {                            // 1er slot libre réutilisé
+        if (!e.active) {                            // reuse 1st free slot
             e = {};
             e.active = true;
             e.id = id;
             return &e;
         }
-    v.emplace_back();                               // sinon on agrandit
+    v.emplace_back();                               // otherwise grow the vector
     auto& e = v.back();
     e.active = true;
     e.id = id;

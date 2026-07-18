@@ -1,21 +1,21 @@
-// Gfx/Font.h — police bitmap/vectorielle du moteur GXD (ID3DXFont + ID3DXSprite).
+// Gfx/Font.h — GXD engine bitmap/vector font (ID3DXFont + ID3DXSprite).
 //
-// Réimplémentation FIDÈLE du sous-système texte de TwelveSky2, d'après le
-// désassemblage (serveur idaTs2) :
+// FAITHFUL reimplementation of TwelveSky2's text subsystem, based on the
+// disassembly (idaTs2 server):
 //   - Gfx_InitDevice 0x69B9B0        : D3DXCreateSprite + D3DXCreateFontIndirectA
 //                                      (sprite @+152 dword, font @+153 dword).
-//   - App_Init 0x461C96              : construction du D3DXFONT_DESCA passé à
+//   - App_Init 0x461C96              : builds the D3DXFONT_DESCA passed to
 //                                      D3DXCreateFontIndirectA (j_ 0x6BB64E).
-//   - Font_AddTtfResource 0x4C0E70   : enregistrement de la police TTF empaquetée
-//                                      (G01_GFONT\...), pilotée par g_UseTRVariant
+//   - Font_AddTtfResource 0x4C0E70   : registers the bundled TTF font
+//                                      (G01_GFONT\...), driven by g_UseTRVariant
 //                                      (0x1669190).
-//   - Font_DrawTextStyled 0x405DC0   : texte normal / ombre / contour 8 directions.
-//   - UI_DrawText 0x69E750           : même logique, sur l'objet UI.
-//   - Font_MeasureTextWidth 0x405CE0 : largeur via DrawText(DT_CALCRECT).
-//   - UI_MeasureText 0x69E680        : idem sur l'objet UI.
+//   - Font_DrawTextStyled 0x405DC0   : normal / shadow / 8-direction outline text.
+//   - UI_DrawText 0x69E750           : same logic, on the UI object.
+//   - Font_MeasureTextWidth 0x405CE0 : width via DrawText(DT_CALCRECT).
+//   - UI_MeasureText 0x69E680        : same, on the UI object.
 //
-// Le SDK DirectX June 2010 étant câblé, on s'appuie sur ID3DXFont/ID3DXSprite
-// (contrairement au reste de Gfx/ qui n'utilise que le Direct3D9 du Windows SDK).
+// Since the DirectX June 2010 SDK is wired in, this relies on ID3DXFont/ID3DXSprite
+// (unlike the rest of Gfx/, which uses only the Windows SDK's Direct3D9).
 #pragma once
 #include <windows.h>
 #include <d3d9.h>
@@ -23,14 +23,14 @@
 
 namespace ts2::gfx {
 
-// Modes de style du dessin de texte (arg `mode` de Font_DrawTextStyled 0x405DC0).
+// Text-drawing style modes (`mode` arg of Font_DrawTextStyled 0x405DC0).
 enum StyleMode {
-    kStyleNormal  = 0, // un seul passage, à (x, y)
-    kStyleShadow  = 1, // ombre noire à (x-1, y-1) puis texte à (x, y)
-    kStyleOutline = 2, // contour noir 8 directions puis texte à (x, y)
+    kStyleNormal  = 0, // single pass, at (x, y)
+    kStyleShadow  = 1, // black shadow at (x-1, y-1) then text at (x, y)
+    kStyleOutline = 2, // black 8-direction outline then text at (x, y)
 };
 
-// Couleur du liseré/ombre : noir opaque (0xFF000000 == -16777216, cf. 0x405E7C).
+// Outline/shadow color: opaque black (0xFF000000 == -16777216, cf. 0x405E7C).
 constexpr D3DCOLOR kFontOutlineColor = 0xFF000000u;
 
 class Font {
@@ -40,72 +40,72 @@ public:
     Font(const Font&) = delete;
     Font& operator=(const Font&) = delete;
 
-    // Enregistre la police TTF empaquetée du client (G01_GFONT\...).
-    // Fidèle à Font_AddTtfResource 0x4C0E70 : vérifie PathFileExistsA puis, ici,
-    // AddFontResourceExA(FR_PRIVATE) — la police n'est visible que du process.
+    // Registers the client's bundled TTF font (G01_GFONT\...).
+    // Faithful to Font_AddTtfResource 0x4C0E70: checks PathFileExistsA then, here,
+    // AddFontResourceExA(FR_PRIVATE) — the font is visible only to this process.
     //   trVariant=false -> "G01_GFONT\GIGASSOFT_12.TTF"
     //   trVariant=true  -> "G01_GFONT\TR\PTSans-Regular.TTF"
-    // (L'original choisit via le global g_UseTRVariant 0x1669190 et appelait
-    //  AddFontResourceA ; on préfère la variante Ex privée, comme demandé.)
+    // (The original picks via global g_UseTRVariant 0x1669190 and called
+    //  AddFontResourceA; we prefer the private Ex variant, as requested.)
     static bool AddTtfResource(bool trVariant = false);
 
-    // Désenregistre la police TTF (App_Shutdown 0x462480, étape 33/33 — TOUT
-    // DERNIER appel de la séquence). Fidèle à Font_RemoveTtfResource 0x4C0F10 :
-    // contrepartie exacte d'AddTtfResource ci-dessus (même sélection de chemin
-    // TR/EU). L'original garde le chemin dans un champ d'INSTANCE et ne rappelle
-    // RemoveFontResourceA que si ce champ est non vide ; comme AddTtfResource
-    // ci-dessus est déjà STATIQUE et SANS ÉTAT (aucun champ n'enregistre le
-    // dernier chemin ajouté), cette fonction est elle aussi statique et sans
-    // état : elle retire inconditionnellement la ressource pour `trVariant`
-    // donné (RemoveFontResourceExA, contrepartie d'AddFontResourceExA/FR_PRIVATE
-    // utilisé par AddTtfResource) — même déviation assumée que AddTtfResource.
+    // Unregisters the TTF font (App_Shutdown 0x462480, step 33/33 — VERY LAST
+    // call of the sequence). Faithful to Font_RemoveTtfResource 0x4C0F10:
+    // exact counterpart of AddTtfResource above (same TR/EU path selection).
+    // The original keeps the path in an INSTANCE field and only calls back
+    // RemoveFontResourceA if that field is non-empty; since AddTtfResource
+    // above is already STATIC and STATELESS (no field records the
+    // last-added path), this function is likewise static and stateless:
+    // it unconditionally removes the resource for the given `trVariant`
+    // (RemoveFontResourceExA, counterpart of AddFontResourceExA/FR_PRIVATE
+    // used by AddTtfResource) — same accepted deviation as AddTtfResource.
     static bool RemoveTtfResource(bool trVariant = false);
 
-    // Remplit le D3DXFONT_DESCA par défaut du client (valeurs de App_Init 0x461C96) :
+    // Fills the client's default D3DXFONT_DESCA (values from App_Init 0x461C96):
     // Height=12, Width=6, Weight=0, MipLevels=1, Italic=0, CharSet=DEFAULT_CHARSET,
     // OutputPrecision=OUT_DEFAULT_PRECIS, Quality=CLEARTYPE_QUALITY, Pitch=DEFAULT_PITCH,
-    // FaceName="GIGASSOFT_12" (ou "PT Sans" en variante TR).
+    // FaceName="GIGASSOFT_12" (or "PT Sans" in the TR variant).
     static D3DXFONT_DESCA MakeDefaultDesc(bool trVariant = false);
 
-    // Crée l'ID3DXSprite + l'ID3DXFont avec le descripteur par défaut.
-    // clipW/clipH = dimensions écran (le rect de clip = {x, y, clipW-1, clipH-1},
-    // comme le champ largeur/hauteur du renderer, cf. 0x405DCF/0x405DD3).
+    // Creates the ID3DXSprite + ID3DXFont with the default descriptor.
+    // clipW/clipH = screen dimensions (clip rect = {x, y, clipW-1, clipH-1},
+    // same as the renderer's width/height field, cf. 0x405DCF/0x405DD3).
     bool Init(IDirect3DDevice9* device, int clipW, int clipH, bool trVariant = false);
 
-    // Variante avec descripteur explicite (pour reproduire un autre corps de police).
+    // Variant with an explicit descriptor (to reproduce a different font face).
     bool InitWithDesc(IDirect3DDevice9* device, const D3DXFONT_DESCA& desc,
                       int clipW, int clipH);
 
     void Shutdown();
 
-    // Perte/restauration du device D3D9 (à appeler autour de Reset()).
+    // D3D9 device loss/restore (call around Reset()).
     void OnDeviceLost();  // ID3DXFont::OnLostDevice + ID3DXSprite::OnLostDevice
     void OnDeviceReset(); // ID3DXFont::OnResetDevice + ID3DXSprite::OnResetDevice
 
-    // Met à jour le rectangle de clip (dims écran) après un redimensionnement.
+    // Updates the clip rect (screen dims) after a resize.
     void SetClipRect(int clipW, int clipH) { clipW_ = clipW; clipH_ = clipH; }
 
-    // Ouvre/ferme le lot de sprites. Dans l'original, le dessin de texte se fait
-    // à l'intérieur du batch sprite global de la frame UI ; ID3DXFont::DrawText
-    // exige que le sprite passé soit entre Begin()/End(). Appeler DrawText* entre
-    // BeginBatch() et EndBatch().
+    // Opens/closes the sprite batch. In the original, text drawing happens
+    // inside the UI frame's global sprite batch; ID3DXFont::DrawText requires
+    // the passed sprite to be between Begin()/End(). Call DrawText* between
+    // BeginBatch() and EndBatch().
     bool BeginBatch(DWORD flags = D3DXSPRITE_ALPHABLEND);
     void EndBatch();
 
-    // Mesure la largeur en pixels du texte (les espaces sont comptés).
-    // Fidèle à Font_MeasureTextWidth 0x405CE0 / UI_MeasureText 0x69E680 :
-    // les ' ' sont remplacés par '_' dans une copie, puis DrawText(DT_CALCRECT),
-    // et l'on renvoie rect.right.
+    // Measures the text width in pixels (spaces are counted).
+    // Faithful to Font_MeasureTextWidth 0x405CE0 / UI_MeasureText 0x69E680:
+    // ' ' are replaced with '_' in a copy, then DrawText(DT_CALCRECT),
+    // and rect.right is returned.
     int MeasureText(const char* text) const;
 
-    // Dessine le texte avec le style demandé (kStyleNormal/Shadow/Outline).
-    // Fidèle à Font_DrawTextStyled 0x405DC0 / UI_DrawText 0x69E750.
-    //   text  : chaîne ANSI NUL-terminée
-    //   x, y  : coin haut-gauche (rect.left / rect.top)
-    //   color : couleur D3DCOLOR (ARGB) du passage principal
+    // Draws text with the requested style (kStyleNormal/Shadow/Outline).
+    // Faithful to Font_DrawTextStyled 0x405DC0 / UI_DrawText 0x69E750.
+    //   text  : NUL-terminated ANSI string
+    //   x, y  : top-left corner (rect.left / rect.top)
+    //   color : D3DCOLOR (ARGB) of the main pass
     void DrawTextStyled(const char* text, int x, int y, D3DCOLOR color, int mode);
 
-    // Raccourci mode normal.
+    // Shortcut for normal mode.
     void DrawTextAt(const char* text, int x, int y, D3DCOLOR color) {
         DrawTextStyled(text, x, y, color, kStyleNormal);
     }
@@ -115,21 +115,21 @@ public:
     bool         Ready()  const { return font_ != nullptr; }
 
 private:
-    // Un passage DrawTextA unique : rect = {x, y, clipW_-1, clipH_-1}, format 0.
-    // C'est l'appel vtable+56 (ID3DXFont::DrawTextA) répété par 0x405DC0.
+    // A single DrawTextA pass: rect = {x, y, clipW_-1, clipH_-1}, format 0.
+    // This is the vtable+56 call (ID3DXFont::DrawTextA) repeated by 0x405DC0.
     void DrawRun(const char* text, int x, int y, D3DCOLOR color) const;
 
     // ex-VeryOldClient: GXD::mGraphicSprite / GXD::mGraphicFont (v1 / Object A). CONFIRMED §1.5.
-    // Object A (g_GfxRenderer 0x7FFE18) : pSprite @+608 (0x800078), pFont @+612 (0x80007C).
-    // Object B (g_GxdRenderer 0x18C4EF8) : pSprite @+528 (0x18C5108), pFont @+532 (0x18C510C) —
-    //   c'est le font/sprite RÉELLEMENT utilisés par Font_DrawTextStyled 0x405DC0 (ancre principale
-    //   de cette classe). NB CONFLICT (D-6, hors passe apply) : Font FUSIONNE les 2 instances A/B ;
-    //   l'ancrage mélange offsets A (+608/+612) et routine B (0x405DC0) — à trancher en journal.
-    ID3DXSprite* sprite_ = nullptr; // ID3DXSprite (renderer A @+152 dword / +608 o ; B @+528) — ex-VeryOldClient: mGraphicSprite
-    ID3DXFont*   font_   = nullptr; // ID3DXFont   (renderer A @+153 dword / +612 o ; B @+532) — ex-VeryOldClient: mGraphicFont
-    // NB CONFLICT (D-7, hors passe apply) : +120/+124 NON PROUVÉ ; Object B lit W/H écran à +48/+52.
-    int          clipW_  = 0;       // largeur écran (renderer @+30 dword / +120 o)
-    int          clipH_  = 0;       // hauteur écran (renderer @+31 dword / +124 o)
+    // Object A (g_GfxRenderer 0x7FFE18): pSprite @+608 (0x800078), pFont @+612 (0x80007C).
+    // Object B (g_GxdRenderer 0x18C4EF8): pSprite @+528 (0x18C5108), pFont @+532 (0x18C510C) —
+    //   this is the font/sprite ACTUALLY used by Font_DrawTextStyled 0x405DC0 (this class's
+    //   main anchor). NB CONFLICT (D-6, out of apply pass) : Font MERGES the 2 A/B instances;
+    //   anchoring mixes A offsets (+608/+612) with B's routine (0x405DC0) — to be settled in the log.
+    ID3DXSprite* sprite_ = nullptr; // ID3DXSprite (renderer A @+152 dword / +608 B; B @+528) — ex-VeryOldClient: mGraphicSprite
+    ID3DXFont*   font_   = nullptr; // ID3DXFont   (renderer A @+153 dword / +612 B; B @+532) — ex-VeryOldClient: mGraphicFont
+    // NB CONFLICT (D-7, out of apply pass): +120/+124 NOT PROVEN; Object B reads screen W/H at +48/+52.
+    int          clipW_  = 0;       // screen width (renderer @+30 dword / +120 B)
+    int          clipH_  = 0;       // screen height (renderer @+31 dword / +124 B)
 };
 
 } // namespace ts2::gfx

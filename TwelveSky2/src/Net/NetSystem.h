@@ -1,7 +1,7 @@
-// Net/NetSystem.h — colle le socket (NetClient) au dispatcher de paquets.
-// Réunit ce que le client d'origine éparpille autour de dword_8156A0 : l'objet
-// socket + la boucle de réception/dispatch (Net_RecvDispatch 0x463040), piloté par
-// le message fenêtre 0x401 (WM_USER+1) routé par App_WndProc 0x461930.
+// Net/NetSystem.h — glues the socket (NetClient) to the packet dispatcher.
+// Reunites what the original client scatters around dword_8156A0: the socket
+// object + the receive/dispatch loop (Net_RecvDispatch 0x463040), driven by
+// window message 0x401 (WM_USER+1) routed by App_WndProc 0x461930.
 #pragma once
 #include "Net/NetClient.h"
 #include "Net/PacketDispatch.h"
@@ -10,17 +10,17 @@ namespace ts2::net {
 
 class NetSystem {
 public:
-    // WSAStartup + enregistrement des handlers (trace par défaut pour l'instant).
+    // WSAStartup + handler registration (default trace for now).
     bool Init();
     void Shutdown();
 
-    // Depuis App_WndProc, sur le message socket 0x401 : pompe recv + drain.
+    // From App_WndProc, on socket message 0x401: pumps recv + drain.
     void OnSocketMessage(WPARAM wParam, LPARAM lParam);
 
     NetClient&        Client()     { return nc_; }
     PacketDispatcher& Dispatcher() { return dispatch_; }
 
-    // Enregistre un handler pour un opcode entrant (délègue au dispatcher).
+    // Registers a handler for an incoming opcode (delegates to the dispatcher).
     void On(std::uint8_t opcode, PacketDispatcher::Handler h) {
         dispatch_.SetHandler(opcode, std::move(h));
     }

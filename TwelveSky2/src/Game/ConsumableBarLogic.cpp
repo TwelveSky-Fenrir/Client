@@ -1,12 +1,12 @@
-// Game/ConsumableBarLogic.cpp — voir Game/ConsumableBarLogic.h pour la table de
-// correspondance EA <-> fonction et le bandeau d'écart binaire/module.
+// Game/ConsumableBarLogic.cpp — see Game/ConsumableBarLogic.h for the EA <-> function
+// mapping table and the binary/module gap banner.
 //
-// ⚠️ Ce fichier porte le PANNEAU 28 cases (UI_ConsumableBar_* 0x68E270+, grille 4x7,
-// pas 52), PAS la barre du HUD (UI_GameHud_Render 0x67A3C0 @0x684CA8-0x685177, grille
-// 1x14, pas 30, source g_Container5 0x16743FC) — cette dernière est portée par
-// UI/ConsumableBarWindow.{h,cpp}, qui lit g_Container5 directement. Voir le bandeau
-// « CE MODULE NE MODÉLISE PAS LA BARRE DU HUD » en tête du header avant d'appeler
-// quoi que ce soit d'ici.
+// WARNING: This file implements the 28-CELL PANEL (UI_ConsumableBar_* 0x68E270+, 4x7
+// grid, stride 52), NOT the HUD bar (UI_GameHud_Render 0x67A3C0 @0x684CA8-0x685177, 1x14
+// grid, stride 30, source g_Container5 0x16743FC) — the latter is ported by
+// UI/ConsumableBarWindow.{h,cpp}, which reads g_Container5 directly. See the
+// "THIS MODULE DOES NOT MODEL THE HUD BAR" banner at the top of the header before
+// calling anything from here.
 #include "Game/ConsumableBarLogic.h"
 
 #include <cstddef>
@@ -19,10 +19,10 @@ namespace ts2::game {
 
 namespace {
 
-// EA 0x68E2A4..0x68E2FE : les 10 premières des 14 valeurs du catalogue fixe
-// d'origine (itemId de potions/scrolls). Les 4 suivantes (1241, 1244, 1242,
-// 1243 — EA 0x68E308/0x68E312/0x68E31C/0x68E326) sont tronquées : le type
-// ts2::ui::QuickSlot ne compte que ui::kQuickSlotCount (10) cases.
+// EA 0x68E2A4..0x68E2FE: the first 10 of the 14 values in the original fixed
+// catalog (potion/scroll itemId). The next 4 (1241, 1244, 1242, 1243 — EA
+// 0x68E308/0x68E312/0x68E31C/0x68E326) are truncated: the ts2::ui::QuickSlot
+// type only holds ui::kQuickSlotCount (10) cells.
 constexpr std::array<uint32_t, 10> kDefaultCatalog = {
     540, 565, 541, 542, 543, 544, 545, 546, 539, 1240,
 };
@@ -30,11 +30,11 @@ constexpr std::array<uint32_t, 10> kDefaultCatalog = {
 } // namespace
 
 void InitConsumableBar(ConsumableSlots& slots) {
-    // EA 0x68E279..0x68E297 : zéro les 28 cases du binaire -> ici les
-    // ui::kQuickSlotCount cases du tableau.
+    // EA 0x68E279..0x68E297: zeroes the binary's 28 cells -> here the
+    // ui::kQuickSlotCount cells of the array.
     for (auto& s : slots) s = ui::QuickSlot{};
 
-    // EA 0x68E2A4..0x68E2FE (tronqué, voir kDefaultCatalog ci-dessus).
+    // EA 0x68E2A4..0x68E2FE (truncated, see kDefaultCatalog above).
     for (std::size_t i = 0; i < slots.size() && i < kDefaultCatalog.size(); ++i) {
         slots[i].type  = ui::QuickSlotType::Item;
         slots[i].refId = kDefaultCatalog[i];
@@ -43,8 +43,8 @@ void InitConsumableBar(ConsumableSlots& slots) {
 
 int HitTestConsumableBar(const ConsumableSlots& slots, int originX, int originY,
                           int mouseX, int mouseY) {
-    // EA 0x68EA2D..0x68EA65 : boucle jusqu'à la première case dont le
-    // rectangle contient (mouseX, mouseY), ou fin de tableau.
+    // EA 0x68EA2D..0x68EA65: loop until the first cell whose rectangle contains
+    // (mouseX, mouseY), or the end of the array.
     for (int i = 0; i < static_cast<int>(slots.size()); ++i) {
         const int col = i % kGridColumns;
         const int row = i / kGridColumns;
@@ -53,26 +53,26 @@ int HitTestConsumableBar(const ConsumableSlots& slots, int originX, int originY,
         const int y0 = originY + kGridStride * row + kGridCellY0;
         const int y1 = originY + kGridStride * row + kGridCellY1;
         if (mouseX >= x0 && mouseX <= x1 && mouseY >= y0 && mouseY <= y1) {
-            // EA 0x68EAE3 : case touchée mais vide -> -1 quand même.
+            // EA 0x68EAE3: cell hit but empty -> -1 anyway.
             return slots[static_cast<std::size_t>(i)].empty() ? -1 : i;
         }
     }
-    return -1; // EA 0x68EAD3 : aucune case touchée.
+    return -1; // EA 0x68EAD3: no cell hit.
 }
 
 ConsumableDecision TriggerSlot(const ConsumableSlots& slots, int index, bool rightClick) {
     ConsumableDecision d;
     d.slotIndex = index;
-    if (index < 0 || index >= static_cast<int>(slots.size())) return d; // hors bornes -> None
+    if (index < 0 || index >= static_cast<int>(slots.size())) return d; // out of bounds -> None
 
     const ui::QuickSlot& slot = slots[static_cast<std::size_t>(index)];
-    if (slot.empty()) return d; // None, aucune EA d'origine n'agit sur une case vide
+    if (slot.empty()) return d; // None, no original EA acts on an empty cell
 
     d.refId = slot.refId;
 
     if (slot.type == ui::QuickSlotType::Skill) {
-        // Voir bandeau d'écart en tête de Game/ConsumableBarLogic.h : aucune
-        // des 6 EA de ce module ne résout de SKILL_INFO.
+        // See gap banner at the top of Game/ConsumableBarLogic.h: none of this
+        // module's 6 EAs resolve a SKILL_INFO.
         d.action   = ConsumableAction::Unsupported;
         d.consumed = true;
         return d;
@@ -80,17 +80,17 @@ ConsumableDecision TriggerSlot(const ConsumableSlots& slots, int index, bool rig
 
     // slot.type == Item.
     if (rightClick) {
-        // EA 0x68E9B2 : Item_DrawTooltip(a2, a3, itemId, 0, 0, 2, 0, 0, 0),
-        // appelé sans vérifier l'existence de l'entrée ITEM_INFO.
+        // EA 0x68E9B2: Item_DrawTooltip(a2, a3, itemId, 0, 0, 2, 0, 0, 0),
+        // called without checking the ITEM_INFO entry exists.
         d.action   = ConsumableAction::ShowTooltip;
         d.consumed = true;
         return d;
     }
 
-    // EA 0x68E480..0x68E491 : MobDb_GetEntry(&mITEM, itemId).
+    // EA 0x68E480..0x68E491: MobDb_GetEntry(&mITEM, itemId).
     const ItemInfo* info = GetItemInfo(slot.refId);
     if (!info) {
-        // EA 0x68E48F/0x68E491 : entrée introuvable -> clic consommé, aucun effet.
+        // EA 0x68E48F/0x68E491: entry not found -> click consumed, no effect.
         d.action   = ConsumableAction::Invalid;
         d.consumed = true;
         return d;
@@ -99,29 +99,29 @@ ConsumableDecision TriggerSlot(const ConsumableSlots& slots, int index, bool rig
     d.action   = ConsumableAction::BeginItemDrag;
     d.consumed = true;
 
-    if (info->typeCode == 2) { // EA 0x68E4A5 : *(v6+188) == 2
-        // EA 0x68E4B4 : branche pilotée par byte_8013FE (signification exacte
-        // TODO — non documentée ailleurs dans le désassemblage relevé pour
-        // cette mission). Exposé fidèlement via l'échappatoire ClientRuntime.
+    if (info->typeCode == 2) { // EA 0x68E4A5: *(v6+188) == 2
+        // EA 0x68E4B4: branch driven by byte_8013FE (exact meaning TODO — not
+        // documented elsewhere in the disassembly reviewed for this mission).
+        // Exposed faithfully via the ClientRuntime escape hatch.
         const bool negative = g_Client.VarGet(0x8013FEu) < 0;
         if (negative) {
-            // EA 0x68E4E6 : Item_BeginDragTransaction(..., itemId, 0,0,0,0,0,
-            // 1, a2-52, a3-72) -> drag avec prompt de quantité près du curseur.
+            // EA 0x68E4E6: Item_BeginDragTransaction(..., itemId, 0,0,0,0,0,
+            // 1, a2-52, a3-72) -> drag with a quantity prompt near the cursor.
             d.promptQuantity = true;
             d.dragCount      = 0;
         } else {
-            // EA 0x68E513 : Item_BeginDragTransaction(..., itemId, 99, 0,0,0,0,
-            // 0,0,0) -> drag d'une quantité fixe (pile pleine 99).
+            // EA 0x68E513: Item_BeginDragTransaction(..., itemId, 99, 0,0,0,0,
+            // 0,0,0) -> drag of a fixed quantity (full stack of 99).
             d.promptQuantity = false;
             d.dragCount      = 99;
         }
     } else {
-        // EA 0x68E540 : Item_BeginDragTransaction(..., itemId, 0,0,0,0,0,0,0,0).
+        // EA 0x68E540: Item_BeginDragTransaction(..., itemId, 0,0,0,0,0,0,0,0).
         d.promptQuantity = false;
         d.dragCount      = 0;
     }
 
-    d.usable = InventoryCount(slot.refId) > 0; // extension mission, hors EA
+    d.usable = InventoryCount(slot.refId) > 0; // mission extension, not tied to an EA
     return d;
 }
 
@@ -132,11 +132,11 @@ ConsumableDecision OnClick(ConsumableBarState& state, const ConsumableSlots& slo
 
     if (!state.visible) { // EA 0x68E3CD
         d.action = ConsumableAction::Ignored;
-        return d; // consumed=false : évènement non consommé
+        return d; // consumed=false: event not consumed
     }
 
-    // EA 0x68E433 : cGameHud_OnMouseDown court-circuite avant tout hit-test.
-    // Sous-système HUD hors périmètre ici — reproduit via le paramètre.
+    // EA 0x68E433: cGameHud_OnMouseDown short-circuits before any hit-test.
+    // HUD subsystem out of scope here — reproduced via the parameter.
     if (parentHudConsumed) {
         d.consumed = true;
         return d;
@@ -152,10 +152,10 @@ ConsumableDecision OnClick(ConsumableBarState& state, const ConsumableSlots& slo
         return d;
     }
 
-    // EA 0x68E45D..0x68E596 : pas de case pleine touchée -> test du bouton
-    // fermer. Le rectangle réel dépend de la taille du sprite unk_8F3798
-    // (Sprite2D_HitTest 0x4D6C50, EA 0x68E56C) : hors périmètre logique,
-    // fourni par l'appelant (rendu) via `closeButtonHit`.
+    // EA 0x68E45D..0x68E596: no full cell hit -> test the close button. The
+    // actual rectangle depends on the size of sprite unk_8F3798
+    // (Sprite2D_HitTest 0x4D6C50, EA 0x68E56C): out of logical scope,
+    // supplied by the caller (rendering) via `closeButtonHit`.
     if (closeButtonHit) {
         state.closeButtonArmed = true; // EA 0x68E588
         d.action   = ConsumableAction::ArmCloseButton;
@@ -163,7 +163,7 @@ ConsumableDecision OnClick(ConsumableBarState& state, const ConsumableSlots& slo
         return d;
     }
 
-    return d; // EA 0x68E596 : None, non consommé
+    return d; // EA 0x68E596: None, not consumed
 }
 
 ConsumableDecision OnMouseUp(ConsumableBarState& state, bool closeButtonHit,
@@ -175,22 +175,22 @@ ConsumableDecision OnMouseUp(ConsumableBarState& state, bool closeButtonHit,
         return d;
     }
 
-    if (parentHudConsumed) { // EA 0x68E611 : cGameHud_OnMouseUp
+    if (parentHudConsumed) { // EA 0x68E611: cGameHud_OnMouseUp
         d.consumed = true;
         return d;
     }
 
-    if (!state.closeButtonArmed) return d; // EA 0x68E624 : retour 0, non consommé
+    if (!state.closeButtonArmed) return d; // EA 0x68E624: return 0, not consumed
 
     state.closeButtonArmed = false; // EA 0x68E62D
 
     if (closeButtonHit) {
-        // EA 0x68E654/0x68E667 -> sub_68E3A0(this) : remet *(this+2) à 0.
+        // EA 0x68E654/0x68E667 -> sub_68E3A0(this): resets *(this+2) to 0.
         state.visible  = false;
         d.action       = ConsumableAction::ClosePanel;
     }
 
-    d.consumed = true; // EA 0x68E675 : toujours 1 une fois le bouton armé
+    d.consumed = true; // EA 0x68E675: always 1 once the button is armed
     return d;
 }
 
@@ -199,29 +199,29 @@ ConsumableDecision OnRightClick(const ConsumableBarState& state, const Consumabl
                                  bool tooltipDispatchConsumed) {
     ConsumableDecision d;
 
-    if (!state.visible) return d; // EA 0x68E94C : non consommé
+    if (!state.visible) return d; // EA 0x68E94C: not consumed
 
-    if (tooltipDispatchConsumed) { // EA 0x68E963 : cGameHud_DrawTooltipDispatch
+    if (tooltipDispatchConsumed) { // EA 0x68E963: cGameHud_DrawTooltipDispatch
         d.consumed = true;
         return d;
     }
 
     const int slot = HitTestConsumableBar(slots, originX, originY, mouseX, mouseY);
-    if (slot == -1) return d; // EA 0x68E98A : non consommé
+    if (slot == -1) return d; // EA 0x68E98A: not consumed
 
     return TriggerSlot(slots, slot, /*rightClick=*/true); // EA 0x68E9B2
 }
 
 uint32_t InventoryCount(uint32_t itemId) {
-    // Modèle unique game::g_Client.inv (InventoryState, Game/ClientRuntime.h) —
-    // PAS game::g_World.self.inventory (ancien « modèle simplifié », retiré lors de
-    // la réconciliation des deux modèles d'inventaire concurrents, mission
-    // « inventaire », 2026-07-14). Balaie toutes les cellules (toutes pages
-    // confondues) : bon marché (2048 InvCell) et sans risque de sous-compter un
-    // objet rangé sur une page actuellement non affichée par l'UI.
+    // Single model game::g_Client.inv (InventoryState, Game/ClientRuntime.h) —
+    // NOT game::g_World.self.inventory (old "simplified model", removed during
+    // the reconciliation of the two competing inventory models, "inventory"
+    // mission, 2026-07-14). Scans all cells (all pages combined): cheap
+    // (2048 InvCell) and no risk of under-counting an item stored on a page
+    // currently not displayed by the UI.
     uint32_t total = 0;
     for (const InvCell& cell : g_Client.inv.cells) {
-        if (cell.itemId == itemId) total += cell.flag; // flag = compteur de pile
+        if (cell.itemId == itemId) total += cell.flag; // flag = stack counter
     }
     return total;
 }
@@ -232,8 +232,9 @@ bool IsSlotUsable(const ConsumableSlots& slots, int index) {
     if (slot.empty()) return false;
 
     if (slot.type == ui::QuickSlotType::Skill) {
-        // TODO : nécessite Game/SkillSystem.h (hors contrat de headers) et la
-        // vraie fonction de cooldown/hotkey, non localisée pour cette mission.
+        // TODO: needs Game/SkillSystem.h (outside this module's header
+        // contract) and the real cooldown/hotkey function, not located for
+        // this mission.
         return false;
     }
 
@@ -243,10 +244,10 @@ bool IsSlotUsable(const ConsumableSlots& slots, int index) {
 }
 
 ConsumableDecision TriggerSlotByHotkey(const ConsumableSlots& slots, uint8_t dikScanCode) {
-    // DIK_1..DIK_9 = 0x02..0x0A, DIK_0 = 0x0B (cf. Input/InputSystem.h,
-    // UI/GameHud.h lignes 27-30, Docs/TS2_CLIENT_SHELL.md §4). Convention déjà
-    // établie ailleurs dans ce codebase — PAS une traduction d'EA de ce module
-    // (aucune des 6 EA du ConsumableBar ne lit le clavier).
+    // DIK_1..DIK_9 = 0x02..0x0A, DIK_0 = 0x0B (see Input/InputSystem.h,
+    // UI/GameHud.h lines 27-30, Docs/TS2_CLIENT_SHELL.md §4). Convention
+    // already established elsewhere in this codebase — NOT a translation of
+    // an EA from this module (none of the 6 ConsumableBar EAs read the keyboard).
     if (dikScanCode < 0x02 || dikScanCode > 0x0B) return ConsumableDecision{};
     const int index = static_cast<int>(dikScanCode) - 0x02; // DIK_1->0 .. DIK_0->9
     return TriggerSlot(slots, index, /*rightClick=*/false);

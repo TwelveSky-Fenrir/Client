@@ -1,26 +1,26 @@
-// Game/IntroFlow.cpp — cf. IntroFlow.h pour le détail du flux découvert (Scene_IntroUpdate
-// 0x517FE0). Reproduction directe du switch(this[1]) désassemblé : chaque sous-état est un
-// simple "incrémente le compteur, si seuil atteint alors avance au sous-état suivant et
-// remets le compteur à 0", à trois seuils distincts (90 / 3*33 / 90). Généralisé ici en une
-// poignée de branches équivalentes (l'original répète le même motif 35 fois, un par
-// `case`, sans aucune variation de logique — cf. les 33 cases identiques 0x1..0x21 dans le
-// désassemblage).
+// Game/IntroFlow.cpp — cf. IntroFlow.h for details of the discovered flow (Scene_IntroUpdate
+// 0x517FE0). Direct reproduction of the decompiled switch(this[1]): each sub-state is a
+// simple "increment the counter, if the threshold is reached advance to the next sub-state
+// and reset the counter to 0", with three distinct thresholds (90 / 3*33 / 90). Generalized
+// here into a handful of equivalent branches (the original repeats the same pattern 35
+// times, one per `case`, with no logic variation — cf. the 33 identical cases 0x1..0x21 in
+// the disassembly).
 #include "Game/IntroFlow.h"
 
 namespace ts2::game {
 
 bool UpdateIntro(IntroState& state, float /*dt*/, const IntroHost& host) {
-    // Sous-état 0 : attente initiale avant le cycle de logos (0x518019..0x51807a).
+    // Sub-state 0: initial wait before the logo cycle (0x518019..0x51807a).
     if (state.subState == 0) {
         ++state.frameCounter;
         if (state.frameCounter >= kIntroWaitFrames) {
-            // Franchissement 0->1 dans l'original (0x51802c..0x518081) :
+            // Crossing 0->1 in the original (0x51802c..0x518081):
             //   Util_SetClampedU8Field(&dword_8E714C, 0) + UI_FocusEditBox(&g_UIEditBoxMgr, 0)
-            // -> effets de bord ts2::ui, hors périmètre ; exposés via le host (cf. IntroFlow.h).
+            // -> ts2::ui side effects, out of scope; exposed via the host (cf. IntroFlow.h).
             if (host.OnLogoSequenceBegin) host.OnLogoSequenceBegin();
 
-            // Mise à zéro du tampon 150 dw (this[3..152], 0x518042..0x51806b), fidèle à
-            // l'original — bien que ce tampon ne soit jamais relu (Scene_IntroRender ne le lit pas).
+            // Zeroing of the 150-dword buffer (this[3..152], 0x518042..0x51806b), faithful to
+            // the original — even though this buffer is never read back (Scene_IntroRender does not read it).
             state.logoFade.fill(0);
 
             state.subState     = 1;
@@ -29,8 +29,8 @@ bool UpdateIntro(IntroState& state, float /*dt*/, const IntroHost& host) {
         return false;
     }
 
-    // Sous-états 1..33 : micro-états séquentiels de 3 frames chacun (0x518092..0x5187b0
-    // dans l'original — 33 `case` identiques, chacun avance simplement subState+1).
+    // Sub-states 1..33: sequential 3-frame micro-states each (0x518092..0x5187b0
+    // in the original — 33 identical `case`s, each simply advancing subState+1).
     if (state.subState >= 1 && state.subState <= kIntroLogoStepCount) {
         ++state.frameCounter;
         if (state.frameCounter >= kIntroLogoStepFrames) {
@@ -40,14 +40,14 @@ bool UpdateIntro(IntroState& state, float /*dt*/, const IntroHost& host) {
         return false;
     }
 
-    // Sous-état 34 (0x22) : maintien final avant transition (0x5187be..0x5187df).
+    // Sub-state 34 (0x22): final hold before transition (0x5187be..0x5187df).
     if (state.subState == kIntroFinalSubState) {
         ++state.frameCounter;
         if (state.frameCounter >= kIntroFinalHoldFrames) {
-            // Transition vers ServerSelect (*a1 = 2 dans l'original) + auto-réinitialisation
-            // (a1[1]=0, a1[2]=0) permettant un replay fidèle si la scène Intro est
-            // re-sélectionnée. NB : l'original NE re-zéro PAS logoFade ici (seul le
-            // franchissement 0->1 le fait) — fidèlement reproduit (pas de fill() ici).
+            // Transition to ServerSelect (*a1 = 2 in the original) + auto-reset
+            // (a1[1]=0, a1[2]=0), enabling a faithful replay if the Intro scene is
+            // re-selected. NB: the original does NOT re-zero logoFade here (only the
+            // 0->1 crossing does) — faithfully reproduced (no fill() here).
             state.subState     = 0;
             state.frameCounter = 0;
             return true;
@@ -55,9 +55,9 @@ bool UpdateIntro(IntroState& state, float /*dt*/, const IntroHost& host) {
         return false;
     }
 
-    // Sous-état hors plage (0..34) : ne devrait jamais survenir en usage normal (mirroir du
-    // `default: return result;` de l'original, qui ne fait rien). Défense en profondeur
-    // uniquement — ne fait pas partie du flux réel observé.
+    // Sub-state out of range (0..34): should never occur in normal use (mirrors the
+    // original's `default: return result;`, which does nothing). Defense in depth
+    // only — not part of the actually observed flow.
     return false;
 }
 

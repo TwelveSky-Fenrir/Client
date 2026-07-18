@@ -1,13 +1,13 @@
-// Gfx/EquipModelResolver.cpp — implémentation. Voir EquipModelResolver.h pour la preuve complète
-// et la CORRECTION (0x4E46A0 résout une MOTION, pas un modèle SObject).
+// Gfx/EquipModelResolver.cpp — implementation. See EquipModelResolver.h for the complete
+// evidence and the CORRECTION (0x4E46A0 resolves a MOTION, not an SObject model).
 //
-// Ancres portées ici :
-//   - SObject_BuildPath        0x4D89C0  (stems de modèle, cases 1..14)
-//   - PcModel_ResolveEquipSlot 0x4E46A0  (méga-switch id d'arme -> slot MOTION)
-//   - Motion_IsValidWeaponPose 0x4E3A30  (garde d'entrée pose/état)
-//   - Motion_BuildPathAndLoad  0x4D7390  (chemins MOTION cat 1 "C…" / cat 6 "X…")
-//   - AssetMgr_InitAllSlots    0x4DEB50  (décomposition d'offset -> catégorie MOTION 1/6)
-//   - Char_RenderModel         0x527020  (liant réel item -> modelIndex = ITEM_INFO+196)
+// Anchors ported here:
+//   - SObject_BuildPath        0x4D89C0  (model stems, cases 1..14)
+//   - PcModel_ResolveEquipSlot 0x4E46A0  (weapon-id mega-switch -> MOTION slot)
+//   - Motion_IsValidWeaponPose 0x4E3A30  (pose/state entry guard)
+//   - Motion_BuildPathAndLoad  0x4D7390  (MOTION paths cat 1 "C…" / cat 6 "X…")
+//   - AssetMgr_InitAllSlots    0x4DEB50  (offset decomposition -> MOTION category 1/6)
+//   - Char_RenderModel         0x527020  (real binding item -> modelIndex = ITEM_INFO+196)
 #include "Gfx/EquipModelResolver.h"
 #include <cstdio>
 
@@ -15,17 +15,15 @@ namespace ts2::gfx {
 
 namespace {
 
-// Bornes race/genre communes (garde 0x4e46cc : `a2 > 2 || a3 > 1`, comparaison NON signée).
+// Common race/gender bounds (guard 0x4e46cc: `a2 > 2 || a3 > 1`, UNSIGNED comparison).
 inline bool RaceGenderOk(int race, int gender) {
     return static_cast<unsigned>(race) <= 2u && static_cast<unsigned>(gender) <= 1u;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Port fidèle de Motion_IsValidWeaponPose 0x4E3A30 : valide le couple (pose, état).
-//  a1 = pose (`a4`, 0..7) ; a2 = état (`a5`, sélecteur 0..95). Toute valeur d'`a2` hors
-//  table -> invalide (branche défaut LABEL_226 -> 0). `pose` est comparé en NON signé
-//  (mêmes `a1 >= 8` / `if (a1)` que le binaire).
-// ─────────────────────────────────────────────────────────────────────────────
+//  Faithful port of Motion_IsValidWeaponPose 0x4E3A30: validates the (pose, state) pair.
+//  a1 = pose (`a4`, 0..7) ; a2 = state (`a5`, selector 0..95). Any `a2` value outside the
+//  table -> invalid (default branch LABEL_226 -> 0). `pose` is compared UNSIGNED
+//  (same `a1 >= 8` / `if (a1)` as the binary).
 bool MotionIsValidWeaponPose(int pose, int state) {
     const unsigned p = static_cast<unsigned>(pose);
     switch (state) {
@@ -72,16 +70,14 @@ bool MotionIsValidWeaponPose(int pose, int state) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Décodage d'une famille du switch de PcModel_ResolveEquipSlot 0x4E46A0.
-//  Toutes les familles non-défaut ciblent le catalogue MOTION cat 6 (base 4062656) et
-//  partagent la MÊME sous-résolution sur l'état `a5` :
-//     a5 == 1  -> slot fixe field3 = f3a (field2 = 0)
-//     a5 == 2  -> slot fixe field3 = f3b (field2 = 0)
-//     a5 == 32 -> slot fixe field3 = f3b (field2 = 0)   [même valeur que a5==2, cf. 0x4e483c…]
-//     défaut   -> slot paramétrique field2 = a4(pose), field3 = a5(état)
-//  (f3a/f3b = (offset_retour - 4062656) / 156, cf. bandeau EquipModelResolver.h.)
-// ─────────────────────────────────────────────────────────────────────────────
+//  Decoding of one family of the PcModel_ResolveEquipSlot 0x4E46A0 switch.
+//  All non-default families target the MOTION cat 6 catalog (base 4062656) and
+//  share the SAME sub-resolution on state `a5`:
+//     a5 == 1  -> fixed slot field3 = f3a (field2 = 0)
+//     a5 == 2  -> fixed slot field3 = f3b (field2 = 0)
+//     a5 == 32 -> fixed slot field3 = f3b (field2 = 0)   [same value as a5==2, cf. 0x4e483c…]
+//     default  -> parametric slot field2 = a4(pose), field3 = a5(state)
+//  (f3a/f3b = (returnOffset - 4062656) / 156, cf. EquipModelResolver.h banner.)
 EquipMotionSlot ResolveFamily(int f3a, int f3b, int race, int gender, int pose, int state) {
     EquipMotionSlot s;
     s.valid     = true;
@@ -97,7 +93,7 @@ EquipMotionSlot ResolveFamily(int f3a, int f3b, int race, int gender, int pose, 
     return s;
 }
 
-// LABEL_152 0x4e5708 : branche par défaut = catalogue MOTION cat 1 (base 2624960, corps joueur).
+// LABEL_152 0x4e5708: default branch = MOTION cat 1 catalog (base 2624960, player body).
 EquipMotionSlot ResolveDefaultCat1(int race, int gender, int pose, int state, int a6, int a7) {
     EquipMotionSlot s;
     s.valid     = true;
@@ -117,9 +113,9 @@ EquipMotionSlot ResolveDefaultCat1(int race, int gender, int pose, int state, in
     return s;
 }
 
-// Famille MOTION résolue depuis l'id d'item `itemId` (a8). isDefault -> ResolveDefaultCat1 (cat 1) ;
-// sinon (f3a, f3b) -> ResolveFamily (cat 6). Reproduit exactement l'arbre de décision du switch
-// (0x4e46ef → 0x4e5708), plages d'id incluses.
+// MOTION family resolved from item id `itemId` (a8). isDefault -> ResolveDefaultCat1 (cat 1) ;
+// otherwise (f3a, f3b) -> ResolveFamily (cat 6). Reproduces exactly the switch's decision tree
+// (0x4e46ef -> 0x4e5708), id ranges included.
 struct WeaponMotionFamily { bool isDefault; int f3a; int f3b; };
 
 constexpr WeaponMotionFamily kDefaultFamily{true, 0, 0};
@@ -206,20 +202,18 @@ WeaponMotionFamily ClassifyWeaponItem(int itemId) {
 
 } // namespace
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  (A) STEMS DE MODÈLE SObject — SObject_BuildPath 0x4D89C0.
-// ─────────────────────────────────────────────────────────────────────────────
+//  (A) SObject MODEL STEMS — SObject_BuildPath 0x4D89C0.
 
 std::string BuildSObjectStem(SObjectEquipCategory cat, int a3, int a4, int a5, int a6, int a7) {
     char buf[24];
-    const int kind = a3 + 3 * a4; // 0-based, catégories kind-based (C/L/W/H/A)
+    const int kind = a3 + 3 * a4; // 0-based, kind-based categories (C/L/W/H/A)
 
     switch (cat) {
-        case SObjectEquipCategory::PlayerBody: // 0x4d8ba7 : C%03d%03d%03d (défaut, sans slot spécial)
+        case SObjectEquipCategory::PlayerBody: // 0x4d8ba7 : C%03d%03d%03d (default, no special slot)
             if (!RaceGenderOk(a3, a4) || a5 < 0 || a6 < 0) return {};
             std::snprintf(buf, sizeof(buf), "C%03d%03d%03d", kind + 1, a5 + 1, a6 + 1);
             return buf;
-        case SObjectEquipCategory::P:          // 0x4d8c2f : P%03d%03d%03d (indices génériques a3/a4/a5)
+        case SObjectEquipCategory::P:          // 0x4d8c2f : P%03d%03d%03d (generic indices a3/a4/a5)
             if (a3 < 0 || a4 < 0 || a5 < 0) return {};
             std::snprintf(buf, sizeof(buf), "P%03d%03d%03d", a3 + 1, a4 + 1, a5 + 1);
             return buf;
@@ -235,7 +229,7 @@ std::string BuildSObjectStem(SObjectEquipCategory cat, int a3, int a4, int a5, i
             if (!RaceGenderOk(a3, a4) || a5 < 0 || a6 < 0) return {};
             std::snprintf(buf, sizeof(buf), "H%03d%03d%03d", kind + 1, a5 + 1, a6 + 1);
             return buf;
-        case SObjectEquipCategory::Y:          // 0x4d8cfc : Y%03d%03d (indices génériques a3/a4)
+        case SObjectEquipCategory::Y:          // 0x4d8cfc : Y%03d%03d (generic indices a3/a4)
             if (a3 < 0 || a4 < 0) return {};
             std::snprintf(buf, sizeof(buf), "Y%03d%03d", a3 + 1, a4 + 1);
             return buf;
@@ -260,13 +254,13 @@ std::string BuildSObjectStem(SObjectEquipCategory cat, int a3, int a4, int a5, i
             std::snprintf(buf, sizeof(buf), "A%03d004%03d", kind + 7, a5 + 1);
             return buf;
     }
-    return {}; // catégorie hors table -> branche défaut 0x4d8df9 (chaîne vide)
+    return {}; // category outside the table -> default branch 0x4d8df9 (empty string)
 }
 
 std::string BuildArmorBodyStem(int race, int gender, EquipBodySlot slot, int variant) {
     if (!RaceGenderOk(race, gender) || variant < 0) return {};
 
-    // (token médian, offset de kind) par slot — SObject_BuildPath case 1 (switch a5 @0x4d8a08).
+    // (middle token, kind offset) per slot — SObject_BuildPath case 1 (switch a5 @0x4d8a08).
     const char* token;
     int kindOffset;
     switch (slot) {
@@ -286,13 +280,13 @@ std::string BuildArmorBodyStem(int race, int gender, EquipBodySlot slot, int var
 
     const int kind = race + 3 * gender;
     char buf[24];
-    // TODO-ancre (Audit-B, off-by-one candidat, NON vérifié — code actuellement NON câblé) :
-    //   AssetMgr_InitAllSlots 0x4DEB50 peuplerait les slots Base2/Slot14/Slot15 avec a6 = i-1
-    //   (@0x4df483/@0x4df8c1/@0x4df91e), et SObject_BuildPath case 1 @0x4d8a30 émet a6+1 -> l'entrée
-    //   catalogue d'indice M porterait alors le champ final = M pour CES slots (donc `variant`, pas
-    //   `variant+1`). Base0/Base1/Slot16..21 utiliseraient a6 = i (=> `variant+1`, correct ci-dessous).
-    //   Les seuls slots CÂBLÉS aujourd'hui (Base0/Base1 via PlayerPaperdoll) ne sont PAS concernés.
-    //   À TRANCHER en dynamique (x32dbg) avant de câbler les slots 2/14..21 -> ne rien deviner ici.
+    // TODO-anchor (Audit-B, off-by-one candidate, NOT verified — code currently NOT wired):
+    //   AssetMgr_InitAllSlots 0x4DEB50 would populate the Base2/Slot14/Slot15 slots with a6 = i-1
+    //   (@0x4df483/@0x4df8c1/@0x4df91e), and SObject_BuildPath case 1 @0x4d8a30 emits a6+1 -> the
+    //   catalog entry at index M would then carry final field = M for THESE slots (so `variant`, not
+    //   `variant+1`). Base0/Base1/Slot16..21 would use a6 = i (=> `variant+1`, correct below).
+    //   The only slots WIRED today (Base0/Base1 via PlayerPaperdoll) are NOT affected.
+    //   TO BE DECIDED dynamically (x32dbg) before wiring slots 2/14..21 -> guess nothing here.
     std::snprintf(buf, sizeof(buf), "C%03d%s%03d", kind + kindOffset, token, variant + 1);
     return buf;
 }
@@ -301,14 +295,12 @@ std::string BuildWeaponStem(int race, int gender, int type, int subType, int lev
     return BuildSObjectStem(SObjectEquipCategory::Weapon, race, gender, type, subType, level);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  (B) SLOT/STEM DE MOTION D'ARME — PcModel_ResolveEquipSlot 0x4E46A0.
-// ─────────────────────────────────────────────────────────────────────────────
+//  (B) WEAPON MOTION SLOT/STEM — PcModel_ResolveEquipSlot 0x4E46A0.
 
 EquipMotionSlot ResolveWeaponMotionSlot(int itemId, int race, int gender,
                                         int a4_pose, int a5_state, int a6, int a7) {
-    // Garde d'entrée 0x4e46cc : race>2 || genre>1 || pose/état invalides -> sentinelle
-    // (retour `this + 2644772` == cat 1, race0/genre0, anim 127). Marquée invalide.
+    // Entry guard 0x4e46cc: race>2 || gender>1 || invalid pose/state -> sentinel
+    // (returns `this + 2644772` == cat 1, race0/gender0, anim 127). Marked invalid.
     if (!RaceGenderOk(race, gender) || !MotionIsValidWeaponPose(a4_pose, a5_state)) {
         EquipMotionSlot s;
         s.valid = false; s.motionCat = 1; s.field3 = 127; // 2644772 = 2624960 + 127*156
@@ -327,9 +319,9 @@ std::string BuildWeaponMotionStem(const EquipMotionSlot& slot) {
     if (slot.field2 < 0 || slot.field3 < 0) return {};
 
     // Motion_BuildPathAndLoad 0x4D7390 : cat 1 -> 'C' (0x4d741e), cat 6 -> 'X' (0x4d7582).
-    // Même format "%c%03d%03d%03d" % (kind+1, field2+1, field3+1). Le cas spécial anim==120 de
-    // la cat 1 (0x4d73c9 -> "C%03d%03d011") n'est jamais atteint : le switch de 0x4E46A0 ne
-    // renvoie jamais field3==120 sur la cat 1 (voir ResolveDefaultCat1 : field3 ∈ {état, 77, 84}).
+    // Same format "%c%03d%03d%03d" % (kind+1, field2+1, field3+1). The special anim==120 case of
+    // cat 1 (0x4d73c9 -> "C%03d%03d011") is never reached: the 0x4E46A0 switch never
+    // returns field3==120 for cat 1 (see ResolveDefaultCat1: field3 ∈ {state, 77, 84}).
     const char prefix = (slot.motionCat == 6) ? 'X' : 'C';
     const int  kind   = slot.race + 3 * slot.gender;
     char buf[24];

@@ -1,5 +1,5 @@
-// Game/MotionPools.cpp — voir MotionPools.h pour la correspondance complète avec
-// App_Init 0x461C20 et le désassemblage des 4 fonctions d'origine.
+// Game/MotionPools.cpp — see MotionPools.h for the full mapping to
+// App_Init 0x461C20 and the disassembly of the 4 original functions.
 #include "Game/MotionPools.h"
 #include "Asset/FileUtil.h"
 #include "Core/Log.h"
@@ -9,12 +9,12 @@ namespace ts2::game {
 
 namespace {
 
-// Table brute des 350 lignes {start,end,type,flag}, extraite AUTOMATIQUEMENT du
-// pseudocode Hex-Rays de Motion_InitFrameTable 0x4F1380 (switch(i) à 350 cas, dont
-// 12 tombent sur le "default: continue;" -> {0,0,-1,0}, valeurs initiales posées avant
-// le switch : this[2*i]=0, this[2*i+1]=0, this[2*i+700]=-1, this[2*i+701]=0). Index =
-// i (0-based) ; motion réelle = i+1 (voir GetFrameRange, 1-based comme tous les autres
-// accesseurs GInfo* du binaire).
+// Raw table of the 350 rows {start,end,type,flag}, extracted AUTOMATICALLY from the
+// Hex-Rays pseudocode of Motion_InitFrameTable 0x4F1380 (350-case switch(i), of which
+// 12 fall into the "default: continue;" -> {0,0,-1,0}, initial values set before
+// the switch: this[2*i]=0, this[2*i+1]=0, this[2*i+700]=-1, this[2*i+701]=0). Index =
+// i (0-based); actual motion = i+1 (see GetFrameRange, 1-based like all the other
+// GInfo* accessors in the binary).
 constexpr MotionFrameRange kFrameTableData[kMotionFrameTableCount] = {
     {1,157,0,1}, // i=0
     {1,157,0,1}, // i=1
@@ -368,17 +368,17 @@ constexpr MotionFrameRange kFrameTableData[kMotionFrameTableCount] = {
     {0,0,-1,0}, // i=349
 };
 
-// État runtime des 4 pools (propriété exclusive de ce module — noms symboliques
-// d'origine rappelés en commentaire pour audit croisé avec le désassemblage).
-bool g_frameTableReady = false;                 // g_MotionFrameRangeTable prête
-MotionFrameRange g_frameTable[kMotionFrameTableCount]; // copie runtime (fidèle à l'original : une copie distincte, pas juste kFrameTableData réutilisée telle quelle, pour rester cohérent avec un futur besoin de mutation)
+// Runtime state of the 4 pools (exclusively owned by this module — original
+// symbolic names noted in comments for cross-auditing against the disassembly).
+bool g_frameTableReady = false;                 // g_MotionFrameRangeTable ready
+MotionFrameRange g_frameTable[kMotionFrameTableCount]; // runtime copy (faithful to the original: a separate copy, not just kFrameTableData reused as-is, to stay consistent with a possible future mutation need)
 
-std::vector<uint32_t> g_attachTable;  // dword_14AA930 — 350*501 DWORD une fois chargée
-std::vector<float>    g_coordTable;   // flt_1555D08   — 350*805 FLOAT une fois chargée
+std::vector<uint32_t> g_attachTable;  // dword_14AA930 — 350*501 DWORD once loaded
+std::vector<float>    g_coordTable;   // flt_1555D08   — 350*805 FLOAT once loaded
 
-bool g_modelMotionPoolReady = false;  // g_ModelMotionArray "initialisé" (mGDATA)
+bool g_modelMotionPoolReady = false;  // g_ModelMotionArray "initialized" (mGDATA)
 
-// Joint deux segments de chemin (identique à Game/GameDatabase.cpp).
+// Joins two path segments (identical to Game/GameDatabase.cpp).
 std::string JoinPath(const std::string& a, const std::string& b) {
     if (a.empty()) return b;
     const char last = a.back();
@@ -387,25 +387,21 @@ std::string JoinPath(const std::string& a, const std::string& b) {
 
 } // namespace
 
-// ---------------------------------------------------------------------------
 // 1) mGDATA
-// ---------------------------------------------------------------------------
 bool InitModelMotionPool() {
-    // Cf. commentaire de tête de MotionPools.h : la construction des chemins par slot
+    // See header comment in MotionPools.h: building the per-slot paths
     // (Sprite2D_BuildPath/ModelObj_BuildPath/Motion_BuildPathAndLoad/SObject_BuildPath/
-    // SObject_BuildPathW/Snd3D_SetISNPath) et le démarrage des 5 threads asynchrones
-    // (cThread_Start) sont HORS PÉRIMÈTRE de ce module (sous-systèmes render/asset/
-    // thread séparés). AssetMgr_InitAllSlots 0x4DEB50 ne comporte aucun chemin d'échec
-    // dans le désassemblage : on reproduit fidèlement cette absence d'échec.
+    // SObject_BuildPathW/Snd3D_SetISNPath) and starting the 5 asynchronous threads
+    // (cThread_Start) are OUT OF SCOPE for this module (separate render/asset/
+    // thread subsystems). AssetMgr_InitAllSlots 0x4DEB50 has no failure path
+    // in the disassembly: we faithfully reproduce this absence of failure.
     g_modelMotionPoolReady = true;
     TS2_LOG("mGDATA : pool documente (layout ModelMotionPoolLayout) — BuildPath/threads"
             " delegues aux sous-systemes render/asset/thread (hors perimetre Asset/Motion)");
     return true;
 }
 
-// ---------------------------------------------------------------------------
 // 2) mZONEMAININFO
-// ---------------------------------------------------------------------------
 bool InitFrameTable() {
     std::memcpy(g_frameTable, kFrameTableData, sizeof(g_frameTable));
     g_frameTableReady = true;
@@ -420,9 +416,7 @@ const MotionFrameRange* GetFrameRange(int motionIndex1Based) {
     return &g_frameTable[motionIndex1Based - 1];
 }
 
-// ---------------------------------------------------------------------------
 // 3) mZONENPCINFO — G02_GINFO\002.BIN
-// ---------------------------------------------------------------------------
 bool LoadGInfo002Bin(const std::string& gameDataDir) {
     const std::string path = JoinPath(gameDataDir, "G02_GINFO\\002.BIN");
 
@@ -431,8 +425,8 @@ bool LoadGInfo002Bin(const std::string& gameDataDir) {
         TS2_ERR("mZONENPCINFO : G02_GINFO\\002.BIN illisible : %s", path.c_str());
         return false;
     }
-    // Fidèle à Motion_LoadGInfo002Bin 0x4FCFD0 : le chargeur d'origine échoue si la
-    // taille lue diffère EXACTEMENT de 701400 o (garde `NumberOfBytesRead == 701400`).
+    // Faithful to Motion_LoadGInfo002Bin 0x4FCFD0: the original loader fails if the
+    // read size differs EXACTLY from 701400 B (guard `NumberOfBytesRead == 701400`).
     if (raw.size() != kGInfo002BinSize) {
         TS2_ERR("mZONENPCINFO : taille inattendue (%zu o, attendu %zu o) : %s",
                 raw.size(), kGInfo002BinSize, path.c_str());
@@ -458,7 +452,7 @@ const uint32_t* AttachTableRow(int motionIndex1Based) {
 }
 
 int FindMotionByFrameId(int frameId) {
-    // Réimplémentation fidèle de GInfo_FindMotionByFrameId 0x4FD070.
+    // Faithful reimplementation of GInfo_FindMotionByFrameId 0x4FD070.
     if (g_attachTable.empty()) return 0;
     for (int i = 0; i < kAttachTableRowCount; ++i) {
         const uint32_t* row = g_attachTable.data() + static_cast<size_t>(i) * kAttachTableRowStride;
@@ -476,9 +470,9 @@ bool GetRawAttachPoint(int frameId, float& x, float& y, float& z, int* outMotion
     if (outMotionIndex1Based) *outMotionIndex1Based = 0;
     if (g_attachTable.empty()) return false;
 
-    // Même parcours interne que GInfo_CalcLeftMargin/GInfo_CalcRightMargin (i,j),
-    // mais on renvoie le triplet BRUT (x,y,z) au lieu de la marge corrigée par
-    // Motion_GetAABB (hors périmètre — cf. MotionPools.h).
+    // Same internal traversal as GInfo_CalcLeftMargin/GInfo_CalcRightMargin (i,j),
+    // but we return the RAW triplet (x,y,z) instead of the margin corrected by
+    // Motion_GetAABB (out of scope — see MotionPools.h).
     for (int i = 0; i < kAttachTableRowCount; ++i) {
         const uint32_t* rowU = g_attachTable.data() + static_cast<size_t>(i) * kAttachTableRowStride;
         const float* rowF = reinterpret_cast<const float*>(rowU);
@@ -526,9 +520,7 @@ float ZoneNpcAngle(int zoneId1Based, int npcIndex0Based) {
     return rowF[401 + npcIndex0Based];
 }
 
-// ---------------------------------------------------------------------------
 // 4) mZONEMOVEINFO — G02_GINFO\003.BIN
-// ---------------------------------------------------------------------------
 bool LoadGInfo003Bin(const std::string& gameDataDir) {
     const std::string path = JoinPath(gameDataDir, "G02_GINFO\\003.BIN");
 
@@ -537,7 +529,7 @@ bool LoadGInfo003Bin(const std::string& gameDataDir) {
         TS2_ERR("mZONEMOVEINFO : G02_GINFO\\003.BIN illisible : %s", path.c_str());
         return false;
     }
-    // Fidèle à Motion_LoadGInfo003Bin 0x4FD420 : garde `NumberOfBytesRead == 1127000`.
+    // Faithful to Motion_LoadGInfo003Bin 0x4FD420: guard `NumberOfBytesRead == 1127000`.
     if (raw.size() != kGInfo003BinSize) {
         TS2_ERR("mZONEMOVEINFO : taille inattendue (%zu o, attendu %zu o) : %s",
                 raw.size(), kGInfo003BinSize, path.c_str());
@@ -557,7 +549,7 @@ const float* LoadedCoordTable() {
 }
 
 bool GetVec3(int motionIndex1Based, float& x, float& y, float& z) {
-    // Réimplémentation fidèle de GInfo2_GetVec3 0x4FD4C0 : hors bornes -> (0,0,0),false.
+    // Faithful reimplementation of GInfo2_GetVec3 0x4FD4C0: out of bounds -> (0,0,0),false.
     x = y = z = 0.0f;
     if (g_coordTable.empty()) return false;
     if (motionIndex1Based < 1 || motionIndex1Based > kCoordTableRowCount) return false;

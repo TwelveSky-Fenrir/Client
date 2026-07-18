@@ -1,19 +1,19 @@
-// UI/SocialWindow.cpp — implémentation de la fenêtre Social (amis/liste noire + succès).
+// UI/SocialWindow.cpp — implementation of the Social window (friends/blacklist + achievements).
 #include "UI/SocialWindow.h"
 #include "UI/PanelSkin.h"
-#include "Game/GameState.h" // game::g_World.allianceRoster.guildName (contexte guilde réel)
+#include "Game/GameState.h" // game::g_World.allianceRoster.guildName (real guild context)
 
 #include <cstdio>
 
 namespace ts2::ui {
 
 namespace {
-// Fond de panneau réel (best effort) : gabarit large (702,488) du dossier atlas
-// UI G03_GDATA/D01_GIMAGE2D/001 — candidat NON CONFIRMÉ par IDA, choisi par
-// proximité de ratio avec le panneau Social (560x400, ratio quasi identique ;
-// cf. méthodologie détaillée dans UI/PanelSkin.h). Indice distinct de celui
-// utilisé par SkillTreeWindow (même cluster de tailles, fichiers différents).
-// Repli automatique sur kColPanelBg si absent.
+// Real panel background (best effort): wide template (702,488) from UI atlas
+// folder G03_GDATA/D01_GIMAGE2D/001 — candidate NOT CONFIRMED by IDA, chosen by
+// ratio proximity to the Social panel (560x400, nearly identical ratio;
+// see detailed methodology in UI/PanelSkin.h). Different index than the one
+// used by SkillTreeWindow (same size cluster, different files).
+// Automatic fallback to kColPanelBg if absent.
 const PanelSkin kPanelBg("G03_GDATA\\D01_GIMAGE2D\\001\\001_01491.IMG");
 } // namespace
 
@@ -23,8 +23,8 @@ SocialWindow::SocialWindow() {
 
 void SocialWindow::Open() {
     Dialog::Open();
-    // AutoPlay_LoadFriendList/EnemyList (EA 0x45d730/0x45daf0) : rechargement disque
-    // à l'ouverture, fidèle au comportement AutoPlay (fichier absent -> liste vidée).
+    // AutoPlay_LoadFriendList/EnemyList (EA 0x45d730/0x45daf0): reload from disk
+    // on open, faithful to AutoPlay behavior (file absent -> list cleared).
     social_.LoadAll();
     hasSelection_ = false;
     selectedName_.clear();
@@ -41,7 +41,7 @@ void SocialWindow::Close() {
 }
 
 // ---------------------------------------------------------------------------
-// Géométrie
+// Geometry
 // ---------------------------------------------------------------------------
 SocialWindow::Layout SocialWindow::ComputeLayout(int screenW, int screenH) const {
     Layout lo;
@@ -66,8 +66,8 @@ SocialWindow::Layout SocialWindow::ComputeLayout(int screenW, int screenH) const
     lo.btnAddBlacklist= { lo.btnAddFriend.x + lo.btnAddFriend.w + 8, inputY, 112, 22 };
     lo.btnRemove      = { lo.btnAddBlacklist.x + lo.btnAddBlacklist.w + 8, inputY, 90, 22 };
 
-    // Grille succès : même zone verticale que les deux listes (listY, hauteur kListH
-    // + place pour la ligne de saisie non utilisée dans cet onglet), largeur pleine.
+    // Achievements grid: same vertical zone as the two lists (listY, height kListH
+    // + room for the input line unused in this tab), full width.
     lo.achGrid = { lo.panel.x + 16, listY, kPanelW - 32, kListH + 14 + 22 };
 
     return lo;
@@ -91,7 +91,7 @@ SocialWindow::Rect SocialWindow::AchCellRect(const Rect& gridArea, int index) {
 }
 
 // ---------------------------------------------------------------------------
-// Logique amis / liste noire
+// Friends / blacklist logic
 // ---------------------------------------------------------------------------
 game::SocialNameList* SocialWindow::FindListContaining(const std::string& name, bool& outIsBlacklist) {
     if (social_.friends.Contains(name)) { outIsBlacklist = false; return &social_.friends; }
@@ -109,8 +109,8 @@ void SocialWindow::TryAdd(bool toBlacklist) {
         SetStatus("Entrez un nom avant d'ajouter.", kColError);
         return;
     }
-    // AutoPlay_OnMouseUpNameList (EA 0x45b000) : capacité pleine testée AVANT
-    // présence dans l'autre liste — reproduit tel quel par AddFriend/AddToBlacklist.
+    // AutoPlay_OnMouseUpNameList (EA 0x45b000): full-capacity checked BEFORE
+    // presence in the other list — reproduced as-is by AddFriend/AddToBlacklist.
     const game::SocialListOp op = toBlacklist ? social_.AddToBlacklist(nameInput_)
                                                : social_.AddFriend(nameInput_);
     switch (op) {
@@ -134,9 +134,9 @@ void SocialWindow::TryRemoveSelected() {
         SetStatus("Sélectionnez d'abord un nom dans une des deux listes.", kColError);
         return;
     }
-    // Revalide l'appartenance courante (au cas où la liste aurait changé entre la
-    // sélection et le clic sur « Retirer ») plutôt que de se fier aveuglément au
-    // drapeau selectedIsBlacklist_ mémorisé au moment du clic.
+    // Re-validates current membership (in case the list changed between
+    // selection and the "Remove" click) rather than blindly trusting the
+    // selectedIsBlacklist_ flag memoized at click time.
     bool isBlacklist = selectedIsBlacklist_;
     if (!FindListContaining(selectedName_, isBlacklist)) {
         SetStatus("Retrait impossible (nom introuvable).", kColError);
@@ -155,14 +155,14 @@ void SocialWindow::TryRemoveSelected() {
 }
 
 // ---------------------------------------------------------------------------
-// Souris
+// Mouse
 // ---------------------------------------------------------------------------
 bool SocialWindow::OnMouseDown(int x, int y) {
     if (!bOpen_) return false;
     const Layout lo = ComputeLayout(lastScreenW_, lastScreenH_);
 
     if (!lo.panel.Contains(x, y))
-        return false; // hors du panneau : laisse passer (pas de blocage du monde 3D)
+        return false; // outside the panel: let it pass through (no 3D world blocking)
 
     armClose_ = lo.closeBtn.Contains(x, y);
     armTabFriends_ = lo.tabFriends.Contains(x, y);
@@ -173,10 +173,10 @@ bool SocialWindow::OnMouseDown(int x, int y) {
         armAddBlacklist_ = lo.btnAddBlacklist.Contains(x, y);
         armRemove_ = lo.btnRemove.Contains(x, y);
 
-        // Sélection immédiate d'une rangée (clic-enfoncé), comme les cellules
-        // d'inventaire : pas besoin d'attendre le relâchement pour une simple
-        // sélection en surbrillance. Bornée aux rangées réellement DESSINÉES
-        // (maxRowsF/B) pour ne pas créer de zone cliquable fantôme sous la liste.
+        // Immediate row selection (mouse-down), like inventory
+        // cells: no need to wait for release for a simple highlight
+        // selection. Bounded to the rows actually DRAWN
+        // (maxRowsF/B) to avoid a phantom clickable area below the list.
         const int maxRowsF = (lo.friendList.h - kListHeaderH) / kRowH;
         const int maxRowsB = (lo.blacklistList.h - kListHeaderH) / kRowH;
         for (int i = 0; i < static_cast<int>(social_.friends.names.size()) && i < maxRowsF; ++i) {
@@ -199,7 +199,7 @@ bool SocialWindow::OnMouseDown(int x, int y) {
         armAddFriend_ = armAddBlacklist_ = armRemove_ = false;
     }
 
-    return true; // clic dans le panneau : toujours consommé (modal)
+    return true; // click inside the panel: always consumed (modal)
 }
 
 bool SocialWindow::OnClick(int x, int y) {
@@ -223,7 +223,7 @@ bool SocialWindow::OnClick(int x, int y) {
 }
 
 // ---------------------------------------------------------------------------
-// Clavier — saisie du champ « nom » (VK_0..VK_9 / VK_A..VK_Z / VK_SPACE / VK_BACK).
+// Keyboard — "name" field input (VK_0..VK_9 / VK_A..VK_Z / VK_SPACE / VK_BACK).
 // ---------------------------------------------------------------------------
 bool SocialWindow::OnKey(int vk) {
     if (!bOpen_) return false;
@@ -234,7 +234,7 @@ bool SocialWindow::OnKey(int vk) {
             return true;
         }
         if (vk == VK_RETURN) {
-            TryAdd(false); // Entrée = ajout rapide côté « amis »
+            TryAdd(false); // Enter = quick-add on the "friends" side
             return true;
         }
         if (vk == VK_TAB) {
@@ -255,11 +255,11 @@ bool SocialWindow::OnKey(int vk) {
             return true;
         }
     }
-    return true; // fenêtre modale ouverte : absorbe le reste du clavier
+    return true; // modal window open: absorbs the rest of the keyboard
 }
 
 // ---------------------------------------------------------------------------
-// Rendu
+// Render
 // ---------------------------------------------------------------------------
 void SocialWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     if (!bOpen_) return;
@@ -311,14 +311,14 @@ void SocialWindow::RenderFriendsTab(const UiContext& ctx, const Layout& lo) {
         ctx.FillRect(lo.blacklistList.x, lo.blacklistList.y, lo.blacklistList.w, lo.blacklistList.h, 0xFF181820u);
         ctx.DrawFrame(lo.blacklistList.x, lo.blacklistList.y, lo.blacklistList.w, lo.blacklistList.h, kColFrameDim, 1);
 
-        // Rangées amis
+        // Friend rows
         const int maxRowsF = (lo.friendList.h - kListHeaderH) / kRowH;
         for (int i = 0; i < static_cast<int>(social_.friends.names.size()) && i < maxRowsF; ++i) {
             const Rect r = RowRect(lo.friendList, i);
             const bool sel = hasSelection_ && !selectedIsBlacklist_ && social_.friends.names[static_cast<size_t>(i)] == selectedName_;
             ctx.FillRect(r.x, r.y, r.w, r.h, sel ? kColHover : kColRowFriend);
         }
-        // Rangées liste noire
+        // Blacklist rows
         const int maxRowsB = (lo.blacklistList.h - kListHeaderH) / kRowH;
         for (int i = 0; i < static_cast<int>(social_.blacklist.names.size()) && i < maxRowsB; ++i) {
             const Rect r = RowRect(lo.blacklistList, i);
@@ -365,8 +365,8 @@ void SocialWindow::RenderFriendsTab(const UiContext& ctx, const Layout& lo) {
             ctx.Text(social_.blacklist.names[static_cast<size_t>(i)].c_str(), r.x + 3, r.y + 1, kColText);
         }
 
-        // Champ de saisie + caret simple (toujours visible : pas de gestion de focus
-        // multi-champ dans cette fenêtre, un seul champ éditable).
+        // Input field + simple caret (always visible: no multi-field focus
+        // handling in this window, only one editable field).
         std::string shown = nameInput_ + "_";
         ctx.Text(shown.c_str(), lo.nameInputBox.x + 4, lo.nameInputBox.y + 4, kColText);
 
@@ -380,9 +380,9 @@ void SocialWindow::RenderFriendsTab(const UiContext& ctx, const Layout& lo) {
         if (!statusText_.empty())
             ctx.Text(statusText_.c_str(), lo.panel.x + 16, lo.btnRemove.y + 30, statusColor_);
 
-        // Note d'honnêteté : cette liste est le fichier local AutoPlay (ciblage bot de
-        // farm), PAS un roster « ami en ligne » côté serveur — aucun champ de présence
-        // n'existe dans la structure d'origine (cf. Game/SocialSystem.h, en-tête §2).
+        // Honesty note: this list is the local AutoPlay file (farm bot
+        // targeting), NOT a server-side "online friend" roster — no presence field
+        // exists in the original structure (see Game/SocialSystem.h, header §2).
         ctx.Text("Liste locale (AutoPlay) - aucun statut « en ligne » : non prouve par le desassemblage.",
                  lo.panel.x + 16, lo.panel.y + lo.panel.h - 20, kColTextDim);
     }
@@ -400,11 +400,11 @@ void SocialWindow::RenderAchievementsTab(const UiContext& ctx, const Layout& lo)
             ctx.DrawFrame(c.x, c.y, c.w, c.h, kColFrameDim, 1);
         }
     } else { // UiPhase::Text
-        // Contexte guilde RÉEL (game::g_World.allianceRoster.guildName == g_LocalGuildName
-        // 0x168740C, cf. Game/GameState.h::AllianceRoster et Docs/
-        // TS2_ALLIANCE_PARTY_ROSTER.md §3) — les "succès de tribu" n'ont de sens que pour
-        // une guilde active ; affiché honnêtement vide (pas d'invention) tant qu'aucun
-        // handler n'a peuplé le nom (hors guilde, ou avant réception du roster).
+        // REAL guild context (game::g_World.allianceRoster.guildName == g_LocalGuildName
+        // 0x168740C, see Game/GameState.h::AllianceRoster and Docs/
+        // TS2_ALLIANCE_PARTY_ROSTER.md §3) — "guild achievements" are only meaningful for
+        // an active guild; shown honestly empty (not invented) until a
+        // handler has populated the name (no guild, or before the roster is received).
         const std::string& liveGuildName = game::g_World.allianceRoster.guildName;
         const std::string achHeader = "Succes de tribu (dword_184C218, 24 emplacements) - Guilde : " +
                                        (liveGuildName.empty() ? std::string("(aucune)") : liveGuildName);

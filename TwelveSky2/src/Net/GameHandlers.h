@@ -1,22 +1,22 @@
-// Net/GameHandlers.h — installation des VRAIS handlers de paquets entrants.
+// Net/GameHandlers.h — installs the REAL incoming-packet handlers.
 //
-// Remplace le handler de trace par défaut de NetSystem par le routage réel :
-//   opcode -> RecvPackets::Xxx::Parse(payload,len) -> mise à jour de l'état
+// Replaces NetSystem's default trace handler with real routing:
+//   opcode -> RecvPackets::Xxx::Parse(payload,len) -> update state
 //   (game::g_World via EntityManager, game::g_Client via ClientRuntime, UI…).
 //
-// Le routage est découpé par DOMAINE (un .cpp par famille) pour permettre la
-// génération parallèle sans collision de fichier. Chaque module implémente sa
-// fonction RegisterXxxHandlers ; InstallGameHandlers les appelle toutes.
-// Fidélité : voir RE/net_handler_notes.md (sémantique d'origine par opcode).
+// Routing is split by DOMAIN (one .cpp per family) to allow parallel
+// generation without file collisions. Each module implements its own
+// RegisterXxxHandlers function; InstallGameHandlers calls them all.
+// Fidelity reference: RE/net_handler_notes.md (original per-opcode semantics).
 #pragma once
 #include "Net/NetSystem.h"
 #include "Net/RecvPackets.h"
-#include "Net/ClientState.h"   // net::g_GmCmdCooldownLatch (remis à 0 par beaucoup de handlers)
+#include "Net/ClientState.h"   // net::g_GmCmdCooldownLatch (reset to 0 by many handlers)
 #include <utility>
 
 namespace ts2::net {
 
-// Helper : enregistre un handler typé. Parse le payload en T puis appelle fn(const T&).
+// Helper: registers a typed handler. Parses the payload into T then calls fn(const T&).
 //   OnPacket<SpawnNpc>(sys, 0x13, [](const SpawnNpc& p){ ... });
 template <class T, class F>
 inline void OnPacket(NetSystem& sys, std::uint8_t op, F&& fn) {
@@ -27,29 +27,29 @@ inline void OnPacket(NetSystem& sys, std::uint8_t op, F&& fn) {
     });
 }
 
-// Helper : handler sans payload (opcode-déclencheur). Appelle fn().
+// Helper: payload-less handler (trigger opcode). Calls fn().
 template <class F>
 inline void OnTrigger(NetSystem& sys, std::uint8_t op, F&& fn) {
     sys.On(op, [fn = std::forward<F>(fn)](std::uint8_t, const std::uint8_t*,
                                           std::uint32_t) mutable { fn(); });
 }
 
-// --- Modules de domaine (un .cpp chacun ; découpage par RE/handler_domains.json) ---
-void RegisterEntityHandlers     (NetSystem& sys); // 0x0c/0f/10/11/12/13/15/19/91 : entités (EntityManager)
-void RegisterInvCellHandlers    (NetSystem& sys); // résultats/cellules d'inventaire (achat/vente/combine/déplacement)
-void RegisterInvDispatchHandlers(NetSystem& sys); // méga-dispatchers objet (enchant/refine/socket/fuse/upgrade/batch)
-void RegisterPartyGuildHandlers (NetSystem& sys); // groupe/guilde/alliance/équipe
-void RegisterChatSocialHandlers (NetSystem& sys); // chat/whisper/amis/notices/prompts/dialogues
-void RegisterVendorTradeHandlers(NetSystem& sys); // marchand/échange/entrepôt/boutique-joueur/réparation
-void RegisterBossWorldHandlers  (NetSystem& sys); // boss/zone/carte/instance/champ de bataille/classements
-void RegisterMiscHandlers       (NetSystem& sys); // game-vars/connexion/script/timers/quickslot/pet/skill/divers
+// --- Domain modules (one .cpp each; split per RE/handler_domains.json) ---
+void RegisterEntityHandlers     (NetSystem& sys); // 0x0c/0f/10/11/12/13/15/19/91: entities (EntityManager)
+void RegisterInvCellHandlers    (NetSystem& sys); // inventory cell results (buy/sell/combine/move)
+void RegisterInvDispatchHandlers(NetSystem& sys); // item mega-dispatchers (enchant/refine/socket/fuse/upgrade/batch)
+void RegisterPartyGuildHandlers (NetSystem& sys); // party/guild/alliance/team
+void RegisterChatSocialHandlers (NetSystem& sys); // chat/whisper/friends/notices/prompts/dialogs
+void RegisterVendorTradeHandlers(NetSystem& sys); // vendor/trade/warehouse/player shop/repair
+void RegisterBossWorldHandlers  (NetSystem& sys); // boss/zone/map/instance/battlefield/rankings
+void RegisterMiscHandlers       (NetSystem& sys); // game-vars/connection/script/timers/quickslot/pet/skill/misc
 
-// Overrides fidèles issus de la décompilation IDA directe (workflow ts2-ida-gameplay-core) :
-// 0x11/0x15/0x16/0x1a. Enregistré EN DERNIER dans InstallGameHandlers (remplace les
-// versions simplifiées posées par les modules de domaine ci-dessus).
+// Faithful overrides derived from direct IDA decompilation (ts2-ida-gameplay-core workflow):
+// 0x11/0x15/0x16/0x1a. Registered LAST in InstallGameHandlers (replaces the
+// simplified versions installed by the domain modules above).
 void RegisterCoreOverrideHandlers(NetSystem& sys);
 
-// Installe TOUS les handlers réels sur le NetSystem (appelé par NetSystem::Init).
+// Installs ALL real handlers on the NetSystem (called by NetSystem::Init).
 void InstallGameHandlers(NetSystem& sys);
 
 } // namespace ts2::net

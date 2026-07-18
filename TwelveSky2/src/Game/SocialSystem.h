@@ -1,42 +1,42 @@
-// Game/SocialSystem.h — Achievements + listes sociales (amis/liste noire) du client TwelveSky2.
+// Game/SocialSystem.h — Achievements + social lists (friends/blacklist) for the TwelveSky2 client.
 //
-// Deux systèmes DISTINCTS et sans rapport l'un avec l'autre dans le binaire, regroupés
-// ici parce que la mission les traite comme des « annexes légères » :
+// Two DISTINCT and unrelated systems in the binary, grouped here because the
+// mission treats them as "lightweight annexes":
 //
-//  1) ACHIEVEMENTS (haut-fait de tribu) — Net_OnAchievementDataLoad (0x4ac920) charge une
-//     table de 96 o (24 int32) dans dword_184C218 ; Net_OnAchievementNotice (0x4ac950)
-//     construit un message "<label> <nom> <suffixe>" à partir de cette table, indexée par
+//  1) TRIBE ACHIEVEMENTS — Net_OnAchievementDataLoad (0x4ac920) loads a 96-byte
+//     table (24 int32) into dword_184C218 ; Net_OnAchievementNotice (0x4ac950)
+//     builds a "<label> <name> <suffix>" message from this table, indexed by
 //     TribeSkill_SkillIdToIndex (0x692e00, 12 slots 0..11).
 //
-//  2) LISTES AMI/ENNEMI DE L'AUTOPLAY (bot de farm) — AutoPlay_LoadFriendList (0x45d730) /
-//     AutoPlay_SaveFriendList (0x45de50) / AutoPlay_IsFriend (0x45faa0) et leurs pendants
-//     Enemy (0x45daf0/0x45e140/0x45fbe0), plus la logique d'ajout/retrait exclusive
-//     AutoPlay_OnMouseUpNameList (0x45b000). C'est la SEULE structure de liste « amis /
-//     liste noire » réellement prouvée par le désassemblage : fichiers locaux
-//     G02_GINFO\011.BIN (amis) / 012.BIN (ennemis), 48 noms max, 25 o/slot, mutuellement
-//     exclusives. Elle sert au ciblage du bot d'auto-combat (ne pas attaquer un ami /
-//     prioriser un ennemi), PAS à un système de « présence » (aucun champ « online » n'existe
-//     dans cette structure).
+//  2) AUTOPLAY FRIEND/ENEMY LISTS (farm bot) — AutoPlay_LoadFriendList (0x45d730) /
+//     AutoPlay_SaveFriendList (0x45de50) / AutoPlay_IsFriend (0x45faa0) and their
+//     Enemy counterparts (0x45daf0/0x45e140/0x45fbe0), plus the exclusive
+//     add/remove logic AutoPlay_OnMouseUpNameList (0x45b000). This is the ONLY
+//     "friend list / blacklist" structure actually proven by the disassembly:
+//     local files G02_GINFO\011.BIN (friends) / 012.BIN (enemies), 48 names max,
+//     25 bytes/slot, mutually exclusive. It serves the auto-combat bot's targeting
+//     (don't attack a friend / prioritize an enemy), NOT a "presence" system (no
+//     "online" field exists in this structure).
 //
-// CE QUI N'EST PAS ICI (hors périmètre, déjà couvert ou non prouvé) :
-//   - Le VRAI système « ami en ligne / ami ajouté » piloté serveur (opcodes 0x7e
-//     FriendStatusNotice EA 0x4aa050 et 0x90 FriendListEvent EA 0x4ab040) est déjà câblé
-//     dans Net/GameHandlers_ChatSocial.cpp. ATTENTION : ces deux handlers ne font QUE
-//     construire un texte et l'afficher (HUD_ShowFloatingMessage / Msg_AppendSystemLine) —
-//     ils ne lisent ni n'écrivent AUCUN tableau. Il n'existe nulle part dans le binaire de
-//     tableau de « liste d'amis serveur avec statut en ligne » : le désassemblage ne prouve
-//     que la notice. Le stockage réel prouvé est la liste locale de l'AutoPlay (ci-dessus).
-//   - Net_OnSocialListRemove (0x4a9450, opcode 0x79, déjà géré comme simple notice dans
-//     GameHandlers_ChatSocial.cpp) NE TOUCHE PAS aux listes ami/ennemi de l'AutoPlay : elle
-//     manipule trois grilles de noms totalement différentes (unk_16869C0/1686AC4/1686BC8,
-//     aussi lues par Skill_CheckBuffState 0x4fc950 et UI_Macro_Init 0x5cb800). Ces grilles
-//     ressemblent à un roster de faction/élément par slot de macro, PAS à une liste
-//     d'amis/blacklist — malgré le nom IDA existant « Net_OnSocialListRemove », le contenu
-//     démontre qu'il s'agit d'un autre sous-système (hors périmètre de cette mission ;
-//     non modélisé ici, conformément à la règle « ne pas inventer »).
+// WHAT IS NOT HERE (out of scope, already covered, or unproven):
+//   - The REAL server-driven "friend online / friend added" system (opcodes 0x7e
+//     FriendStatusNotice EA 0x4aa050 and 0x90 FriendListEvent EA 0x4ab040) is already
+//     wired in Net/GameHandlers_ChatSocial.cpp. WARNING: these two handlers ONLY
+//     build text and display it (HUD_ShowFloatingMessage / Msg_AppendSystemLine) —
+//     they never read or write ANY array. Nowhere in the binary is there a "server
+//     friend list with online status" array: the disassembly only proves the notice.
+//     The real proven storage is the local AutoPlay list (above).
+//   - Net_OnSocialListRemove (0x4a9450, opcode 0x79, already handled as a plain
+//     notice in GameHandlers_ChatSocial.cpp) does NOT touch the AutoPlay friend/enemy
+//     lists: it manipulates three totally different name grids (unk_16869C0/
+//     1686AC4/1686BC8, also read by Skill_CheckBuffState 0x4fc950 and UI_Macro_Init
+//     0x5cb800). These grids look like a faction/element roster per macro slot,
+//     NOT a friend/blacklist — despite the existing IDA name "Net_OnSocialListRemove",
+//     the content shows it's a different subsystem (out of scope for this mission;
+//     not modeled here, per the "don't invent" rule).
 //
 #pragma once
-#include "Game/ClientRuntime.h"   // game::Str(), g_Client (journal de messages)
+#include "Game/ClientRuntime.h"   // game::Str(), g_Client (message log)
 #include <array>
 #include <cstdint>
 #include <string>
@@ -45,17 +45,17 @@
 namespace ts2::game {
 
 // =============================================================================
-// 1) ACHIEVEMENTS DE TRIBU
+// 1) TRIBE ACHIEVEMENTS
 // =============================================================================
 
-// Table de haut-faits — dword_184C218 (EA 0x184c218), remplie par
-// Net_OnAchievementDataLoad (EA 0x4ac920) : memcpy direct de 96 o reçus réseau.
-// 96 / 4 = 24 emplacements int32 ; seuls les indices 0..11 sont adressés par le
-// handler de notice via TribeSkillIdToIndex (les 12 restants ne sont lus par
-// aucune fonction croisée dans ce cluster — probablement une marge/second jeu de
-// tribu non exercé par ce chemin ; on les conserve tels quels par fidélité).
+// Achievement table — dword_184C218 (EA 0x184c218), filled by
+// Net_OnAchievementDataLoad (EA 0x4ac920): direct memcpy of 96 bytes received over
+// the network. 96 / 4 = 24 int32 slots; only indices 0..11 are addressed by the
+// notice handler via TribeSkillIdToIndex (the remaining 12 aren't read by any
+// cross-referenced function in this cluster — probably a margin/second tribe set
+// not exercised by this path; kept as-is for fidelity).
 struct AchievementState {
-    static constexpr size_t kFlagCount = 24;   // 96 o / 4
+    static constexpr size_t kFlagCount = 24;   // 96 bytes / 4
 
     std::array<int32_t, kFlagCount> flags{};
 
@@ -63,97 +63,98 @@ struct AchievementState {
     void LoadFromPayload(const void* payload96);
 };
 
-// TribeSkill_SkillIdToIndex (EA 0x692e00) — mappe un id de compétence de tribu vers
-// un slot 0..11 (12 compétences reconnues) ; -1 si non reconnu. Reproduction exacte
-// du switch d'origine (pas de formule fermée, la table est irrégulière : 2,3,4,7,8,9,
+// TribeSkill_SkillIdToIndex (EA 0x692e00) — maps a tribe skill id to a slot
+// 0..11 (12 recognized skills); -1 if unrecognized. Exact reproduction of the
+// original switch (no closed formula, the table is irregular: 2,3,4,7,8,9,
 // 12,13,14,141,142,143).
 int TribeSkillIdToIndex(int skillId);
 
-// Résultat de Net_OnAchievementNotice (EA 0x4ac950) : soit rien (id de compétence non
-// reconnu, EA 0x4aca3a), soit un texte prêt à poster.
+// Result of Net_OnAchievementNotice (EA 0x4ac950): either nothing (unrecognized
+// skill id, EA 0x4aca3a), or ready-to-post text.
 struct AchievementNoticeResult {
     bool        shown = false;
     std::string text;
 };
 
-// Reconstruit le message de Net_OnAchievementNotice SANS l'envoyer au journal (fonction
-// pure, testable). `tribeSkillOrMorphId` correspond exactement à l'argument passé à
-// TribeSkill_SkillIdToIndex dans l'original (EA 0x4ac9b5) : le binaire y passe
-// g_SelfMorphNpcId (dword 0x1675a98), un global de « npc de morph » réutilisé ici comme
-// sélecteur de compétence de tribu — c'est ce que montre le désassemblage tel quel, sans
-// interprétation ; ce global n'est pas modélisé dans GameState.h, donc l'appelant doit le
-// fournir. `achieverName13` correspond au champ nom de 13 o copié en tête de payload
-// (EA 0x4ac9a1, &unk_8156C1..+13), non retraité (pas de trim '@' ici, contrairement aux
-// listes AutoPlay : l'original ne trim rien sur ce champ).
+// Rebuilds the Net_OnAchievementNotice message WITHOUT posting it to the log
+// (pure, testable function). `tribeSkillOrMorphId` matches exactly the argument
+// passed to TribeSkill_SkillIdToIndex in the original (EA 0x4ac9b5): the binary
+// passes g_SelfMorphNpcId (dword 0x1675a98), a "morph npc" global reused here as
+// a tribe skill selector — that's what the disassembly shows as-is, without
+// interpretation; this global isn't modeled in GameState.h, so the caller must
+// supply it. `achieverName13` matches the 13-byte name field copied at the head
+// of the payload (EA 0x4ac9a1, &unk_8156C1..+13), unprocessed (no '@' trim here,
+// unlike the AutoPlay lists: the original doesn't trim this field at all).
 AchievementNoticeResult BuildAchievementNotice(const AchievementState& state,
                                                 int tribeSkillOrMorphId,
                                                 const std::string& achieverName13);
 
-// Instance globale unique (miroir de dword_184C218) — alimentée par
-// Net_OnAchievementDataLoad (Net/GameHandlers_BossWorld.cpp, opcode 0x98) et lue par
-// UI/SocialWindow.h (onglet Succès), même pattern que game::g_Warehouse/g_World.
+// Single global instance (mirror of dword_184C218) — fed by
+// Net_OnAchievementDataLoad (Net/GameHandlers_BossWorld.cpp, opcode 0x98) and read
+// by UI/SocialWindow.h (Achievements tab), same pattern as game::g_Warehouse/g_World.
 inline AchievementState g_Achievements;
 
-// Variante pratique : construit ET poste (bannière flottante + ligne système), comme
-// EA 0x4aca20 (HUD_ShowFloatingMessage(0,0,&v7,&String)) et 0x4aca35
-// (Msg_AppendSystemLine(&v7, g_SysMsgColor)). g_SysMsgColor (EA 0x84dfd8) n'est pas
-// modélisé en champ propre -> lu via g_Client.Var() par convention du hub ClientRuntime.
+// Convenience variant: builds AND posts (floating banner + system line), like
+// EA 0x4aca20 (HUD_ShowFloatingMessage(0,0,&v7,&String)) and 0x4aca35
+// (Msg_AppendSystemLine(&v7, g_SysMsgColor)). g_SysMsgColor (EA 0x84dfd8) isn't
+// modeled as its own field -> read via g_Client.Var() per the ClientRuntime hub convention.
 bool PostAchievementNotice(const AchievementState& state, int tribeSkillOrMorphId,
                             const std::string& achieverName13);
 
 // =============================================================================
-// 2) LISTES AMI / ENNEMI DE L'AUTOPLAY (seule structure « social list » prouvée)
+// 2) AUTOPLAY FRIEND / ENEMY LISTS (only proven "social list" structure)
 // =============================================================================
 
-// Une des deux listes (amis OU ennemis) de l'AutoPlay. Layout disque et règles de
-// capacité relevés à l'identique dans AutoPlay_Load/SaveFriendList (EA 0x45d730/
-// 0x45de50) et AutoPlay_Load/SaveEnemyList (EA 0x45daf0/0x45e140) — les deux paires
-// sont bit-à-bit identiques hormis le nom de fichier et les offsets de champ dans la
-// classe AutoPlay d'origine.
+// One of the AutoPlay's two lists (friends OR enemies). Disk layout and capacity
+// rules recorded identically in AutoPlay_Load/SaveFriendList (EA 0x45d730/
+// 0x45de50) and AutoPlay_Load/SaveEnemyList (EA 0x45daf0/0x45e140) — both pairs
+// are bit-for-bit identical except for the file name and field offsets in the
+// original AutoPlay class.
 struct SocialNameList {
     static constexpr size_t kCapacity  = 48;   // EA 0x45dec0 (`*(this+320) <= 0x30`), 0x45e1a3
-    static constexpr size_t kSlotBytes = 25;   // stride slot sur disque
-    static constexpr size_t kFileBytes = kCapacity * kSlotBytes;   // 1200 o (ReadFile/WriteFile 0x4B0 EA 0x45d7ca/0x45e0ad)
+    static constexpr size_t kSlotBytes = 25;   // on-disk slot stride
+    static constexpr size_t kFileBytes = kCapacity * kSlotBytes;   // 1200 bytes (ReadFile/WriteFile 0x4B0 EA 0x45d7ca/0x45e0ad)
 
-    std::vector<std::string> names;   // ordre = ordre d'insertion (list std du binaire)
+    std::vector<std::string> names;   // order = insertion order (std list in the binary)
 
     bool Full() const { return names.size() >= kCapacity; }
 
-    // Crt_Strcmp linéaire sur toute la liste — EA 0x45fbb3/0x45fba0 (IsFriend),
+    // Linear Crt_Strcmp scan over the whole list — EA 0x45fbb3/0x45fba0 (IsFriend),
     // 0x45fcf3/0x45fce0 (IsEnemy).
     bool Contains(const std::string& name) const;
 
-    // Ajout BRUT (sans vérification d'exclusivité avec l'autre liste — voir
-    // AutoPlaySocialLists::AddFriend/AddToBlacklist pour la logique complète telle
-    // qu'exercée par AutoPlay_OnMouseUpNameList, EA 0x45b6b0-0x45b90a).
-    // NOTE fidélité : l'original valide aussi le nom via MobDb_FindByName (EA 0x4c3c50)
-    // avant tout ajout (chargement ET saisie UI) — cette base n'est pas exposée par les
-    // headers fournis (GameDatabase.h ne couvre qu'ITEM_INFO/LEVEL_INFO) ; la validation
-    // d'existence du nom reste donc à la charge de l'appelant (TODO EA 0x45d9e9/0x45da26,
-    // 0x45b63f).
+    // RAW add (no exclusivity check against the other list — see
+    // AutoPlaySocialLists::AddFriend/AddToBlacklist for the full logic as
+    // exercised by AutoPlay_OnMouseUpNameList, EA 0x45b6b0-0x45b90a).
+    // FIDELITY NOTE: the original also validates the name via MobDb_FindByName (EA
+    // 0x4c3c50) before any add (both loading AND UI entry) — this base isn't
+    // exposed by the provided headers (GameDatabase.h only covers ITEM_INFO/
+    // LEVEL_INFO); name-existence validation is therefore left to the caller
+    // (TODO EA 0x45d9e9/0x45da26, 0x45b63f).
     bool Add(const std::string& name);
 
-    // Retrait par recherche linéaire, 1re occurrence — EA 0x45bb95-0x45bc21 (friend),
+    // Removal by linear search, first occurrence — EA 0x45bb95-0x45bc21 (friend),
     // 0x45bd3e-0x45be34 (enemy).
     bool Remove(const std::string& name);
 
-    // Sérialise au format disque exact : 48 slots x 25 o, remplis de 0x40 ('@')
-    // (Crt_Memset(Buffer, 64, 1200) EA 0x45de9f/0x45e182), nom tronqué à 24 caractères
-    // utiles (le 25e octet reste du padding '@').
+    // Serializes to the exact on-disk format: 48 slots x 25 bytes, padded with
+    // 0x40 ('@') (Crt_Memset(Buffer, 64, 1200) EA 0x45de9f/0x45e182), name
+    // truncated to 24 useful characters (the 25th byte remains '@' padding).
     std::array<uint8_t, kFileBytes> Serialize() const;
 
-    // Recharge depuis `bufBytes` o au format disque : pour chaque slot de 25 o, tronque
-    // au premier '@' rencontré (EA 0x45d992/0x45d9af Str_Find('@'), 0x45d9d1 Str_Erase),
-    // slot vide ignoré. Écrase la liste en mémoire (List_Clear implicite, EA 0x45d7e5).
-    // Si bufBytes < kFileBytes, la liste est simplement vidée (comme un fichier absent).
+    // Reloads from `bufBytes` bytes in the on-disk format: for each 25-byte slot,
+    // truncates at the first '@' encountered (EA 0x45d992/0x45d9af Str_Find('@'),
+    // 0x45d9d1 Str_Erase), empty slot ignored. Overwrites the in-memory list
+    // (implicit List_Clear, EA 0x45d7e5). If bufBytes < kFileBytes, the list is
+    // simply cleared (like a missing file).
     void Deserialize(const uint8_t* buf, size_t bufBytes);
 };
 
-// Charge/sauvegarde le fichier local exact de l'AutoPlay (chemins et tailles fidèles :
-// EA 0x45d7ca "G02_GINFO\\011.BIN" et 0x45db81 "G02_GINFO\\012.BIN", 1200 o fixes).
-// Utilise l'API C standard (fopen/fread/fwrite) : le binaire d'origine utilise
-// CreateFileA/ReadFile/WriteFile Win32, la sémantique (lecture/écriture bloc fixe,
-// échec silencieux -> liste vidée) est préservée.
+// Loads/saves the AutoPlay's exact local file (faithful paths and sizes:
+// EA 0x45d7ca "G02_GINFO\\011.BIN" and 0x45db81 "G02_GINFO\\012.BIN", fixed 1200
+// bytes). Uses the standard C API (fopen/fread/fwrite): the original binary uses
+// Win32 CreateFileA/ReadFile/WriteFile; the semantics (fixed-block read/write,
+// silent failure -> cleared list) are preserved.
 bool LoadSocialNameListFile(SocialNameList& list, const char* path);
 bool SaveSocialNameListFile(const SocialNameList& list, const char* path);
 
@@ -162,40 +163,40 @@ bool SaveFriendListFile(const SocialNameList& list);     // EA 0x45de50
 bool LoadBlacklistFile(SocialNameList& list);            // EA 0x45daf0 -> "G02_GINFO\012.BIN"
 bool SaveBlacklistFile(const SocialNameList& list);      // EA 0x45e140
 
-// Code de résultat d'ajout — reflète les 3 issues distinctes de
-// AutoPlay_OnMouseUpNameList (str1947 « déjà dans une liste », str1980 « liste pleine »,
-// succès silencieux + sauvegarde immédiate).
+// Add result code — reflects the 3 distinct outcomes of
+// AutoPlay_OnMouseUpNameList (str1947 "already in a list", str1980 "list full",
+// silent success + immediate save).
 enum class SocialListOp { Added, AlreadyListed, ListFull };
 
-// Bundle ami+ennemi de l'AutoPlay avec la logique d'exclusivité mutuelle EXACTE de
-// AutoPlay_OnMouseUpNameList (EA 0x45b000) : un nom ne peut être présent que dans une
-// seule des deux listes ; l'ajout à l'une échoue si le nom figure déjà dans l'AUTRE
-// (même message d'erreur str1947 que pour un doublon dans la même liste — le binaire ne
-// distingue pas les deux cas, cf. EA 0x45b679/0x45b848).
+// AutoPlay friend+enemy bundle with the EXACT mutual-exclusivity logic of
+// AutoPlay_OnMouseUpNameList (EA 0x45b000): a name can only be present in one
+// of the two lists; adding to one fails if the name is already in the OTHER
+// (same error message str1947 as for a duplicate in the same list — the binary
+// doesn't distinguish the two cases, cf. EA 0x45b679/0x45b848).
 struct AutoPlaySocialLists {
-    SocialNameList friends;    // this+296/+316/+320 — EA 0x45b7 (ajout), 0x45bb (retrait)
-    SocialNameList blacklist;  // this+324/+344/+348 — EA 0x45b8 (ajout), 0x45bd (retrait)
+    SocialNameList friends;    // this+296/+316/+320 — EA 0x45b7 (add), 0x45bb (remove)
+    SocialNameList blacklist;  // this+324/+344/+348 — EA 0x45b8 (add), 0x45bd (remove)
 
-    // Branche mode==0 de AutoPlay_OnMouseUpNameList (ajout côté « amis »).
-    // Ordre des tests fidèle : capacité pleine (str1980, EA 0x45b6f1/0x45b811) AVANT
-    // test de présence dans l'autre liste (str1947, EA 0x45b723/0x45b850).
+    // mode==0 branch of AutoPlay_OnMouseUpNameList (add on the "friends" side).
+    // Faithful test order: capacity full (str1980, EA 0x45b6f1/0x45b811) BEFORE
+    // checking presence in the other list (str1947, EA 0x45b723/0x45b850).
     SocialListOp AddFriend(const std::string& name);
 
-    // Branche mode==1 (ajout côté « ennemis / liste noire »), symétrique — EA 0x45b6b0.
+    // mode==1 branch (add on the "enemies / blacklist" side), symmetric — EA 0x45b6b0.
     SocialListOp AddToBlacklist(const std::string& name);
 
-    // Retrait — EA 0x45bb95-0x45bc21 (amis) / 0x45bd3e-0x45be34 (ennemis) : recherche
-    // linéaire, 1re correspondance, sauvegarde immédiate si trouvé (sinon str1981,
-    // EA 0x45ba5b, non modélisé ici : le bool de retour porte cette information).
+    // Removal — EA 0x45bb95-0x45bc21 (friends) / 0x45bd3e-0x45be34 (enemies):
+    // linear search, first match, immediate save if found (otherwise str1981,
+    // EA 0x45ba5b, not modeled here: the returned bool carries this information).
     bool RemoveFriend(const std::string& name);
     bool RemoveFromBlacklist(const std::string& name);
 
     bool IsFriend(const std::string& name) const { return friends.Contains(name); }     // EA 0x45faa0
     bool IsEnemy(const std::string& name)  const { return blacklist.Contains(name); }   // EA 0x45fbe0
-    // AutoPlay_IsNameListed (EA 0x45f820) : sélectionne UNE SEULE des deux listes selon
-    // l'onglet actif d'origine (this+292 == 0 -> amis, ==1 -> ennemis) ; ce comportement
-    // dépendant de l'UI n'est pas reproduit ici (hors périmètre données). IsListed()
-    // ci-dessous est l'union des deux, utile pour la logique d'exclusivité ci-dessus.
+    // AutoPlay_IsNameListed (EA 0x45f820): selects ONLY ONE of the two lists based
+    // on the original active UI tab (this+292 == 0 -> friends, ==1 -> enemies);
+    // this UI-dependent behavior isn't reproduced here (out of scope for data).
+    // IsListed() below is the union of both, useful for the exclusivity logic above.
     bool IsListed(const std::string& name) const { return IsFriend(name) || IsEnemy(name); }
 
     bool LoadAll();

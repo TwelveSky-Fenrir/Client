@@ -1,24 +1,24 @@
-// Net/GameHandlers_Core.cpp — branche les méga-dispatchers reversés DIRECTEMENT
-// depuis IDA (workflow ts2-ida-gameplay-core) sur le réseau. Ces implémentations
-// sont plus fidèles/complètes que les versions simplifiées posées par les modules
-// de domaine (GameHandlers_Misc pour 0x16, GameHandlers_Entity pour 0x11/0x15) :
-// ce module est donc enregistré EN DERNIER dans InstallGameHandlers pour les
-// remplacer (le dispatcher n'a qu'un seul slot par opcode — le dernier gagne).
+// Net/GameHandlers_Core.cpp — wires the mega-dispatchers reverse-engineered DIRECTLY
+// from IDA (ts2-ida-gameplay-core workflow) into the network layer. These
+// implementations are more faithful/complete than the simplified versions set up by
+// the domain modules (GameHandlers_Misc for 0x16, GameHandlers_Entity for 0x11/0x15):
+// this module is therefore registered LAST in InstallGameHandlers to replace them
+// (the dispatcher has only one slot per opcode — the last one wins).
 //
-//   0x11 CharStatDelta       -> game::ApplyCharStatDelta       (32 sous-cas, EA 0x465d90)
-//   0x15 OnCombatResult      -> game::ApplyCombatResult        (bloc 76o,   EA 0x55a380)
-//   0x16 SetGameVar          -> game::ApplySetGameVar          (133 cas,    EA 0x468370)
-//   0x1a ItemActionDispatch  -> game::ApplyItemActionDispatch  (trou comblé, EA 0x46a320)
-//   0x5e WorldEntityDispatch -> game::ApplyWorldEntityDispatch (trou comblé PARTIEL,
-//        sous-opcodes 1..18/~300, EA 0x494870 — cf. Net/WorldEntityDispatch.h pour la carte
-//        et les TODO du reste du mega-switch)
-//   0x27 QuestInteractResult -> complète (state) le handler existant de GameHandlers_Misc
-//        (messages haut-niveau déjà posés là ; on y ajoute ApplyQuestInteractResultState :
-//        écriture inventaire + compteurs de quête + messages de boucle de récompense).
+//   0x11 CharStatDelta       -> game::ApplyCharStatDelta       (32 sub-cases, EA 0x465d90)
+//   0x15 OnCombatResult      -> game::ApplyCombatResult        (76-byte block, EA 0x55a380)
+//   0x16 SetGameVar          -> game::ApplySetGameVar          (133 cases,    EA 0x468370)
+//   0x1a ItemActionDispatch  -> game::ApplyItemActionDispatch  (gap filled, EA 0x46a320)
+//   0x5e WorldEntityDispatch -> game::ApplyWorldEntityDispatch (PARTIALLY filled gap,
+//        sub-opcodes 1..18/~300, EA 0x494870 — see Net/WorldEntityDispatch.h for the map
+//        and the TODOs for the rest of the mega-switch)
+//   0x27 QuestInteractResult -> completes (state) the existing GameHandlers_Misc handler
+//        (high-level messages already set up there; ApplyQuestInteractResultState is added
+//        here: inventory write + quest counters + reward-loop messages).
 //
-// Les payloads bruts correspondent octet à octet aux layouts attendus par ces
-// fonctions (mêmes offsets que les structs RecvPackets équivalentes) : on les
-// leur passe directement, sans repasser par un Parse() intermédiaire.
+// The raw payloads match byte-for-byte the layouts expected by these functions
+// (same offsets as the equivalent RecvPackets structs): they are passed to them
+// directly, without going through an intermediate Parse().
 #include "Net/GameHandlers.h"
 #include "Net/GameVarDispatch.h"
 #include "Net/CharStatDeltaDispatch.h"
@@ -47,9 +47,9 @@ void RegisterCoreOverrideHandlers(NetSystem& sys) {
         game::ApplyWorldEntityDispatch(payload, len);
     });
 
-    // 0x27 QuestInteractResult : réplique les messages haut-niveau de
-    // GameHandlers_Misc (pour ne pas dépendre de l'ordre d'enregistrement) puis
-    // applique l'état réel (inventaire + compteurs + messages de récompense).
+    // 0x27 QuestInteractResult: replicates the high-level messages from
+    // GameHandlers_Misc (to avoid depending on registration order), then
+    // applies the real state (inventory + counters + reward messages).
     OnPacket<QuestInteractResult>(sys, 0x27, [](const QuestInteractResult& p) {
         using namespace game;
         switch (p.resultCode) {

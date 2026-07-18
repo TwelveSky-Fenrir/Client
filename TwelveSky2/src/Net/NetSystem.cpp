@@ -10,9 +10,9 @@ bool NetSystem::Init() {
         TS2_ERR("Net : WSAStartup a echoue.");
         return false;
     }
-    // Installe les VRAIS handlers de jeu (156 opcodes -> état runtime via
-    // EntityManager / ClientRuntime). Les opcodes sans handler enregistré sont
-    // simplement ignorés par le dispatcher (handler vide).
+    // Installs the REAL game handlers (156 opcodes -> runtime state via
+    // EntityManager / ClientRuntime). Opcodes without a registered handler are
+    // simply ignored by the dispatcher (empty handler).
     InstallGameHandlers(*this);
     TS2_LOG("Net : initialise (WSAStartup OK, handlers de jeu armes).");
     return true;
@@ -24,7 +24,7 @@ void NetSystem::Shutdown() {
 }
 
 void NetSystem::OnSocketMessage(WPARAM wParam, LPARAM lParam) {
-    (void)wParam; // = la socket concernée (== nc_.sock)
+    (void)wParam; // = the socket in question (== nc_.sock)
     const std::uint16_t netEvent = WSAGETSELECTEVENT(lParam);
     if (dispatch_.OnSocketEvent(nc_.sock, netEvent) == RecvResult::Closed)
         NetCloseSocket(nc_);

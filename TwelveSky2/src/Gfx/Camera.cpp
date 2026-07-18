@@ -1,10 +1,10 @@
-// Gfx/Camera.cpp — implémentation de la caméra en orbite du moteur GXD.
-// Voir Camera.h pour la table des fonctions reversées.
+// Gfx/Camera.cpp — implementation of the GXD engine's orbiting camera.
+// See Camera.h for the table of reversed functions.
 #include "Gfx/Camera.h"
 
 #include <cmath>
 
-// Liaison des libs Direct3D9 / D3DX9 (DirectX SDK June 2010, x86).
+// Link Direct3D9 / D3DX9 libs (DirectX SDK June 2010, x86).
 #pragma comment(lib, "d3d9.lib")
 #pragma comment(lib, "d3dx9.lib")
 
@@ -12,13 +12,11 @@ namespace ts2::gfx {
 
 Camera::Camera() = default;
 
-// -----------------------------------------------------------------------------
-// Clamp d'élévation.
-// Fidèle à Cam_OrbitPitch (0x69CF90) / Camera_RotateEyePitch (0x403650) :
-//   if ( fabs(newPitchDeg) <= 89.9 ) appliquer, sinon ignorer.
-// Ici on borne (au lieu d'ignorer) : le résultat visuel est identique — l'oeil
-// ne franchit jamais le pôle, ce qui protège LookAtLH du gimbal (up figé (0,1,0)).
-// -----------------------------------------------------------------------------
+// Elevation clamp.
+// Faithful to Cam_OrbitPitch (0x69CF90) / Camera_RotateEyePitch (0x403650):
+//   if ( fabs(newPitchDeg) <= 89.9 ) apply, else ignore.
+// Here we clamp (instead of ignoring): the visual result is identical — the eye
+// never crosses the pole, which protects LookAtLH from gimbal lock (up fixed at (0,1,0)).
 float Camera::ClampPitch(float rad)
 {
     const float limit = kPitchLimitDeg * kDegToRad;
@@ -27,181 +25,163 @@ float Camera::ClampPitch(float rad)
     return rad;
 }
 
-// -----------------------------------------------------------------------------
-// Bride la distance dans [min,max].
-// Cam_ClampDistance (0x69CE00) ne borne que le maximum ; les bornes 25..150 de
-// Camera_Init encadrent aussi le minimum via Camera_MouseWheelZoom. On applique
-// les deux bornes de façon cohérente.
-// -----------------------------------------------------------------------------
+// Clamps the distance to [min,max].
+// Cam_ClampDistance (0x69CE00) only clamps the maximum; the 25..150 bounds of
+// Camera_Init also enforce the minimum via Camera_MouseWheelZoom. We apply
+// both bounds consistently here.
 void Camera::ClampDistanceInternal()
 {
-    if (m_distance < m_minDist) m_distance = m_minDist;
-    if (m_distance > m_maxDist) m_distance = m_maxDist;
+    if (distance_ < minDist_) distance_ = minDist_;
+    if (distance_ > maxDist_) distance_ = maxDist_;
 }
 
 void Camera::SetDistance(float d)
 {
-    m_distance = d;
+    distance_ = d;
     ClampDistanceInternal();
 }
 
 void Camera::SetDistanceLimits(float mn, float mx)
 {
     if (mn > mx) { const float t = mn; mn = mx; mx = t; }
-    m_minDist = mn;
-    m_maxDist = mx;
+    minDist_ = mn;
+    maxDist_ = mx;
     ClampDistanceInternal();
 }
 
-// -----------------------------------------------------------------------------
-// Orbite incrémentale.
-// yaw accumulé librement (Cam_OrbitYaw 0x69CEE0 est purement incrémental) ;
-// pitch clampé (Cam_OrbitPitch 0x69CF90).
-// -----------------------------------------------------------------------------
+// Incremental orbit.
+// yaw accumulates freely (Cam_OrbitYaw 0x69CEE0 is purely incremental);
+// pitch is clamped (Cam_OrbitPitch 0x69CF90).
 void Camera::Orbit(float dYawRad, float dPitchRad)
 {
-    m_yaw  += dYawRad;
-    m_pitch = ClampPitch(m_pitch + dPitchRad);
+    yaw_  += dYawRad;
+    pitch_ = ClampPitch(pitch_ + dPitchRad);
 }
 
-// -----------------------------------------------------------------------------
-// Orbite au drag souris.
-// Camera_MouseDragRotate (0x50AFD0) :
+// Mouse-drag orbit.
+// Camera_MouseDragRotate (0x50AFD0):
 //   yawDeg   = (mx - lastMx) * 0.2   (this+60)
 //   pitchDeg = (my - lastMy) * 0.3   (this+64)
-// puis Cam_OrbitYaw(yawDeg) / Cam_OrbitPitch(pitchDeg) (degrés -> radians en interne).
+// then Cam_OrbitYaw(yawDeg) / Cam_OrbitPitch(pitchDeg) (degrees -> radians internally).
 //
-// BORNES 30deg/80deg DU DRAG (gap INPUT-10, comblé Passe 4 / W9) — REVERT, PAS CLAMP.
-// Séquence d'origine relue :
-//   1. sauvegarde oeil (0x800130/34/38) + cible (0x80013C/40/44)   @0x50B075..0x50B0A2
-//   2. Cam_OrbitYaw puis Cam_OrbitPitch
-//   3. v22 = Math_Dist3D(&oeil, &cible)                            @0x50B10B
-//      si v22 > 0 : v32 = asin(fabs(eye.y - target.y) / v22) * 57.2957763671875  @0x50B12A..0x50B16D
-//      sinon       v32 = 0                                         @0x50B174
-//   4. si (target.y >= eye.y && 30.0 < |v32|) @0x50B26A  OU  (target.y < eye.y && 80.0 < |v32|)
-//      @0x50B1BA  ->  Cam_SetLookAt(sauvegarde) @0x50B29B / @0x50B1EB
-//                     + Camera_SetEyeTarget @0x50B2CF  ET SORTIE.
+// 30deg/80deg DRAG BOUNDS (gap INPUT-10, filled in Passe 4 / W9) — REVERT, NOT CLAMP.
+// Original sequence, re-read:
+//   1. save eye (0x800130/34/38) + target (0x80013C/40/44)          @0x50B075..0x50B0A2
+//   2. Cam_OrbitYaw then Cam_OrbitPitch
+//   3. v22 = Math_Dist3D(&eye, &target)                             @0x50B10B
+//      if v22 > 0 : v32 = asin(fabs(eye.y - target.y) / v22) * 57.2957763671875  @0x50B12A..0x50B16D
+//      else        v32 = 0                                         @0x50B174
+//   4. if (target.y >= eye.y && 30.0 < |v32|) @0x50B26A  OR  (target.y < eye.y && 80.0 < |v32|)
+//      @0x50B1BA  ->  Cam_SetLookAt(saved state) @0x50B29B / @0x50B1EB
+//                     + Camera_SetEyeTarget @0x50B2CF  AND RETURN.
 //
-// ⚠ POINT DE FIDÉLITÉ : l'original restaure l'OEIL COMPLET, donc le YAW est annulé lui
-//   aussi — pas seulement le pitch. On restaure bien les deux (le drag est intégralement
-//   rejeté, il n'est pas « rogné » sur le seul axe fautif).
+// FIDELITY NOTE: the original restores the FULL EYE, so YAW gets reverted too —
+//   not just pitch. We restore both here (the drag is rejected wholesale, it is
+//   not "trimmed" on just the offending axis).
 //
-// Le clamp symétrique 89.9deg de Orbit()/ClampPitch (Cam_OrbitPitch 0x69CF90) reste appliqué
-// EN AMONT par Orbit() : c'est un garde-fou moteur distinct, les deux se cumulent comme dans
-// le binaire (Camera_MouseDragRotate appelle Cam_OrbitPitch, qui clampe déjà, PUIS teste).
+// The symmetric 89.9deg clamp of Orbit()/ClampPitch (Cam_OrbitPitch 0x69CF90) still applies
+// UPSTREAM via Orbit(): it's a separate engine-level guard, and both stack as in the
+// binary (Camera_MouseDragRotate calls Cam_OrbitPitch, which already clamps, THEN tests).
 //
-// HORS PÉRIMÈTRE (contrôleur, cf. Gfx/CameraThirdPersonBridge non possédé) : les gardes de
-// scène de 0x50AFD0 (`g_SceneMgr == 6 && g_SceneSubState == 4`, bouton `a4 == 2`) décident
-// SI le drag a lieu ; elles ne changent pas ce que fait le drag.
-// -----------------------------------------------------------------------------
+// OUT OF SCOPE (controller, cf. Gfx/CameraThirdPersonBridge, not owned here): the scene
+// guards at 0x50AFD0 (`g_SceneMgr == 6 && g_SceneSubState == 4`, button `a4 == 2`) decide
+// WHETHER the drag happens at all; they don't change what the drag does.
 void Camera::OrbitByMouse(int dxPixels, int dyPixels)
 {
-    // 1) Sauvegarde de l'état AVANT orbite (équivalent de l'oeil/cible sauvegardés).
-    const float savedYaw   = m_yaw;
-    const float savedPitch = m_pitch;
+    // 1) Save state BEFORE orbiting (equivalent to the saved eye/target).
+    const float savedYaw   = yaw_;
+    const float savedPitch = pitch_;
 
-    // 2) Application de l'orbite (yaw libre, pitch clampé à 89.9deg par ClampPitch).
+    // 2) Apply the orbit (yaw free, pitch clamped to 89.9deg by ClampPitch).
     const float yawDeg   = static_cast<float>(dxPixels) * kMouseYawSensDeg;
     const float pitchDeg = static_cast<float>(dyPixels) * kMousePitchSensDeg;
     Orbit(yawDeg * kDegToRad, pitchDeg * kDegToRad);
 
-    // 3) Élévation résultante en degrés. Notre pitch EST l'angle que l'original recalcule
-    //    par asin(|eye.y - target.y| / dist) : avec eye = target + dist*(cp*sy, sp, cp*cy),
-    //    on a |eye.y - target.y| / dist = |sin(pitch)|, donc asin(...) = |pitch|.
-    //    On utilise donc directement |pitch| plutôt que de refaire le trajet trigonométrique.
-    const float elevDeg = std::fabs(m_pitch) * kRadToDeg;
+    // 3) Resulting elevation in degrees. Our pitch IS the angle the original recomputes
+    //    via asin(|eye.y - target.y| / dist): with eye = target + dist*(cp*sy, sp, cp*cy),
+    //    we get |eye.y - target.y| / dist = |sin(pitch)|, so asin(...) = |pitch|.
+    //    We therefore use |pitch| directly instead of redoing the trig round trip.
+    const float elevDeg = std::fabs(pitch_) * kRadToDeg;
 
-    // 4) Test des deux bornes asymétriques puis REVERT (yaw ET pitch) + sortie.
-    //    pitch <= 0 <=> target.y >= eye.y (caméra sous la cible) -> borne 30deg  @0x50B26A
-    //    pitch >  0 <=> target.y <  eye.y (caméra au-dessus)     -> borne 80deg  @0x50B1BA
-    const float limitDeg = (m_pitch <= 0.0f) ? kDragPitchLimitBelowDeg
+    // 4) Test the two asymmetric bounds then REVERT (yaw AND pitch) + return.
+    //    pitch <= 0 <=> target.y >= eye.y (camera below target) -> 30deg bound  @0x50B26A
+    //    pitch >  0 <=> target.y <  eye.y (camera above target) -> 80deg bound  @0x50B1BA
+    const float limitDeg = (pitch_ <= 0.0f) ? kDragPitchLimitBelowDeg
                                              : kDragPitchLimitAboveDeg;
     if (limitDeg < elevDeg) {
-        m_yaw   = savedYaw;   // @0x50B29B / @0x50B1EB : restauration puis sortie sèche
-        m_pitch = savedPitch;
+        yaw_   = savedYaw;   // @0x50B29B / @0x50B1EB : restore then hard return
+        pitch_ = savedPitch;
         return;
     }
 }
 
-// -----------------------------------------------------------------------------
-// Dolly (zoom). delta>0 rapproche l'oeil de la cible ; re-clamp aux bornes.
-// -----------------------------------------------------------------------------
+// Dolly (zoom). delta>0 moves the eye closer to the target; re-clamped to bounds.
 void Camera::Zoom(float delta)
 {
-    m_distance -= delta;
+    distance_ -= delta;
     ClampDistanceInternal();
 }
 
-// -----------------------------------------------------------------------------
-// Dolly molette.
-// Camera_MouseWheelZoom (0x50B460) applique un pas proportionnel au delta de
-// molette (this+19 = 0.1) et borne la distance dans [25,150]. WM_MOUSEWHEEL
-// remonte des multiples de WHEEL_DELTA (120) ; un cran avant => zoom avant.
-// -----------------------------------------------------------------------------
+// Wheel dolly.
+// Camera_MouseWheelZoom (0x50B460) applies a step proportional to the wheel
+// delta (this+19 = 0.1) and clamps the distance to [25,150]. WM_MOUSEWHEEL
+// reports multiples of WHEEL_DELTA (120); a forward notch => zoom in.
 void Camera::ZoomByWheel(int wheelDelta)
 {
-    const float steps = static_cast<float>(wheelDelta) / 120.0f; // crans
+    const float steps = static_cast<float>(wheelDelta) / 120.0f; // notches
     Zoom(steps * kWheelZoomStep);
 }
 
-// -----------------------------------------------------------------------------
-// Update : intègre les vélocités d'orbite/zoom sur dt puis resynchronise l'état.
-// Vélocités nulles par défaut => Update est un simple point d'accroche par frame
-// (le contrôleur d'origine, Camera_UpdateFromInput 0x50B7D0, est piloté par
-// événements : chaque touche applique un pas discret, pas d'intégration).
-// -----------------------------------------------------------------------------
+// Update: integrates orbit/zoom velocities over dt then resynchronizes the state.
+// Zero velocities by default => Update is just a per-frame hook point
+// (the original controller, Camera_UpdateFromInput 0x50B7D0, is event-driven:
+// each key press applies a discrete step, no integration).
 void Camera::Update(float dt)
 {
-    if (m_yawVel != 0.0f || m_pitchVel != 0.0f)
-        Orbit(m_yawVel * dt, m_pitchVel * dt);
-    if (m_zoomVel != 0.0f)
-        Zoom(m_zoomVel * dt);
+    if (yawVel_ != 0.0f || pitchVel_ != 0.0f)
+        Orbit(yawVel_ * dt, pitchVel_ * dt);
+    if (zoomVel_ != 0.0f)
+        Zoom(zoomVel_ * dt);
 }
 
-// -----------------------------------------------------------------------------
-// Oeil dérivé de l'état sphérique.
-// Isomorphe aux rotations incrémentales d'origine (Cam_OrbitYaw / Cam_OrbitPitch),
-// avec la convention du moteur (LookAtLH gauche, up=(0,1,0)) :
-//   yaw = PI  => oeil sur -Z, soit oeil = cible + (0,0,-dist), comme l'init
-//   Gfx_InitDevice (oeil (0,0,-10), cible (0,0,0)).
-// -----------------------------------------------------------------------------
+// Eye derived from the spherical state.
+// Isomorphic to the original's incremental rotations (Cam_OrbitYaw / Cam_OrbitPitch),
+// with the engine's convention (left-handed LookAtLH, up=(0,1,0)):
+//   yaw = PI  => eye on -Z, i.e. eye = target + (0,0,-dist), like the init in
+//   Gfx_InitDevice (eye (0,0,-10), target (0,0,0)).
 D3DXVECTOR3 Camera::Eye() const
 {
-    const float cp = std::cos(m_pitch);
-    const float sp = std::sin(m_pitch);
-    const float sy = std::sin(m_yaw);
-    const float cy = std::cos(m_yaw);
+    const float cp = std::cos(pitch_);
+    const float sp = std::sin(pitch_);
+    const float sy = std::sin(yaw_);
+    const float cy = std::cos(yaw_);
     return D3DXVECTOR3(
-        m_target.x + m_distance * cp * sy,
-        m_target.y + m_distance * sp,
-        m_target.z + m_distance * cp * cy);
+        target_.x + distance_ * cp * sy,
+        target_.y + distance_ * sp,
+        target_.z + distance_ * cp * cy);
 }
 
 D3DXVECTOR3 Camera::Forward() const
 {
-    D3DXVECTOR3 fwd = m_target - Eye();
+    D3DXVECTOR3 fwd = target_ - Eye();
     D3DXVec3Normalize(&fwd, &fwd);
     return fwd;
 }
 
-// -----------------------------------------------------------------------------
-// Matrice de vue : LookAtLH(oeil, cible, up) — cf. GXD_BeginScene (0x4046E3),
-// où l'up est figé à (0,1,0). Résultat = g_GxdRenderer+748. ex-VeryOldClient: mViewMatrix.
-// -----------------------------------------------------------------------------
+// View matrix: LookAtLH(eye, target, up) — cf. GXD_BeginScene (0x4046E3),
+// where up is fixed to (0,1,0). Result = g_GxdRenderer+748. ex-VeryOldClient: mViewMatrix.
 void Camera::BuildViewMatrix(D3DXMATRIX& out) const
 {
     const D3DXVECTOR3 eye = Eye();
-    D3DXMatrixLookAtLH(&out, &eye, &m_target, &m_up);
+    D3DXMatrixLookAtLH(&out, &eye, &target_, &up_);
 }
 
-// -----------------------------------------------------------------------------
-// Matrice de projection : PerspectiveFovLH(fovY, aspect, near, far) — cf.
-// Gfx_InitDevice (0x69BFC6), FOV vertical = 45deg converti en radians.
-// Résultat = g_GxdRenderer+648. ex-VeryOldClient: mPerspectiveMatrix.
-// -----------------------------------------------------------------------------
+// Projection matrix: PerspectiveFovLH(fovY, aspect, near, far) — cf.
+// Gfx_InitDevice (0x69BFC6), vertical FOV = 45deg converted to radians.
+// Result = g_GxdRenderer+648. ex-VeryOldClient: mPerspectiveMatrix.
 void Camera::BuildProjMatrix(D3DXMATRIX& out, float aspect) const
 {
-    D3DXMatrixPerspectiveFovLH(&out, m_fovY, aspect, m_nearZ, m_farZ);
+    D3DXMatrixPerspectiveFovLH(&out, fovY_, aspect, nearZ_, farZ_);
 }
 
 } // namespace ts2::gfx

@@ -1,15 +1,15 @@
-// UI/AutoPlayWindow.cpp — implémentation du panneau « AutoPlay ».
-// Voir UI/AutoPlayWindow.h pour le contrat et les réserves sur les données
-// affichées (pas de nom de monstre disponible). Le basculement Start/Stop émet
-// Net_SendOp99 (opcode 0x63) — l'état « actif » (enabled_) est le miroir sérialisé
-// de g_InvDirtyEnable 0x16755AC, PAS un drapeau purement local.
+// UI/AutoPlayWindow.cpp — implementation of the "AutoPlay" panel.
+// See UI/AutoPlayWindow.h for the contract and caveats on displayed data
+// (no monster name available). The Start/Stop toggle emits
+// Net_SendOp99 (opcode 0x63) — the "active" state (enabled_) is the serialized mirror
+// of g_InvDirtyEnable 0x16755AC, NOT a purely local flag.
 #include "UI/AutoPlayWindow.h"
 #include "UI/PanelSkin.h"
-// Émission de la synchro auto-hunt (Net_SendOp99 0x4BD140, opcode 0x63, 125 o) : builder
-// EXISTANT net::Net_SendAutoHuntSync (Net/SendPackets.h:269) + singleton g_NetClient
-// 0x8156A0 restauré par net::GlobalNetClient() (Net/NetClient.h:67-68). Messages système via
+// Auto-hunt sync emission (Net_SendOp99 0x4BD140, opcode 0x63, 125 bytes): EXISTING builder
+// net::Net_SendAutoHuntSync (Net/SendPackets.h:269) + g_NetClient singleton
+// 0x8156A0 restored via net::GlobalNetClient() (Net/NetClient.h:67-68). System messages via
 // game::g_Client.msg (Msg_AppendSystemLine 0x68D9D0) + game::Str (StrTable005_Get 0x4C1D10).
-// NB : Net/SendPackets.h inclut déjà NetClient.h (même ordre winsock que CharacterStatsWindow.cpp).
+// NB: Net/SendPackets.h already includes NetClient.h (same winsock order as CharacterStatsWindow.cpp).
 #include "Net/SendPackets.h"
 #include "Game/ClientRuntime.h"
 
@@ -19,73 +19,67 @@
 namespace ts2::ui {
 
 namespace {
-// Fond de panneau réel (best effort) : gabarit (400,440) du dossier atlas UI
-// G03_GDATA/D01_GIMAGE2D/001 — candidat NON CONFIRMÉ par IDA, choisi par
-// proximité de ratio avec le panneau AutoPlay (240 x ~304 selon
-// RecomputeLayout, ratio le plus proche parmi les gabarits identifiés ; cf.
-// méthodologie détaillée dans UI/PanelSkin.h). Indice distinct de ceux
-// utilisés par OptionsWindow/VendorShopWindow (même cluster). Repli
-// automatique sur kColBg si absent.
+// Real panel background (best effort): (400,440) template from the UI atlas folder
+// G03_GDATA/D01_GIMAGE2D/001 — candidate NOT CONFIRMED by IDA, chosen by
+// aspect-ratio proximity to the AutoPlay panel (240 x ~304 per
+// RecomputeLayout, closest ratio among identified templates; see
+// detailed methodology in UI/PanelSkin.h). Distinct index from the ones
+// used by OptionsWindow/VendorShopWindow (same cluster). Automatic
+// fallback to kColBg if missing.
 const PanelSkin kPanelBg("G03_GDATA\\D01_GIMAGE2D\\001\\001_03641.IMG");
 
-// ---------------------------------------------------------------------------
-// Sérialisation du blob config auto-hunt 44 o émis par Op99 (offset paquet +81 ; orig.
-// région contiguë g_AutoHuntMode 0x16755F4..0x1675620). CHAMP PAR CHAMP aux offsets fil
-// PROUVÉS (RE Net_SendOp99 0x4BD140) : AutoPlayConfig n'est PAS compatible fil (ordre
-// différent — skillAoE à +8 côté struct vs +12 fil ; bool au lieu d'int32 ; 3 champs fil
-// absents) -> memcpy(&config, 44) INTERDIT. Chaque champ = int32 LE (x86 natif).
-// Offset indiqué = position DANS le blob (offset paquet correspondant = +81 + offset).
-// ---------------------------------------------------------------------------
+// Serialization of the 44-byte auto-hunt config blob emitted by Op99 (packet offset +81; original
+// contiguous region g_AutoHuntMode 0x16755F4..0x1675620). FIELD BY FIELD at wire offsets
+// PROVEN (RE Net_SendOp99 0x4BD140): AutoPlayConfig is NOT wire-compatible (different
+// order — skillAoE at +8 in struct vs +12 on wire; bool instead of int32; 3 wire fields
+// missing) -> memcpy(&config, 44) FORBIDDEN. Each field = int32 LE (native x86).
+// Offset shown = position WITHIN the blob (corresponding packet offset = +81 + offset).
 void BuildAutoHunt44(const game::AutoPlayConfig& c, uint8_t out[44]) {
     int32_t w[11] = {0};
     w[0]  = c.mode;                                // +0  (pkt+81)  g_AutoHuntMode            0x16755F4
     w[1]  = static_cast<int32_t>(c.skillSingle);   // +4  (pkt+85)  g_AutoHuntSkillSingle     0x16755F8
-    w[2]  = 0; // +8  (pkt+89)  g_AutoHuntSkillSingleOn 0x16755FC — absent d'AutoPlayConfig
+    w[2]  = 0; // +8  (pkt+89)  g_AutoHuntSkillSingleOn 0x16755FC — absent from AutoPlayConfig
     w[3]  = static_cast<int32_t>(c.skillAoE);      // +12 (pkt+93)  g_AutoHuntSkillAoE        0x1675600
-    w[4]  = 0; // +16 (pkt+97)  g_AutoHuntSkillAoEOn   0x1675604 — absent d'AutoPlayConfig
+    w[4]  = 0; // +16 (pkt+97)  g_AutoHuntSkillAoEOn   0x1675604 — absent from AutoPlayConfig
     w[5]  = c.aoeThreshold;                        // +20 (pkt+101) g_AutoHuntAoEThreshold    0x1675608
     w[6]  = static_cast<int32_t>(c.pkFactionMask); // +24 (pkt+105) g_AutoHuntPkFactionMask   0x167560C
     w[7]  = c.warpOnStuck ? 1 : 0;                 // +28 (pkt+109) g_AutoHuntBagFullReturn   0x1675610
-    w[8]  = 0; // +32 (pkt+113) g_AutoHuntSettingsDirty 0x1675614 — absent d'AutoPlayConfig
+    w[8]  = 0; // +32 (pkt+113) g_AutoHuntSettingsDirty 0x1675614 — absent from AutoPlayConfig
     w[9]  = c.useReturnScroll ? 1 : 0;             // +36 (pkt+117) g_AutoHuntUseReturnScroll 0x1675618
     w[10] = c.useTownItem ? 1 : 0;                 // +40 (pkt+121) g_AutoHuntUseTownItem     0x167561C
-    // TODO [0x16755FC / 0x1675604 / 0x1675614] : skillSingleOn / skillAoEOn / settingsDirty
-    //   non modélisés dans AutoPlayConfig (Game/AutoPlaySystem.h, non possédé par cette vague)
-    //   -> émis à 0 (défaut fidèle « non configuré », PAS une invention). À modéliser côté
-    //   AutoPlaySystem pour une fidélité fil complète.
+    // TODO [0x16755FC / 0x1675604 / 0x1675614]: skillSingleOn / skillAoEOn / settingsDirty
+    //   not modeled in AutoPlayConfig (Game/AutoPlaySystem.h, not owned by this wave)
+    //   -> emitted as 0 (faithful "not configured" default, NOT a fabrication). Needs modeling on
+    //   the AutoPlaySystem side for full wire fidelity.
     std::memcpy(out, w, 44);
 }
 
-// ---------------------------------------------------------------------------
-// EmitAutoHuntSync — émet Net_SendOp99 (opcode 0x63, 125 o) via le g_NetClient global.
-// Le binaire émet INCONDITIONNELLEMENT depuis &g_AutoPlayMgr (tampon global, PAS un
-// manager autoplay) sans recevoir la socket ; côté C++ on lit le singleton restauré
-// net::GlobalNetClient() (0x8156A0).
-// ---------------------------------------------------------------------------
+// EmitAutoHuntSync — emits Net_SendOp99 (opcode 0x63, 125 bytes) via the global g_NetClient.
+// The binary emits UNCONDITIONALLY from &g_AutoPlayMgr (global buffer, NOT an
+// autoplay manager) without receiving the socket; on the C++ side we read the restored
+// singleton net::GlobalNetClient() (0x8156A0).
 void EmitAutoHuntSync(game::AutoPlaySystem& sys, net::NetClient* nc, int8_t stateFlag) {
-    if (!nc) return; // hors session : pas d'envoi. En scène 6 nc est non nul (PAS de code mort).
+    if (!nc) return; // out of session: no send. In scene 6 nc is non-null (NOT dead code).
 
-    // Blob apparence/quick-skills 68 o : byte_16755B0 (u32) + g_AutoHuntQuickSkills 0x16755B4
-    // (8×{id:u32, on:u32}). AUCUN modèle C++ : écrit par UI_QuickSlot_AssignHotkey 0x5BDF00,
-    // front NON possédé par cette vague. Hébergé dans le blob long-traîne partagé de
-    // ClientRuntime (clé = adresse d'origine 0x16755B0) — zéros tant que le front quickslot
-    // ne l'alimente pas = état « aucun quick-skill assigné » (défaut fidèle, PAS une invention).
-    // TODO [0x16755B4 / UI_QuickSlot_AssignHotkey 0x5BDF00] : brancher le vrai contenu 68 o
-    //   (débloque aussi les TODO(net/state) de Game/MapWarp.cpp:179/205).
+    // 68-byte appearance/quick-skills blob: byte_16755B0 (u32) + g_AutoHuntQuickSkills 0x16755B4
+    // (8×{id:u32, on:u32}). NO C++ model: written by UI_QuickSlot_AssignHotkey 0x5BDF00,
+    // front-end NOT owned by this wave. Hosted in ClientRuntime's shared long-tail blob
+    // (key = original address 0x16755B0) — zeros until the quickslot front-end
+    // feeds it = faithful "no quick-skill assigned" default state (NOT a fabrication).
+    // TODO [0x16755B4 / UI_QuickSlot_AssignHotkey 0x5BDF00]: wire up the real 68-byte content
+    //   (also unblocks the TODO(net/state) in Game/MapWarp.cpp:179/205).
     const void* appearance68 = game::g_Client.Blob(0x16755B0, 68).data();
 
     uint8_t autoHunt44[44];
     BuildAutoHunt44(sys.config, autoHunt44);
 
-    // Net_SendAutoHuntSync = Net_SendOp99 0x4BD140. stateFlag émis sur 4 octets LE
-    // (WriteChar4LE, piège thiscall prouvé 0x4BD1DF -> le serveur lit un int32).
+    // Net_SendAutoHuntSync = Net_SendOp99 0x4BD140. stateFlag emitted as 4 bytes LE
+    // (WriteChar4LE, proven thiscall gotcha 0x4BD1DF -> the server reads an int32).
     net::Net_SendAutoHuntSync(*nc, stateFlag, appearance68, autoHunt44);
 }
 } // namespace
 
-// ============================================================================
-// Géométrie
-// ============================================================================
+// Geometry
 void AutoPlayWindow::RecomputeLayout(int screenW, int screenH) {
     const int listH = kRowCount * kRowH;
     const int h = kPadY + kTitleH + kCheckH + 6 + listH + 8 + kButtonH + kPadY;
@@ -94,7 +88,7 @@ void AutoPlayWindow::RecomputeLayout(int screenW, int screenH) {
     const int py = (screenH - h) / 2;
 
     panel_ = { px, py, w, h };
-    // Dialog::x_/y_ : recentré chaque frame, comme les autres dialogues modaux.
+    // Dialog::x_/y_: recentered every frame, like the other modal dialogs.
     x_ = px;
     y_ = py;
 
@@ -103,7 +97,7 @@ void AutoPlayWindow::RecomputeLayout(int screenW, int screenH) {
 
     const int cy = py + kTitleH;
     checkbox_ = { px + kPadX, cy + (kCheckH - kCheckSize) / 2, kCheckSize, kCheckSize };
-    checkboxLabel_ = { px + kPadX, cy, w - 2 * kPadX, kCheckH }; // case + libellé cliquables
+    checkboxLabel_ = { px + kPadX, cy, w - 2 * kPadX, kCheckH }; // checkbox + label, clickable
 
     const int listY = cy + kCheckH + 6;
     for (int i = 0; i < kRowCount; ++i)
@@ -113,9 +107,9 @@ void AutoPlayWindow::RecomputeLayout(int screenW, int screenH) {
     clearBtn_ = { px + kPadX, btnY, w - 2 * kPadX, kButtonH };
 }
 
-// Dérive l'état d'affichage d'un slot à partir de AutoPlaySystem::Targets() +
-// (si le monstre référencé est encore vivant côté g_World.monsters) ses PV.
-// AUCUN nom : MONSTER_INFO n'a pas d'accesseur typé dans Game/GameDatabase.h.
+// Derives a slot's display state from AutoPlaySystem::Targets() +
+// (if the referenced monster is still alive in g_World.monsters) its HP.
+// NO name: MONSTER_INFO has no typed accessor in Game/GameDatabase.h.
 AutoPlayWindow::RowView AutoPlayWindow::BuildRow(int slotIndex) const {
     RowView r;
     if (!system_) return r;
@@ -140,23 +134,21 @@ AutoPlayWindow::RowView AutoPlayWindow::BuildRow(int slotIndex) const {
     return r;
 }
 
-// ============================================================================
-// Événements souris / clavier
-// ============================================================================
+// Mouse / keyboard events
 bool AutoPlayWindow::OnMouseDown(int x, int y) {
     if (!bOpen_) return false;
     if (!panel_.Contains(x, y)) return false;
 
-    // Armement des latches au clic-ENFONCÉ uniquement (le binaire pose *this/*(this+1) en
-    // mouse-down, cf. AutoPlay_OnMouseUpMain 0x45A9BE/0x45AB69) ; l'ACTION (bascule Start/Stop
-    // + émission Op99) est DIFFÉRÉE au relâchement (OnClick). PAS d'effet optimiste ici :
-    // l'ancien `enabled_ = !enabled_` en mouse-down était le défaut « effet local que le
-    // binaire ne fait pas » (même famille que le défaut EnchantWindow de la passe 3) -> retiré.
+    // Latches armed on mouse-DOWN only (the binary sets *this/*(this+1) on
+    // mouse-down, cf. AutoPlay_OnMouseUpMain 0x45A9BE/0x45AB69); the ACTION (Start/Stop toggle
+    // + Op99 emission) is DEFERRED to mouse-up (OnClick). NO optimistic effect here:
+    // the old `enabled_ = !enabled_` on mouse-down was the "local effect the
+    // binary doesn't do" bug (same family as the pass-3 EnchantWindow bug) -> removed.
     closeArmed_ = closeBtn_.Contains(x, y);
     clearArmed_ = clearBtn_.Contains(x, y);
     checkArmed_ = checkboxLabel_.Contains(x, y);
 
-    return true; // clic dans le panneau : toujours consommé (règle premier-consommateur)
+    return true; // click inside the panel: always consumed (first-consumer rule)
 }
 
 bool AutoPlayWindow::OnClick(int x, int y) {
@@ -173,15 +165,15 @@ bool AutoPlayWindow::OnClick(int x, int y) {
     if (clearArmed_) {
         clearArmed_ = false;
         if (clearBtn_.Contains(x, y) && system_) {
-            system_->ResetTargetList(); // AutoPlay_ResetTargetList 0x458AB0 — purement local
+            system_->ResetTargetList(); // AutoPlay_ResetTargetList 0x458AB0 — purely local
             return true;
         }
     }
     if (checkArmed_) {
         checkArmed_ = false;
         if (checkboxLabel_.Contains(x, y)) {
-            // Bascule Start/Stop émise au RELÂCHEMENT, fidèle à AutoPlay_OnMouseUpMain
-            // 0x45A980 (le binaire bascule + émet en mouse-up, pas en mouse-down).
+            // Start/Stop toggle emitted on RELEASE, faithful to AutoPlay_OnMouseUpMain
+            // 0x45A980 (the binary toggles + emits on mouse-up, not mouse-down).
             ToggleAutoHunt();
             return true;
         }
@@ -189,56 +181,54 @@ bool AutoPlayWindow::OnClick(int x, int y) {
     return inPanel;
 }
 
-// ============================================================================
-// Bascule Start/Stop de l'auto-hunt — émission Net_SendOp99 (opcode 0x63).
-// Miroir fidèle de AutoPlay_OnMouseUpMain 0x45A980 (branche START unk_9647F8 /
-// branche STOP unk_964920). La case à cocher unique de ce portage joue les deux
-// rôles : START si l'auto-hunt est arrêté (enabled_ == false), STOP sinon.
-// ============================================================================
+// Start/Stop toggle for auto-hunt — emits Net_SendOp99 (opcode 0x63).
+// Faithful mirror of AutoPlay_OnMouseUpMain 0x45A980 (START branch unk_9647F8 /
+// STOP branch unk_964920). This port's single checkbox plays both
+// roles: START if auto-hunt is stopped (enabled_ == false), STOP otherwise.
 void AutoPlayWindow::ToggleAutoHunt() {
-    if (!system_) return; // le binaire a toujours une machine d'état ; sans elle, rien à piloter
+    if (!system_) return; // the binary always has a state machine; without it, nothing to drive
 
-    net::NetClient* nc = net::GlobalNetClient(); // &g_NetClient 0x8156A0 (non nul en scène 6)
+    net::NetClient* nc = net::GlobalNetClient(); // &g_NetClient 0x8156A0 (non-null in scene 6)
 
-    // enabled_ = miroir de g_InvDirtyEnable 0x16755AC (drapeau maître 0/1). La garde START du
-    // binaire est `if (!g_InvDirtyEnable)` 0x45AA7D : on ne (re)démarre que si arrêté.
+    // enabled_ = mirror of g_InvDirtyEnable 0x16755AC (master 0/1 flag). The binary's START
+    // guard is `if (!g_InvDirtyEnable)` 0x45AA7D: only (re)starts if stopped.
     if (!enabled_) {
-        // ===== START (bouton "Start" unk_9647F8, 0x45A9BE) =====
-        // Garde a (0x45AA01) : dword_1673248 <= 0 || !AutoPlay_HasPotionsSet() -> refus 1790.
-        //   dword_1673248 = externalState.classItemId (« cœur de classe » équipé).
-        //   AutoPlay_HasPotionsSet 0x45E700 : NON modélisé dans AutoPlaySystem -> garde
-        //   partielle (seule la moitié classItemId est reproduite).
-        // NB : classItemId est un uint32_t côté C++ ; le binaire compare dword_1673248 en
-        // SIGNÉ (`<= 0`), d'où le cast int32_t (reproduit le compare signé, évite aussi le
-        // warning « unsigned <= 0 toujours == 0 »).
+        // ===== START ("Start" button unk_9647F8, 0x45A9BE) =====
+        // Guard a (0x45AA01): dword_1673248 <= 0 || !AutoPlay_HasPotionsSet() -> refusal 1790.
+        //   dword_1673248 = externalState.classItemId (equipped "class core").
+        //   AutoPlay_HasPotionsSet 0x45E700: NOT modeled in AutoPlaySystem -> partial
+        //   guard (only the classItemId half is reproduced).
+        // NB: classItemId is a uint32_t on the C++ side; the binary compares dword_1673248 as
+        // SIGNED (`<= 0`), hence the int32_t cast (reproduces the signed compare, also avoids
+        // the "unsigned <= 0 always == 0" warning).
         if (static_cast<int32_t>(system_->externalState.classItemId) <= 0
-            /* TODO [0x45E700] : && AutoPlay_HasPotionsSet() — état potions non modélisé */) {
+            /* TODO [0x45E700]: && AutoPlay_HasPotionsSet() — potion state not modeled */) {
             game::g_Client.msg.System(game::Str(1790)); // Msg_AppendSystemLine 1790 (0x45A9E4)
-            return;                                       // 0x45A9F9 : AUCUNE émission
+            return;                                       // 0x45A9F9: NO emission
         }
-        // Garde b (0x45AA38) : !AutoPlay_HasRequiredItems() -> refus 1792.
+        // Guard b (0x45AA38): !AutoPlay_HasRequiredItems() -> refusal 1792.
         if (!system_->HasRequiredItems()) {              // AutoPlay_HasRequiredItems 0x45CC10
             game::g_Client.msg.System(game::Str(1792)); // Msg_AppendSystemLine 1792 (0x45AA52)
-            return;                                       // 0x45AA67 : AUCUNE émission
+            return;                                       // 0x45AA67: NO emission
         }
-        // 0x45AA6C : dword_1675B20 = -1 (reset du slot de parchemin auto en vol). État PRIVÉ
-        // d'AutoPlaySystem (pendingItemUseSlot_) sans setter public exposé.
-        // TODO [0x1675B20] : reset non reproductible sans API sur AutoPlaySystem (non possédé).
+        // 0x45AA6C: dword_1675B20 = -1 (resets the in-flight auto-scroll slot). PRIVATE state
+        // of AutoPlaySystem (pendingItemUseSlot_) with no exposed public setter.
+        // TODO [0x1675B20]: reset not reproducible without an AutoPlaySystem API (not owned).
 
-        // Garde c (0x45AA8C) : !AutoPlay_IsNpcTargetable(g_SelfMorphNpcId) -> refus 2418.
-        //   AutoPlay_IsNpcTargetable 0x45FD90 / g_SelfMorphNpcId 0x1675A98 : NON modélisés.
-        // TODO [0x45FD90 / 0x1675A98] : garde IsNpcTargetable non reproduite (état non modélisé)
-        //   -> on émet directement (le binaire émet aussi lorsque la cible morph est valide).
+        // Guard c (0x45AA8C): !AutoPlay_IsNpcTargetable(g_SelfMorphNpcId) -> refusal 2418.
+        //   AutoPlay_IsNpcTargetable 0x45FD90 / g_SelfMorphNpcId 0x1675A98: NOT modeled.
+        // TODO [0x45FD90 / 0x1675A98]: IsNpcTargetable guard not reproduced (state not modeled)
+        //   -> emits directly (the binary also emits when the morph target is valid).
 
         enabled_ = true;                               // g_InvDirtyEnable = 1 (0x45AAC0)
-        system_->externalState.invDirtyEnable = true;  // write-through vers le miroir gameplay
+        system_->externalState.invDirtyEnable = true;  // write-through to the gameplay mirror
         EmitAutoHuntSync(*system_, nc, 1);             // Net_SendOp99(1) (0x45AAD1)
-        // 0x45AADB..0x45AB1F : cQuickSlotWin_Close / this[20]=0 / unfocus editbox / this[71]=0
-        //   = état d'autres fenêtres (quickslots / editbox), hors de ce widget.
-        // TODO [cQuickSlotWin_Close 0x65F5A0] : fermeture des quickslots non reproduite ici.
+        // 0x45AADB..0x45AB1F: cQuickSlotWin_Close / this[20]=0 / unfocus editbox / this[71]=0
+        //   = state of other windows (quickslots / editbox), outside this widget.
+        // TODO [cQuickSlotWin_Close 0x65F5A0]: quickslot closing not reproduced here.
         game::g_Client.msg.System(game::Str(1907));    // Msg_AppendSystemLine 1907 (0x45AB0C)
     } else {
-        // ===== STOP (bouton "Stop" unk_964920, 0x45AB69) : émission INCONDITIONNELLE =====
+        // ===== STOP ("Stop" button unk_964920, 0x45AB69): UNCONDITIONAL emission =====
         enabled_ = false;                              // g_InvDirtyEnable = 0 (0x45AB72)
         system_->externalState.invDirtyEnable = false; // write-through
         EmitAutoHuntSync(*system_, nc, 0);             // Net_SendOp99(0) (0x45AB88)
@@ -256,14 +246,12 @@ bool AutoPlayWindow::OnKey(int vk) {
     return false;
 }
 
-// ============================================================================
-// Rendu
-// ============================================================================
+// Rendering
 void AutoPlayWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
-    // Recalcule la géométrie aux DEUX phases (résultat identique dans la même
-    // frame) : nécessaire pour que la phase Text s'aligne sur les rects tout
-    // juste remplis en phase Panels, et pour que le hit-test différé (routé
-    // entre deux frames) reste juste après un redimensionnement écran.
+    // Recomputes geometry in BOTH phases (identical result within the same
+    // frame): needed so the Text phase aligns with the rects just
+    // filled in the Panels phase, and so the deferred hit-test (routed
+    // across two frames) stays accurate right after a screen resize.
     RecomputeLayout(ctx.screenW, ctx.screenH);
     if (!bOpen_) return;
 
@@ -271,18 +259,18 @@ void AutoPlayWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         kPanelBg.Draw(ctx, panel_.x, panel_.y, panel_.w, panel_.h, kColBg);
         ctx.DrawFrame(panel_.x, panel_.y, panel_.w, panel_.h, kColBorder, 1);
 
-        // Bouton fermeture (croix), survol en surbrillance.
+        // Close button (X), highlighted on hover.
         const bool closeHover = closeBtn_.Contains(cursorX, cursorY);
         ctx.FillRect(closeBtn_.x, closeBtn_.y, closeBtn_.w, closeBtn_.h,
                      closeHover ? kColHover : kColButtonBg);
         ctx.DrawFrame(closeBtn_.x, closeBtn_.y, closeBtn_.w, closeBtn_.h, kColBorder, 1);
 
-        // Case à cocher « AutoPlay actif ».
+        // "AutoPlay active" checkbox.
         ctx.FillRect(checkbox_.x, checkbox_.y, checkbox_.w, checkbox_.h,
                      enabled_ ? kColSuccess : kColButtonBg);
         ctx.DrawFrame(checkbox_.x, checkbox_.y, checkbox_.w, checkbox_.h, kColBorder, 1);
 
-        // Bouton « Vider la liste ».
+        // "Clear list" button.
         const bool clearHover = clearBtn_.Contains(cursorX, cursorY);
         ctx.FillRect(clearBtn_.x, clearBtn_.y, clearBtn_.w, clearBtn_.h,
                      clearHover ? kColHover : kColButtonBg);
@@ -290,7 +278,7 @@ void AutoPlayWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         return;
     }
 
-    // --- Phase texte ---
+    // --- Text phase ---
     const char* title = "AutoPlay";
     ctx.Text(title, panel_.x + (panel_.w - ctx.MeasureText(title)) / 2, panel_.y + 4, kColTitle);
     ctx.Text("X", closeBtn_.x + (closeBtn_.w - ctx.MeasureText("X")) / 2, closeBtn_.y + 2, kColText);

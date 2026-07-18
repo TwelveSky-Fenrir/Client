@@ -1,14 +1,13 @@
-// UI/QuestTrackerWindow.cpp — implémentation du panneau de suivi de quête.
-// Voir UI/QuestTrackerWindow.h pour le contrat et les réserves sur les
-// données affichées (deux sources de données quête distinctes, cf.
-// Game/QuestSystem.h).
+// UI/QuestTrackerWindow.cpp — implementation of the quest-tracking panel.
+// See UI/QuestTrackerWindow.h for the contract and reservations on the
+// displayed data (two distinct quest data sources, cf. Game/QuestSystem.h).
 //
-// RÉSEAU : ce fichier n'inclut ni Net/SendPackets.h ni Net/NetClient.h, et n'appelle
-// AUCUN net::Net_Send* — c'est VOULU et PROUVÉ, pas un oubli. Les deux fonctions
-// d'origine du panneau (Quest_DrawTracker 0x510FC0 = rendu pur ; Quest_UpdateMarkerTimer
-// 0x510D90 = état/son uniquement) n'émettent rien : cf. la démonstration détaillée en
-// tête de UI/QuestTrackerWindow.h. La progression de quête arrive par les handlers Pkt_*
-// (entrants), jamais par une action de ce panneau.
+// NETWORK: this file includes neither Net/SendPackets.h nor Net/NetClient.h, and
+// calls NO net::Net_Send* — that is INTENTIONAL and PROVEN, not an oversight. The
+// panel's two original functions (Quest_DrawTracker 0x510FC0 = pure rendering;
+// Quest_UpdateMarkerTimer 0x510D90 = state/sound only) emit nothing: see the detailed
+// proof at the top of UI/QuestTrackerWindow.h. Quest progress arrives via inbound
+// Pkt_* handlers, never via an action from this panel.
 #include "UI/QuestTrackerWindow.h"
 #include "UI/PanelSkin.h"
 #include "Game/StringTables.h" // game::g_Strings.zoneNames (003.DAT -> mZONENAME)
@@ -19,17 +18,16 @@
 namespace ts2::ui {
 
 namespace {
-// Fond de panneau réel (best effort) : gabarit étroit/haut (252,440), le PLUS
-// répété (63 occurrences non consécutives) du dossier atlas UI
-// G03_GDATA/D01_GIMAGE2D/001 — candidat NON CONFIRMÉ par IDA, retenu par
-// défaut pour ce panneau HUD étroit (260 px de large, hauteur dynamique selon
-// les lignes affichées ; cf. méthodologie détaillée dans UI/PanelSkin.h).
-// Indice distinct de celui utilisé par PartyWindow. Repli automatique sur
-// kColBg si absent.
+// Real panel background (best effort): narrow/tall (252,440) template, the MOST
+// repeated (63 non-consecutive occurrences) in the UI atlas folder
+// G03_GDATA/D01_GIMAGE2D/001 — NOT CONFIRMED by IDA, kept as the default for
+// this narrow HUD panel (260 px wide, dynamic height based on displayed lines;
+// see the methodology in UI/PanelSkin.h). Distinct index from the one used by
+// PartyWindow. Falls back to kColBg automatically if missing.
 const PanelSkin kPanelBg("G03_GDATA\\D01_GIMAGE2D\\001\\001_00516.IMG");
 
-// Formatage sans exceptions ni allocation dynamique excessive (snprintf ->
-// std::string). `fmt` : format C classique.
+// Formatting without exceptions or excessive dynamic allocation (snprintf ->
+// std::string). `fmt`: classic C format string.
 std::string Fmt(const char* fmt, ...) {
     char buf[256];
     va_list ap;
@@ -43,35 +41,35 @@ std::string Fmt(const char* fmt, ...) {
 QuestTrackerWindow::Layout QuestTrackerWindow::BuildLayout(int screenW, int screenH) const {
     Layout L;
 
-    // Garde de visibilité : CurrentQuestStepRecord() (mirroir g_pCurQuestStepRecord /
-    // dword_18231B4). nullptr => aucune quête active => panneau entièrement masqué.
+    // Visibility guard: CurrentQuestStepRecord() (mirrors g_pCurQuestStepRecord /
+    // dword_18231B4). nullptr => no active quest => panel fully hidden.
     const game::QuestStepRecord* npc = game::CurrentQuestStepRecord();
-    if (!npc) return L; // L.visible reste false
+    if (!npc) return L; // L.visible stays false
 
     L.visible = true;
 
-    // --- Identifiant de l'étape : nom de zone RÉEL si 003.DAT (mZONENAME) le connaît
-    //     pour progress_.zoneId (StrTable003_Get 0x4C1AD0, index 1-based, cf.
-    //     Game/StringTables.h) ; repli sur l'id numérique si la table est vide/non
-    //     chargée ou si l'entrée n'existe pas (Get() renvoie "" hors bornes). Aucun
-    //     nom de quête disponible (cf. bandeau .h : QuestTbl (A) et mQUEST (B) sont
-    //     deux sources sans jointure connue) -> npcQuestId reste numérique.
+    // --- Step identifier: REAL zone name if 003.DAT (mZONENAME) knows it for
+    //     progress_.zoneId (StrTable003_Get 0x4C1AD0, 1-based index, cf.
+    //     Game/StringTables.h); falls back to the numeric id if the table is empty/
+    //     not loaded or the entry doesn't exist (Get() returns "" out of bounds). No
+    //     quest name available (cf. .h banner: QuestTbl (A) and mQUEST (B) are two
+    //     sources with no known join) -> npcQuestId stays numeric.
     const char* zoneName = game::g_Strings.zoneNames.Get(progress_.zoneId);
     if (zoneName && zoneName[0] != '\0')
         L.line1 = Fmt("%s - Quete NPC #%d", zoneName, progress_.npcQuestId);
     else
         L.line1 = Fmt("Zone #%d - Quete NPC #%d", progress_.zoneId, progress_.npcQuestId);
 
-    // --- Catégorie / type d'interaction (+72 du record, valeurs 1..6 non mappées
-    //     à un libellé textuel connu dans le désassemblage disponible) ---
+    // --- Category / interaction type (+72 of the record, values 1..6 not mapped
+    //     to any known text label in the available disassembly) ---
     L.line2 = Fmt("Categorie : %u", npc->category);
 
-    // --- Objectif courant : cible + progression/requis (Quest_CheckObjectiveState
-    //     compare ces mêmes champs en interne) ---
+    // --- Current objective: target + progress/required (Quest_CheckObjectiveState
+    //     compares these same fields internally) ---
     L.line3 = Fmt("Objectif : cible #%u (%d/%u)",
                   npc->targetId, progress_.objectiveProgress, npc->required);
 
-    // --- État (Quest_CheckObjectiveState 0x50FF10 / Quest_IsObjectiveComplete 0x5103F0) ---
+    // --- State (Quest_CheckObjectiveState 0x50FF10 / Quest_IsObjectiveComplete 0x5103F0) ---
     const bool complete = game::Quest_IsObjectiveComplete(progress_);
     const int  code     = game::Quest_CheckObjectiveState(progress_);
     if (complete) {
@@ -85,14 +83,14 @@ QuestTrackerWindow::Layout QuestTrackerWindow::BuildLayout(int screenW, int scre
         L.line4Color = kColPending;
     }
 
-    // --- Récompense potentielle (Quest_GetRewardItemId 0x510A10) ---
-    // Quest_GetRewardItemId/Quest_IsRewardItemActive résolvent via
-    // LookupQuestStep(zoneId, npcQuestId) (résolveur QuestStepLookup injectable,
-    // cf. QuestSystem.h/.cpp) : tant qu'aucun chargeur NPC réel n'est branché
-    // (TODO PRECIS du header), cette résolution renvoie 0/false même si
-    // CurrentQuestStepRecord() est peuplé par ailleurs. On retente donc en lisant
-    // directement le premier slot de récompense de type==6 (id d'item) du record
-    // déjà en main, pour un affichage robuste sans dépendre du branchement futur.
+    // --- Potential reward (Quest_GetRewardItemId 0x510A10) ---
+    // Quest_GetRewardItemId/Quest_IsRewardItemActive resolve via
+    // LookupQuestStep(zoneId, npcQuestId) (injectable QuestStepLookup resolver,
+    // cf. QuestSystem.h/.cpp): until a real NPC loader is wired in (header's
+    // PRECISE TODO), this resolution returns 0/false even if
+    // CurrentQuestStepRecord() is populated otherwise. So we retry by reading
+    // directly the first type==6 reward slot (item id) from the record already
+    // in hand, for a robust display that doesn't depend on the future wiring.
     int rewardItemId = game::Quest_GetRewardItemId(progress_);
     if (rewardItemId == 0) {
         for (const auto& r : npc->reward) {
@@ -113,7 +111,7 @@ QuestTrackerWindow::Layout QuestTrackerWindow::BuildLayout(int screenW, int scre
         L.line5 = "Recompense : aucune";
     }
 
-    // --- Géométrie (ancré haut-droite, indépendant de la résolution écran) ---
+    // --- Geometry (anchored top-right, independent of screen resolution) ---
     L.w = kPanelW;
     L.h = kPadY + kTitleH + 4 + 5 * kLineH + kPadY;
     L.x = screenW - kPanelW - kMarginX;
@@ -124,9 +122,9 @@ QuestTrackerWindow::Layout QuestTrackerWindow::BuildLayout(int screenW, int scre
 }
 
 bool QuestTrackerWindow::OnMouseDown(int x, int y) {
-    // Consomme uniquement si le clic tombe SUR le panneau actuellement dessiné
-    // (évite le clic-traversant vers le monde 3D sous ce HUD). Pas de bouton :
-    // aucune autre action.
+    // Only consumes if the click lands ON the currently drawn panel
+    // (avoids click-through to the 3D world under this HUD). No button:
+    // no other action.
     if (!lastVisible_) return false;
     return PointInRect(x, y, lastX_, lastY_, lastW_, lastH_);
 }
@@ -141,16 +139,16 @@ void QuestTrackerWindow::Render(const UiContext& ctx, int cursorX, int cursorY) 
 
     const Layout L = BuildLayout(ctx.screenW, ctx.screenH);
 
-    // bOpen_ / x_ / y_ (champs protégés de Dialog) reflètent l'état auto-masqué :
-    // recalculés à CHAQUE Render (les deux phases donnent le même résultat dans
-    // la même frame), donc un Close() externe éventuel n'a pas d'effet durable —
-    // conforme à « toujours visible si une quête est active ».
+    // bOpen_ / x_ / y_ (Dialog's protected fields) reflect the auto-hidden state:
+    // recalculated on EVERY Render (both phases give the same result within the
+    // same frame), so an external Close() call has no lasting effect — consistent
+    // with "always visible while a quest is active".
     bOpen_ = L.visible;
     x_ = L.x;
     y_ = L.y;
 
-    // Mémorise la géométrie effectivement dessinée pour le hit-test (routé entre
-    // deux frames), même motif que MsgBoxDialog::lastScreenW_/lastScreenH_.
+    // Stores the geometry actually drawn for hit-testing (routed across
+    // two frames), same pattern as MsgBoxDialog::lastScreenW_/lastScreenH_.
     lastVisible_ = L.visible;
     lastX_ = L.x; lastY_ = L.y; lastW_ = L.w; lastH_ = L.h;
 
@@ -162,7 +160,7 @@ void QuestTrackerWindow::Render(const UiContext& ctx, int cursorX, int cursorY) 
         return;
     }
 
-    // Phase texte.
+    // Text phase.
     int ty = L.y + kPadY;
     const char* title = "Quete en cours";
     ctx.Text(title, L.x + (L.w - ctx.MeasureText(title)) / 2, ty, kColTitle);

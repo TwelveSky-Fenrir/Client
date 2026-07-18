@@ -1,65 +1,64 @@
-// Game/NpcInteraction.h — Système d'interaction PNJ de TwelveSky2 (ts2::game).
+// Game/NpcInteraction.h — NPC interaction system of TwelveSky2 (ts2::game).
 //
-// Réécriture C++ fidèle (traduction réelle du désassemblage, pas d'invention) du petit
-// cluster "Npc_*" qui gère : la sélection du PNJ interactible le plus proche, l'auto-
-// interaction (portée/cooldown), et la classification PNJ (spécial / cible de quête /
-// couleur de plaque de nom). Alimente les hooks NPC actuellement stubés de
-// Game/AutoPlaySystem.h (host.InteractNpc -> Npc_Interact, host.ShouldRefreshNpc ->
-// équivalent de maybe_Npc_ShouldRefreshTarget) et la résolution de cible de quête de
-// Game/QuestSystem.h (IsQuestTarget peut nourrir la définition d'un objectif "aller
-// parler à/tuer une entité de telle catégorie").
+// Faithful C++ rewrite (real translation of the disassembly, no invention) of the small
+// "Npc_*" cluster that handles: selecting the nearest interactable NPC, auto-interaction
+// (range/cooldown), and NPC classification (special / quest target / nameplate color).
+// Feeds the currently stubbed NPC hooks of Game/AutoPlaySystem.h (host.InteractNpc ->
+// Npc_Interact, host.ShouldRefreshNpc -> equivalent of maybe_Npc_ShouldRefreshTarget) and the
+// quest-target resolution of Game/QuestSystem.h (IsQuestTarget can feed the definition of a
+// "go talk to/kill an entity of category X" objective).
 //
-// Fonctions d'origine traduites (EA -> fonction/méthode) :
+// Original functions translated (EA -> function/method):
 //   Npc_Interact             0x53A660 -> NpcInteractionSystem::Interact()
 //   Npc_AutoInteract         0x53A980 -> NpcInteractionSystem::AutoInteractCurrentTarget()
 //   Npc_AutoSelectNearest    0x53ABC0 -> NpcInteractionSystem::AutoSelectNearestInteractable()
 //   Npc_AutoInteractForPet   0x53B5F0 -> NpcInteractionSystem::AutoInteractForPet()
-//   Npc_IsQuestTarget        0x540340 -> Npc_IsQuestTarget()          (fonction pure)
-//   Npc_GetNameplateColor    0x540790 -> Npc_GetNameplateColor()      (fonction pure)
-//   Npc_IsSpecialType        0x54EE60 -> Npc_IsSpecialType()          (fonction pure)
-// Callees indispensables à la fidélité, traduits en interne (pas de dépendance externe) :
-//   Math_Dist2D_XZ           0x53FA40 -> DistanceXZ()   (distance PNJ<->joueur plan XZ)
-//   Math_Dist3D              0x53FAA0 -> Distance3D()   (distance PNJ<->joueur 3D)
-//   Level_ToAggroValue       0x53F700 -> Npc_LevelToAggroValue() (table complète 100..157)
+//   Npc_IsQuestTarget        0x540340 -> Npc_IsQuestTarget()          (pure function)
+//   Npc_GetNameplateColor    0x540790 -> Npc_GetNameplateColor()      (pure function)
+//   Npc_IsSpecialType        0x54EE60 -> Npc_IsSpecialType()          (pure function)
+// Callees required for fidelity, translated internally (no external dependency):
+//   Math_Dist2D_XZ           0x53FA40 -> DistanceXZ()   (NPC<->player distance in the XZ plane)
+//   Math_Dist3D              0x53FAA0 -> Distance3D()   (NPC<->player 3D distance)
+//   Level_ToAggroValue       0x53F700 -> Npc_LevelToAggroValue() (full table 100..157)
 //
 // ---------------------------------------------------------------------------------------
-// PROVENANCE DES CHAMPS PNJ (important) : les 4 fonctions d'action lisent un tableau
-// RUNTIME (base dword_17AB534, pas dans l'IDB tel quel — stride 38 dwords/152 o), DIFFÉRENT
-// du payload réseau brut modélisé par NpcEntity::body (84 o, cf. Game/GameState.h). Champs
-// identifiés par arithmétique d'adresse entre les symboles voisins de ce tableau :
-//   +0   actif           (dword_17AB534[38*i])
+// NPC FIELD PROVENANCE (important): the 4 action functions read a RUNTIME array (base
+// dword_17AB534, not in the IDB as-is — stride 38 dwords/152 bytes), DIFFERENT from the raw
+// network payload modeled by NpcEntity::body (84 bytes, cf. Game/GameState.h). Fields
+// identified by address arithmetic between the symbols neighboring this array:
+//   +0   active           (dword_17AB534[38*i])
 //   +4   EntityId.hi      (dword_17AB538[38*i])
 //   +8   EntityId.lo      (dword_17AB53C[38*i])
-//   +16  itemId "offre"   (dword_17AB544[38*i])  — objet géré/remis par le PNJ
-//   +20  poids "offre"    (dword_17AB548[38*i])
-//   +100 ptr définition   (dword_17AB598[38*i])  — champs +184/+188 lus par Npc_Interact et
-//        consorts ; MÊME convention que Game/AutoPlaySystem.cpp (kDefOffFaction=184,
-//        kDefOffNpcKind=188 sur NpcEntity::def) → on réutilise donc NpcEntity::def pour ce
-//        pointeur, cohérent avec le reste du code déjà écrit.
+//   +16  "offer" itemId   (dword_17AB544[38*i])  — item handled/given by the NPC
+//   +20  "offer" weight   (dword_17AB548[38*i])
+//   +100 def pointer      (dword_17AB598[38*i])  — fields +184/+188 read by Npc_Interact and
+//        friends; SAME convention as Game/AutoPlaySystem.cpp (kDefOffFaction=184,
+//        kDefOffNpcKind=188 on NpcEntity::def) -> so we reuse NpcEntity::def for this
+//        pointer, consistent with the rest of the already-written code.
 //   +128 position (x,y,z) (flt_17AB5B4[38*i])
-// Ces 3 derniers groupes (itemId/poids d'offre, position) sont ABSENTS de NpcEntity (ni body
-// wire ni def ne les portent) → modélisés ici via NpcInteractionExt (tableau parallèle à
-// g_World.npcs, même index, à l'image de AutoPlaySystem::MonsterAutoplayExt). NOTE fidélité :
-// ceci diffère du choix (non prouvé, cf. commentaires "unk_17AB554"/"déduits") fait dans
-// AutoPlaySystem.cpp de lire la position depuis NpcEntity::body+16 — l'arithmétique
-// d'adresse directe sur Npc_Interact ci-dessus est la source la plus fiable dont on dispose
-// ici ; à réconcilier lors d'un futur portage du vrai spawn NPC (TODO intégration).
+// These last 3 groups (offer itemId/weight, position) are ABSENT from NpcEntity (neither
+// the wire body nor def carries them) -> modeled here via NpcInteractionExt (array parallel
+// to g_World.npcs, same index, mirroring AutoPlaySystem::MonsterAutoplayExt). FIDELITY NOTE:
+// this differs from the (unproven, cf. "unk_17AB554"/"deduced" comments) choice made in
+// AutoPlaySystem.cpp to read position from NpcEntity::body+16 — the direct address
+// arithmetic on Npc_Interact above is the most reliable source available here; to be
+// reconciled during a future port of the real NPC spawn (TODO integration).
 //
-// Npc_IsQuestTarget/Npc_GetNameplateColor lisent un pointeur "a1+96" avec des champs à
-// +232/+236 (sélection de catégorie) et, pour la couleur, +252/+260/+352 (hauteur de modèle,
-// seuil d'aggro/niveau). NOTE FIDÉLITÉ IMPORTANTE : l'offset +96 correspond EXACTEMENT à
-// MonsterEntity::def (documenté "+0x60" = 96 dans Game/GameState.h), alors que NpcEntity::def
-// est théoriquement à +100 (cf. ci-dessus) — ces 2 fonctions opèrent donc très probablement
-// sur le tableau MONSTRE d'origine malgré leur nom IDB "Npc_*" (précédent déjà rencontré dans
-// QuestSystem.h : "Pkt_SmithUpgradeResult... mal nommé"). Conformément à la mission ("Opère
-// sur game::g_World.npcs"), on les expose ici de façon GÉNÉRIQUE sur un pointeur de record
-// (compatible NpcEntity::def ET MonsterEntity::def, tous deux "const void*" résolus) plutôt
-// que de figer un type d'entité — l'appelant choisit la source.
+// Npc_IsQuestTarget/Npc_GetNameplateColor read an "a1+96" pointer with fields at
+// +232/+236 (category selection) and, for color, +252/+260/+352 (model height, aggro/level
+// threshold). IMPORTANT FIDELITY NOTE: offset +96 corresponds EXACTLY to MonsterEntity::def
+// (documented "+0x60" = 96 in Game/GameState.h), whereas NpcEntity::def is theoretically at
+// +100 (cf. above) — these 2 functions therefore very probably operate on the original
+// MONSTER array despite their "Npc_*" IDB name (a precedent already encountered in
+// QuestSystem.h: "Pkt_SmithUpgradeResult... misnamed"). Per the mission scope ("Operates on
+// game::g_World.npcs"), they are exposed here GENERICALLY on a record pointer (compatible
+// with both NpcEntity::def AND MonsterEntity::def, both resolved as "const void*") rather
+// than locking in an entity type — the caller picks the source.
 //
-// RÈGLE : ce fichier n'édite AUCUN header existant. Inclut Game/GameState.h (NpcEntity,
-// EntityId, GameWorld), Game/ClientRuntime.h (g_Client.msg/inv, Str()) et Game/QuestSystem.h
-// (Quest_SumExceeds2Billion, réutilisé tel quel — même formule que Util_SumExceeds2Billion
-// 0x53F660 utilisée par TOUTES les fonctions de ce fichier).
+// RULE: this file does not edit any existing header. Includes Game/GameState.h (NpcEntity,
+// EntityId, GameWorld), Game/ClientRuntime.h (g_Client.msg/inv, Str()) and Game/QuestSystem.h
+// (Quest_SumExceeds2Billion, reused as-is — same formula as Util_SumExceeds2Billion
+// 0x53F660 used by ALL functions in this file).
 #pragma once
 #include <cstdint>
 #include <cstddef>
@@ -76,24 +75,24 @@
 namespace ts2::game {
 
 // ---------------------------------------------------------------------------
-// Constantes fidèles (littéraux du binaire).
+// Faithful constants (binary literals).
 // ---------------------------------------------------------------------------
-constexpr float kNpcInteractRange = 50.0f; // seuil <= utilisé par les 4 fonctions d'action
+constexpr float kNpcInteractRange = 50.0f; // <= threshold used by the 4 action functions
                                             // (Math_Dist2D_XZ/Math_Dist3D <= 50.0)
 
-// Offsets dans le record pointé par NpcEntity::def (cf. bandeau ci-dessus). Réutilise EXACTEMENT
-// les noms/valeurs déjà établis dans Game/AutoPlaySystem.cpp (kDefOffFaction/kDefOffNpcKind)
-// pour rester cohérent avec le reste du portage ; +252/+260/+352 sont propres à ce fichier
+// Offsets within the record pointed to by NpcEntity::def (cf. banner above). Reuses EXACTLY
+// the names/values already established in Game/AutoPlaySystem.cpp (kDefOffFaction/kDefOffNpcKind)
+// to stay consistent with the rest of the port ; +252/+260/+352 are specific to this file
 // (Npc_GetNameplateColor / Char_DrawOverheadName 0x581440).
 constexpr std::size_t kNpcDefOffFaction     = 184; // dword_17AB598[i]+184 (== AutoPlaySystem kDefOffFaction)
-constexpr std::size_t kNpcDefOffKind        = 188; // dword_17AB598[i]+188 (== AutoPlaySystem kDefOffNpcKind ; ==1 -> "vendeur"/vault direct)
-constexpr std::size_t kNpcDefOffQuestCatA   = 232; // *(def+232) — catégorie objectif (Npc_IsQuestTarget/GetNameplateColor)
-constexpr std::size_t kNpcDefOffQuestCatB   = 236; // *(def+236) — sous-catégorie (branche categorie==1)
-constexpr std::size_t kNpcDefOffAggroLevel  = 352; // *(def+352) — comparé à Level_ToAggroValue(niveau local)
+constexpr std::size_t kNpcDefOffKind        = 188; // dword_17AB598[i]+188 (== AutoPlaySystem kDefOffNpcKind ; ==1 -> "vendor"/direct vault)
+constexpr std::size_t kNpcDefOffQuestCatA   = 232; // *(def+232) — objective category (Npc_IsQuestTarget/GetNameplateColor)
+constexpr std::size_t kNpcDefOffQuestCatB   = 236; // *(def+236) — subcategory (category==1 branch)
+constexpr std::size_t kNpcDefOffAggroLevel  = 352; // *(def+352) — compared against Level_ToAggroValue(local level)
 
 // ---------------------------------------------------------------------------
-// Lecture LE brute d'un dword dans un record opaque (même convention que les helpers
-// anonymes de AutoPlaySystem.cpp — redéclarés ici localement, non exportés là-bas).
+// Raw LE dword read from an opaque record (same convention as the anonymous helpers in
+// AutoPlaySystem.cpp — redeclared here locally, not exported there).
 // ---------------------------------------------------------------------------
 inline uint32_t NpcDefReadU32(const void* def, std::size_t offset) {
     if (!def) return 0;
@@ -106,41 +105,41 @@ inline int32_t NpcDefReadI32(const void* def, std::size_t offset) {
 }
 
 // ---------------------------------------------------------------------------
-// Champs runtime absents de NpcEntity (cf. bandeau ci-dessus) — tableau parallèle à
-// g_World.npcs, même index (à l'image de AutoPlaySystem::MonsterAutoplayExt). À peupler par
-// le (futur) portage du spawn/update NPC ; défauts sûrs (0) tant que rien ne les alimente.
+// Runtime fields absent from NpcEntity (cf. banner above) — array parallel to
+// g_World.npcs, same index (mirroring AutoPlaySystem::MonsterAutoplayExt). To be populated
+// by the (future) port of NPC spawn/update; safe defaults (0) until something feeds them.
 // ---------------------------------------------------------------------------
 struct NpcInteractionExt {
-    float    x = 0.0f, y = 0.0f, z = 0.0f; // flt_17AB5B4[38*i] (+128 origine) : position monde
-    uint32_t offerItemId = 0;              // dword_17AB544[38*i] (+16) : objet géré/remis par le PNJ
-    uint32_t offerWeight = 0;              // dword_17AB548[38*i] (+20) : poids/quantité associée
+    float    x = 0.0f, y = 0.0f, z = 0.0f; // flt_17AB5B4[38*i] (+128 original) : world position
+    uint32_t offerItemId = 0;              // dword_17AB544[38*i] (+16) : item handled/given by the NPC
+    uint32_t offerWeight = 0;              // dword_17AB548[38*i] (+20) : associated weight/quantity
 };
 
 // ---------------------------------------------------------------------------
-// Contexte "élément local" nécessaire à Npc_IsQuestTarget/Npc_GetNameplateColor (reflète des
-// blocs de g_LocalPlayerSheet 0x1685748 non couverts par SelfState, cf. Game/GameState.h :
-// g_ElementLoadout 0x1685E14..+0x1C = loadout[0..3], et Char_GetPairedElement 0x557C00 qui
-// cherche `element` dans les paires alliance[2] du même g_LocalPlayerSheet, +0x71C/+0x728).
-// Données pures (pas de comportement caché) : l'appelant les peuple depuis le futur portage
-// de g_LocalPlayerSheet ; défauts (tout à 0, pairedElement absent -> -1) = "aucun élément",
-// fidèle au fallback d'origine.
+// "Local element" context needed by Npc_IsQuestTarget/Npc_GetNameplateColor (mirrors blocks
+// of g_LocalPlayerSheet 0x1685748 not covered by SelfState, cf. Game/GameState.h:
+// g_ElementLoadout 0x1685E14..+0x1C = loadout[0..3], and Char_GetPairedElement 0x557C00 which
+// searches for `element` in the same g_LocalPlayerSheet's alliance[2] pairs, +0x71C/+0x728).
+// Pure data (no hidden behavior): the caller populates it from the future port of
+// g_LocalPlayerSheet; defaults (everything at 0, pairedElement absent -> -1) = "no element",
+// faithful to the original fallback.
 // ---------------------------------------------------------------------------
 struct NpcQuestContext {
     int localElement = 0;                 // = g_World.self.element (g_LocalElement 0x1673194)
-    std::array<int, 4> elementLoadout{};   // g_ElementLoadout..+0x1C (loadout[0..3] ; loadout[4] jamais lu par ces 2 fonctions)
-    int factionFlag = 0;                   // dword_1687320[0] (indicateur faction/camp, sens exact non prouvé ici)
+    std::array<int, 4> elementLoadout{};   // g_ElementLoadout..+0x1C (loadout[0..3] ; loadout[4] never read by these 2 functions)
+    int factionFlag = 0;                   // dword_1687320[0] (faction/camp indicator, exact meaning not proven here)
 
-    // Char_GetPairedElement 0x557C00 : élément "jumelé" (autre membre d'une paire alliance du
-    // loadout), -1 si absent. Fonction pure injectable (dépend de g_LocalPlayerSheet, hors
-    // périmètre des headers partagés de cette mission) ; nullptr -> -1 constant (fidèle au
-    // fallback "return -1" de fin de fonction d'origine).
+    // Char_GetPairedElement 0x557C00: "paired" element (other member of an alliance pair in
+    // the loadout), -1 if absent. Pure injectable function (depends on g_LocalPlayerSheet,
+    // out of scope for this mission's shared headers); nullptr -> constant -1 (faithful to
+    // the original's "return -1" fallback at the end of the function).
     std::function<int(int element)> pairedElement;
     int GetPaired(int element) const { return pairedElement ? pairedElement(element) : -1; }
 };
 
 // ---------------------------------------------------------------------------
-// Distances fidèles (Math_Dist2D_XZ 0x53FA40 / Math_Dist3D 0x53FAA0 — sqrt(dx²+dz²) et
-// sqrt(dx²+dy²+dz²), aucune approximation).
+// Faithful distances (Math_Dist2D_XZ 0x53FA40 / Math_Dist3D 0x53FAA0 — sqrt(dx²+dz²) and
+// sqrt(dx²+dy²+dz²), no approximation).
 // ---------------------------------------------------------------------------
 inline float Npc_DistanceXZ(float x1, float z1, float x2, float z2) {
     const float dx = x1 - x2, dz = z1 - z2;
@@ -152,121 +151,121 @@ inline float Npc_Distance3D(float x1, float y1, float z1, float x2, float y2, fl
 }
 
 // ---------------------------------------------------------------------------
-// Level_ToAggroValue 0x53F700 — table complète (identité sous 100, courbe codée en dur
-// 100..157, 1 par défaut au-delà de 157). Utilisée par Npc_GetNameplateColor (branche par
-// défaut : comparaison de "puissance" joueur vs seuil du PNJ/monstre).
+// Level_ToAggroValue 0x53F700 — full table (identity below 100, hardcoded curve 100..157,
+// 1 by default beyond 157). Used by Npc_GetNameplateColor (default branch: comparing player
+// "power" vs the NPC's/monster's threshold).
 // ---------------------------------------------------------------------------
 int Npc_LevelToAggroValue(int level);
 
 // ===========================================================================
-// Classification pure (aucun état, aucun réseau) — Npc_IsSpecialType 0x54EE60.
+// Pure classification (no state, no network) — Npc_IsSpecialType 0x54EE60.
 // ===========================================================================
-// Vrai pour la liste figée {19,20,21,34,49,120,154,175,176,177,190,191,192,193} (table de
-// type/code "spécial" réutilisée à plusieurs endroits du binaire — cf. xrefs Char_CalcAttackRating*,
-// Char_BuildEquipSnapshot, UI_MainInventory : PAS spécifique aux PNJ malgré le nom IDB).
+// True for the fixed list {19,20,21,34,49,120,154,175,176,177,190,191,192,193} ("special"
+// type/code table reused in several places in the binary — cf. xrefs Char_CalcAttackRating*,
+// Char_BuildEquipSnapshot, UI_MainInventory: NOT NPC-specific despite the IDB name).
 bool Npc_IsSpecialType(int typeOrCode);
 
 // ===========================================================================
-// Npc_IsQuestTarget 0x540340 / Npc_GetNameplateColor 0x540790 — fonctions PURES opérant sur
-// un pointeur de record "def" générique (NpcEntity::def OU MonsterEntity::def, cf. bandeau de
-// tête). `def` peut être nullptr (résultat "non trouvé"/couleur par défaut, sûr).
+// Npc_IsQuestTarget 0x540340 / Npc_GetNameplateColor 0x540790 — PURE functions operating on
+// a generic record pointer "def" (NpcEntity::def OR MonsterEntity::def, cf. banner above).
+// `def` may be nullptr ("not found"/default color result, safe).
 // ===========================================================================
 
-// Vrai si l'entité correspond à l'objectif de quête/élément/faction actif du joueur local
-// (branches fidèles : catégorie 1 -> sous-catégorie 232/236 ; catégories 6/7/8/9/0xE/0xF ->
-// élément/faction direct ; tout le reste -> false).
+// True if the entity matches the local player's active quest/element/faction objective
+// (faithful branches: category 1 -> subcategory 232/236 ; categories 6/7/8/9/0xE/0xF ->
+// direct element/faction; everything else -> false).
 bool Npc_IsQuestTarget(const void* def, const NpcQuestContext& ctx);
 
-// Code couleur de plaque de nom (10 = allié/élément apparié, 2 = hostile/mismatch, 22/33 =
-// branche par défaut selon l'écart de "puissance" Level_ToAggroValue(niveau local) vs
-// *(def+352)). `selfLevel`/`selfLevelBonus` = g_World.self.level / g_World.self.levelBonus.
+// Nameplate color code (10 = ally/matched element, 2 = hostile/mismatch, 22/33 = default
+// branch depending on the "power" gap Level_ToAggroValue(local level) vs *(def+352)).
+// `selfLevel`/`selfLevelBonus` = g_World.self.level / g_World.self.levelBonus.
 int Npc_GetNameplateColor(const void* def, const NpcQuestContext& ctx, int selfLevel, int selfLevelBonus);
 
 // ---------------------------------------------------------------------------
-// Points d'intégration hors périmètre (réseau/UI/item/stat non modélisés dans les headers
-// partagés de cette mission). Callbacks optionnels ; comportement par défaut documenté au
-// site d'appel. EA d'origine citées pour le branchement réel — AUCUN envoi réseau direct
-// n'est fait par ce module en dehors de SendVaultReq201.
+// Out-of-scope integration points (network/UI/item/stat not modeled in this mission's
+// shared headers). Optional callbacks; default behavior documented at the call site. Original
+// EAs cited for the real wiring — NO direct network send is done by this module outside of
+// SendVaultReq201.
 // ---------------------------------------------------------------------------
 struct NpcInteractionHost {
-    // maybe_Npc_ShouldRefreshTarget 0x583E20 : éligibilité de rafraîchissement/verrouillage
-    // du PNJ (comparaisons de noms alliance/chat + minuteries — hors périmètre, dépend de
-    // l'UI sociale). Signature alignée sur AutoPlaySystem::AutoPlayHost::ShouldRefreshNpc pour
-    // pouvoir brancher le MÊME callback des deux côtés. Défaut (non branché) : toujours éligible.
+    // maybe_Npc_ShouldRefreshTarget 0x583E20: refresh/lock eligibility for the NPC
+    // (alliance/chat name comparisons + timers — out of scope, depends on social UI).
+    // Signature aligned with AutoPlaySystem::AutoPlayHost::ShouldRefreshNpc so the SAME
+    // callback can be wired on both sides. Default (unwired): always eligible.
     std::function<bool(const NpcEntity&)> ShouldRefreshTarget;
 
-    // cGameHud_PlaceItemIntoBag 0x650470 : tente de placer (itemId, weight) dans le sac.
-    // outSlot=-1 => échec. Ordre des 3 autres sorties fidèle à l'appel d'origine
-    // (&v9,&v11,&v10,&v14 — v9=outSlot ; v11/v10/v14 réordonnés tels quels, sémantique non
-    // prouvée, réinjectés tels quels dans Net_SendVaultReq_201).
+    // cGameHud_PlaceItemIntoBag 0x650470: attempts to place (itemId, weight) into the bag.
+    // outSlot=-1 => failure. Order of the other 3 outputs faithful to the original call
+    // (&v9,&v11,&v10,&v14 — v9=outSlot ; v11/v10/v14 reordered as-is, semantics not proven,
+    // re-injected as-is into Net_SendVaultReq_201).
     std::function<void(uint32_t itemId, uint32_t weight, int& outSlot, int& outB, int& outC, int& outD)> TryPlaceItemIntoBag;
 
-    // Net_SendVaultReq_201 0x5901C0 : émission réseau de la demande d'interaction/récompense
-    // PNJ. Seul point d'envoi réseau de ce module ; TODO PRÉCIS : brancher sur le vrai
-    // builder Net_Send* une fois la couche sortante disponible.
+    // Net_SendVaultReq_201 0x5901C0: network send of the NPC interaction/reward request.
+    // Only network send point of this module ; PRECISE TODO: wire to the real Net_Send*
+    // builder once the outbound layer is available.
     std::function<void(int idHi, int idLo, int p0, int outSlot, int outB, int outC, int outD)> SendVaultReq201;
 
-    // Branche "hors de portée" de Npc_Interact (0x53a73a) — approche à pied. Enchaîne dans le
-    // binaire : World_IsPointBlocked 0x540DA0 (teste la position du JOUEUR, pas celle du PNJ —
-    // fidèle, pas une erreur de notre part) -> Char_CalcAttackSpeed 0x4CCAB0 (vitesse) ->
-    // Skill_TraceProjectilePath 0x5419F0 (calcule un point d'approche) -> Net_QueueRunTo
-    // 0x511B00 (enqueue le déplacement). Hors périmètre (collision + pathing + réseau) : TODO
-    // PRÉCIS, cf. EAs ci-dessus. Appelée avec la position du PNJ cible ; no-op par défaut.
+    // Npc_Interact's "out of range" branch (0x53a73a) — approach on foot. Chains in the
+    // binary: World_IsPointBlocked 0x540DA0 (tests the PLAYER's position, not the NPC's —
+    // faithful, not an error on our part) -> Char_CalcAttackSpeed 0x4CCAB0 (speed) ->
+    // Skill_TraceProjectilePath 0x5419F0 (computes an approach point) -> Net_QueueRunTo
+    // 0x511B00 (enqueues the movement). Out of scope (collision + pathing + network):
+    // PRECISE TODO, cf. EAs above. Called with the target NPC's position ; no-op by default.
     std::function<void(float npcX, float npcY, float npcZ)> ApproachNpc;
 
-    // Item_GetEquipCategory 0x54C940 : catégorie d'équipement de l'item sélectionné (1/2 dans
-    // AutoInteractForPet). Hors périmètre (Item/Stat, headers non inclus ici). -1 par défaut
-    // (ne correspond jamais à 1 ni 2), fidèle au cas "aucune correspondance".
+    // Item_GetEquipCategory 0x54C940: equip category of the selected item (1/2 in
+    // AutoInteractForPet). Out of scope (Item/Stat, headers not included here). -1 by
+    // default (never matches 1 or 2), faithful to the "no match" case.
     std::function<int(uint32_t itemId)> GetEquipCategory;
 
-    // Gate complète de Npc_AutoInteractForPet (0x53b600..0x53b661) : MobDb_GetEntry(&mITEM,
-    // selectedItemId) 0x4C3C00 doit réussir ET (typeCode!=22 OU (Item_NormalizeStatByType
-    // 0x4C8FF0 >= 100 ET compteur associé >= 1)). Hors périmètre (Item/Stat). false par défaut
-    // (fonction inerte tant que non branchée — conservateur : on ne peut pas prouver la
-    // disponibilité du pet sans le système Item réel).
+    // Full gate of Npc_AutoInteractForPet (0x53b600..0x53b661): MobDb_GetEntry(&mITEM,
+    // selectedItemId) 0x4C3C00 must succeed AND (typeCode!=22 OR (Item_NormalizeStatByType
+    // 0x4C8FF0 >= 100 AND associated counter >= 1)). Out of scope (Item/Stat). false by
+    // default (function inert until wired — conservative: pet availability cannot be
+    // proven without the real Item system).
     std::function<bool(uint32_t selectedItemId)> IsPetCommandItemReady;
 };
 
 // ---------------------------------------------------------------------------
-// NpcInteractionSystem — porte l'état partagé entre les 4 fonctions d'action (verrou
-// "requête en vol" dword_1675B08/flt_1675B0C — MÊME globals que
-// AutoPlaySystem::pendingItemUseLatch_/pendingItemUseTimeSec_ documentés dans
-// AutoPlaySystem.h : dans le binaire d'origine c'est UN SEUL verrou partagé entre l'usage de
-// parchemin ET l'interaction PNJ. Ce module porte SA PROPRE copie ; TODO d'intégration :
-// unifier avec AutoPlaySystem si les deux tournent en même temps dans la boucle de jeu) +
-// les hooks hors périmètre (host) + l'extension par-PNJ (ext_).
+// NpcInteractionSystem — carries the state shared between the 4 action functions
+// ("request in flight" lock dword_1675B08/flt_1675B0C — SAME globals as
+// AutoPlaySystem::pendingItemUseLatch_/pendingItemUseTimeSec_ documented in
+// AutoPlaySystem.h: in the original binary this is a SINGLE lock shared between scroll use
+// AND NPC interaction. This module carries ITS OWN copy; integration TODO: unify with
+// AutoPlaySystem if both run concurrently in the game loop) + the out-of-scope hooks (host)
+// + the per-NPC extension (ext_).
 // ---------------------------------------------------------------------------
 class NpcInteractionSystem {
 public:
     NpcInteractionHost host;
 
-    // g_MorphInProgress 0x1675A88 : bloque l'émission de la requête PNJ (toutes fonctions
-    // d'action). Piloté par l'appelant (même global que AutoPlayExternalState::morphInProgress).
+    // g_MorphInProgress 0x1675A88: blocks emitting the NPC request (all action functions).
+    // Driven by the caller (same global as AutoPlayExternalState::morphInProgress).
     bool morphInProgress = false;
 
-    // Extension par-PNJ (position + item/poids d'offre) — accès pour peuplement par le futur
-    // portage du spawn NPC. Redimensionne automatiquement sur g_World.npcs.
+    // Per-NPC extension (offer position + item/weight) — accessible for population by the
+    // future NPC spawn port. Automatically resizes against g_World.npcs.
     NpcInteractionExt& Ext(std::size_t npcIndex);
     const NpcInteractionExt* TryExt(std::size_t npcIndex) const;
 
-    // Npc_Interact 0x53A660 — recherche le PNJ actif d'identité `targetId`, approche ou
-    // interagit selon la portée (50.0). `gameTimeSec` = g_World.gameTimeSec (horodatage du
-    // verrou, fidèle à flt_1675B0C = g_GameTimeSec).
+    // Npc_Interact 0x53A660 — finds the active NPC with identity `targetId`, approaches or
+    // interacts depending on range (50.0). `gameTimeSec` = g_World.gameTimeSec (lock
+    // timestamp, faithful to flt_1675B0C = g_GameTimeSec).
     void Interact(EntityId targetId, float gameTimeSec);
 
-    // Npc_AutoInteract 0x53A980 — interagit avec la cible d'ordre d'attaque courante
-    // (`currentAttackOrderTarget` = g_SelfAttackOrder_GridX/Y 0x1687354/58, PAS de
-    // déplacement si hors de portée — fidèle, contrairement à Interact()). Renvoie le code de
-    // retour d'origine (0 = échec/absent, 1 = succès ou "hors de portée mais pas une erreur").
+    // Npc_AutoInteract 0x53A980 — interacts with the current attack-order target
+    // (`currentAttackOrderTarget` = g_SelfAttackOrder_GridX/Y 0x1687354/58, NO movement
+    // if out of range — faithful, unlike Interact()). Returns the original return code
+    // (0 = failure/absent, 1 = success or "out of range but not an error").
     int AutoInteractCurrentTarget(EntityId currentAttackOrderTarget, float gameTimeSec);
 
-    // Npc_AutoSelectNearest 0x53ABC0 — scanne g_World.npcs par 6 passes de priorité
-    // décroissante (vendeur direct, puis catégorie {5,6}, {4}, {3}, {2}, {1}) et interagit
-    // avec le premier PNJ exploitable trouvé ; message d'échec (poids/sac/aucun PNJ) sinon.
+    // Npc_AutoSelectNearest 0x53ABC0 — scans g_World.npcs in 6 decreasing-priority passes
+    // (direct vendor, then category {5,6}, {4}, {3}, {2}, {1}) and interacts with the first
+    // exploitable NPC found ; failure message (weight/bag/no NPC) otherwise.
     void AutoSelectNearestInteractable(float gameTimeSec);
 
-    // Npc_AutoInteractForPet 0x53B5F0 — commande auto liée à l'item sélectionné
-    // (`selectedItemId` = g_SelectedInvItemId 0x1673258). Gate via host.IsPetCommandItemReady.
+    // Npc_AutoInteractForPet 0x53B5F0 — auto command tied to the selected item
+    // (`selectedItemId` = g_SelectedInvItemId 0x1673258). Gated via host.IsPetCommandItemReady.
     void AutoInteractForPet(uint32_t selectedItemId, float gameTimeSec);
 
 private:
@@ -275,17 +274,17 @@ private:
     bool  pendingLatch_ = false;        // dword_1675B08 (g_GmCmdCooldownLatch)
     float pendingLatchTimeSec_ = 0.0f;  // flt_1675B0C
 
-    // Résultat commun aux 4 fonctions d'action (args de Net_SendVaultReq_201 0x5901C0).
+    // Common result for the 4 action functions (Net_SendVaultReq_201 0x5901C0 args).
     struct RewardArgs {
         int idHi = 0, idLo = 0, p0 = 0, outSlot = 0, outB = 0, outC = 0, outD = 0;
-        bool ok = false;        // false => échec (ne rien envoyer)
-        bool blockedWeight = false; // true => bloqué par Util_SumExceeds2Billion (poids)
-        bool blockedBag    = false; // true => bloqué par échec PlaceItemIntoBag
+        bool ok = false;        // false => failure (do not send)
+        bool blockedWeight = false; // true => blocked by Util_SumExceeds2Billion (weight)
+        bool blockedBag    = false; // true => blocked by PlaceItemIntoBag failure
     };
 
-    // Corps commun (typeCode188==1 -> vault direct + garde de poids ; sinon PlaceItemIntoBag).
+    // Shared body (typeCode188==1 -> direct vault + weight guard ; otherwise PlaceItemIntoBag).
     RewardArgs BuildRewardArgs(const NpcEntity& npc, const NpcInteractionExt& ext) const;
-    // Envoie la requête si ni morph ni verrou en cours (fidèle : sinon silencieux, PAS d'erreur).
+    // Sends the request if neither morph nor lock is in progress (faithful: otherwise silent, NO error).
     void SendReward(const RewardArgs& args, float gameTimeSec);
 
     bool ShouldRefresh(const NpcEntity& npc) const;

@@ -1,7 +1,7 @@
-// Game/StringTables.cpp — implémentations non-template de StringTables.h.
-// Voir StringTables.h pour la documentation complète des formats et des EA.
+// Game/StringTables.cpp — non-template implementations of StringTables.h.
+// See StringTables.h for full documentation of formats and EAs.
 #include "Game/StringTables.h"
-#include "Game/ClientRuntime.h"   // g_Client.Var(...) : publication de la table de couleurs mFONTCOLOR dans la longue traine
+#include "Game/ClientRuntime.h"   // g_Client.Var(...): publishes the mFONTCOLOR color table into the long tail
 #include "Core/Log.h"
 #include <cstring>
 
@@ -17,9 +17,7 @@ std::string JoinPath(const std::string& a, const std::string& b) {
 
 } // namespace
 
-// ---------------------------------------------------------------------------
 // TipsTable (002.DAT -> mGAMENOTICE ; Tips002_Load 0x4C1630).
-// ---------------------------------------------------------------------------
 bool TipsTable::Load(const std::string& gameDataDir, bool trVariant, float nowSeconds) {
     const std::string path = JoinPath(gameDataDir,
         trVariant ? "G01_GFONT\\TR\\002.DAT" : "G01_GFONT\\002.DAT");
@@ -27,7 +25,7 @@ bool TipsTable::Load(const std::string& gameDataDir, bool trVariant, float nowSe
         TS2_ERR("mGAMENOTICE : chargement echoue : %s", path.c_str());
         return false;
     }
-    // Init fidele a la fin de sub_4C1630 : lastRotateTime=horloge courante, currentIndex=-1.
+    // Init faithful to the end of sub_4C1630: lastRotateTime=current clock, currentIndex=-1.
     lastRotateTime_ = nowSeconds;
     currentIndex_ = -1;
     TS2_LOG("mGAMENOTICE : %u annonces chargees (%s)", table_.Count(), path.c_str());
@@ -42,9 +40,7 @@ bool TipsTable::Advance(float nowSeconds) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
 // BannedWordDict (001.DAT -> mBADWORD ; Dict001_Load 0x4C1170).
-// ---------------------------------------------------------------------------
 bool BannedWordDict::Load(const std::string& gameDataDir) {
     const std::string path = JoinPath(gameDataDir, "G01_GFONT\\001.DAT");
 
@@ -55,7 +51,7 @@ bool BannedWordDict::Load(const std::string& gameDataDir) {
     }
     const std::vector<uint8_t>& payload = img.Payload();
     if (payload.size() != 11572) {
-        // Garde dure de l'original : `if (Buffer == 11572)` sinon echec total.
+        // Hard guard from the original: `if (Buffer == 11572)` otherwise total failure.
         TS2_ERR("mBADWORD : taille decompressee inattendue (%zu, attendu 11572) : %s",
                 payload.size(), path.c_str());
         return false;
@@ -65,7 +61,7 @@ bool BannedWordDict::Load(const std::string& gameDataDir) {
     int col = 0;
     for (size_t i = 0; i < payload.size(); ++i) {
         const uint8_t c = payload[i];
-        if (c == 0x0D) { // '\r' — delimiteur d'enregistrement
+        if (c == 0x0D) { // '\r' — record delimiter
             if (col == 0) {
                 TS2_ERR("mBADWORD : mot vide / CR isole a l'offset %zu", i);
                 return false;
@@ -75,10 +71,10 @@ bool BannedWordDict::Load(const std::string& gameDataDir) {
                 return false;
             }
             int term = col;
-            if (term >= 51) term = 50; // clamp defensif (voir note de tete de StringTables.h)
+            if (term >= 51) term = 50; // defensive clamp (see header note in StringTables.h)
             word_[count_++][term] = 0;
             col = 0;
-            ++i; // saute l'octet suivant (0x0A du CRLF), non inspecte, comme l'original
+            ++i; // skip the next byte (CRLF's 0x0A), not inspected, like the original
         } else {
             if (col == 51) {
                 TS2_ERR("mBADWORD : mot trop long (>51 o) a l'offset %zu", i);
@@ -89,7 +85,7 @@ bool BannedWordDict::Load(const std::string& gameDataDir) {
     }
 
     if (count_ != 1432) {
-        // Garde d'integrite dure de l'original : `if (*this == 1432)` sinon echec total.
+        // Hard integrity guard from the original: `if (*this == 1432)` otherwise total failure.
         TS2_ERR("mBADWORD : compteur final invalide (%u, attendu 1432)", count_);
         return false;
     }
@@ -101,8 +97,8 @@ bool BannedWordDict::Load(const std::string& gameDataDir) {
 bool BannedWordDict::IsBanned(const std::string& text) const {
     if (count_ == 0) return false;
 
-    // Normalisation fidele a sub_4C1410 0x4C1410 : retire les espaces (0x20),
-    // recopie telles quelles les paires DBCS (octet de tete >= 0x80).
+    // Normalization faithful to sub_4C1410 0x4C1410: strips spaces (0x20),
+    // copies DBCS pairs (lead byte >= 0x80) through unchanged.
     std::string norm;
     norm.reserve(text.size());
     for (size_t i = 0; i < text.size(); ) {
@@ -117,9 +113,9 @@ bool BannedWordDict::IsBanned(const std::string& text) const {
         }
     }
 
-    // Recherche de sous-chaine (equivalente en intention a la fenetre glissante
-    // d'origine, mais sans son arithmetique de pointeur potentiellement hors
-    // bornes — cf. note IsBanned() dans StringTables.h).
+    // Substring search (equivalent in intent to the original sliding window, but
+    // without its potentially out-of-bounds pointer arithmetic — cf. IsBanned()
+    // note in StringTables.h).
     for (uint32_t i = 0; i < count_; ++i) {
         const size_t wordLen = std::strlen(word_[i]);
         if (wordLen == 0 || wordLen > norm.size()) continue;
@@ -128,14 +124,12 @@ bool BannedWordDict::IsBanned(const std::string& text) const {
     return false;
 }
 
-// ---------------------------------------------------------------------------
 // ColorPalette (mFONTCOLOR ; ColorTable_InitPalette 0x4C1D60).
-// Constantes reprises telles quelles du desassemblage (45 int32 ARGB signes
-// suivis de 8 index de canal), aucune E/S — la fonction d'origine renvoie
-// toujours 1.
-// ---------------------------------------------------------------------------
+// Constants taken as-is from the disassembly (45 signed int32 ARGB values
+// followed by 8 channel indices), no I/O — the original function always
+// returns 1.
 bool ColorPalette::InitPalette() {
-    count_ = 45; // EA 0x4C1D6A (`*this = 45`) — champ count consomme par Get()/ColorTable_GetColor 0x4C1FE0.
+    count_ = 45; // EA 0x4C1D6A (`*this = 45`) — count field consumed by Get()/ColorTable_GetColor 0x4C1FE0.
     static const int32_t kColors[45] = {
         -1,        -65536,    -256,      -16776961, -16736414,
         -12775045, -5000269,  -406134,   -7483404,  -7746915,
@@ -149,8 +143,8 @@ bool ColorPalette::InitPalette() {
     };
     std::memcpy(colors_, kColors, sizeof(colors_));
 
-    // Indices 1-based dans colors_ (this+46..+53 dans le desassemblage,
-    // == ChannelColorTable 0x84DFD8 documentee dans TS2_CLIENT_SHELL.md).
+    // 1-based indices into colors_ (this+46..+53 in the disassembly,
+    // == ChannelColorTable 0x84DFD8 documented in TS2_CLIENT_SHELL.md).
     channel_ = ChannelIndices{
         /*system*/15, /*whisper*/1, /*party*/40, /*shout*/39,
         /*guild*/36, /*faction*/37, /*trade*/38, /*gm*/45,
@@ -158,9 +152,7 @@ bool ColorPalette::InitPalette() {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Façade de chargement (ordre App_Init 0x461C20).
-// ---------------------------------------------------------------------------
+// Loading facade (App_Init 0x461C20 order).
 bool LoadStringTables(StringTables& out, const std::string& gameDataDir,
                       float nowSeconds, bool trVariant) {
     bool allOk = true;
@@ -186,28 +178,27 @@ bool LoadStringTables(StringTables& out, const std::string& gameDataDir,
         TS2_LOG("mMESSAGE : %u messages charges (%s)", out.messages.Count(), msgPath.c_str());
     }
 
-    if (!out.colors.InitPalette()) allOk = false; // ne peut pas echouer en pratique
+    if (!out.colors.InitPalette()) allOk = false; // cannot fail in practice
 
-    // -----------------------------------------------------------------------
-    // CABLAGE de la palette mFONTCOLOR (ColorTable_InitPalette 0x4C1D60) : le
-    // binaire garde les 8 couleurs de canal dans un tableau contigu a
-    // 0x84DFD8..0x84DFF4 (= instance mFONTCOLOR 0x84DF20 + 184), qui EST la
-    // ChannelColorTable (system/whisper/party/shout/guild/faction/trade/gm).
-    // On publie ici les 8 ARGB *deja resolus* (ColorTable_GetColor 0x4C1FE0) dans
-    // la longue traine g_Client.Var(<EA d'origine>), miroir fidele de ce tableau.
+    // WIRING of the mFONTCOLOR palette (ColorTable_InitPalette 0x4C1D60): the binary
+    // keeps the 8 channel colors in a contiguous array at 0x84DFD8..0x84DFF4 (=
+    // mFONTCOLOR instance 0x84DF20 + 184), which IS the ChannelColorTable
+    // (system/whisper/party/shout/guild/faction/trade/gm). This publishes the 8
+    // *already-resolved* ARGB values (ColorTable_GetColor 0x4C1FE0) into the
+    // g_Client.Var(<original EA>) long tail, a faithful mirror of that array.
     //
-    // Consommation REELLE (verifiee) :
-    //   - 0x84DFD8 (g_SysMsgColor, idx15) est LU par 6 sites deja cables :
+    // ACTUAL consumption (verified):
+    //   - 0x84DFD8 (g_SysMsgColor, idx15) is READ by 6 already-wired sites:
     //     Net/CharStatDeltaDispatch.cpp:191, Net/GameVarDispatch.cpp (A_SysMsgColor),
     //     Game/SocialSystem.cpp:69, UI/PartyWindow.cpp:48, UI/NpcDialogWindow.cpp:32,
-    //     UI/VendorShopWindow.cpp:364 (tous via g_Client.VarGet(0x84dfd8)). Avant ce
-    //     cablage la valeur restait 0 -> lignes systeme sociales invisibles
-    //     (Game/SocialSystem.cpp:69, sans repli) : bug corrige.
-    //   - 0x84DFDC..0x84DFF4 (couleurs de canal chat) : consommees par
-    //     UI/ChatWindow.cpp::ChannelColor() qui lit g_Strings.colors DIRECTEMENT ;
-    //     publiees ici aussi comme miroir fidele du tableau du binaire (les
-    //     handlers Net/GameHandlers_ChatSocial.cpp:33 / Net/GameHandlers_PartyGuild.cpp:33
-    //     documentent ces EA comme "valeurs a reextraire" et pourraient les lire ici).
+    //     UI/VendorShopWindow.cpp:364 (all via g_Client.VarGet(0x84dfd8)). Before this
+    //     wiring the value stayed 0 -> invisible social system lines
+    //     (Game/SocialSystem.cpp:69, no fallback): bug fixed.
+    //   - 0x84DFDC..0x84DFF4 (chat channel colors): consumed by
+    //     UI/ChatWindow.cpp::ChannelColor(), which reads g_Strings.colors DIRECTLY;
+    //     also published here as a faithful mirror of the binary's array (handlers
+    //     Net/GameHandlers_ChatSocial.cpp:33 / Net/GameHandlers_PartyGuild.cpp:33
+    //     document these EAs as "values to re-extract" and could read them here).
     g_Client.Var(0x84DFD8u) = static_cast<int32_t>(out.colors.SystemColor());  // g_SysMsgColor       idx15 -> 0xFFA8A400
     g_Client.Var(0x84DFDCu) = static_cast<int32_t>(out.colors.WhisperColor()); // g_ChatColor_Whisper idx1  -> 0xFFFFFFFF
     g_Client.Var(0x84DFE0u) = static_cast<int32_t>(out.colors.PartyColor());   // g_ChatColor_Party   idx40 -> 0xFF35E0FF

@@ -1,32 +1,32 @@
-// Gfx/CameraThirdPersonBridge.cpp — implémentation. Voir CameraThirdPersonBridge.h pour la
-// doc complète (périmètre, signature de câblage attendue côté SceneManager).
+// Gfx/CameraThirdPersonBridge.cpp — implementation. See CameraThirdPersonBridge.h for the
+// full doc (scope, wiring signature expected on the SceneManager side).
 #include "Gfx/CameraThirdPersonBridge.h"
-#include "Game/CameraWarpTick.h"       // InGame_InitCamera, CameraFollowState (déjà écrits)
+#include "Game/CameraWarpTick.h"       // InGame_InitCamera, CameraFollowState (already written)
 #include "Game/AnimationTick.h"        // Camera_UpdateCollision, ICameraCollisionQueries, CameraCollisionHost
-#include "World/WorldIntegration.h"    // world::WorldAssets — fournisseur des requêtes de collision (WG-02)
+#include "World/WorldIntegration.h"    // world::WorldAssets — collision-query provider (WG-02)
 
 namespace ts2::gfx {
 
 namespace {
 
-// État de cadrage caméra (dword_1837E64/dword_1837E68/g_CamFollowDist d'origine, cf.
-// Game/CameraWarpTick.h::CameraFollowState) : une SEULE caméra 3e personne active à la fois
-// côté client -> état possédé par ce module.
+// Camera framing state (original dword_1837E64/dword_1837E68/g_CamFollowDist, see
+// Game/CameraWarpTick.h::CameraFollowState): only ONE 3rd-person camera active at a time
+// client-side -> state owned by this module.
 game::CameraFollowState g_FollowState{};
 
-// Host free-look (Camera_UpdateCollision) : aucun système UI de bascule free-look côté
-// ClientSource -> tous les std::function restent nuls (dégradation propre fidèle).
+// Free-look host (Camera_UpdateCollision): no free-look toggle UI system on the
+// ClientSource side -> all std::function members stay null (faithful clean degradation).
 const game::CameraCollisionHost g_NoFreeLookHost{};
 
-// Oracle de collision RÉEL (WG-02, Camera_UpdateCollision 0x538580) : traduit les 4 requêtes
-// de l'interface game::ICameraCollisionQueries vers world::WorldAssets. Chaque méthode vise le
-// slot PROUVÉ par le désassemblage du site d'appel (report §1.3) : le sweep -> .WG (slot 0 =
-// g_GameWorld @0x5387b9) ; le point bloqué -> Main+WJ (0x540da0) ; le sol -> Main (@0x5388f4).
+// REAL collision oracle (WG-02, Camera_UpdateCollision 0x538580): translates the 4 queries
+// of the game::ICameraCollisionQueries interface to world::WorldAssets. Each method targets the
+// slot PROVEN by the call-site disassembly (report §1.3): the sweep -> .WG (slot 0 =
+// g_GameWorld @0x5387b9); the blocked point -> Main+WJ (0x540da0); the ground -> Main (@0x5388f4).
 class WorldCameraCollision final : public game::ICameraCollisionQueries {
 public:
     explicit WorldCameraCollision(const world::WorldAssets& assets) : assets_(assets) {}
 
-    // Terrain_SweepSphereSegment 0x69a1f0 (radius 2.5) contre le TERRAIN .WG.
+    // Terrain_SweepSphereSegment 0x69a1f0 (radius 2.5) against the TERRAIN .WG.
     bool SweepSphereSegment(const D3DXVECTOR3& from, const D3DXVECTOR3& to, float radius,
                             D3DXVECTOR3& outHit) const override {
         const float f[3] = { from.x, from.y, from.z };
@@ -41,7 +41,7 @@ public:
         const float pt[3] = { p.x, p.y, p.z };
         return assets_.IsPointBlocked(pt);
     }
-    // MapColl_LineOfSightObjects 0x696fc0 (non porté -> false, cf. WorldIntegration.cpp).
+    // MapColl_LineOfSightObjects 0x696fc0 (not ported -> false, see WorldIntegration.cpp).
     bool LineOfSightBlockedByObjects(const D3DXVECTOR3& from, const D3DXVECTOR3& to) const override {
         const float f[3] = { from.x, from.y, from.z };
         const float t[3] = { to.x, to.y, to.z };
@@ -61,25 +61,25 @@ private:
 void TickThirdPersonCamera(Camera& camera, const game::GameWorld& world,
                             float dt, bool justEnteredInGame,
                             const world::WorldAssets* worldAssets) {
-    // `dt` non consommé ici : NI InGame_InitCamera NI Camera_UpdateCollision n'intègrent de
-    // temps dans le binaire d'origine (cf. tête de CameraThirdPersonBridge.h).
+    // `dt` unused here: NEITHER InGame_InitCamera NOR Camera_UpdateCollision integrate
+    // time in the original binary (see CameraThirdPersonBridge.h header).
     (void)dt;
 
-    // Position du joueur local. GameWorld::Self() n'est pas const (peut insérer un slot par
-    // défaut si `players` est vide) -> accès en lecture seule via une référence non-const locale.
+    // Local player position. GameWorld::Self() is not const (may insert a default slot
+    // if `players` is empty) -> read-only access via a local non-const reference.
     game::GameWorld& mutableWorld = const_cast<game::GameWorld&>(world);
     const game::PlayerEntity& self = mutableWorld.Self();
 
     if (justEnteredInGame) {
-        // Cadrage d'entrée en InGame (Scene_InGameUpdate case 3, EA 0x52C6EF) — déjà écrit
-        // (Game/CameraWarpTick.h), réutilisé tel quel : AUCUNE duplication.
+        // InGame entry framing (Scene_InGameUpdate case 3, EA 0x52C6EF) — already written
+        // (Game/CameraWarpTick.h), reused as-is: NO duplication.
         game::InGame_InitCamera(camera, g_FollowState, self.x, self.y, self.z);
     }
 
-    // Suivi de cible + collision terrain/objets (Camera_UpdateCollision 0x538580). WG-02 :
-    // oracle RÉEL quand la zone est chargée (worldAssets non nul) -> la caméra ne traverse plus
-    // le décor ; sinon nullptr = comportement fidèle « zone non chargée » (bras précédent, sans
-    // correction). Free-look désactivé (aucun système UI de bascule côté ClientSource).
+    // Target follow + terrain/object collision (Camera_UpdateCollision 0x538580). WG-02:
+    // REAL oracle when the zone is loaded (worldAssets non-null) -> the camera no longer
+    // clips through scenery; else nullptr = faithful "zone not loaded" behavior (previous
+    // arm, unfixed). Free-look disabled (no toggle UI system on the ClientSource side).
     if (worldAssets) {
         const WorldCameraCollision collision(*worldAssets);
         game::Camera_UpdateCollision(camera, world, /*freeLookActive=*/false, /*camMode=*/0,

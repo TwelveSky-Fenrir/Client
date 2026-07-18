@@ -1,94 +1,92 @@
-// UI/LoginScene.h — scènes shell de connexion du client TwelveSky2 (ts2::ui).
+// UI/LoginScene.h — TwelveSky2 client login shell scenes (ts2::ui).
 //
-// Regroupe les trois scènes de l'amorçage réseau, câblées sur la même machine
-// d'états que le binaire (cSceneMgr 0x1676180) :
+// Groups the three network-bootstrap scenes, wired onto the same state machine
+// as the binary (cSceneMgr 0x1676180):
 //   - ServerSelect (id 2) : Scene_ServerSelect* (0x518B30 / 0x519250 / 0x519780)
 //   - Login        (id 3) : Scene_Login*        (0x51A8D0 / 0x51B020 / 0x51B5D0 / 0x51B780)
 //   - CharSelect   (id 4) : Scene_CharSelect*   (0x51BD90 / 0x51CED0 / 0x520F40 / 0x522E50)
 //
-// Flux de connexion (Docs/TS2_CLIENT_SHELL.md §4) :
-//   ServerSelect --clic--> Login --OK--> ConnectLoginServer + LoginRequest(op0x0B,
-//   ver 106) --succès--> CharSelect --Entrer--> ConnectGameServer(op0x0B,
+// Connection flow (Docs/TS2_CLIENT_SHELL.md §4):
+//   ServerSelect --click--> Login --OK--> ConnectLoginServer + LoginRequest(op0x0B,
+//   ver 106) --success--> CharSelect --Enter--> ConnectGameServer(op0x0B,
 //   WSAAsyncSelect 0x401) --code 0--> EnterWorld.
 //
-// Réécriture PRAGMATIQUE : un squelette fonctionnel qui compile et DESSINE
-// (aplats colorés via SpriteBatch + libellés via Font) et pilote le vrai flux
-// réseau (Net/Login.h) au-dessus de net::NetSystem, sans réimplémenter les 573
-// fonctions UI ni le chargement des sprites .IMG (atlas UI unk_8E8B50) — les
-// vrais assets se brancheront via gfx::SetSpriteTextureLoader.
+// PRAGMATIC rewrite: a functional skeleton that compiles and DRAWS (colored fills via
+// SpriteBatch + labels via Font) and drives the real network flow (Net/Login.h) on top of
+// net::NetSystem, without reimplementing the 573 UI functions or the .IMG sprite loading
+// (UI atlas unk_8E8B50) — real assets plug in via gfx::SetSpriteTextureLoader.
 //
-// Les champs/boutons sont des widgets ts2::ui (EditBox/Button) manipulés
-// EXCLUSIVEMENT par leur interface publique (setters/getters + événements).
+// Fields/buttons are ts2::ui widgets (EditBox/Button) manipulated EXCLUSIVELY through their
+// public interface (setters/getters + events).
 //
-// Convention Winsock du projet : Net/NetSystem.h -> Net/NetClient.h met
-// <winsock2.h> AVANT <windows.h> ; on l'inclut EN TÊTE pour garantir l'ordre.
+// Project Winsock convention: Net/NetSystem.h -> Net/NetClient.h puts <winsock2.h> BEFORE
+// <windows.h>; included FIRST here to guarantee the order.
 #pragma once
-#include "Net/NetSystem.h"      // net::NetSystem / net::NetClient (winsock2 avant windows)
+#include "Net/NetSystem.h"      // net::NetSystem / net::NetClient (winsock2 before windows)
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdint>
 #include <functional>
-#include <mutex>                 // std::mutex — protège l'état serveur partagé avec le thread de statut
+#include <mutex>                 // std::mutex — protects the server state shared with the status thread
 #include <string>
-#include <thread>                // std::thread — worker de statut serveur (Net_ServerStatusThread 0x518AB0)
+#include <thread>                // std::thread — server-status worker (Net_ServerStatusThread 0x518AB0)
 #include <vector>
 
 #include "UI/Widgets.h"         // ts2::ui::EditBox / ts2::ui::Button
-#include "UI/ConfirmMsgBox.h"   // ts2::ui::ConfirmMsgBox (MsgBox partagé dword_1822438, UI_MsgBox_* 0x5C08C0)
-#include "UI/ServerSelectRender.h" // ts2::ui::ServerSelectRender (rendu géométrie réelle ServerSelect)
-#include "UI/IntroRender.h"        // ts2::ui::IntroRender (rendu géométrie réelle Intro)
-#include "UI/EnterWorldRender.h"   // ts2::ui::EnterWorldRender (rendu géométrie réelle EnterWorld)
-#include "Game/IntroFlow.h"        // ts2::game::IntroState (paramètre de RenderIntro)
-#include "Game/EnterWorldFlow.h"   // ts2::game::EnterWorldFlowState (paramètre de RenderEnterWorld)
-#include "Game/CharSelectFlow.h"   // ts2::game::CharSelectState/Host — flux CharSelect fidèle
-#include "Game/ServerSelectFlow.h" // ts2::game::ServerSelectState/Host — flux ServerSelect fidèle (liste RÉELLE + statut)
-#include "Net/ServerStatusQuery.h" // ts2::net::QueryServerStatusLive — interrogation live population (contrat ss-netconnect)
-#include "Audio/AudioSystem.h"     // audio::SoundBuffer — BGM front-end Z000.BGM (Scene_ServerSelectUpdate 0x518BF7)
+#include "UI/ConfirmMsgBox.h"   // ts2::ui::ConfirmMsgBox (shared MsgBox dword_1822438, UI_MsgBox_* 0x5C08C0)
+#include "UI/ServerSelectRender.h" // ts2::ui::ServerSelectRender (real ServerSelect geometry render)
+#include "UI/IntroRender.h"        // ts2::ui::IntroRender (real Intro geometry render)
+#include "UI/EnterWorldRender.h"   // ts2::ui::EnterWorldRender (real EnterWorld geometry render)
+#include "Game/IntroFlow.h"        // ts2::game::IntroState (RenderIntro parameter)
+#include "Game/EnterWorldFlow.h"   // ts2::game::EnterWorldFlowState (RenderEnterWorld parameter)
+#include "Game/CharSelectFlow.h"   // ts2::game::CharSelectState/Host — faithful CharSelect flow
+#include "Game/ServerSelectFlow.h" // ts2::game::ServerSelectState/Host — faithful ServerSelect flow (REAL list + status)
+#include "Net/ServerStatusQuery.h" // ts2::net::QueryServerStatusLive — live population polling (ss-netconnect contract)
+#include "Audio/AudioSystem.h"     // audio::SoundBuffer — front-end BGM Z000.BGM (Scene_ServerSelectUpdate 0x518BF7)
 #include "Gfx/SpriteBatch.h"    // gfx::SpriteBatch, gfx::SetActiveSprite
 #include "Gfx/Font.h"           // gfx::Font
-#include "Gfx/GpuTexture.h"     // gfx::GpuTexture (fond réel ServerSelect/Login, atlas unk_8E8B50)
-#include "Gfx/Renderer.h"       // gfx::Renderer — requis par gfx::MeshRenderer::Init (aperçu 3D CharSelect)
+#include "Gfx/GpuTexture.h"     // gfx::GpuTexture (real ServerSelect/Login background, atlas unk_8E8B50)
+#include "Gfx/Renderer.h"       // gfx::Renderer — required by gfx::MeshRenderer::Init (CharSelect 3D preview)
 #include "Gfx/CharPreview3D.h"  // gfx::CharPreview3D + MeshRenderer/ModelCache/MotionCache (Char_RenderModel 0x527020)
 #include "Scene/SceneManager.h" // ts2::Scene
-#include <memory>               // std::unique_ptr — ModelCache/MotionCache (non copiables, ctor à arguments)
+#include <memory>               // std::unique_ptr — ModelCache/MotionCache (non-copyable, argument ctor)
 #include <unordered_map>
 
 namespace ts2::ui {
 
-// Sous-états de la scène Login (this[1] de cSceneMgr — Scene_LoginUpdate 0x51A8D0).
+// Login scene sub-states (this[1] of cSceneMgr — Scene_LoginUpdate 0x51A8D0).
 enum class LoginSub {
-    Init       = 0, // reset champs + focus ID
-    Idle       = 1, // idle + heartbeat GameGuard (/30 frames)
-    Trigger    = 2, // OK cliqué -> passe en DoLogin
-    DoLogin    = 3, // lit ID/PW, ConnectLoginServer + LoginRequest
-    // NoticeWait = 4 : AUCUN case 4 dans le vrai switch (tombe dans le
-    // `default: return result;` de Scene_LoginUpdate — no-op à chaque frame).
-    // La sortie réelle ne vient PAS de cette fonction : elle est pilotée par
-    // UI_NoticeDlg_OnLButtonUp 0x5C03F0 (clic OK sur la notice), qui pour
-    // TOUTES les notices ouvertes par Scene_LoginUpdate (this[4]=kind=2,
-    // confirmé par désassemblage — `push 2` avant CHAQUE appel
-    // UI_NoticeDlg_Open sur le singleton &byte_18225C8, sans exception, y
-    // compris les notices ID/PW vides) exécute inconditionnellement, au clic
-    // OK : Net_CloseSocket(&g_NetClient) + g_SceneMgr=2 (retour ServerSelect)
-    // + g_SceneSubState=0 (EA 0x5C04DF-0x5C0502). Autrement dit : fermer
-    // N'IMPORTE QUELLE notice affichée depuis l'écran Login renvoie TOUJOURS
-    // à ServerSelect et ferme la socket — même pour un simple champ vide.
-    // Reproduit fidèlement via le callback de fermeture de OpenNotice() (cf.
-    // DoLogin()) plutôt que par un auto-retour vers Idle (ancien comportement
-    // inventé, cf. Docs/TS2_LOGINSCENE_AUDIT.md §3.6 — écart fermé).
-    NoticeWait = 4, // no-op par frame ; sortie pilotée par le clic OK de la notice (cf. ci-dessus)
+    Init       = 0, // reset fields + focus ID
+    Idle       = 1, // idle + GameGuard heartbeat (/30 frames)
+    Trigger    = 2, // OK clicked -> switch to DoLogin
+    DoLogin    = 3, // reads ID/PW, ConnectLoginServer + LoginRequest
+    // NoticeWait = 4: NO case 4 in the real switch (falls into the
+    // `default: return result;` of Scene_LoginUpdate — no-op every frame).
+    // The real exit does NOT come from this function: it is driven by
+    // UI_NoticeDlg_OnLButtonUp 0x5C03F0 (OK click on the notice), which for
+    // ALL notices opened by Scene_LoginUpdate (this[4]=kind=2, confirmed by
+    // disassembly — `push 2` before EVERY UI_NoticeDlg_Open call on the
+    // singleton &byte_18225C8, without exception, including the empty
+    // ID/PW notices) unconditionally executes, on the OK click:
+    // Net_CloseSocket(&g_NetClient) + g_SceneMgr=2 (return to ServerSelect)
+    // + g_SceneSubState=0 (EA 0x5C04DF-0x5C0502). In other words: closing
+    // ANY notice shown from the Login screen ALWAYS returns to ServerSelect
+    // and closes the socket — even for a simple empty field.
+    // Faithfully reproduced via OpenNotice()'s close callback (cf.
+    // DoLogin()) rather than an auto-return to Idle (old invented
+    // behavior, cf. Docs/TS2_LOGINSCENE_AUDIT.md §3.6 — gap closed).
+    NoticeWait = 4, // no-op every frame; exit driven by the notice's OK click (cf. above)
 };
 
-// La liste de serveurs et le statut/population de chaque entrée sont désormais portés par
-// le module fidèle Game/ServerSelectFlow.h (game::ServerSelectState/ServerEntry) : source
-// de vérité du FLUX (BuildServerList/PollServerStatuses/UpdateServerSelect/OnServerClicked,
-// mirroir de Scene_ServerSelect* 0x518B30/0x519250/0x519780 + Net_ServerStatusThread
-// 0x518AB0). LoginScene ne redéfinit plus de ServerEntry local (l'ancien struct ts2::ui
-// dupliquait ces champs) — cf. membre serverState_ ci-dessous.
+// The server list and each entry's status/population are now carried by the faithful module
+// Game/ServerSelectFlow.h (game::ServerSelectState/ServerEntry): source of truth for the FLOW
+// (BuildServerList/PollServerStatuses/UpdateServerSelect/OnServerClicked, mirroring
+// Scene_ServerSelect* 0x518B30/0x519250/0x519780 + Net_ServerStatusThread 0x518AB0).
+// LoginScene no longer defines a local ServerEntry (the old ts2::ui struct duplicated these
+// fields) — cf. member serverState_ below.
 
-// ---------------------------------------------------------------------------
-// LoginScene — machine des scènes 2/3/4. À brancher dans SceneManager : sur
-// Update/Render/OnLButton*, déléguer aux méthodes ci-dessous puis appliquer
+// LoginScene — state machine for scenes 2/3/4. Wire into SceneManager: on
+// Update/Render/OnLButton*, delegate to the methods below then apply
 // PendingScene() (Change + ClearPending).
 class LoginScene {
 public:
@@ -97,340 +95,340 @@ public:
     LoginScene(const LoginScene&) = delete;
     LoginScene& operator=(const LoginScene&) = delete;
 
-    // Crée la police + le sprite batch depuis le device, construit la liste des
-    // serveurs et réinitialise l'écran de login. `net` = système réseau partagé
-    // (socket dword_8156A0 + dispatcher) ; `notifyWnd` = fenêtre des
-    // notifications socket asynchrones (WM_USER+1).
+    // Creates the font + sprite batch from the device, builds the server list and resets the
+    // login screen. `net` = shared network system (socket dword_8156A0 + dispatcher);
+    // `notifyWnd` = window receiving async socket notifications (WM_USER+1).
     //
-    // `serverModeFlag` = dword_166918C (g_ServerModeFlag) = GameConfig::buildVariant
-    // (1er jeton `/N/...` de la ligne de commande, parsé par WinMain EA 0x4609F1/
-    // 0x460BAE). Pilote la construction de la table serveurs (BuildServerList, keyée
-    // sur ce flag, fidèle à Scene_ServerSelectUpdate 0x518B30). DÉFAUT 0 = mode
-    // SingleServer, le SEUL mode actif pour la commande documentée `/0/0/2/1024/768`
-    // — SceneManager peut passer cfg.buildVariant pour couvrir les builds non nuls
-    // (cf. « Points d'attention » de la doc de session).
+    // `serverModeFlag` = dword_166918C (g_ServerModeFlag) = GameConfig::buildVariant (1st
+    // `/N/...` token of the command line, parsed by WinMain EA 0x4609F1/0x460BAE). Drives the
+    // server table construction (BuildServerList, keyed on this flag, faithful to
+    // Scene_ServerSelectUpdate 0x518B30). DEFAULT 0 = SingleServer mode, the ONLY mode active
+    // for the documented command `/0/0/2/1024/768` — SceneManager can pass cfg.buildVariant to
+    // cover non-zero builds (cf. "Points to watch" of the session doc).
     //
-    // `renderer` (OPTIONNEL, défaut nullptr) = le gfx::Renderer possédé par SceneManager.
-    // Requis UNIQUEMENT par l'aperçu 3D de CharSelect : gfx::MeshRenderer::Init() prend un
-    // `gfx::Renderer&` (dont il ne lit que Device(), cf. Gfx/MeshRenderer.cpp) et il n'existe
-    // aucun moyen de fabriquer un Renderer depuis un IDirect3DDevice9* (Renderer::Init crée
-    // son PROPRE device). Paramètre DÉFAUTÉ pour ne pas casser l'unique appelant existant
-    // (Scene/SceneManager.cpp:337), qui n'est pas un fichier de ce front.
-    // ⚠ TANT QUE SceneManager NE PASSE PAS `&renderer` ICI, charPreviewReady_ reste false et
-    //   les 4 Char_RenderModel (0x51D361/0x51D3CC/0x51D429/0x51D480) ne dessinent RIEN.
-    //   -> wiring TODO CHARSELECT_3D (cf. rapport de front cs-render-2d).
+    // `renderer` (OPTIONAL, default nullptr) = the gfx::Renderer owned by SceneManager.
+    // Required ONLY by the CharSelect 3D preview: gfx::MeshRenderer::Init() takes a
+    // `gfx::Renderer&` (of which it only reads Device(), cf. Gfx/MeshRenderer.cpp), and there
+    // is no way to build a Renderer from an IDirect3DDevice9* (Renderer::Init creates its OWN
+    // device). Defaulted parameter so as not to break the single existing caller
+    // (Scene/SceneManager.cpp:337), which is not a file of this front.
+    // ⚠ AS LONG AS SceneManager DOES NOT PASS `&renderer` HERE, charPreviewReady_ stays false
+    //   and the 4 Char_RenderModel calls (0x51D361/0x51D3CC/0x51D429/0x51D480) draw NOTHING.
+    //   -> wiring TODO CHARSELECT_3D (cf. front report cs-render-2d).
     bool Init(IDirect3DDevice9* device, net::NetSystem* net, HWND notifyWnd,
               int screenW, int screenH, int serverModeFlag = 0,
               gfx::Renderer* renderer = nullptr);
     void Shutdown();
 
     void SetScreenSize(int w, int h) { screenW_ = w; screenH_ = h; }
-    void OnDeviceLost();   // autour de IDirect3DDevice9::Reset
+    void OnDeviceLost();   // around IDirect3DDevice9::Reset
     void OnDeviceReset();
 
-    // --- Dispatch par scène (branché dans les cases 2/3/4 de SceneManager) ---
+    // --- Per-scene dispatch (wired into SceneManager cases 2/3/4) ---
     void Update(ts2::Scene scene);
     void Render(ts2::Scene scene);
 
-    // Rendu de l'écran Intro (Scene::Intro), câblé par SceneManager (ts2::game::IntroState
-    // et son flux restent détenus par SceneManager, cf. Game/IntroFlow.h — LoginScene ne
-    // pilote AUCUN état ici). Réutilise simplement les ressources GPU déjà créées par
-    // Init() (sprite batch + police + texture blanche) : LoginScene est initialisée avant
-    // l'Intro dans le bootstrap (SceneManager::Init crée+Init() login_ en premier), donc
-    // ces ressources sont déjà prêtes quand l'Intro joue.
+    // Renders the Intro screen (Scene::Intro), driven by SceneManager (ts2::game::IntroState
+    // and its flow remain owned by SceneManager, cf. Game/IntroFlow.h — LoginScene drives NO
+    // state here). Simply reuses the GPU resources already created by Init() (sprite batch +
+    // font + white texture): LoginScene is initialized before the Intro in the bootstrap
+    // (SceneManager::Init creates+Init()s login_ first), so these resources are already ready
+    // when the Intro plays.
     void RenderIntro(const game::IntroState& state);
 
-    // Rendu de l'écran de transition EnterWorld (Scene::EnterWorld), câblé par
-    // SceneManager (ts2::game::EnterWorldFlowState reste détenu par SceneManager, cf.
-    // Game/EnterWorldFlow.h — même découplage que RenderIntro ci-dessus). `zoneId` = même
-    // valeur que celle passée à game::EnterWorldFlow_Update (dword_1675A9C d'origine).
-    // Réutilise les ressources GPU déjà créées par Init() (sprite batch + police + texture
-    // blanche) — voir UI/EnterWorldRender.h pour la géométrie réelle reproduite
-    // (Scene_EnterWorldRender 0x52C260).
+    // Renders the EnterWorld transition screen (Scene::EnterWorld), driven by SceneManager
+    // (ts2::game::EnterWorldFlowState remains owned by SceneManager, cf.
+    // Game/EnterWorldFlow.h — same decoupling as RenderIntro above). `zoneId` = the same value
+    // passed to game::EnterWorldFlow_Update (originally dword_1675A9C). Reuses the GPU
+    // resources already created by Init() (sprite batch + font + white texture) — see
+    // UI/EnterWorldRender.h for the reproduced real geometry (Scene_EnterWorldRender 0x52C260).
     void RenderEnterWorld(const game::EnterWorldFlowState& state, int zoneId);
 
     void OnMouseDown(ts2::Scene scene, int x, int y);
     void OnMouseUp(ts2::Scene scene, int x, int y);
 
-    // Saisie clavier (à relayer depuis App_WndProc : WM_CHAR -> OnChar,
-    // WM_KEYDOWN -> OnKeyDown). N'a de sens qu'en scène Login.
+    // Keyboard input (relayed from App_WndProc: WM_CHAR -> OnChar, WM_KEYDOWN -> OnKeyDown).
+    // Only meaningful in the Login scene.
     void OnChar(char c);
     void OnKeyDown(int vk);
 
-    // Transition demandée par la machine (None = rester). Le SceneManager doit la
-    // consommer après Update/OnMouse* : Change(PendingScene()) puis ClearPending().
+    // Transition requested by the state machine (None = stay). SceneManager must consume it
+    // after Update/OnMouse*: Change(PendingScene()) then ClearPending().
     ts2::Scene PendingScene() const { return pending_; }
     void       ClearPending()       { pending_ = ts2::Scene::None; }
 
 private:
-    // --- ServerSelect (scène 2) — flux fidèle : Game/ServerSelectFlow.h pilote la LISTE
-    // RÉELLE (BuildServerList) et l'interrogation de population (PollServerStatuses via un
-    // thread worker, cf. LaunchServerStatusThread) ; LoginScene route les entrées et dessine.
+    // --- ServerSelect (scene 2) — faithful flow: Game/ServerSelectFlow.h drives the REAL
+    // LIST (BuildServerList) and the population polling (PollServerStatuses via a worker
+    // thread, cf. LaunchServerStatusThread); LoginScene routes input and draws.
     void ServerSelectUpdate();
     void ServerSelectRender();
     void ServerSelectOnMouseDown(int x, int y);
-    void ServerSelectOnMouseUp(int x, int y);   // Scene_ServerSelectOnMouseUp 0x519AC0 (confirme la sortie)
+    void ServerSelectOnMouseUp(int x, int y);   // Scene_ServerSelectOnMouseUp 0x519AC0 (confirms exit)
     RECT ServerRowRect(int i) const;
-    // Lance le worker de statut serveur (fidèle à CreateThread(Net_ServerStatusThread
-    // 0x518AB0) au passage sous-état Init->Idle) : interroge en TCP bloquant borné
-    // (ts2::net::QueryServerStatusLive) HORS boucle de rendu, publie les populations sous
-    // verrou (serverMutex_). Le rendu lit ces int32 « au fur et à mesure » (curPop==-1 = en cours).
+    // Launches the server-status worker (faithful to CreateThread(Net_ServerStatusThread
+    // 0x518AB0) on the Init->Idle sub-state transition): polls over bounded blocking TCP
+    // (ts2::net::QueryServerStatusLive) OUTSIDE the render loop, publishes populations under
+    // lock (serverMutex_). The render reads these int32 values "as they arrive" (curPop==-1 =
+    // still polling).
     void LaunchServerStatusThread();
 
-    // --- Login (scène 3) ---
+    // --- Login (scene 3) ---
     void LoginUpdate();          // Scene_LoginUpdate 0x51A8D0
     void LoginRender();          // Scene_LoginRender 0x51B020
     void LoginOnMouseDown(int x, int y); // Scene_LoginOnMouseDown 0x51B5D0
     void LoginOnMouseUp(int x, int y);   // Scene_LoginOnMouseUp   0x51B780
-    void DoLogin();              // sous-état 3
-    // Action kind=2 de UI_NoticeDlg_OnLButtonUp 0x5C03F0 (EA 0x5C04DF-0x5C0502) : ferme la
-    // socket et revient à ServerSelect. Passée comme `onClose` à OpenNotice() par DoLogin()
-    // pour les 4 notices qu'elle ouvre (cf. LoginSub::NoticeWait).
+    void DoLogin();              // sub-state 3
+    // Action kind=2 of UI_NoticeDlg_OnLButtonUp 0x5C03F0 (EA 0x5C04DF-0x5C0502): closes the
+    // socket and returns to ServerSelect. Passed as `onClose` to OpenNotice() by DoLogin() for
+    // the 4 notices it opens (cf. LoginSub::NoticeWait).
     void AbortLoginToServerSelect();
     void LayoutLogin(int px, int py);
     void DrawFieldValue(const EditBox& box, int tx, int ty);
-    // Caret réel du champ de saisie (Sprite2D_Draw(unk_8EA42C = slot 43 de l'atlas UI) à
-    // panneau+largeurTexte+127, y — EA 0x51B34F (ID) / 0x51B445 (PW)). Dessiné dans le batch
-    // SPRITE quand le champ est focalisé ; repli caret texte « | » (batch Font, DrawFieldValue)
-    // uniquement si le sprite slot 43 est indisponible (cf. CaretSpriteReady).
+    // Real input-field caret (Sprite2D_Draw(unk_8EA42C = slot 43 of the UI atlas) at
+    // panel+textWidth+127, y — EA 0x51B34F (ID) / 0x51B445 (PW)). Drawn in the SPRITE batch
+    // when the field is focused; falls back to a text caret "|" (Font batch, DrawFieldValue)
+    // only if sprite slot 43 is unavailable (cf. CaretSpriteReady).
     void DrawFieldCaretSprite(const EditBox& box, int tx, int ty);
-    bool CaretSpriteReady();     // true si le sprite caret réel (slot 43) est chargeable
+    bool CaretSpriteReady();     // true if the real caret sprite (slot 43) is loadable
     void ResetLoginFields();
-    void SetFocus(int field);    // 0=aucun, 1=ID, 2=PW (dword_1668FC0)
+    void SetFocus(int field);    // 0=none, 1=ID, 2=PW (dword_1668FC0)
 
-    // --- CharSelect (scène 4) — flux fidèle : Game/CharSelectFlow.h::CharSelectState/
-    // Host pilotent la logique (sous-états/création/suppression/entrée) ; LoginScene ne
-    // fait plus que router les entrées et dessiner l'état courant (cf. Docs/TS2_CHARSELECT_AUDIT.md).
+    // --- CharSelect (scene 4) — faithful flow: Game/CharSelectFlow.h::CharSelectState/Host
+    // drive the logic (sub-states/creation/deletion/entry); LoginScene now only routes input
+    // and draws the current state (cf. Docs/TS2_CHARSELECT_AUDIT.md).
     void CharSelectUpdate();
     void CharSelectRender();
     void CharSelectOnMouseDown(int x, int y);
     void CharSelectOnMouseUp(int x, int y);
-    void BuildCharSelectHost();  // construit charHost_ (appelé une fois depuis Init())
-    void LayoutCharSelect();     // écran Liste (this[15714]==1)
-    void LayoutCreateForm();     // écran Formulaire de création (this[15714]==2)
+    void BuildCharSelectHost();  // builds charHost_ (called once from Init())
+    void LayoutCharSelect();     // List screen (this[15714]==1)
+    void LayoutCreateForm();     // create-form screen (this[15714]==2)
     void CharListRender();
     void CreateFormRender();
-    // Peint le MsgBox modal partagé (msgBox_) en QUEUE de la scène active (UI_RenderAllDialogs
-    // 0x5AE2D0). Cursor de survol = position PHYSIQUE (CharSelectCursorClient, comme le binaire
-    // @0x5AE2DD). Appelé après tout le reste du rendu de ServerSelect ET de CharSelect.
+    // Draws the shared modal MsgBox (msgBox_) LAST for the active scene (UI_RenderAllDialogs
+    // 0x5AE2D0). Hover cursor = PHYSICAL position (CharSelectCursorClient, like the binary
+    // @0x5AE2DD). Called after all the rest of both ServerSelect's AND CharSelect's rendering.
     void RenderMsgBox();
 
-    // --- CharSelect : ordre de peintre EXACT (Scene_CharSelectRender 0x51CED0) ---
-    // fond (Begin2D..End2D) -> PASSE 3D -> UI 2D (Begin2D..End2D). Les trois helpers
-    // ci-dessous découpent la fonction d'origine dans CET ordre ; CharSelectRender() les
-    // enchaîne. Empiler fond+UI dans un seul Begin2D puis dessiner la 3D CASSE l'ordre.
+    // --- CharSelect: EXACT paint order (Scene_CharSelectRender 0x51CED0) ---
+    // background (Begin2D..End2D) -> 3D PASS -> 2D UI (Begin2D..End2D). The three helpers
+    // below split the original function in THIS order; CharSelectRender() chains them.
+    // Stacking background+UI into a single Begin2D and drawing the 3D elsewhere BREAKS the
+    // order.
     void CharSelectRenderBg();       // Sprite2D_DrawScaled(atlas+148*this[15713],0,0,nW/1024,nH/768) @0x51D2AB
-    void CharSelectRenderPreview3D();// 4x Char_RenderModel entre End2D 0x51D2B5 et Begin2D 0x51D48A
-    void CharSelectRenderUi2D();     // dispatch d'écran 2D (0x51D4CB) : Liste / Formulaire
+    void CharSelectRenderPreview3D();// 4x Char_RenderModel between End2D 0x51D2B5 and Begin2D 0x51D48A
+    void CharSelectRenderUi2D();     // 2D screen dispatch (0x51D4CB): List / Form
 
-    // Panneau de détail GAUCHE de l'écran Liste, origine ABSOLUE (15,19).
-    // GARDE : `cmp [ecx+0F58Ch], -1 ; jz loc_51DF0D` @0x51D7CA -> RIEN si aucun slot
-    // sélectionné (garde ABSENTE de la spec consolidée §8.3, re-prouvée par désassemblage).
+    // LEFT detail panel of the List screen, ABSOLUTE origin (15,19).
+    // GUARD: `cmp [ecx+0F58Ch], -1 ; jz loc_51DF0D` @0x51D7CA -> NOTHING if no slot is
+    // selected (guard MISSING from the consolidated spec §8.3, re-proven by disassembly).
     void CharDetailPanelRender();
-    // Colonne des 10 boutons (origine (nWidth-140, nHeight-301), pas 37 ; #8/#9 ABSOLUS).
+    // Column of 10 buttons (origin (nWidth-140, nHeight-301), pitch 37; #8/#9 ABSOLUTE).
     void CharButtonColumnRender();
 
-    // Motif canonique du bouton 3 ÉTATS (slots CONSÉCUTIFS n/n+1/n+2), EA de référence
-    // 0x51DF32-0x51DF9A (ENTRER) — identique pour les 10 boutons, sans exception :
-    //   if (latch)                          Draw(base+2 /*pressé*/, x, y);
-    //   else if (HitTest(base /*normal*/))  Draw(base+1 /*survol*/, x, y);
+    // Canonical 3-STATE button pattern (CONSECUTIVE slots n/n+1/n+2), reference EA
+    // 0x51DF32-0x51DF9A (ENTER) — identical for the 10 buttons, without exception:
+    //   if (latch)                          Draw(base+2 /*pressed*/, x, y);
+    //   else if (HitTest(base /*normal*/))  Draw(base+1 /*hover*/, x, y);
     //   else                                Draw(base   /*normal*/, x, y);
-    // ⚠ Le hit-test porte TOUJOURS sur le sprite NORMAL, même quand un autre état est peint.
+    // ⚠ The hit-test ALWAYS targets the NORMAL sprite, even when another state is painted.
     void DrawTriStateSprite(int slotNormal, int x, int y, bool latched, int mouseX, int mouseY);
-    // Sprite2D_HitTest 0x4D6C50 sur un slot d'atlas : bornes >= gauche/haut et < droite/bas.
-    // Renvoie false si le sprite n'est pas chargeable (dimensions inconnues -> aucun rect).
+    // Sprite2D_HitTest 0x4D6C50 on an atlas slot: bounds >= left/top and < right/bottom.
+    // Returns false if the sprite is not loadable (unknown dimensions -> no rect).
     bool AtlasHitTest(int slotIndex, int x, int y, int mouseX, int mouseY);
 
-    // Lit un int32 dans la fiche BRUTE de 10088 o du slot `slot` (net::g_CharRecords[slot]
-    // == &unk_1669380 + 0x2768*slot). Nécessaire parce que game::CharSlotInfo
-    // (Game/CharSelectFlow.h, HORS de ce front) n'expose PAS les champs que le rendu lit :
-    // +60 (dword_16693BC, bonus de niveau) et +5708 (dword_166A9CC, 2e palier de
-    // renaissance) pilotent les DEUX cascades de tier à 4 paliers de l'écran Liste
-    // (@0x51D55C/0x51D572) et du panneau de détail (@0x51D7FA/0x51D815), et les 11 champs du
-    // panneau de détail (+16/+88/+92/+100/+5432/+5484/+5488/+5568/+5572/+9408) n'y sont pas
-    // non plus. C'est EXACTEMENT la source du binaire, qui indexe ces mêmes globals à plat.
-    // Renvoie 0 si `slot` est hors [0, net::kCharRecordCount).
+    // Reads an int32 from the RAW 10088-byte sheet of slot `slot` (net::g_CharRecords[slot]
+    // == &unk_1669380 + 0x2768*slot). Needed because game::CharSlotInfo
+    // (Game/CharSelectFlow.h, OUTSIDE this front) does NOT expose the fields the render reads:
+    // +60 (dword_16693BC, level bonus) and +5708 (dword_166A9CC, 2nd rebirth tier) drive BOTH
+    // 4-tier cascades of the List screen (@0x51D55C/0x51D572) and of the detail panel
+    // (@0x51D7FA/0x51D815), and the 11 detail-panel fields
+    // (+16/+88/+92/+100/+5432/+5484/+5488/+5568/+5572/+9408) are not exposed either. This is
+    // EXACTLY the binary's source, which indexes these same globals flatly.
+    // Returns 0 if `slot` is outside [0, net::kCharRecordCount).
     static int32_t CharRecI32(int32_t slot, int byteOffset);
 
-    // UI_MeasureNumberText 0x53FCA0 + UI_DrawNumberValue 0x53FCC0 (police bitmap
-    // unk_1685740) : `x = cx - largeur/2` (idiome `movzx/cdq/sub/sar 1` @0x51D73F-0x51D747).
+    // UI_MeasureNumberText 0x53FCA0 + UI_DrawNumberValue 0x53FCC0 (bitmap font
+    // unk_1685740): `x = cx - width/2` (idiom `movzx/cdq/sub/sar 1` @0x51D73F-0x51D747).
     void DrawNumberCentered(const char* text, int centerX, int y);
 
-    // GetPhysicalCursorPos(&pt) @0x51D493 puis ScreenToClient(hWndParent 0x815184, &pt)
-    // @0x51D4A4 — DISTINCT de CursorClient() (GetCursorPos), utilisé par les autres scènes.
-    // Le survol de CharSelect est recalculé PAR FRAME dans le rendu depuis cette position
-    // physique live ; AUCUN index de survol n'est mis en cache dans Update.
+    // GetPhysicalCursorPos(&pt) @0x51D493 then ScreenToClient(hWndParent 0x815184, &pt)
+    // @0x51D4A4 — DISTINCT from CursorClient() (GetCursorPos), used by the other scenes.
+    // CharSelect hover is recomputed PER FRAME in the render from this live physical
+    // position; NO hover index is cached in Update.
     POINT CharSelectCursorClient() const;
 
-    // --- Notice modale (NoticeDlg 0x5C0280/0x5C03F0 simplifiée) ---
-    // `onClose` reproduit l'action déclenchée par UI_NoticeDlg_OnLButtonUp au clic OK,
-    // indexée par this[4] (« kind »). Les notices ouvertes par Scene_LoginUpdate ont
-    // TOUTES kind=2 (cf. commentaire de LoginSub::NoticeWait) -> onClose doit fermer la
-    // socket + revenir à ServerSelect ; nullptr (défaut) = fermeture simple sans effet de
-    // bord (comportement des notices CharSelect, kind non vérifié ici, hors périmètre).
+    // --- Modal notice (simplified NoticeDlg 0x5C0280/0x5C03F0) ---
+    // `onClose` reproduces the action triggered by UI_NoticeDlg_OnLButtonUp on the OK click,
+    // indexed by this[4] ("kind"). Notices opened by Scene_LoginUpdate ALL have kind=2 (cf.
+    // LoginSub::NoticeWait comment) -> onClose must close the socket + return to ServerSelect;
+    // nullptr (default) = plain close with no side effect (behavior of CharSelect notices,
+    // kind not verified here, out of scope).
     void OpenNotice(const std::string& text, std::function<void()> onClose = nullptr);
-    void CloseNotice(); // ferme la notice et exécute onClose (clic OK / Entrée / Échap)
+    void CloseNotice(); // closes the notice and executes onClose (OK click / Enter / Escape)
     void RenderNotice();
 
-    // --- Helpers de rendu / entrée ---
-    void  FillRect(int x, int y, int w, int h, D3DCOLOR color); // via texture blanche 1x1
+    // --- Render / input helpers ---
+    void  FillRect(int x, int y, int w, int h, D3DCOLOR color); // via the 1x1 white texture
     POINT CursorClient() const;
     void  CreateWhiteTexture();
-    // Construit la table de serveurs RÉELLE via game::BuildServerList(serverState_, mode)
-    // (mode dérivé de serverModeFlag_). Remplace l'ancienne construction locale + AddServer().
+    // Builds the REAL server table via game::BuildServerList(serverState_, mode) (mode derived
+    // from serverModeFlag_). Replaces the old local construction + AddServer().
     void  BuildServerList();
-    static std::string ConnectErrText(int code);   // codes kNet* -> StrTable005 réel (game::Str)
-    static std::string LoginErrText(int result);   // code serveur -> StrTable005 réel (game::Str)
+    static std::string ConnectErrText(int code);   // kNet* codes -> real StrTable005 (game::Str)
+    static std::string LoginErrText(int result);   // server code -> real StrTable005 (game::Str)
 
-    // --- Fond réel ServerSelect/Login (atlas unk_8E8B50, cf. LoginScene.cpp) ---
-    // Scene_ServerSelectUpdate 0x518B30 (EA 0x518C29-0x518C40) : this[168] = 2380 ou 2381
-    // (Rng_Next()%2, 50/50) UNE SEULE FOIS par entrée dans ServerSelect ; Scene_LoginRender
-    // 0x51B020 (EA 0x51B207) RELIT LE MÊME this[168] (mémoire de scène partagée, non reset
-    // entre ServerSelect et Login) -> Login affiche TOUJOURS le même fond que le tirage
-    // ServerSelect qui a précédé. Reproduit ici par bgAtlasSlot_ (tiré une fois dans Init(),
-    // simplification : l'original re-tire à chaque (ré)entrée dans ServerSelect, non modélisé
-    // par ce squelette qui n'a pas de sous-état ServerSelect « Init » distinct).
-    gfx::GpuTexture* GetAtlasSprite(int slotIndex); // lazy-load + cache (nullptr si échec)
-    void DrawFullscreenBg(int slotIndex); // texture réelle plein écran (rien si non chargée — zéro repli)
+    // --- Real ServerSelect/Login background (atlas unk_8E8B50, cf. LoginScene.cpp) ---
+    // Scene_ServerSelectUpdate 0x518B30 (EA 0x518C29-0x518C40): this[168] = 2380 or 2381
+    // (Rng_Next()%2, 50/50) drawn ONCE per entry into ServerSelect; Scene_LoginRender 0x51B020
+    // (EA 0x51B207) RE-READS THE SAME this[168] (shared scene memory, not reset between
+    // ServerSelect and Login) -> Login ALWAYS shows the same background as the preceding
+    // ServerSelect draw. Reproduced here via bgAtlasSlot_ (drawn once in Init(),
+    // simplification: the original re-draws it on every (re)entry into ServerSelect, not
+    // modeled by this skeleton, which has no distinct ServerSelect "Init" sub-state).
+    gfx::GpuTexture* GetAtlasSprite(int slotIndex); // lazy-load + cache (nullptr on failure)
+    void DrawFullscreenBg(int slotIndex); // real fullscreen texture (nothing if not loaded — zero fallback)
 
-    // Câble la paire générique de sprites "Confirm"/"Cancel" (slots 9/10 et 12/13 du pool
-    // partagé unk_8E8B50 — Docs/TS2_LOGIN_BUTTON_ASSETS.md §4) sur un couple de boutons,
-    // avec repli sur le rect coloré existant (SetFallbackColors/SetFallbackTexture) si les
-    // fichiers .IMG sont réellement absents/illisibles au runtime. Réutilisée pour Login
-    // (OK/Quitter), CharSelect liste (Entrer/Quitter) et la confirmation de suppression
-    // (Oui/Non) — même paire de sprites que le binaire réutilise dans
-    // Scene_CharSelectRender et les dialogues modales (doc §5, xrefs confirmées).
+    // Wires the generic "Confirm"/"Cancel" sprite pair (slots 9/10 and 12/13 of the shared
+    // pool unk_8E8B50 — Docs/TS2_LOGIN_BUTTON_ASSETS.md §4) onto a button pair, falling back to
+    // the existing colored rect (SetFallbackColors/SetFallbackTexture) if the .IMG files are
+    // genuinely missing/unreadable at runtime. Reused for Login (OK/Quit), CharSelect list
+    // (Enter/Quit) and the delete confirmation (Yes/No) — the same sprite pair the binary
+    // reuses in Scene_CharSelectRender and the modal dialogs (doc §5, confirmed xrefs).
     void ApplyConfirmCancelSkin(Button& confirmBtn, Button& cancelBtn);
 
-    // --- Dépendances ---
+    // --- Dependencies ---
     IDirect3DDevice9* device_    = nullptr;
-    net::NetSystem*   net_       = nullptr;         // socket + dispatcher partagés
+    net::NetSystem*   net_       = nullptr;         // shared socket + dispatcher
     HWND              notifyWnd_ = nullptr;
     int               screenW_   = 1024;
     int               screenH_   = 768;
 
-    gfx::SpriteBatch  sprites_;                 // batch 2D (aplats colorés + sprites)
-    gfx::Font         font_;                    // police GXD (texte)
-    IDirect3DTexture9* whiteTex_ = nullptr;     // 1x1 blanc (modulé -> aplats)
-    ts2::ui::ServerSelectRender serverSelectRender_; // rendu réel ServerSelect (positions/dimensions binaire, cf. UI/ServerSelectRender.h)
-    ts2::ui::IntroRender        introRender_;        // rendu réel Intro (positions/dimensions binaire, cf. UI/IntroRender.h)
-    ts2::ui::EnterWorldRender   enterWorldRender_;   // rendu réel EnterWorld (positions/dimensions binaire, cf. UI/EnterWorldRender.h)
+    gfx::SpriteBatch  sprites_;                 // 2D batch (colored fills + sprites)
+    gfx::Font         font_;                    // GXD font (text)
+    IDirect3DTexture9* whiteTex_ = nullptr;     // 1x1 white (modulated -> fills)
+    ts2::ui::ServerSelectRender serverSelectRender_; // real ServerSelect render (binary positions/dimensions, cf. UI/ServerSelectRender.h)
+    ts2::ui::IntroRender        introRender_;        // real Intro render (binary positions/dimensions, cf. UI/IntroRender.h)
+    ts2::ui::EnterWorldRender   enterWorldRender_;   // real EnterWorld render (binary positions/dimensions, cf. UI/EnterWorldRender.h)
 
-    // --- État Login ---
+    // --- Login state ---
     LoginSub loginSub_ = LoginSub::Init;
-    int      frame_    = 0;                     // this[2] (compteur sous-état)
+    int      frame_    = 0;                     // this[2] (sub-state counter)
     int      focusField_ = 0;                   // dword_1668FC0
     EditBox  idBox_, pwBox_;                    // dword_1668FC4 / dword_1668FC8
     Button   okBtn_, exitBtn_, optBtn_;         // this[3] / this[4] / this[5]
     bool     shadowsEnabled_ = false;           // g_Opt_GfxDetailShadows 0x84DEF8
-    std::string loggedUser_;                    // ID validé (affiché en CharSelect)
+    std::string loggedUser_;                    // validated ID (shown in CharSelect)
 
-    // --- Serveurs (flux fidèle, cf. Game/ServerSelectFlow.h) ---
-    // serverState_ = table serveurs + populations + sélection (mirroir de la portion
-    // ServerSelect de g_SceneMgr 0x1676180). serverHost_ = callbacks réseau/persistance :
-    // QueryServerStatus branché sur ts2::net::QueryServerStatusLive (contrat ss-netconnect,
-    // Net_QueryServerStatus 0x519CC0), SaveLastServer sur config::Cfg_SaveLastServer.
+    // --- Servers (faithful flow, cf. Game/ServerSelectFlow.h) ---
+    // serverState_ = server table + populations + selection (mirrors the ServerSelect portion
+    // of g_SceneMgr 0x1676180). serverHost_ = network/persistence callbacks: QueryServerStatus
+    // wired to ts2::net::QueryServerStatusLive (ss-netconnect contract,
+    // Net_QueryServerStatus 0x519CC0), SaveLastServer to config::Cfg_SaveLastServer.
     game::ServerSelectState serverState_;
     game::ServerSelectHost  serverHost_;
-    int  serverModeFlag_ = 0;                   // dword_166918C (g_ServerModeFlag) = buildVariant :
-                                                // pilote BuildServerList (0 = SingleServer .com actif ;
-                                                // 1/2 = SingleServer autre hôte ; sinon MultiChannel)
+    int  serverModeFlag_ = 0;                   // dword_166918C (g_ServerModeFlag) = buildVariant:
+                                                // drives BuildServerList (0 = SingleServer .com active;
+                                                // 1/2 = SingleServer other host; else MultiChannel)
 
-    // Worker de statut serveur (fidèle : CreateThread(Net_ServerStatusThread 0x518AB0)).
-    // Interroge les populations en TCP bloquant borné HORS boucle de rendu. serverMutex_
-    // protège l'accès concurrent aux champs population (int32) de serverState_.servers.
+    // Server-status worker (faithful: CreateThread(Net_ServerStatusThread 0x518AB0)). Polls
+    // populations over bounded blocking TCP OUTSIDE the render loop. serverMutex_ protects
+    // concurrent access to the (int32) population fields of serverState_.servers.
     std::thread statusThread_;
     std::mutex  serverMutex_;
-    bool        statusThreadLaunched_ = false;  // lancement unique (au passage Init->Idle)
+    bool        statusThreadLaunched_ = false;  // launched once (on the Init->Idle transition)
 
-    // BGM du front-end (Scene_ServerSelectUpdate 0x518BF7 : Snd_LoadOggToBuffers(
-    // "G03_GDATA\D10_WORLDBGM\Z000.BGM", boucle)). Chargée+jouée une seule fois au même
-    // passage Init->Idle que le worker de statut ; loop continu couvrant ServerSelect ET
-    // Login (front-end partagé). Décodage Ogg->PCM via le callback branché dans
-    // AudioSystem::Init (Audio/OggVorbisDecoder).
+    // Front-end BGM (Scene_ServerSelectUpdate 0x518BF7: Snd_LoadOggToBuffers(
+    // "G03_GDATA\D10_WORLDBGM\Z000.BGM", loop)). Loaded+played once, on the same Init->Idle
+    // transition as the status worker; continuous loop covering both ServerSelect AND Login
+    // (shared front-end). Ogg->PCM decoding via the callback wired in AudioSystem::Init
+    // (Audio/OggVorbisDecoder).
     audio::SoundBuffer bgm_;
 
-    // --- Fond réel ServerSelect/Login (atlas unk_8E8B50) ---
+    // --- Real ServerSelect/Login background (atlas unk_8E8B50) ---
     int bgAtlasSlot_ = 2380;                     // this[168] (2380/2381, cf. GetAtlasSprite)
-    // [A4] Fond CharSelect : l'ancien membre `charBgSlot_`, tiré UNE FOIS dans Init(), a été
-    // SUPPRIMÉ. Le tirage `Rng_Next()%3` -> 2383/2384/2385 est À L'INTÉRIEUR du bloc Init de
-    // Scene_CharSelectUpdate (EA 0x51C23A `call Rng_Next` ; 0x51C261/70/7F les 3 écritures ;
-    // immédiatement suivi de this[15714]=1 @0x51C28C et this[15715]=-1 @0x51C299) : il est
-    // donc RE-TIRÉ À CHAQUE ENTRÉE en scène, pas une seule fois au boot. Ce tirage est
-    // désormais porté par game::CharSelectState::backgroundSlot (RunInitBlock) ; LoginScene
-    // le LIT (wiring TODO CHARBG_SLOT de Game/CharSelectFlow.h:480 — FERMÉ ici).
-    // Tirer une 2e fois ici décalerait AUSSI le flux PRNG partagé (net::DefaultRng), dont
-    // dépendent les nonces réseau : double défaut de fidélité.
+    // [A4] CharSelect background: the old `charBgSlot_` member, drawn ONCE in Init(), was
+    // REMOVED. The `Rng_Next()%3` -> 2383/2384/2385 draw is INSIDE the Init block of
+    // Scene_CharSelectUpdate (EA 0x51C23A `call Rng_Next`; 0x51C261/70/7F the 3 writes;
+    // immediately followed by this[15714]=1 @0x51C28C and this[15715]=-1 @0x51C299): it is
+    // therefore RE-DRAWN on EVERY scene entry, not once at boot. This draw is now carried by
+    // game::CharSelectState::backgroundSlot (RunInitBlock); LoginScene READS it (wiring TODO
+    // CHARBG_SLOT of Game/CharSelectFlow.h:480 — CLOSED here).
+    // Drawing a 2nd time here would ALSO shift the shared PRNG stream (net::DefaultRng), on
+    // which network nonces depend: a double fidelity defect.
     std::unordered_map<int, gfx::GpuTexture> atlasCache_; // slot -> texture (lazy)
 
-    // --- Aperçu 3D CharSelect (Char_RenderModel 0x527020, 4 sites) ---
-    // Ces membres sont PERSISTANTS (caches + device objects) : c'est précisément ce que les
-    // TODO d'aperçu 3D des passes précédentes déclaraient « bloqué, exige des membres
-    // possédés ». LoginScene.h appartenant à ce front, le blocage est levé.
-    gfx::Renderer*   gfxRenderer_ = nullptr;   // fourni par Init() (cf. wiring TODO CHARSELECT_3D)
-    gfx::MeshRenderer            charMesh_;    // decl 76 o + shaders skinnés
-    std::unique_ptr<gfx::ModelCache> charModels_;  // C%03d%03d%03d.SOBJECT (ctor : MeshRenderer&)
-    // ⚠ MÊME MotionCache pour la PALETTE DESSINÉE et pour le NOMBRE DE FRAMES rendu à
-    // host.GetMotionFrameCount : dans le binaire c'est le MÊME g_ModelMotionArray 0x8E8B30
-    // qui sert aux deux (PcModel_ResolveEquipSlot @0x52705F/0x527544 et
-    // PcModel_ResolveSlotAndApply @0x51c555). Deux caches divergeraient sur les motions
-    // absentes. Même discipline que Scene/WorldRenderer.cpp::Motions().
+    // --- CharSelect 3D preview (Char_RenderModel 0x527020, 4 call sites) ---
+    // These members are PERSISTENT (caches + device objects): this is precisely what earlier
+    // passes' 3D-preview TODOs called "blocked, requires owned members". LoginScene.h
+    // belonging to this front, the blocker is lifted.
+    gfx::Renderer*   gfxRenderer_ = nullptr;   // supplied by Init() (cf. wiring TODO CHARSELECT_3D)
+    gfx::MeshRenderer            charMesh_;    // 76-byte decl + skinned shaders
+    std::unique_ptr<gfx::ModelCache> charModels_;  // C%03d%03d%03d.SOBJECT (ctor: MeshRenderer&)
+    // ⚠ SAME MotionCache for the DRAWN PALETTE and for the FRAME COUNT returned to
+    // host.GetMotionFrameCount: in the binary it's the SAME g_ModelMotionArray 0x8E8B30 used
+    // for both (PcModel_ResolveEquipSlot @0x52705F/0x527544 and PcModel_ResolveSlotAndApply
+    // @0x51c555). Two caches would diverge on missing motions. Same discipline as
+    // Scene/WorldRenderer.cpp::Motions().
     std::unique_ptr<gfx::MotionCache> charMotions_;
-    bool charPreviewReady_ = false;            // charMesh_.Init() a réussi ET renderer fourni
+    bool charPreviewReady_ = false;            // charMesh_.Init() succeeded AND a renderer was supplied
 
-    // --- CharSelect (flux fidèle, cf. Game/CharSelectFlow.h) ---
-    game::CharSelectState charState_;  // sous-état/écran/slots/formulaire/aperçu
-    game::CharSelectHost  charHost_;   // callbacks réseau/UI (construits par BuildCharSelectHost)
+    // --- CharSelect (faithful flow, cf. Game/CharSelectFlow.h) ---
+    game::CharSelectState charState_;  // sub-state/screen/slots/form/preview
+    game::CharSelectHost  charHost_;   // network/UI callbacks (built by BuildCharSelectHost)
 
-    // Écran Liste : slots (clic = sélection), Créer/Supprimer/Entrer/Quitter.
-    Button enterBtn_, backBtn_;        // enterBtn_ = ENTRER (16/17/18) ; backBtn_ = RETOUR (963/964/965)
-    Button createBtn_, deleteBtn_;     // CRÉER (19/20/21) ; SUPPRIMER (22/23/24)
+    // List screen: slots (click = selection), Create/Delete/Enter/Quit.
+    Button enterBtn_, backBtn_;        // enterBtn_ = ENTER (16/17/18); backBtn_ = BACK (963/964/965)
+    Button createBtn_, deleteBtn_;     // CREATE (19/20/21); DELETE (22/23/24)
     Button restoreBtn_;                // slots 3086/3087/3088 @ (x0, y0-37), EA 0x51E34F
-    // QUITTER (slots 25/26/27 @ (x0, y0+222), EA 0x51E2AA). Était hit-testé « à la main » sur
-    // le rect du sprite dans CharSelectOnMouseUp, sans latch : le binaire, lui, le latche
-    // comme les autres (`cmp dword ptr [ecx+24h], 0` = this[9] @0x51E288) et peint donc bien
-    // son état PRESSÉ (slot 27). Widget dédié -> motif 3 états identique aux 9 autres.
+    // QUIT (slots 25/26/27 @ (x0, y0+222), EA 0x51E2AA). Used to be hit-tested "by hand" on
+    // the sprite rect in CharSelectOnMouseUp, without a latch: the binary, for its part,
+    // latches it like the others (`cmp dword ptr [ecx+24h], 0` = this[9] @0x51E288) and thus
+    // does paint its PRESSED state (slot 27). Dedicated widget -> same 3-state pattern as the
+    // other 9.
     Button quitBtn_;
 
-    // Écran Formulaire de création : 5 paires +/- (job/faction/visage/couleur/variant),
-    // nom saisi (EditBox réutilisé de Widgets.h), Confirmer/Annuler.
+    // Create-form screen: 5 +/- pairs (job/faction/face/hair color/variant), typed name
+    // (EditBox reused from Widgets.h), Confirm/Cancel.
     Button  jobMinusBtn_, jobPlusBtn_, factionMinusBtn_, factionPlusBtn_;
     Button  faceMinusBtn_, facePlusBtn_, hairMinusBtn_, hairPlusBtn_;
     Button  variantMinusBtn_, variantPlusBtn_;
     Button  createConfirmBtn_, createCancelBtn_;
     EditBox createNameBox_;
 
-    // Boutons de ROTATION de l'aperçu 3D de création (slots 44/45 et 46/47, projetés par
-    // UI_ProjectSpriteToScreen 0x50F5D0 aux mondes (390,628)/(557,628)). Latches this[15]
-    // (+0x3C) / this[16] (+0x40) : COLLANTS — jamais remis à 0 pendant l'état Actif (aucun
-    // clear dans Update/OnMouseDown/OnMouseUp), UNIQUEMENT par l'Init de scène (boucle
-    // 150-latch @0x51BE83) = charHost_.ClearAllButtonLatches. Un clic gauche -> rotation
-    // continue +3°/frame (@0x51CDE8) jusqu'à re-entrée en scène ; un clic droit ajoute -3°
-    // (@0x51CE09) -> +3-3=0 = arrêt net. NE PAS modéliser via Button (armed_ s'auto-efface).
+    // Create-preview 3D ROTATION buttons (slots 44/45 and 46/47, projected by
+    // UI_ProjectSpriteToScreen 0x50F5D0 at world coords (390,628)/(557,628)). Latches this[15]
+    // (+0x3C) / this[16] (+0x40): STICKY — never cleared during the Active state (no clear in
+    // Update/OnMouseDown/OnMouseUp), ONLY by the scene's Init (150-latch loop @0x51BE83) =
+    // charHost_.ClearAllButtonLatches. A left click -> continuous rotation +3°/frame
+    // (@0x51CDE8) until scene re-entry; a right click adds -3° (@0x51CE09) -> +3-3=0 = a hard
+    // stop. Do NOT model via Button (armed_ self-clears).
     bool rotLeftLatched_  = false; // this[15]
     bool rotRightLatched_ = false; // this[16]
 
-    // MsgBox modal partagé (dword_1822438) : confirmation de SUPPRESSION (CharSelect,
-    // host.ShowDeleteConfirm, type 2) ET de SORTIE (ServerSelect, bouton d'action, type 1).
-    // Un seul objet réutilisé par le binaire — un seul membre ici (UI/ConfirmMsgBox.h). Remplace
-    // les ex-membres deleteConfirmOpen_/exitConfirmOpen_ + leurs 4 boutons Oui/Non inventés.
+    // Shared modal MsgBox (dword_1822438): DELETE confirmation (CharSelect,
+    // host.ShowDeleteConfirm, type 2) AND EXIT confirmation (ServerSelect, action button, type
+    // 1). A single object reused by the binary — a single member here (UI/ConfirmMsgBox.h).
+    // Replaces the old deleteConfirmOpen_/exitConfirmOpen_ members + their 4 invented Yes/No
+    // buttons.
     ui::ConfirmMsgBox msgBox_;
 
     // --- Notice ---
     bool        noticeOpen_ = false;
     std::string noticeText_;
-    std::function<void()> noticeOnClose_; // action kind=2 (cf. OpenNotice) ; vide = no-op
-    // [A3] TYPE de la notice CharSelect (2e argument de UI_NoticeDlg_Open 0x5C0280).
-    // C'est LUI qui décide si le sous-état Verrouillé est un cul-de-sac (mode 1 = Close :
-    // la scène reste où elle est) ou une SORTIE vers ServerSelect (mode 2 = Disconnect :
-    // UI_NoticeDlg_OnLButtonUp 0x5C03F0 case 2 -> Net_CloseSocket 0x5C04DF, g_SceneMgr=2
-    // 0x5C04E4, g_SceneSubState=0 0x5C04EE, dword_1676188=0 0x5C04F8).
-    // Sans ce champ, Verrouillé était un CUL-DE-SAC DÉFINITIF (les 4 handlers de scène sont
-    // gatés `==1` et ne voient jamais ce clic — il arrive par UI_RouteLButtonUp 0x5AD0F0,
-    // xref unique EA 0x5AD164). Renseigné par charHost_.ShowNoticeTyped.
+    std::function<void()> noticeOnClose_; // kind=2 action (cf. OpenNotice); empty = no-op
+    // [A3] TYPE of the CharSelect notice (2nd argument of UI_NoticeDlg_Open 0x5C0280). THIS is
+    // what decides whether the Locked sub-state is a dead end (mode 1 = Close: the scene stays
+    // where it is) or an EXIT to ServerSelect (mode 2 = Disconnect: UI_NoticeDlg_OnLButtonUp
+    // 0x5C03F0 case 2 -> Net_CloseSocket 0x5C04DF, g_SceneMgr=2 0x5C04E4, g_SceneSubState=0
+    // 0x5C04EE, dword_1676188=0 0x5C04F8).
+    // Without this field, Locked was a PERMANENT DEAD END (the scene's 4 handlers are gated
+    // `==1` and never see this click — it arrives via UI_RouteLButtonUp 0x5AD0F0, sole xref EA
+    // 0x5AD164). Populated by charHost_.ShowNoticeTyped.
     game::NoticeType noticeType_ = game::NoticeType::Close;
 
-    // --- Transition demandée ---
+    // --- Requested transition ---
     ts2::Scene pending_ = ts2::Scene::None;
 };
 

@@ -1,6 +1,6 @@
-// UI/EnchantWindow.cpp — implémentation de la fenêtre « Enchantement ».
-// Voir UI/EnchantWindow.h pour le contrat, l'hypothèse de mapping classe/slot et
-// les références de RE (Game/ItemSystem.h, Game/GameState.h).
+// UI/EnchantWindow.cpp — implementation of the "Enchant" window.
+// See UI/EnchantWindow.h for the contract, the class/slot mapping hypothesis, and
+// the RE references (Game/ItemSystem.h, Game/GameState.h).
 #include "UI/EnchantWindow.h"
 #include "Game/GameDatabase.h"
 #include "Asset/ImgFile.h"
@@ -11,12 +11,12 @@
 namespace ts2::ui {
 namespace {
 
-// Résolveur d'icône d'objet — IDENTIQUE à ResolveItemIconPath de UI/InventoryWindow.cpp
-// (pattern de référence de la mission, dupliqué faute de header commun sans toucher à
-// l'architecture existante). CONFIRMÉ par désassemblage (Docs/TS2_UI_ICON_ATLAS_CONFIRMED.md) :
-// l'index de fichier N'EST PAS itemId (ancienne hypothèse, FAUSSE) mais le champ SÉPARÉ
-// ITEM_INFO+192 ("IconID", game::ItemInfo::iconId, 1-based), lu via game::GetItemInfo().
-// (mise à l'échelle par DrawSpriteScaled comme les autres fenêtres, kSlotSize=48 ici.)
+// Item icon resolver — IDENTICAL to ResolveItemIconPath in UI/InventoryWindow.cpp
+// (the mission's reference pattern, duplicated for lack of a shared header, without
+// touching the existing architecture). CONFIRMED by disassembly (Docs/TS2_UI_ICON_ATLAS_CONFIRMED.md):
+// the file index is NOT itemId (old hypothesis, FALSE) but the SEPARATE field
+// ITEM_INFO+192 ("IconID", game::ItemInfo::iconId, 1-based), read via game::GetItemInfo().
+// (scaled via DrawSpriteScaled like the other windows, kSlotSize=48 here.)
 std::string ResolveItemIconPath(uint32_t itemId) {
     const game::ItemInfo* info = game::GetItemInfo(itemId);
     if (!info || info->iconId == 0) return {};
@@ -25,28 +25,26 @@ std::string ResolveItemIconPath(uint32_t itemId) {
     return std::string(buf);
 }
 
-// ===========================================================================
-// Palette (ARGB, D3DCOLOR = 0xAARRGGBB) — mêmes teintes que les autres fenêtres
-// modales du shell (ex. CharacterStatsWindow.cpp), cf. contrat UI.
-// ===========================================================================
-constexpr D3DCOLOR kColBg        = Argb(0xE0, 0x20, 0x20, 0x28); // fond panneau
-constexpr D3DCOLOR kColTitleBg   = Argb(0xF0, 0x18, 0x18, 0x20); // bandeau titre
-constexpr D3DCOLOR kColFrame     = Argb(0xFF, 0x80, 0x80, 0x80); // cadre
-constexpr D3DCOLOR kColText      = Argb(0xFF, 0xFF, 0xFF, 0xFF); // texte normal
-constexpr D3DCOLOR kColTitle     = Argb(0xFF, 0xFF, 0xDD, 0x66); // titre
-constexpr D3DCOLOR kColLabel     = Argb(0xFF, 0xC0, 0xC0, 0xC8); // libellés (gris clair)
-constexpr D3DCOLOR kColHover     = Argb(0xFF, 0x40, 0x60, 0xA0); // survol
-constexpr D3DCOLOR kColSelected  = Argb(0xFF, 0xFF, 0xDD, 0x66); // cadre du slot sélectionné
-constexpr D3DCOLOR kColBtn       = Argb(0xFF, 0x38, 0x40, 0x50); // bouton normal
-constexpr D3DCOLOR kColBtnDown   = Argb(0xFF, 0x58, 0x84, 0xC8); // bouton enfoncé
-constexpr D3DCOLOR kColBtnOff    = Argb(0xFF, 0x30, 0x30, 0x34); // bouton désactivé
-constexpr D3DCOLOR kColSlotEmpty = Argb(0xFF, 0x2A, 0x2A, 0x30); // slot vide
-constexpr D3DCOLOR kColSuccess   = Argb(0xFF, 0x60, 0xFF, 0x60); // delta positif
-constexpr D3DCOLOR kColError     = Argb(0xFF, 0xFF, 0x60, 0x60); // delta négatif / erreur
-constexpr D3DCOLOR kColDivider   = Argb(0xFF, 0x50, 0x50, 0x58); // séparateur
-constexpr D3DCOLOR kColDim       = Argb(0xFF, 0x70, 0x70, 0x78); // texte estompé (delta nul)
+// Palette (ARGB, D3DCOLOR = 0xAARRGGBB) — same shades as the other modal
+// windows of the shell (e.g. CharacterStatsWindow.cpp), cf. UI contract.
+constexpr D3DCOLOR kColBg        = Argb(0xE0, 0x20, 0x20, 0x28); // panel background
+constexpr D3DCOLOR kColTitleBg   = Argb(0xF0, 0x18, 0x18, 0x20); // title bar
+constexpr D3DCOLOR kColFrame     = Argb(0xFF, 0x80, 0x80, 0x80); // frame
+constexpr D3DCOLOR kColText      = Argb(0xFF, 0xFF, 0xFF, 0xFF); // normal text
+constexpr D3DCOLOR kColTitle     = Argb(0xFF, 0xFF, 0xDD, 0x66); // title
+constexpr D3DCOLOR kColLabel     = Argb(0xFF, 0xC0, 0xC0, 0xC8); // labels (light gray)
+constexpr D3DCOLOR kColHover     = Argb(0xFF, 0x40, 0x60, 0xA0); // hover
+constexpr D3DCOLOR kColSelected  = Argb(0xFF, 0xFF, 0xDD, 0x66); // selected slot frame
+constexpr D3DCOLOR kColBtn       = Argb(0xFF, 0x38, 0x40, 0x50); // normal button
+constexpr D3DCOLOR kColBtnDown   = Argb(0xFF, 0x58, 0x84, 0xC8); // pressed button
+constexpr D3DCOLOR kColBtnOff    = Argb(0xFF, 0x30, 0x30, 0x34); // disabled button
+constexpr D3DCOLOR kColSlotEmpty = Argb(0xFF, 0x2A, 0x2A, 0x30); // empty slot
+constexpr D3DCOLOR kColSuccess   = Argb(0xFF, 0x60, 0xFF, 0x60); // positive delta
+constexpr D3DCOLOR kColError     = Argb(0xFF, 0xFF, 0x60, 0x60); // negative delta / error
+constexpr D3DCOLOR kColDivider   = Argb(0xFF, 0x50, 0x50, 0x58); // divider
+constexpr D3DCOLOR kColDim       = Argb(0xFF, 0x70, 0x70, 0x78); // dimmed text (zero delta)
 
-// --- Constantes de géométrie ---
+// --- Geometry constants ---
 constexpr int kBoxW      = 580;
 constexpr int kBoxH      = 440;
 constexpr int kTitleH    = 28;
@@ -55,37 +53,35 @@ constexpr int kCloseSize = 18;
 constexpr int kGridCols  = 5;
 constexpr int kSlotSize  = 48;
 constexpr int kSlotGap   = 10;
-constexpr int kGridOffX  = 24;              // depuis box.x
-constexpr int kGridOffY  = kTitleH + 24;    // depuis box.y
+constexpr int kGridOffX  = 24;              // from box.x
+constexpr int kGridOffY  = kTitleH + 24;    // from box.y
 constexpr int kGridW     = kGridCols * kSlotSize + (kGridCols - 1) * kSlotGap;
 
-constexpr int kPanelGapX        = 24; // espace entre la grille et le panneau info
+constexpr int kPanelGapX        = 24; // gap between the grid and the info panel
 constexpr int kPanelRightMargin = 24;
-constexpr int kBtnBottomMargin  = 70; // hauteur réservée en bas pour le bouton
+constexpr int kBtnBottomMargin  = 70; // height reserved at the bottom for the button
 
 constexpr int kEnchantBtnW = 180;
 constexpr int kEnchantBtnH = 34;
 
-// Table des 13 identifiants de type d'équipement associés à l'ordre des slots,
-// reprise TELLE QUELLE de UI/InventoryWindow.cpp (kEquipDelta / cGameHud_InitLayout
-// 0x62A5B0, ordre slotIds[13] = {2,3,4,5,6,7,99,9,10,11,12,13,14}). Sert
-// UNIQUEMENT d'étiquette repère (id de type) : aucun nom d'emplacement humain
-// n'est confirmé par le désassemblage pour cette fenêtre, donc on n'en invente pas.
+// Table of the 13 equipment type ids matching the slot order, taken
+// VERBATIM from UI/InventoryWindow.cpp (kEquipDelta / cGameHud_InitLayout
+// 0x62A5B0, order slotIds[13] = {2,3,4,5,6,7,99,9,10,11,12,13,14}). Used
+// ONLY as a reference label (type id): no human-readable slot name is
+// confirmed by the disassembly for this window, so none is invented.
 constexpr int kEquipSlotIds[kEnchantSlotCount] = {
     2, 3, 4, 5, 6, 7, 99, 9, 10, 11, 12, 13, 14,
 };
 
-// ---------------------------------------------------------------------------
-// Mapping classe/slot DOCUMENTÉ (cf. commentaire d'en-tête de UI/EnchantWindow.h
-// et Game/ItemSystem.h lignes 155-161, commentaire de Item_GetEnchantStatDelta).
-// Seule source de vérité pour ce mapping dans ce fichier (le membre privé
-// EnchantWindow::GuessItemClass délègue ici).
-// ---------------------------------------------------------------------------
+// Class/slot mapping DOCUMENTED (cf. header comment of UI/EnchantWindow.h
+// and Game/ItemSystem.h lines 155-161, comment on Item_GetEnchantStatDelta).
+// Sole source of truth for this mapping in this file (the private member
+// EnchantWindow::GuessItemClass delegates here).
 int ClassifySlotForEnchant(int slot) {
-    if (slot == 1) return 8;                                   // cas spécial (slot 1 uniquement)
-    if (slot == 0 || slot == 2 || slot == 3 || slot == 4 || slot == 5) return 4; // armure
-    if (slot == 7) return 1;                                    // arme
-    return -1;                                                  // non couvert par la table connue
+    if (slot == 1) return 8;                                   // special case (slot 1 only)
+    if (slot == 0 || slot == 2 || slot == 3 || slot == 4 || slot == 5) return 4; // armor
+    if (slot == 7) return 1;                                    // weapon
+    return -1;                                                  // not covered by the known table
 }
 
 const char* ClassLabelFor(int itemClass) {
@@ -98,8 +94,8 @@ const char* ClassLabelFor(int itemClass) {
 }
 
 D3DCOLOR SlotColorFor(int slot) {
-    // Palette fixe de 13 teintes distinctes — REPLI utilisé quand l'icône .IMG réelle de
-    // l'objet équipé (GetIconTex/ResolveItemIconPath ci-dessus) n'a pas pu être chargée.
+    // Fixed palette of 13 distinct shades — FALLBACK used when the real .IMG icon of
+    // the equipped item (GetIconTex/ResolveItemIconPath above) failed to load.
     static constexpr D3DCOLOR kPalette[kEnchantSlotCount] = {
         Argb(0xFF, 0xC0, 0x50, 0x50), Argb(0xFF, 0xC0, 0x80, 0x40),
         Argb(0xFF, 0xC0, 0xB0, 0x40), Argb(0xFF, 0x90, 0xB0, 0x40),
@@ -120,7 +116,7 @@ const char* SlotLabelFor(int slot) {
     return buf[slot];
 }
 
-// Clés/labels d'affichage du delta d'enchantement (cf. UI/EnchantWindow.h).
+// Display keys/labels for the enchant delta (cf. UI/EnchantWindow.h).
 const char* StatKeyLabel(EnchantStatKey key) {
     switch (key) {
         case EnchantStatKey::AtkExt:    return "Attaque Externe";
@@ -136,8 +132,8 @@ const char* StatKeyLabel(EnchantStatKey key) {
     return "?";
 }
 
-// Les clés 10/20/30/40 sont en CENTIÈMES (converties /100 à l'affichage), les
-// autres en UNITÉS — fidèle au commentaire de Item_GetEnchantStatDelta.
+// Keys 10/20/30/40 are in HUNDREDTHS (converted /100 for display), the
+// others in UNITS — faithful to the Item_GetEnchantStatDelta comment.
 bool IsHundredthsKey(EnchantStatKey key) {
     return key == EnchantStatKey::AtkExt || key == EnchantStatKey::AtkInt ||
            key == EnchantStatKey::DefExt || key == EnchantStatKey::DefInt;
@@ -152,9 +148,9 @@ void FormatDelta(char* buf, size_t n, EnchantStatKey key, int rawDelta) {
     }
 }
 
-// Delta d'enchantement pour `slot`, au niveau `previewLevel` (remplace octet3 du
-// mot socket). Ne dépend que de l'octet3 (cf. Game/ItemSystem.cpp — seule lecture
-// de socketWord dans Item_GetEnchantStatDelta), donc un mot minimal suffit.
+// Enchant delta for `slot`, at level `previewLevel` (replaces byte3 of
+// the socket word). Depends only on byte3 (cf. Game/ItemSystem.cpp — the only
+// read of socketWord in Item_GetEnchantStatDelta), so a minimal word suffices.
 int PreviewDeltaFor(int itemClass, int slot, int previewLevel, EnchantStatKey key) {
     if (itemClass < 0) return 0;
     int lvl = previewLevel;
@@ -164,16 +160,16 @@ int PreviewDeltaFor(int itemClass, int slot, int previewLevel, EnchantStatKey ke
     return game::Item_GetEnchantStatDelta(itemClass, slot, previewSocket, static_cast<int>(key));
 }
 
-// État d'enchantement dérivé du slot sélectionné (item courant + niveau courant/
-// prochain + classe résolue). Centralise la logique utilisée par le hit-test des
-// boutons ET par le rendu (une seule source de vérité).
+// Enchant state derived from the selected slot (current item + current/next
+// level + resolved class). Centralizes the logic used by both the button
+// hit-test AND the rendering (single source of truth).
 struct EnchantState {
-    bool     valid     = false; // slot dans [0..12] avec un objet équipé
+    bool     valid     = false; // slot in [0..12] with an equipped item
     uint32_t itemId    = 0;
-    int      itemClass = -1;    // -1 = non couvert par la table connue
-    int      curLvl    = 0;     // niveau d'enchant courant (octet3 du mot socket)
-    int      nextLvl   = 1;     // niveau prévisualisé (curLvl+1, plafonné à 59)
-    bool     atMax     = false; // curLvl >= 59 (plus de progression possible)
+    int      itemClass = -1;    // -1 = not covered by the known table
+    int      curLvl    = 0;     // current enchant level (byte3 of the socket word)
+    int      nextLvl   = 1;     // previewed level (curLvl+1, capped at 59)
+    bool     atMax     = false; // curLvl >= 59 (no further progression possible)
 };
 
 EnchantState ComputeState(int slot) {
@@ -193,10 +189,8 @@ EnchantState ComputeState(int slot) {
 
 } // namespace
 
-// ===========================================================================
-// Délégations des membres privés statiques vers la logique centralisée ci-dessus
-// (garde une unique source de vérité pour le mapping classe/slot et la palette).
-// ===========================================================================
+// Delegation of static private members to the centralized logic above
+// (keeps a single source of truth for the class/slot mapping and the palette).
 int EnchantWindow::GuessItemClass(int slot) { return ClassifySlotForEnchant(slot); }
 const char* EnchantWindow::ItemClassLabel(int itemClass) { return ClassLabelFor(itemClass); }
 const char* EnchantWindow::SlotLabel(int slot) { return SlotLabelFor(slot); }
@@ -208,21 +202,17 @@ int EnchantWindow::PreviewDelta(int slot, int previewLevel, EnchantStatKey key) 
     return PreviewDeltaFor(itemClass, slot, previewLevel, key);
 }
 
-// ===========================================================================
-// Icônes (même pattern paresseux+cache que InventoryWindow::GetIconTex)
-// ===========================================================================
+// Icons (same lazy+cache pattern as InventoryWindow::GetIconTex)
 gfx::GpuTexture* EnchantWindow::GetIconTex(IDirect3DDevice9* dev, uint32_t itemId) {
-    // Cache PARTAGÉ par chemin de fichier (cf. SetIconCache/ActiveIconCache) : une icône
-    // déjà chargée par InventoryWindow/WarehouseWindow/VendorShopWindow est réutilisée sans
-    // re-décoder/re-uploader en VRAM (même fichier .IMG, même ITEM_INFO::iconId).
+    // Cache SHARED by file path (cf. SetIconCache/ActiveIconCache): an icon
+    // already loaded by InventoryWindow/WarehouseWindow/VendorShopWindow is reused without
+    // re-decoding/re-uploading to VRAM (same .IMG file, same ITEM_INFO::iconId).
     const std::string path = ResolveItemIconPath(itemId);
     return ActiveIconCache().GetOrLoad(dev, path);
 }
 
-// ===========================================================================
-// Layout — centré sur l'écran courant (recalculé chaque frame, comme MsgBoxDialog
+// Layout — centered on the current screen (recomputed every frame, like MsgBoxDialog
 // / CharacterStatsWindow).
-// ===========================================================================
 void EnchantWindow::ComputeLayout(int screenW, int screenH, Layout& L) const {
     L.box.w = kBoxW;
     L.box.h = kBoxH;
@@ -255,9 +245,7 @@ void EnchantWindow::ComputeLayout(int screenW, int screenH, Layout& L) const {
                           kEnchantBtnW, kEnchantBtnH };
 }
 
-// ===========================================================================
-// Cycle de vie
-// ===========================================================================
+// Lifecycle
 void EnchantWindow::Open() {
     Dialog::Open();
     closeArmed_   = false;
@@ -266,9 +254,7 @@ void EnchantWindow::Open() {
     selectedSlot_ = -1;
 }
 
-// ===========================================================================
-// Souris
-// ===========================================================================
+// Mouse
 bool EnchantWindow::OnMouseDown(int x, int y) {
     if (!bOpen_) return false;
 
@@ -295,8 +281,8 @@ bool EnchantWindow::OnMouseDown(int x, int y) {
         return true;
     }
 
-    // Clic n'importe où ailleurs dans le panneau : consommé (empêche le clic de
-    // "traverser" jusqu'au monde 3D derrière la fenêtre) mais n'arme rien.
+    // Click anywhere else in the panel: consumed (prevents the click from
+    // "passing through" to the 3D world behind the window) but arms nothing.
     if (PointInRect(x, y, L.box.x, L.box.y, L.box.w, L.box.h)) return true;
 
     return false;
@@ -321,8 +307,8 @@ bool EnchantWindow::OnClick(int x, int y) {
         slotArmed_[i] = false;
         const Rect& r = L.slot[i];
         if (PointInRect(x, y, r.x, r.y, r.w, r.h)) {
-            selectedSlot_ = i; // sélectionne l'objet à enchanter (même si le slot est vide
-                                // ou hors table -> le panneau affichera le statut correspondant)
+            selectedSlot_ = i; // selects the item to enchant (even if the slot is empty
+                                // or outside the table -> the panel will show the corresponding status)
             return true;
         }
     }
@@ -332,37 +318,37 @@ bool EnchantWindow::OnClick(int x, int y) {
         if (PointInRect(x, y, L.enchantBtn.x, L.enchantBtn.y, L.enchantBtn.w, L.enchantBtn.h)) {
             const EnchantState st = ComputeState(selectedSlot_);
             if (st.valid && st.itemClass >= 0 && !st.atMax) {
-                // TODO(send) : demande d'enchantement au serveur.
-                // MANIP DE SLOT PROUVÉE (ré-audit W4-F3, UI_Enchant_Press 0x5FB770) :
-                // poser/retirer l'objet à enchanter dans la fenêtre passe par
+                // TODO(send): enchant request to the server.
+                // PROVEN SLOT MANIPULATION (re-audit W4-F3, UI_Enchant_Press 0x5FB770):
+                // placing/removing the item to enchant in the window goes through
                 // Item_BeginDragTransaction(g_DragCtx, /*type=*/8|9, ...)  // 0x5AFDF0
-                // (prise/pose LOCALE, types de conteneur 8/9), PAS un send. La
-                // validation (envoi réel) est dans UI_Enchant_OnLUp (famille Op19,
-                // sous-op non isolée statiquement). Aucun builder Net_Send* dédié à
-                // l'enchantement n'est identifié dans Net/SendPackets.h à ce jour
-                // (pas de "Net_SendEnchant*"). Le
-                // candidat le plus probable est le DISPATCHER générique action/
-                // inventaire opcode SORTANT 0x13 (Outgoing::Op19, Net/Opcodes.h,
-                // "sous-op 0..255, vault 201..250"), symétrique du dispatcher
-                // ENTRANT Pkt_ItemActionDispatch (opcode 0x1a, EA 0x46A320,
-                // Net/ItemActionDispatch.h) qui applique le résultat serveur
-                // (succès/échec/casse) aux cellules d'équipement/sac. Builder
-                // exact à appeler : Net_SendPacket_Op19(NetClient&, uint8_t
-                // subCmd, const void* payload) — Net/SendPackets.h ligne 216. Le
-                // sous-op précis "lancer un enchantement sur le slot N" N'EST PAS
-                // isolé dans RE/opcode_table.json ni RE/outbound_results.json :
-                // NE PAS deviner sa valeur ; la relever en dynamique (breakpoint
-                // sur Net_SendPacket_Op19 pendant un clic "Enchanter" en jeu),
-                // puis appeler ici :
-                //   Net_SendPacket_Op19(nc, /*subCmd=*/<relevé>, /*payload=*/&req);
-                // où `req` encoderait a minima {slot=selectedSlot_, itemId=st.itemId}.
+                // (LOCAL pickup/drop, container types 8/9), NOT a send. The
+                // validation (actual send) is in UI_Enchant_OnLUp (Op19 family,
+                // sub-op not statically isolated). No dedicated Net_Send* builder for
+                // enchanting has been identified in Net/SendPackets.h to date
+                // (no "Net_SendEnchant*"). The
+                // most likely candidate is the generic action/inventory OUTBOUND
+                // dispatcher opcode 0x13 (Outgoing::Op19, Net/Opcodes.h,
+                // "sub-op 0..255, vault 201..250"), the mirror of the INBOUND
+                // dispatcher Pkt_ItemActionDispatch (opcode 0x1a, EA 0x46A320,
+                // Net/ItemActionDispatch.h) which applies the server result
+                // (success/failure/break) to the equipment/bag cells. Exact
+                // builder to call: Net_SendPacket_Op19(NetClient&, uint8_t
+                // subCmd, const void* payload) — Net/SendPackets.h line 216. The
+                // precise sub-op "cast an enchant on slot N" is NOT
+                // isolated in RE/opcode_table.json nor RE/outbound_results.json:
+                // DO NOT guess its value; capture it dynamically (breakpoint
+                // on Net_SendPacket_Op19 during an in-game "Enchant" click),
+                // then call here:
+                //   Net_SendPacket_Op19(nc, /*subCmd=*/<captured>, /*payload=*/&req);
+                // where `req` would encode at minimum {slot=selectedSlot_, itemId=st.itemId}.
 
-                // Mise à jour LOCALE optimiste (état visible immédiatement, comme demandé
-                // par la mission, même sans envoi réseau réel) : on avance le niveau
-                // d'enchant affiché (octet3 du mot socket) de l'équipement sélectionné.
-                // Le serveur écrasera cette valeur avec le résultat RÉEL (réussite,
-                // échec ou casse de l'objet) à réception de sa réponse via
-                // Pkt_ItemActionDispatch — cette prévisualisation n'est PAS garantie.
+                // Optimistic LOCAL update (state visible immediately, as requested
+                // by the mission, even without an actual network send): advances the
+                // displayed enchant level (byte3 of the socket word) of the selected
+                // equipment. The server will overwrite this value with the REAL result
+                // (success, failure, or item break) upon receiving its response via
+                // Pkt_ItemActionDispatch — this preview is NOT guaranteed.
                 game::EquipSlot& e = game::g_World.self.equip[static_cast<size_t>(selectedSlot_)];
                 e.socket = (e.socket & 0x00FFFFFFu) | (static_cast<uint32_t>(st.nextLvl) << 24);
             }
@@ -384,13 +370,11 @@ bool EnchantWindow::OnKey(int vk) {
     return false;
 }
 
-// ===========================================================================
-// Rendu
-// ===========================================================================
+// Rendering
 void EnchantWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
-    // Mémorise les dims écran courantes pour que le hit-test (routé entre deux
-    // frames) s'aligne sur la géométrie effectivement dessinée. Fait dans les deux
-    // sous-passes (Panels puis Text), comme MsgBoxDialog/CharacterStatsWindow.
+    // Stores the current screen dims so the hit-test (routed between two
+    // frames) aligns with the geometry actually drawn. Done in both
+    // sub-passes (Panels then Text), like MsgBoxDialog/CharacterStatsWindow.
     lastScreenW_ = ctx.screenW;
     lastScreenH_ = ctx.screenH;
     if (!bOpen_) return;
@@ -405,21 +389,21 @@ void EnchantWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     char buf[128];
 
     if (ctx.phase == UiPhase::Panels) {
-        // --- Fond + cadre + bandeau de titre ---
+        // --- Background + frame + title bar ---
         ctx.FillRect(L.box.x, L.box.y, L.box.w, L.box.h, kColBg);
         ctx.FillRect(L.titleBar.x, L.titleBar.y, L.titleBar.w, L.titleBar.h, kColTitleBg);
         ctx.DrawFrame(L.box.x, L.box.y, L.box.w, L.box.h, kColFrame, 2);
         ctx.FillRect(L.box.x, L.box.y + kTitleH, L.box.w, 1, kColDivider);
 
-        // --- Bouton fermeture ---
+        // --- Close button ---
         const bool closeHover = PointInRect(cursorX, cursorY, L.closeBtn.x, L.closeBtn.y,
                                              L.closeBtn.w, L.closeBtn.h);
         const D3DCOLOR closeCol = closeArmed_ ? kColBtnDown : (closeHover ? kColHover : kColBtn);
         ctx.FillRect(L.closeBtn.x, L.closeBtn.y, L.closeBtn.w, L.closeBtn.h, closeCol);
         ctx.DrawFrame(L.closeBtn.x, L.closeBtn.y, L.closeBtn.w, L.closeBtn.h, kColFrame, 1);
 
-        // --- 13 slots d'équipement : icône .IMG réelle si résolue, sinon repli sur le
-        // carré coloré générique par slot (SlotColor) — comportement d'origine inchangé.
+        // --- 13 equipment slots: real .IMG icon if resolved, otherwise fallback to
+        // the generic per-slot colored square (SlotColor) — original behavior unchanged.
         IDirect3DDevice9* dev = ctx.renderer ? ctx.renderer->Device() : nullptr;
         for (int i = 0; i < kEnchantSlotCount; ++i) {
             const Rect& r = L.slot[i];
@@ -429,7 +413,7 @@ void EnchantWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
 
             gfx::GpuTexture* icon = occupied ? GetIconTex(dev, itemId) : nullptr;
             if (icon && icon->Handle() && icon->Width() > 0 && icon->Height() > 0 && ctx.sprites) {
-                ctx.FillRect(r.x, r.y, r.w, r.h, kColSlotEmpty); // fond neutre sous l'icône
+                ctx.FillRect(r.x, r.y, r.w, r.h, kColSlotEmpty); // neutral background under the icon
                 const float sx = static_cast<float>(r.w) / static_cast<float>(icon->Width());
                 const float sy = static_cast<float>(r.h) / static_cast<float>(icon->Height());
                 ctx.sprites->DrawSpriteScaled(icon->Handle(), nullptr, r.x, r.y, sx, sy,
@@ -445,11 +429,11 @@ void EnchantWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
             ctx.DrawFrame(r.x, r.y, r.w, r.h, frameCol, thickness);
         }
 
-        // --- Panneau d'information / prévisualisation (droite) ---
+        // --- Info / preview panel (right side) ---
         ctx.FillRect(L.panel.x, L.panel.y, L.panel.w, L.panel.h, kColBg);
         ctx.DrawFrame(L.panel.x, L.panel.y, L.panel.w, L.panel.h, kColFrame, 1);
 
-        // --- Bouton "Enchanter" ---
+        // --- Enchant button ---
         const bool enchantHover = PointInRect(cursorX, cursorY, L.enchantBtn.x, L.enchantBtn.y,
                                                L.enchantBtn.w, L.enchantBtn.h);
         D3DCOLOR btnCol = kColBtnOff;
@@ -460,12 +444,12 @@ void EnchantWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         return;
     }
 
-    // --- Phase texte -----------------------------------------------------
+    // --- Text phase -----------------------------------------------------
     const int titleW = ctx.MeasureText("Enchantement");
     ctx.Text("Enchantement", L.box.x + (L.box.w - titleW) / 2, L.titleBar.y + 6, kColTitle);
     ctx.Text("X", L.closeBtn.x + 5, L.closeBtn.y + 2, kColText);
 
-    // Repère index dans chaque slot (numéro + id de type, cf. kEquipSlotIds).
+    // Reference index inside each slot (number + type id, cf. kEquipSlotIds).
     for (int i = 0; i < kEnchantSlotCount; ++i) {
         const Rect& r = L.slot[i];
         std::snprintf(buf, sizeof(buf), "%d", i);
@@ -480,7 +464,7 @@ void EnchantWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         }
     }
 
-    // --- Panneau d'information ---
+    // --- Info panel ---
     int ty = L.panel.y + 10;
     const int tx = L.panel.x + 12;
     const int lineH = 16;
@@ -544,7 +528,7 @@ void EnchantWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         }
     }
 
-    // Libellé du bouton "Enchanter" (estompé si désactivé).
+    // "Enchanter" button label (dimmed when disabled).
     const int btnTextW = ctx.MeasureText("Enchanter");
     ctx.Text("Enchanter",
               L.enchantBtn.x + (L.enchantBtn.w - btnTextW) / 2, L.enchantBtn.y + 9,

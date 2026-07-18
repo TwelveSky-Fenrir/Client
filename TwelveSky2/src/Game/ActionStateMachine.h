@@ -1,43 +1,43 @@
-// Game/ActionStateMachine.h — FSM d'action/animation du personnage (pivot du
-// déclenchement combat), réécriture C++ PROPRE (pas byte-exact sur le rendu, byte-exact
-// sur les seuils/offsets/valeurs numériques d'état et sur la formule de vitesse).
+// Game/ActionStateMachine.h — character action/animation FSM (the pivot for
+// combat triggering), CLEAN C++ rewrite (not byte-exact on rendering, byte-exact
+// on thresholds/offsets/numeric state values and on the speed formula).
 //
-// Source de vérité = Char_UpdateAnimationFrame (0x571880, ~5.9 Ko de pseudocode,
-// désassemblage TwelveSky2.exe imagebase 0x400000). Cette fonction est le tick par
-// personnage (this = objet "fiche perso" au format de byte_1685748/g_LocalPlayerSheet ;
-// a2 = indicateur "entité pilotée à distance / relecture réseau" -> !a2 = simulation
-// locale réelle, déclenche réellement les envois réseau ; a3 = dt de la frame 30 FPS).
+// Source of truth = Char_UpdateAnimationFrame (0x571880, ~5.9 KB of pseudocode,
+// TwelveSky2.exe disassembly, imagebase 0x400000). This function is the per-
+// character tick (this = "character sheet" object with the layout of
+// byte_1685748/g_LocalPlayerSheet; a2 = "remotely driven entity / network replay"
+// flag -> !a2 = real local simulation, actually triggers network sends; a3 = dt
+// of the 30 FPS frame).
 //
-// PÉRIMÈTRE (imposé par la mission) : uniquement la MACHINE D'ÉTAT et le TIMING de
-// l'action — quels états existent (valeurs numériques d'origine), quelles transitions,
-// à quelle frame le contact (coup/compétence) part réellement, et la vitesse d'attaque
-// (Char_CalcAttackSpeed 0x4CCAB0, déjà câblée dans Game/StatFormulas.h::CalcAttackSpeed).
-// Le rendu 3D du squelette/mesh (PcModel_ResolveSlotAndApply 0x4E5A00, sélection de sous-
-// objets ModelObj_GetSubObjectCount 0x4D7080, tables de frames d'animation par arme/
-// compétence Anim_IsWeaponHitFrame 0x558D80 / Anim_LookupFrameEvent 0x558B40) est HORS
-// PÉRIMÈTRE : ces données sont pilotées par les assets de motion (SOBJECT/MOTION), pas
-// par du code. Ce module expose une interface `IAnimFrameOracle` que la couche
-// rendu/anim doit implémenter pour brancher ces tables (TODO précis à chaque point
-// d'usage, EA citée).
+// SCOPE (mission-imposed): only the STATE MACHINE and the action TIMING — which
+// states exist (original numeric values), which transitions, on which frame the
+// contact (hit/skill) actually fires, and attack speed (Char_CalcAttackSpeed
+// 0x4CCAB0, already wired into Game/StatFormulas.h::CalcAttackSpeed). The 3D
+// skeleton/mesh rendering (PcModel_ResolveSlotAndApply 0x4E5A00, sub-object
+// selection ModelObj_GetSubObjectCount 0x4D7080, per-weapon/skill animation frame
+// tables Anim_IsWeaponHitFrame 0x558D80 / Anim_LookupFrameEvent 0x558B40) is OUT
+// OF SCOPE: that data is driven by motion assets (SOBJECT/MOTION), not by code.
+// This module exposes an `IAnimFrameOracle` interface that the render/anim layer
+// must implement to wire those tables in (precise TODO at each usage site, EA cited).
 //
-// Offsets d'origine relevés dans Char_UpdateAnimationFrame (indices dword *((_DWORD*)this
-// + N) => octet N*4 ; les fonctions "sœurs" Combat_TickAttackState 0x574BD0,
-// Char_AttackAnimTick_576890/576A20, Char_CastAnimTick_5762F0 etc. utilisent la même
-// disposition en offsets OCTET directs `this + N` — les deux notations concordent) :
-//   +0    bool   actif           validité de l'enregistrement (garde de tête de fonction)
-//   +92   int    modelIndex      (idx23) modèle/apparence
-//   +96   int    modelVariant    (idx24) variante modèle (genre/skin)
-//   +108  int    (idx27) / +112 int (idx28)   paramètres additionnels PcModel_ResolveSlotAndApply
-//   +116  arme   champ résolu par Weapon_ClassFromField56 (0x4CC930) -> classe d'arme
-//   +144  bool   altWeaponSet    (idx144... voir plus bas, ATTENTION collision de notation)
-// (cf. commentaires détaillés sur ActionFsm ci-dessous pour chaque champ retenu)
+// Original offsets recovered from Char_UpdateAnimationFrame (dword indices
+// *((_DWORD*)this + N) => byte N*4; the "sibling" functions Combat_TickAttackState
+// 0x574BD0, Char_AttackAnimTick_576890/576A20, Char_CastAnimTick_5762F0 etc. use
+// the same layout as direct BYTE offsets `this + N` — the two notations agree):
+//   +0    bool   active          record validity (function-entry guard)
+//   +92   int    modelIndex      (idx23) model/appearance
+//   +96   int    modelVariant    (idx24) model variant (gender/skin)
+//   +108  int    (idx27) / +112 int (idx28)   additional PcModel_ResolveSlotAndApply parameters
+//   +116  weapon field resolved by Weapon_ClassFromField56 (0x4CC930) -> weapon class
+//   +144  bool   altWeaponSet    (idx144... see below, NOTE notation collision)
+// (see detailed comments on ActionFsm below for each field kept)
 //
-// CombatSystem.h (DÉJÀ ÉCRIT, NE PAS ÉDITER) documente déjà que entity+244 est À LA FOIS
-// le sélecteur d'état de cette FSM (switch de Char_UpdateAnimationFrame, ~0x5727BF) ET le
-// champ "facing" P[11] envoyé tel quel dans les paquets d'action (Combat_QueueMeleeAttack
-// 0x573130 / Combat_QueueSkillAction 0x573200 lisent *(this+244) sans transformation) —
-// vérifié à nouveau ici sur les deux builders : c'est bien une réutilisation volontaire du
-// même mot mémoire, pas une erreur d'étiquetage.
+// CombatSystem.h (ALREADY WRITTEN, DO NOT EDIT) already documents that entity+244
+// is BOTH this FSM's state selector (switch in Char_UpdateAnimationFrame, ~0x5727BF)
+// AND the "facing" field P[11] sent as-is in action packets (Combat_QueueMeleeAttack
+// 0x573130 / Combat_QueueSkillAction 0x573200 read *(this+244) with no transform) —
+// re-verified here on both builders: this is indeed a deliberate reuse of the same
+// memory word, not a labeling error.
 #pragma once
 #include <cstdint>
 #include "Game/CombatSystem.h"
@@ -45,40 +45,39 @@
 
 namespace ts2::game {
 
-// ---------------------------------------------------------------------------
-// États d'action — valeurs numériques EXACTES du switch terminal de
-// Char_UpdateAnimationFrame (0x5727BF..0x572F42). Chaque cas appelle un handler
-// Char_*Tick*/Char_*AnimEnd*/Combat_TickAttackState dédié (EA en commentaire) qui fait
-// avancer entity+248 (frame courante) de a3*30 (ou d'un multiple pondéré pour les états
-// de cast, cf. CastSlot0/1/2) et transitionne quand la frame atteint la durée d'anim
-// (donnée asset 3D, hors périmètre — cf. IAnimFrameOracle/TickTimedState).
+// Action states — EXACT numeric values from the terminal switch in
+// Char_UpdateAnimationFrame (0x5727BF..0x572F42). Each case calls a dedicated
+// Char_*Tick*/Char_*AnimEnd*/Combat_TickAttackState handler (EA in comment) that
+// advances entity+248 (current frame) by a3*30 (or a weighted multiple for the cast
+// states, see CastSlot0/1/2) and transitions when the frame reaches the anim
+// duration (3D asset data, out of scope — see IAnimFrameOracle/TickTimedState).
 //
-// ENUM VALIDÉ INTÉGRALEMENT (W11) — bornes du switch re-prouvées à l'instruction près :
+// ENUM FULLY VALIDATED (W11) — switch bounds re-proven down to the instruction:
 //     0x5727B2  cmp [ebp+var_6C], 5Fh   ; switch 96 cases
 //     0x5727B6  ja  def_5727BF          ; default case, cases 8,24-29,47,53,59,77-80,84
 //     0x5727BF  jmp jpt_5727BF[eax*4]
-// Soit 96 valeurs (0x00..0x5F) − 15 valeurs `default` = **81 CAS VIVANTS** (et non « 55 »,
-// chiffre erroné qui circulait dans Game/AnimationTick.*, corrigé). La liste `default`
-// d'IDA — 8 ; 24-29 ; 47 ; 53 ; 59 ; 77-80 ; 84 — correspond EXACTEMENT, aux 7 plages
-// près, aux valeurs marquées « absentes » ci-dessous (0x08 ; 0x18..0x1D ; 0x2F ; 0x35 ;
-// 0x3B ; 0x4D..0x50 ; 0x54) : la table d'états ci-dessous est donc complète et exacte,
-// il n'y a AUCUN trou supplémentaire (l'ancien « ... » laissait croire le contraire).
-// Ces 15 valeurs tombent dans le `default: break` d'origine -> aucune progression d'anim
-// pour cette entité tant que l'état vaut l'une d'elles (états pilotés ailleurs, ou inutilisés).
+// I.e. 96 values (0x00..0x5F) minus 15 `default` values = **81 LIVE CASES** (not "55",
+// an erroneous figure that circulated in Game/AnimationTick.*, now fixed). IDA's
+// `default` list — 8; 24-29; 47; 53; 59; 77-80; 84 — matches EXACTLY, down to the 7
+// ranges, the values marked "absent" below (0x08; 0x18..0x1D; 0x2F; 0x35; 0x3B;
+// 0x4D..0x50; 0x54): the state table below is therefore complete and exact, with NO
+// additional gaps (the old "..." wrongly implied otherwise). These 15 values fall
+// into the original `default: break` -> no anim progression for this entity while
+// the state holds one of them (states driven elsewhere, or unused).
 enum class CharActionState : int32_t {
-    Idle                    = 0x00, // Char_AnimTick_5746E0            0x5746E0 — boucle d'inactivité
-    Move                    = 0x01, // Char_TickMoveState              0x574830 — déplacement + proximité ramassage/aura
-    ApproachAndInteract     = 0x02, // Combat_TickAttackState          0x574BD0 — marche vers la cible puis auto-interact (combat/pickup/npc/gather) en portée
-    RecoveryToMove          = 0x03, // Char_AnimEndToRecovery_576050   0x576050 — fin d'anim -> Move, recalcule *(this+240) via Weapon_ClassFromField56
+    Idle                    = 0x00, // Char_AnimTick_5746E0            0x5746E0 — idle loop
+    Move                    = 0x01, // Char_TickMoveState              0x574830 — movement + pickup/aura proximity
+    ApproachAndInteract     = 0x02, // Combat_TickAttackState          0x574BD0 — walks to target then auto-interacts (combat/pickup/npc/gather) in range
+    RecoveryToMove          = 0x03, // Char_AnimEndToRecovery_576050   0x576050 — anim end -> Move, recalculates *(this+240) via Weapon_ClassFromField56
     AnimEndToIdle_5761A0    = 0x04, // Char_AnimEndToIdle_5761A0       0x5761A0
-    CastSlot0               = 0x05, // Char_CastAnimTick_5762F0        0x5762F0 — windup compétence, table de frame d'événement slot 0 (a4=état-5=0)
-    CastSlot1               = 0x06, // Char_CastAnimTick_5764D0        0x5764D0 — idem, slot 1 (a4=1)
-    CastSlot2               = 0x07, // Char_CastAnimTick_5766B0        0x5766B0 — idem, slot 2 (a4=2)
-    // (0x08 absent du switch : default -> no-op)
-    AttackWindupA           = 0x09, // Char_AttackAnimTick_576890      0x576890 — windup coup n°1, tire l'ordre d'attaque en fin d'anim
-    AttackWindupB           = 0x0A, // Char_AttackAnimTick_576A20      0x576A20 — windup coup n°2 (variante), idem
+    CastSlot0               = 0x05, // Char_CastAnimTick_5762F0        0x5762F0 — skill windup, frame event table slot 0 (a4=state-5=0)
+    CastSlot1               = 0x06, // Char_CastAnimTick_5764D0        0x5764D0 — same, slot 1 (a4=1)
+    CastSlot2               = 0x07, // Char_CastAnimTick_5766B0        0x5766B0 — same, slot 2 (a4=2)
+    // (0x08 absent from the switch: default -> no-op)
+    AttackWindupA           = 0x09, // Char_AttackAnimTick_576890      0x576890 — windup hit #1, fires the attack order at anim end
+    AttackWindupB           = 0x0A, // Char_AttackAnimTick_576A20      0x576A20 — windup hit #2 (variant), same
     AnimHold                = 0x0B, // Char_AnimHold_576BB0            0x576BB0
-    DeathRespawn            = 0x0C, // Char_TickDeathRespawn           0x576CB0 — anim de mort, décompte respawn (this+740), warp destination
+    DeathRespawn            = 0x0C, // Char_TickDeathRespawn           0x576CB0 — death anim, respawn countdown (this+740), warp destination
     AnimEndToIdle_577D70    = 0x0D, // 0x577D70
     AnimLoop_577EC0         = 0x0E, // 0x577EC0
     AnimLoop_577FC0         = 0x0F, // 0x577FC0
@@ -90,18 +89,18 @@ enum class CharActionState : int32_t {
     AnimEndToIdle_578760    = 0x15, // 0x578760
     AnimEndToIdle_5788B0    = 0x16, // 0x5788B0
     AnimEndToIdle_578A00    = 0x17, // 0x578A00
-    // (0x18..0x1D absents du switch)
+    // (0x18..0x1D absent from the switch)
     AnimEndToState31        = 0x1E, // Char_AnimEndToState31_578B50    0x578B50
     AnimLoop_578C70         = 0x1F, // 0x578C70
     Run                     = 0x20, // Char_TickRunState               0x578D70
     AnimEndToState34        = 0x21, // Char_AnimEndToState34_579DD0    0x579DD0
-    ArcMoveSeg1             = 0x22, // Char_TickArcMoveSeg1            0x579EE0 — saut/trajectoire arquée, segment 1
+    ArcMoveSeg1             = 0x22, // Char_TickArcMoveSeg1            0x579EE0 — jump/arc trajectory, segment 1
     ArcMoveSeg2             = 0x23, // Char_TickArcMoveSeg2            0x57A040 — segment 2
     ArcMoveSeg3             = 0x24, // Char_TickArcMoveSeg3            0x57A190 — segment 3
     AnimEndToIdle_57A2F0    = 0x25, // 0x57A2F0
     AnimEndToIdle_57A440    = 0x26, // 0x57A440
     AnimEndToIdle_57A5A0    = 0x27, // 0x57A5A0
-    Channel                 = 0x28, // Char_TickChannelState           0x57A700 — canalisation de compétence (maintien)
+    Channel                 = 0x28, // Char_TickChannelState           0x57A700 — skill channeling (hold)
     AnimEndToIdle_57A970    = 0x29, // 0x57A970
     CastAnimTick_57AAC0     = 0x2A, // 0x57AAC0
     CastAnimTick_57ACB0     = 0x2B, // 0x57ACB0
@@ -126,7 +125,7 @@ enum class CharActionState : int32_t {
     AnimEndToIdle_57C800    = 0x3E, // 0x57C800
     AnimEndToState64        = 0x3F, // Char_AnimEndToState64_57C930    0x57C930
     LootPickup              = 0x40, // Char_TickLootPickupState        0x57CA50
-    AnimEndSpawnSkillFx     = 0x41, // Char_AnimEndSpawnSkillFx_57CE40 0x57CE40 — déclenche un FX de compétence en fin d'anim (hors périmètre rendu)
+    AnimEndSpawnSkillFx     = 0x41, // Char_AnimEndSpawnSkillFx_57CE40 0x57CE40 — triggers a skill FX at anim end (rendering out of scope)
     AnimEndToIdle_57D0E0    = 0x42, // 0x57D0E0
     AnimEndToIdle_57D230    = 0x43, // 0x57D230
     AnimEndToIdle_57D380    = 0x44, // 0x57D380
@@ -138,7 +137,7 @@ enum class CharActionState : int32_t {
     CastAnimTick_57DE30     = 0x4A, // 0x57DE30
     AnimEndToIdle_57DFD0    = 0x4B, // 0x57DFD0
     AnimEndToIdle_57E120    = 0x4C, // 0x57E120
-    // (0x4D..0x50 absents)
+    // (0x4D..0x50 absent)
     CastAnimTick_57E280     = 0x51, // 0x57E280
     CastAnimTick_57E420     = 0x52, // 0x57E420
     CastAnimTick_57E5C0     = 0x53, // 0x57E5C0
@@ -149,191 +148,177 @@ enum class CharActionState : int32_t {
     CastAnimTick_57ED30     = 0x58, // 0x57ED30
     ActionToStand           = 0x59, // Char_ActionTick_ToStand         0x57EF20
     ActionToStand2          = 0x5A, // Char_ActionTick_ToStand2        0x57F0C0
-    GuardBegin              = 0x5B, // Char_ActionTick_GuardBegin      0x57F260 — passe l'état à 92 (GuardLoop) puis 93 (GuardEnd) si pas de maintien
-    GuardLoop               = 0x5C, // Char_ActionTick_GuardLoop       0x57F410 — maintien tant que this+548==1 (touche gardée)
+    GuardBegin              = 0x5B, // Char_ActionTick_GuardBegin      0x57F260 — moves state to 92 (GuardLoop) then 93 (GuardEnd) if not held
+    GuardLoop               = 0x5C, // Char_ActionTick_GuardLoop       0x57F410 — holds while this+548==1 (guard key held)
     GuardEnd                = 0x5D, // Char_ActionTick_GuardEnd        0x57F600
-    GuardHit                = 0x5E, // Char_ActionTick_GuardHit        0x57F800 — anim d'impact bloqué (cf. CombatPacket::resultType==4)
+    GuardHit                = 0x5E, // Char_ActionTick_GuardHit        0x57F800 — blocked-impact anim (see CombatPacket::resultType==4)
     GuardHitAlt             = 0x5F, // Char_ActionTick_GuardHitAlt     0x57F990
 };
 
 inline int32_t ToRaw(CharActionState s) { return static_cast<int32_t>(s); }
 
-// ---------------------------------------------------------------------------
-// Interface de branchement vers les tables d'animation figées dans le binaire mais
-// indexées par des données d'assets (motion/skinning) — HORS PÉRIMÈTRE de ce module
-// (rendu 3D). L'implémentation réelle vit dans la couche rendu/anim.
-// ---------------------------------------------------------------------------
+// Interface hooking into the animation tables that are fixed in the binary but
+// indexed by asset data (motion/skinning) — OUT OF SCOPE for this module
+// (3D rendering). The real implementation lives in the render/anim layer.
 class IAnimFrameOracle {
 public:
     virtual ~IAnimFrameOracle() = default;
 
-    // Fidèle à Anim_IsWeaponHitFrame (0x558D80) : table figée {weaponAnimId -> 1..3 frames
-    // de contact ±1} pour les coups d'arme "simples" (cette branche est empruntée quand
+    // Faithful to Anim_IsWeaponHitFrame (0x558D80): fixed table {weaponAnimId -> 1..3 contact
+    // frames ±1} for "simple" weapon hits (this branch is taken when
     // hitUsesSkillTable==false). weaponAnimId = entity+296 (== CombatActorState::skillId,
-    // 0 pour un coup de base), frame = entity+248, weaponClass = classe résolue par
-    // Weapon_ClassFromField56 (0x4CC930, hors périmètre : dépend de l'équipement 3D).
+    // 0 for a base hit), frame = entity+248, weaponClass = class resolved by
+    // Weapon_ClassFromField56 (0x4CC930, out of scope: depends on 3D equipment).
     virtual bool IsWeaponHitFrame(int32_t weaponAnimId, float frame, int32_t weaponClass) const = 0;
 
-    // Fidèle à Anim_LookupFrameEvent (0x558B40) : table figée indexée par
-    // [modelIndex][weaponClass][castSlot(=état-5, 0..2)][frame±1][altIndex] -> id
-    // d'événement (skillId/effet) écrit dans outEventId. altIndex = 0 si altWeaponSet
-    // (entity+576) sinon weaponAnimSlot (entity+220). Utilisée quand hitUsesSkillTable==true.
+    // Faithful to Anim_LookupFrameEvent (0x558B40): fixed table indexed by
+    // [modelIndex][weaponClass][castSlot(=state-5, 0..2)][frame±1][altIndex] -> event
+    // id (skillId/effect) written to outEventId. altIndex = 0 if altWeaponSet
+    // (entity+576) else weaponAnimSlot (entity+220). Used when hitUsesSkillTable==true.
     virtual bool LookupSkillFrameEvent(int32_t modelIndex, int32_t weaponClass, int32_t castSlot,
                                         float frame, int32_t altIndex, int32_t& outEventId) const = 0;
 };
 
-// ---------------------------------------------------------------------------
-// FSM d'action par entité — champs retenus (offsets d'origine en commentaire, "entity+N"
-// = octet N du même enregistrement que CombatActorState). Les champs de position/cible/
-// compétence sont directement ceux de CombatActorState (partagés avec les builders réseau
-// Build{Melee,Skill}Attack) : `actor.facing` == entity+244 == `state` (miroir typé),
+// Per-entity action FSM — fields kept (original offsets in comment, "entity+N"
+// = byte N of the same record as CombatActorState). The position/target/skill
+// fields are directly those of CombatActorState (shared with the network builders
+// Build{Melee,Skill}Attack): `actor.facing` == entity+244 == `state` (typed mirror),
 // `actor.meleeSubmode` == entity+284, `actor.targetId` == entity+288/292,
-// `actor.skillId` == entity+296 (== a1 de Anim_IsWeaponHitFrame).
-// ---------------------------------------------------------------------------
+// `actor.skillId` == entity+296 (== a1 of Anim_IsWeaponHitFrame).
 struct ActionFsm {
-    // --- Contexte partagé avec les builders de paquet d'action (cf. CombatSystem.h) ---
+    // --- Context shared with the action packet builders (see CombatSystem.h) ---
     CombatActorState actor;
 
-    // --- État / timing (entity+244, +248) ---
-    CharActionState state     = CharActionState::Idle;  // entity+244 (miroir de actor.facing)
-    float           animFrame = 0.0f;                   // entity+248 — position dans l'anim courante (unités = frames @ 30 FPS)
+    // --- State / timing (entity+244, +248) ---
+    CharActionState state     = CharActionState::Idle;  // entity+244 (mirror of actor.facing)
+    float           animFrame = 0.0f;                   // entity+248 — position in current anim (units = frames @ 30 FPS)
 
-    // !a2 dans le binaire : true si cette entité est simulée localement (le joueur ou une
-    // entité dont on rejoue le tick client) — seul ce cas envoie réellement des paquets
-    // (Net_SendPacket_Op16/18) et déclenche le contact ; false = relecture d'un état déjà
-    // reçu du réseau (autres joueurs/monstres), avance juste l'anim.
+    // !a2 in the binary: true if this entity is simulated locally (the player or an
+    // entity whose client tick we replay) — only this case actually sends packets
+    // (Net_SendPacket_Op16/18) and triggers contact; false = replay of a state already
+    // received over the network (other players/monsters), just advances the anim.
     bool isLocalSimulation = true;
 
-    // --- Détection de la frame de contact (bloc en tête de Char_UpdateAnimationFrame,
-    // 0x571926..0x571D2A — actif quel que soit `state` tant que hitCheckActive==true) ---
-    bool hitCheckActive   = false; // entity+624 (idx156) — arme le test de contact ce tick
-    bool hitFired         = false; // entity+640 (idx160) — latch "déjà tiré pour cette anim" (empêche double-déclenchement tant que la frame reste dans la fenêtre ±1)
-    bool hitUsesSkillTable = false; // entity+628 (idx157) — true: Anim_LookupFrameEvent (table compétence, castSlot=état-5) ; false: Anim_IsWeaponHitFrame (table arme, clé=actor.skillId)
-    bool altWeaponSet     = false; // entity+576 (idx144) — sélectionne l'entrée "arme alternative" dans les deux tables ci-dessus
-    int32_t weaponAnimSlot = 0;    // entity+220 (idx55) — passé comme altIndex à LookupSkillFrameEvent quand altWeaponSet==false
-    int32_t lastSkillEventId = 0;  // v68 dans le binaire — id d'événement écrit par LookupSkillFrameEvent au moment du premier tir ; réutilisé comme argument skillId de BuildMeleeAttack (cf. Combat_QueueMeleeAttack(v68) 0x571D7D)
+    // --- Contact-frame detection (block at the head of Char_UpdateAnimationFrame,
+    // 0x571926..0x571D2A — active regardless of `state` as long as hitCheckActive==true) ---
+    bool hitCheckActive   = false; // entity+624 (idx156) — arms the contact test this tick
+    bool hitFired         = false; // entity+640 (idx160) — "already fired for this anim" latch (prevents double-trigger while the frame stays in the ±1 window)
+    bool hitUsesSkillTable = false; // entity+628 (idx157) — true: Anim_LookupFrameEvent (skill table, castSlot=state-5); false: Anim_IsWeaponHitFrame (weapon table, key=actor.skillId)
+    bool altWeaponSet     = false; // entity+576 (idx144) — selects the "alt weapon" entry in the two tables above
+    int32_t weaponAnimSlot = 0;    // entity+220 (idx55) — passed as altIndex to LookupSkillFrameEvent when altWeaponSet==false
+    int32_t lastSkillEventId = 0;  // v68 in the binary — event id written by LookupSkillFrameEvent at first fire; reused as the skillId argument of BuildMeleeAttack (see Combat_QueueMeleeAttack(v68) 0x571D7D)
 
-    // --- Nature de l'action déclenchée au contact (entity+632, +636) ---
-    // actionKind   : 1 = coup/compétence instantanée (dispatch vers Build{Melee,Skill}Attack),
-    //                2 = compétence à projectile (Effect_SpawnSkillProjectile 0x573A90, FX -> hors périmètre)
-    // actionSubKind (valide seulement si actionKind==1) : 1 = cible unique, 2 = zone
-    //                (Combat_CastAoESkillOnTargets 0x573480 — énumération de cibles hors périmètre)
+    // --- Nature of the action triggered on contact (entity+632, +636) ---
+    // actionKind   : 1 = instant hit/skill (dispatch to Build{Melee,Skill}Attack),
+    //                2 = projectile skill (Effect_SpawnSkillProjectile 0x573A90, FX -> out of scope)
+    // actionSubKind (valid only if actionKind==1): 1 = single target, 2 = area
+    //                (Combat_CastAoESkillOnTargets 0x573480 — target enumeration out of scope)
     int32_t actionKind    = 1; // entity+632 (idx158)
     int32_t actionSubKind = 1; // entity+636 (idx159)
 
-    // --- Résolution de la table de contact (fournie par la couche rendu/anim, hors périmètre) ---
+    // --- Contact-table resolution (provided by the render/anim layer, out of scope) ---
     int32_t modelIndex  = 0; // entity+92  (idx23)
-    int32_t weaponClass = 0; // Weapon_ClassFromField56(0x4CC930) résolu en amont par l'appelant
+    int32_t weaponClass = 0; // Weapon_ClassFromField56(0x4CC930), resolved upstream by the caller
 
-    // --- Interruption de cast (0x57275A) : uniquement pour l'entité locale (soi-même,
-    // comparaison *(this+4)==dword_1687238[0] dans le binaire). Sémantique exacte des
-    // globals déclencheurs (g_InvDirtyEnable 0x16755AC / g_AutoHuntFuelA 0x16755A4 /
-    // g_AutoHuntFuelB 0x16755A8, liés à l'auto-hunt) non modélisée ici : l'appelant
-    // positionne ce drapeau quand la condition d'origine est vraie.
+    // --- Cast interrupt (0x57275A): local entity (self) only (comparison
+    // *(this+4)==dword_1687238[0] in the binary). Exact semantics of the triggering
+    // globals (g_InvDirtyEnable 0x16755AC / g_AutoHuntFuelA 0x16755A4 /
+    // g_AutoHuntFuelB 0x16755A8, related to auto-hunt) not modeled here: the caller
+    // sets this flag when the original condition is true.
     bool isSelf               = false;
     bool pendingCastInterrupt = false;
 
-    // --- Sorties du dernier Update() ---
-    bool                 contactFiredThisTick = false; // un coup/compétence instantané a été validé ce tick
-    CombatActionRequest  lastAction{};                  // requête construite par BuildMeleeAttack/BuildSkillAction (valide seulement si contactFiredThisTick)
-    bool                 pendingAoECast       = false;  // actionSubKind==2 au contact -> Combat_CastAoESkillOnTargets (0x573480, hors périmètre : ce module ne calcule pas la liste de cibles)
-    bool                 pendingProjectile    = false;  // actionKind==2 au contact -> Effect_SpawnSkillProjectile (0x573A90, hors périmètre FX)
+    // --- Outputs of the last Update() ---
+    bool                 contactFiredThisTick = false; // an instant hit/skill was validated this tick
+    CombatActionRequest  lastAction{};                  // request built by BuildMeleeAttack/BuildSkillAction (valid only if contactFiredThisTick)
+    bool                 pendingAoECast       = false;  // actionSubKind==2 on contact -> Combat_CastAoESkillOnTargets (0x573480, out of scope: this module does not compute the target list)
+    bool                 pendingProjectile    = false;  // actionKind==2 on contact -> Effect_SpawnSkillProjectile (0x573A90, FX out of scope)
 
-    // Positionne l'état ET son miroir dans actor.facing (entity+244) — cf. en-tête de
-    // fichier : les deux DOIVENT rester synchronisés, c'est le même mot mémoire d'origine.
+    // Sets the state AND its mirror in actor.facing (entity+244) — see file header:
+    // the two MUST stay in sync, they are the same original memory word.
     void SetState(CharActionState s) {
         state = s;
         actor.facing = ToRaw(s);
     }
 
-    // ==========================================================================
-    // Bloc de détection de contact — traduction fidèle de Char_UpdateAnimationFrame
-    // 0x571926 (if (*(this+156)==1)) .. 0x571D2A (v66==1 -> dispatch). Appelé à chaque
-    // Update() indépendamment de `state` (le binaire ne teste QUE hitCheckActive).
-    // Retourne true si un coup/compétence instantané a été validé (contactFiredThisTick).
-    // `world` = table d'entités pour la revalidation de cible (0x571BC9/0x571C89) ;
-    // `oracle` peut être nullptr (aucun contact ne sera jamais détecté, dégrade proprement).
-    // ==========================================================================
+    // Contact-detection block — faithful port of Char_UpdateAnimationFrame
+    // 0x571926 (if (*(this+156)==1)) .. 0x571D2A (v66==1 -> dispatch). Called on every
+    // Update() regardless of `state` (the binary only tests hitCheckActive).
+    // Returns true if an instant hit/skill was validated (contactFiredThisTick).
+    // `world` = entity table for target revalidation (0x571BC9/0x571C89);
+    // `oracle` may be nullptr (no contact will ever be detected, degrades cleanly).
     bool UpdateContactDetection(const GameWorld& world, const IAnimFrameOracle* oracle);
 
-    // ==========================================================================
-    // Interruption de cast — 0x57275A : si pendingCastInterrupt && isSelf && state est
-    // un des 3 emplacements de cast (CastSlot0/1/2), force le retour à Move avec frame
-    // remise à 0 (comme le binaire : *(this+244)=1; *(this+248)=0.0;). Retourne true si la
-    // transition a eu lieu (et remet pendingCastInterrupt à false).
-    // ==========================================================================
+    // Cast interrupt — 0x57275A: if pendingCastInterrupt && isSelf && state is one of
+    // the 3 cast slots (CastSlot0/1/2), forces a return to Move with frame reset to 0
+    // (like the binary: *(this+244)=1; *(this+248)=0.0;). Returns true if the
+    // transition happened (and resets pendingCastInterrupt to false).
     bool ApplyPendingCastInterrupt();
 
-    // ==========================================================================
-    // Tick générique "l'anim avance de dt*30 frames jusqu'à durationFrames puis
-    // transitionne vers nextState" — motif QUASI UNIVERSEL des handlers Char_AnimEnd*/
-    // Char_AnimLoop*/Char_AttackAnimTick_*/Char_TickDeathRespawn (ex. 0x574C98,
-    // 0x576958, 0x576D78, 0x57F328...). `durationFrames` est une donnée d'anim 3D
-    // (ModelObj_GetSubObjectCount 0x4D7080 ou similaire) — HORS PÉRIMÈTRE, fournie par
-    // l'appelant (couche rendu). `loopInstead` reproduit la variante "boucle" (frame -=
-    // duration au lieu de clamp, ex. Char_TickMoveState 0x574911/0x574922) plutôt que la
-    // variante "fin d'anim -> transition" (ex. Char_AnimEndToRecovery 0x576131).
-    // Retourne true si la transition (ou le rebouclage) a eu lieu ce tick.
-    // ==========================================================================
+    // Generic tick "the anim advances dt*30 frames until durationFrames, then
+    // transitions to nextState" — the NEAR-UNIVERSAL pattern of the Char_AnimEnd*/
+    // Char_AnimLoop*/Char_AttackAnimTick_*/Char_TickDeathRespawn handlers (e.g. 0x574C98,
+    // 0x576958, 0x576D78, 0x57F328...). `durationFrames` is 3D anim data
+    // (ModelObj_GetSubObjectCount 0x4D7080 or similar) — OUT OF SCOPE, provided by the
+    // caller (render layer). `loopInstead` reproduces the "loop" variant (frame -=
+    // duration instead of clamping, e.g. Char_TickMoveState 0x574911/0x574922) rather
+    // than the "anim end -> transition" variant (e.g. Char_AnimEndToRecovery 0x576131).
+    // Returns true if the transition (or the wraparound) happened this tick.
     bool TickTimedState(float dt, float durationFrames, CharActionState nextState, bool loopInstead = false);
 
-    // ==========================================================================
-    // Variante pour les 3 états de cast (CastSlot0/1/2) — l'incrément de frame N'EST PAS
-    // dt*30 mais dt*weaponRatePct*0.3 (0x576414, Char_CalcWeaponRatePct 0x4CD900), et n'a
-    // lieu QUE si weaponRatePct est STRICTEMENT dans les bornes ouvertes
-    // ]Char_CalcAnimBoundMin99, Char_CalcAnimBoundMax121[ (0x57FB30/0x57FBB0 — l'appelant
-    // fournit `withinBounds`). En fin d'anim, retour à Move (1), frame=0, ET
-    // hitCheckActive=false (0x57644F, comportement spécifique à ce groupe d'états — les
-    // autres handlers ne touchent pas hitCheckActive).
+    // Variant for the 3 cast states (CastSlot0/1/2) — the frame increment is NOT
+    // dt*30 but dt*weaponRatePct*0.3 (0x576414, Char_CalcWeaponRatePct 0x4CD900), and
+    // only happens if weaponRatePct is STRICTLY within the open bounds
+    // ]Char_CalcAnimBoundMin99, Char_CalcAnimBoundMax121[ (0x57FB30/0x57FBB0 — the caller
+    // supplies `withinBounds`). At anim end, returns to Move (1), frame=0, AND
+    // hitCheckActive=false (0x57644F, behavior specific to this group of states — other
+    // handlers don't touch hitCheckActive).
     //
-    // UNE seule primitive pour TROIS états : cadrage RE-PROUVÉ, pas une approximation.
-    // Les cas 5/6/7 du switch appellent bien TROIS fonctions DISTINCTES (0x5762F0 @0x57284C,
-    // 0x5764D0 @0x572864, 0x5766B0 @0x57287C), mais leurs décompilations sont STRICTEMENT
-    // identiques (mêmes offsets, même constante 0.3, mêmes bornes, même queue) : ce sont
-    // trois copies compilées du même corps. La modélisation par une primitive unique est
-    // donc FIDÈLE. (Objection « TickCastState masque 3 états distincts » : RÉFUTÉE, W11.)
+    // ONE single primitive for THREE states: this framing is RE-PROVEN, not an
+    // approximation. Switch cases 5/6/7 do call THREE DISTINCT functions (0x5762F0
+    // @0x57284C, 0x5764D0 @0x572864, 0x5766B0 @0x57287C), but their decompilations are
+    // STRICTLY identical (same offsets, same 0.3 constant, same bounds, same tail): they
+    // are three compiled copies of the same body. Modeling them with a single primitive
+    // is therefore FAITHFUL. (Objection "TickCastState hides 3 distinct states":
+    // REFUTED, W11.)
     //
-    // ⚠️ FOURNITURE DE `weaponRatePct` — le seul portage existant, CalcWeaponRatePct
-    // (Game/StatFormulas.h:71), a la signature `(const SelfState&, const GameDatabases&)` :
-    // il ne calcule le taux que pour SOI. Le binaire, lui, appelle
-    // Char_CalcWeaponRatePct(this+328, this+116) @0x5763BE — PAR ENTITÉ. Il n'est donc PAS
-    // réutilisable tel quel pour un joueur distant. TODO [ancre 0x4CD900].
-    // ==========================================================================
+    // WARNING: SUPPLYING `weaponRatePct` — the only existing port, CalcWeaponRatePct
+    // (Game/StatFormulas.h:71), has signature `(const SelfState&, const GameDatabases&)`:
+    // it only computes the rate for SELF. The binary, meanwhile, calls
+    // Char_CalcWeaponRatePct(this+328, this+116) @0x5763BE — PER ENTITY. It is therefore
+    // NOT reusable as-is for a remote player. TODO [ancre 0x4CD900].
     bool TickCastState(float dt, double weaponRatePct, bool withinBounds, float durationFrames);
 
-    // ==========================================================================
-    // États de garde (0x5B..0x5F) — reproduction du sous-automate this+548 (bool "touche
-    // de garde maintenue", fourni par l'appelant = input) / this+552 (sous-état garde
-    // 2=maintien en cours, 3=relâché) observé dans Char_ActionTick_GuardBegin (0x57F260)
-    // et Char_ActionTick_GuardLoop (0x57F410). Expose seulement les transitions d'état + le
-    // sous-état de garde via `guardSubstate` (membre ci-dessous).
+    // Guard states (0x5B..0x5F) — reproduces the this+548 sub-automaton (bool "guard
+    // key held", supplied by the caller as input) / this+552 (guard sub-state:
+    // 2=holding, 3=released) observed in Char_ActionTick_GuardBegin (0x57F260) and
+    // Char_ActionTick_GuardLoop (0x57F410). Exposes only the state transitions + the
+    // guard sub-state via `guardSubstate` (member below).
     //
-    // BANDEAU CORRIGÉ (W11) : la rédaction précédente disait « Ne modélise pas l'envoi
-    // réseau (Net_SendOp104 0x4BDAE0, HORS PÉRIMÈTRE NET) ». Formulation PÉRIMÉE et
-    // trompeuse — Net_SendOp104 EST porté (Net/SendPackets.h:238, .cpp:2280), tout comme
-    // Net_SendPacket_Op16 (Net/SendPackets.h:134, .cpp:1266). La vraie raison de l'omission
-    // est un choix de COUCHE, pas une absence de builder : Game/* n'inclut pas Net/* (cf.
-    // bandeau d'autonomie de Game/AnimationTick.h). Les émissions manquantes sont donc des
-    // TODO de CÂBLAGE, à honorer par des hooks côté appelant :
-    //   GuardBegin 0x57F260, sous `if (!a4)` @0x57F371 : Op104(3, guardSubstate) @0x57F389,
+    // BANNER CORRECTED (W11): the previous wording said "Does not model the network
+    // send (Net_SendOp104 0x4BDAE0, OUT OF NET SCOPE)". That wording was STALE and
+    // misleading — Net_SendOp104 IS ported (Net/SendPackets.h:238, .cpp:2280), as is
+    // Net_SendPacket_Op16 (Net/SendPackets.h:134, .cpp:1266). The real reason for the
+    // omission is a LAYERING choice, not a missing builder: Game/* does not include
+    // Net/* (see the autonomy banner in Game/AnimationTick.h). The missing emissions
+    // are therefore WIRING TODOs, to be honored via hooks on the caller side:
+    //   GuardBegin 0x57F260, under `if (!a4)` @0x57F371: Op104(3, guardSubstate) @0x57F389,
     //     Op104(2, 0) @0x57F397, Op104(3, 3) @0x57F3D3, Op16(this+240) @0x57F400.
-    //   GuardLoop  0x57F410, sous `if (!a4)` @0x57F59E : Op104(1, 0) @0x57F5C3 (uniquement
-    //     si guardSubstate==3 && guardKeyHeld), Op16(this+240) @0x57F5F0.
-    // ==========================================================================
-    int32_t guardSubstate = 0; // entity+552 : 0=inactif, 2=maintien, 3=relâché/fin
-    bool guardKeyHeld     = false; // entrée fournie par l'appelant, reflète entity+548
+    //   GuardLoop  0x57F410, under `if (!a4)` @0x57F59E: Op104(1, 0) @0x57F5C3 (only if
+    //     guardSubstate==3 && guardKeyHeld), Op16(this+240) @0x57F5F0.
+    int32_t guardSubstate = 0; // entity+552: 0=inactive, 2=holding, 3=released/end
+    bool guardKeyHeld     = false; // input supplied by the caller, reflects entity+548
     bool TickGuardBegin(float dt, float durationFrames);
     bool TickGuardLoop(float dt, float durationFrames);
 };
 
-// ---------------------------------------------------------------------------
-// Liste EXACTE des identifiants d'animation d'arme/compétence donnant le bonus de
-// vitesse ×1.1 dans Combat_TickAttackState (0x575A39..0x575A44). Reproduite telle
-// quelle (byte-exact) — NOTE : cette liste est un SUR-ENSEMBLE de celle utilisée par
-// Char_CalcAttackSpeed (0x4CCD14, ~39 valeurs, déjà neutralisée dans StatFormulas.cpp
-// faute de champ SelfState porteur du "special item" runtime) ; les deux listes
-// DIVERGENT réellement dans le binaire (incohérence d'origine entre les deux call
-// sites, conservée telle quelle plutôt que "corrigée").
+// EXACT list of weapon/skill animation ids granting the ×1.1 speed bonus in
+// Combat_TickAttackState (0x575A39..0x575A44). Reproduced as-is (byte-exact) — NOTE:
+// this list is a SUPERSET of the one used by Char_CalcAttackSpeed (0x4CCD14, ~39
+// values, already neutralized in StatFormulas.cpp for lack of a SelfState field
+// carrying the runtime "special item"); the two lists genuinely DIVERGE in the
+// binary (an original inconsistency between the two call sites, kept as-is rather
+// than "fixed").
 bool IsFastAttackAnimId(int32_t animId);
 
 } // namespace ts2::game

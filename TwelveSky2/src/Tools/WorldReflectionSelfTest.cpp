@@ -1,9 +1,9 @@
-// Tools/WorldReflectionSelfTest.cpp — voir WorldReflectionSelfTest.h. Outil TEMPORAIRE,
-// a supprimer apres verification (mission "EXTENSION OMBRE/REFLET" 2026-07-14).
+// Tools/WorldReflectionSelfTest.cpp — see WorldReflectionSelfTest.h. TEMPORARY tool,
+// to remove after verification ("SHADOW/REFLECTION EXTENSION" mission, 2026-07-14).
 //
-// Meme squelette que Tools/UiWindowSelfTest.cpp (fenetre Win32 + gfx::Renderer reel),
-// mais rendu direct via Scene/WorldRenderer.h (pas de SceneManager/UI ici : la mission
-// ne porte que sur le rendu d'entites, pas sur le flux de scenes).
+// Same skeleton as Tools/UiWindowSelfTest.cpp (Win32 window + real gfx::Renderer),
+// but renders directly via Scene/WorldRenderer.h (no SceneManager/UI here: the
+// mission only covers entity rendering, not the scene flow).
 #include "Tools/WorldReflectionSelfTest.h"
 #include "Scene/WorldRenderer.h"
 #include "Gfx/Renderer.h"
@@ -21,8 +21,8 @@ namespace ts2::tools {
 
 namespace {
 
-// Duplique EXACTEMENT la logique de sondage de App::ResolveGameDataDir (App/App.cpp,
-// NON MODIFIE) — meme convention que Tools/UiWindowSelfTest.cpp.
+// Duplicates EXACTLY the probing logic of App::ResolveGameDataDir (App/App.cpp,
+// NOT MODIFIED) — same convention as Tools/UiWindowSelfTest.cpp.
 std::string ResolveGameDataDirLocal() {
     static const char* const kCandidates[] = {
         "GameData",
@@ -93,17 +93,17 @@ int RunWorldReflectionSelfTest(int seconds, int width, int height) {
         return 1;
     }
 
-    // Camera : cible a l'origine, distance min par defaut (25, cf. Camera::kMinDistDefault)
-    // -> largement au-dessus du near-cull cameras (10 u, IsBeyondCameraNearCull) pour les 3
-    // entites placees ci-dessous.
+    // Camera: target at origin, default min distance (25, cf. Camera::kMinDistDefault)
+    // -> well above the camera near-cull (10 u, IsBeyondCameraNearCull) for the 3
+    // entities placed below.
     gfx::Camera camera;
     camera.SetTarget(0.0f, 0.0f, 0.0f);
     camera.SetPitch(20.0f * gfx::Camera::kDegToRad);
 
-    // Peuple game::g_World DIRECTEMENT (meme mecanisme que EntityManager en production,
-    // juste sans passer par Net_RecvDispatch) : joueur local + joueur distant + monstre,
-    // tous actifs et proches les uns des autres, pour observer en UNE capture la
-    // difference de comportement reflectionEligible (monstre=oui, joueurs=non).
+    // Populates game::g_World DIRECTLY (same mechanism as EntityManager in production,
+    // just without going through Net_RecvDispatch): local player + remote player + monster,
+    // all active and close to each other, to observe in ONE capture the
+    // reflectionEligible behavior difference (monster=yes, players=no).
     game::g_World.players.clear();
     game::g_World.monsters.clear();
     game::g_World.npcs.clear();

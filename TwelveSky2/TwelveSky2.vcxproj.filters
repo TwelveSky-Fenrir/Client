@@ -135,6 +135,12 @@
     <ClCompile Include="src\App\App.cpp">
       <Filter>Source Files\App</Filter>
     </ClCompile>
+    <ClCompile Include="src\App\App_Init.cpp">
+      <Filter>Source Files\App</Filter>
+    </ClCompile>
+    <ClCompile Include="src\App\App_WndProc.cpp">
+      <Filter>Source Files\App</Filter>
+    </ClCompile>
     <ClCompile Include="src\App\PlayerInputController.cpp">
       <Filter>Source Files\App</Filter>
     </ClCompile>
@@ -189,6 +195,12 @@
     <ClCompile Include="src\Game\AnimationTick.cpp">
       <Filter>Source Files\Game\Entities</Filter>
     </ClCompile>
+    <ClCompile Include="src\Game\AnimationTick_World.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\AnimationTick_Entities.cpp">
+      <Filter>Source Files\Game\Entities</Filter>
+    </ClCompile>
     <ClCompile Include="src\Game\AutoPlaySystem.cpp">
       <Filter>Source Files\Game</Filter>
     </ClCompile>
@@ -202,6 +214,15 @@
       <Filter>Source Files\Game\Entities</Filter>
     </ClCompile>
     <ClCompile Include="src\Game\CharSelectFlow.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\CharSelectFlow_Create.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\CharSelectFlow_Delete.cpp">
+      <Filter>Source Files\Game\Flow</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\CharSelectFlow_Nav.cpp">
       <Filter>Source Files\Game\Flow</Filter>
     </ClCompile>
     <ClCompile Include="src\Game\ChatCommands.cpp">
@@ -297,6 +318,12 @@
     <ClCompile Include="src\Game\StatFormulas.cpp">
       <Filter>Source Files\Game\Data</Filter>
     </ClCompile>
+    <ClCompile Include="src\Game\StatFormulas_Attack.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Game\StatFormulas_Defense.cpp">
+      <Filter>Source Files\Game\Data</Filter>
+    </ClCompile>
     <ClCompile Include="src\Game\StaticNpcLoader.cpp">
       <Filter>Source Files\Game\Entities</Filter>
     </ClCompile>
@@ -330,6 +357,12 @@
     <ClCompile Include="src\Gfx\MeshRenderer.cpp">
       <Filter>Source Files\Gfx</Filter>
     </ClCompile>
+    <ClCompile Include="src\Gfx\MeshRenderer_Skinning.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\MeshRenderer_Shadow.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
     <ClCompile Include="src\Gfx\MotionCache.cpp">
       <Filter>Source Files\Gfx</Filter>
     </ClCompile>
@@ -355,6 +388,15 @@
       <Filter>Source Files\Gfx</Filter>
     </ClCompile>
     <ClCompile Include="src\Gfx\WorldGeometryRenderer.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer_Terrain.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer_Objects.cpp">
+      <Filter>Source Files\Gfx</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer_FxSky.cpp">
       <Filter>Source Files\Gfx</Filter>
     </ClCompile>
     <ClCompile Include="src\Input\InputSystem.cpp">
@@ -432,10 +474,34 @@
     <ClCompile Include="src\Net\SendPackets.cpp">
       <Filter>Source Files\Net</Filter>
     </ClCompile>
+    <ClCompile Include="src\Net\SendPackets_Op.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\SendPackets_Vault.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\SendPackets_Cmd.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
     <ClCompile Include="src\Net\ServerStatusQuery.cpp">
       <Filter>Source Files\Net</Filter>
     </ClCompile>
     <ClCompile Include="src\Net\WorldEntityDispatch.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\WorldEntityDispatch_ComboFamilies.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\WorldEntityDispatch_BranchSkill.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\WorldEntityDispatch_Element.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\WorldEntityDispatch_Special.cpp">
+      <Filter>Source Files\Net</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Net\WorldEntityDispatch_War.cpp">
       <Filter>Source Files\Net</Filter>
     </ClCompile>
     <ClCompile Include="src\Scene\SceneAudit.cpp">
@@ -444,7 +510,22 @@
     <ClCompile Include="src\Scene\SceneManager.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
+    <ClCompile Include="src\Scene\SceneManager_Update.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene\SceneManager_Render.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
     <ClCompile Include="src\Scene\WorldRenderer.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene\WorldRenderer_Shadows.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene\WorldRenderer_Entities.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene\WorldRenderer_Nameplates.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
     <ClCompile Include="src\Tools\CharSelectSelfTest.cpp">
@@ -483,6 +564,18 @@
     <ClCompile Include="src\UI\GameHud.cpp">
       <Filter>Source Files\UI</Filter>
     </ClCompile>
+    <ClCompile Include="src\UI\GameHud_Vitals.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\GameHud_Alliance.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\GameHud_Text.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\GameHud_Render.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
     <ClCompile Include="src\UI\GameWindows.cpp">
       <Filter>Source Files\UI</Filter>
     </ClCompile>
@@ -499,6 +592,18 @@
       <Filter>Source Files\UI</Filter>
     </ClCompile>
     <ClCompile Include="src\UI\LoginScene.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\LoginScene_ServerSelect.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\LoginScene_Login.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\LoginScene_CharSelect.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UI\LoginScene_Notice.cpp">
       <Filter>Source Files\UI</Filter>
     </ClCompile>
     <ClCompile Include="src\UI\ConfirmMsgBox.cpp">
@@ -555,6 +660,9 @@
     <ClCompile Include="src\World\WorldMap.cpp">
       <Filter>Source Files\World</Filter>
     </ClCompile>
+    <ClCompile Include="src\World\WorldMap_ZoneModel.cpp">
+      <Filter>Source Files\World</Filter>
+    </ClCompile>
     <ClCompile Include="src\Game\PlayerCmdController.cpp">
       <Filter>Source Files\Game</Filter>
     </ClCompile>
@@ -582,6 +690,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h">
+      <Filter>Header Files\App</Filter>
+    </ClInclude>
+    <ClInclude Include="src\App\App_Internal.h">
       <Filter>Header Files\App</Filter>
     </ClInclude>
     <ClInclude Include="src\App\PlayerInputController.h">
@@ -653,6 +764,9 @@
     <ClInclude Include="src\Game\AnimationTick.h">
       <Filter>Header Files\Game\Entities</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game\AnimationTick_Internal.h">
+      <Filter>Header Files\Game\Entities</Filter>
+    </ClInclude>
     <ClInclude Include="src\Game\AutoPlaySystem.h">
       <Filter>Header Files\Game</Filter>
     </ClInclude>
@@ -666,6 +780,9 @@
       <Filter>Header Files\Game\Entities</Filter>
     </ClInclude>
     <ClInclude Include="src\Game\CharSelectFlow.h">
+      <Filter>Header Files\Game\Flow</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Game\CharSelectFlow_Internal.h">
       <Filter>Header Files\Game\Flow</Filter>
     </ClInclude>
     <ClInclude Include="src\Game\ChatCommands.h">
@@ -764,6 +881,9 @@
     <ClInclude Include="src\Game\StatFormulas.h">
       <Filter>Header Files\Game\Data</Filter>
     </ClInclude>
+    <ClInclude Include="src\Game\StatFormulas_Internal.h">
+      <Filter>Header Files\Game\Data</Filter>
+    </ClInclude>
     <ClInclude Include="src\Game\StaticNpcLoader.h">
       <Filter>Header Files\Game\Entities</Filter>
     </ClInclude>
@@ -797,6 +917,9 @@
     <ClInclude Include="src\Gfx\MeshRenderer.h">
       <Filter>Header Files\Gfx</Filter>
     </ClInclude>
+    <ClInclude Include="src\Gfx\MeshRenderer_Internal.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
     <ClInclude Include="src\Gfx\MotionCache.h">
       <Filter>Header Files\Gfx</Filter>
     </ClInclude>
@@ -822,6 +945,9 @@
       <Filter>Header Files\Gfx</Filter>
     </ClInclude>
     <ClInclude Include="src\Gfx\WorldGeometryRenderer.h">
+      <Filter>Header Files\Gfx</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Gfx\WorldGeometryRenderer_Internal.h">
       <Filter>Header Files\Gfx</Filter>
     </ClInclude>
     <ClInclude Include="src\Input\InputSystem.h">
@@ -878,6 +1004,33 @@
     <ClInclude Include="src\Net\RecvPackets.h">
       <Filter>Header Files\Net</Filter>
     </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_BossWorld.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_ChatSocial.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_Core.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_Entity.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_InvCells.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_InvDispatch.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_Misc.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_PartyGuild.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Net\RecvPackets_VendorTrade.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
     <ClInclude Include="src\Net\Rng.h">
       <Filter>Header Files\Net</Filter>
     </ClInclude>
@@ -890,13 +1043,22 @@
     <ClInclude Include="src\Net\WorldEntityDispatch.h">
       <Filter>Header Files\Net</Filter>
     </ClInclude>
+    <ClInclude Include="src\Net\WorldEntityDispatch_Internal.h">
+      <Filter>Header Files\Net</Filter>
+    </ClInclude>
     <ClInclude Include="src\Scene\SceneAudit.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Scene\SceneManager.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
+    <ClInclude Include="src\Scene\SceneManager_Internal.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
     <ClInclude Include="src\Scene\WorldRenderer.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Scene\WorldRenderer_Internal.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Tools\CharSelectSelfTest.h">
@@ -935,6 +1097,9 @@
     <ClInclude Include="src\UI\GameHud.h">
       <Filter>Header Files\UI</Filter>
     </ClInclude>
+    <ClInclude Include="src\UI\GameHud_Internal.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
     <ClInclude Include="src\UI\GameWindows.h">
       <Filter>Header Files\UI</Filter>
     </ClInclude>
@@ -951,6 +1116,9 @@
       <Filter>Header Files\UI</Filter>
     </ClInclude>
     <ClInclude Include="src\UI\LoginScene.h">
+      <Filter>Header Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UI\LoginScene_Internal.h">
       <Filter>Header Files\UI</Filter>
     </ClInclude>
     <ClInclude Include="src\UI\MinimapWidget.h">

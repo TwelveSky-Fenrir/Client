@@ -1,9 +1,9 @@
-// Game/ZoneGroup.cpp — implémentation de la table zoneId -> groupe (voir ZoneGroup.h).
+// Game/ZoneGroup.cpp — implementation of the zoneId -> group table (see ZoneGroup.h).
 //
-// Traduction fidèle du switch décompilé de World_ZoneIdToGroup EA 0x4DC260 (~1.4 Ko, 130
-// case labels + default). Chaque case est reproduite telle quelle ; aucune valeur n'a été
-// réordonnée ni fusionnée au-delà de ce que le compilateur d'origine avait déjà fusionné
-// (cases partageant un même bloc, ex. 122/295/296 -> 5).
+// Faithful translation of the decompiled switch of World_ZoneIdToGroup EA 0x4DC260 (~1.4 KB, 130
+// case labels + default). Each case is reproduced as-is; no value was reordered or merged
+// beyond what the original compiler had already merged (cases sharing a single block, e.g.
+// 122/295/296 -> 5).
 #include "Game/ZoneGroup.h"
 
 namespace ts2::game {

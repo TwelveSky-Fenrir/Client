@@ -1,12 +1,12 @@
-// Gfx/Renderer.h — device Direct3D9 du moteur GXD.
-// Fidèle à Gfx_InitDevice 0x69B9B0 / GXD_DeviceReinit 0x4023F0 / GXD_BeginScene 0x404640
-// / Gfx_Present 0x69E270 (voir Docs/TS2_GXD_ENGINE.md).
-// ex-VeryOldClient: Core/GXD (v1 / Object A = g_GfxRenderer 0x7FFE18) — le CRÉATEUR du device
-//   physique (Direct3DCreate9 + CreateDevice), l'une des deux classes GXD homonymes ; l'autre
-//   (v2 TW2AddIn::GXD = Object B 0x18C4EF8) RÉUTILISE ce device, cf. Gfx/GxdRenderer.h.
+// Gfx/Renderer.h — Direct3D9 device of the GXD engine.
+// Faithful to Gfx_InitDevice 0x69B9B0 / GXD_DeviceReinit 0x4023F0 / GXD_BeginScene 0x404640
+// / Gfx_Present 0x69E270 (see Docs/TS2_GXD_ENGINE.md).
+// ex-VeryOldClient: Core/GXD (v1 / Object A = g_GfxRenderer 0x7FFE18) — the CREATOR of the
+//   physical device (Direct3DCreate9 + CreateDevice), one of the two homonymous GXD classes;
+//   the other (v2 TW2AddIn::GXD = Object B 0x18C4EF8) REUSES this device, cf. Gfx/GxdRenderer.h.
 //   CONFIRMED Docs/TS2_GXD_ROSETTA.md §1.1/§3.
-// N'utilise QUE le Direct3D9 du Windows SDK (pas de D3DX legacy) : la math passe par
-// DirectXMath, les shaders par d3dcompiler, sprite/police seront réimplémentés.
+// Uses ONLY the Windows SDK's Direct3D9 (no legacy D3DX): math goes through
+// DirectXMath, shaders through d3dcompiler, sprite/font will be reimplemented.
 #pragma once
 #include <windows.h>
 #include <d3d9.h>
@@ -18,38 +18,38 @@ class Renderer {
 public:
     ~Renderer();
 
-    // Crée le device (D3DDEVTYPE_HAL, HW vertex processing + fallback SOFTWARE).
+    // Creates the device (D3DDEVTYPE_HAL, HW vertex processing + SOFTWARE fallback).
     bool Init(HWND hwnd, int width, int height, bool windowed);
     void Shutdown();
 
     bool BeginFrame(); // Clear(TARGET|ZBUFFER) + BeginScene (Gfx_BeginFrame)
     void EndFrame();   // EndScene + Present (Gfx_Present)
 
-    // --- Observateurs de perte/restauration de device (Gfx_HandleDeviceLostReset 0x69DD40) ---
-    // Signature d'un observateur ; `user` est le pointeur opaque fourni à SetDeviceCallbacks.
+    // --- Device lost/reset observers (Gfx_HandleDeviceLostReset 0x69DD40) ---
+    // Observer signature; `user` is the opaque pointer supplied to SetDeviceCallbacks.
     using DeviceNotifyFn = void (*)(void* user);
 
-    // Enregistre les observateurs appelés AUTOUR de IDirect3DDevice9::Reset.
-    // Ancre : Gfx_HandleDeviceLostReset 0x69DD40. Dans le binaire, le renderer (Object A =
-    // g_GfxRenderer 0x7FFE18) POSSÈDE directement l'ID3DXEffect (+620), l'ID3DXFont (+612)
-    // et l'ID3DXSprite (+608), et appelle lui-même leurs OnLostDevice (@0x69DE3E) puis, après
-    // le Reset (@0x69DE55), leurs OnResetDevice (@0x69DE9B). Côté ClientSource ces objets D3DX
-    // appartiennent aux couches supérieures (SceneManager -> LoginScene/GameHud/GameWindows ->
-    // Font/SpriteBatch) : la transposition passe donc par un observateur.
-    // ⚠ SANS enregistrement, Reset() est appelé sans notifier les ID3DXSprite/ID3DXFont et la
-    // restauration après perte de device (Alt+Tab, changement de résolution) est IMPOSSIBLE.
+    // Registers the observers called AROUND IDirect3DDevice9::Reset.
+    // Anchor: Gfx_HandleDeviceLostReset 0x69DD40. In the binary, the renderer (Object A =
+    // g_GfxRenderer 0x7FFE18) directly OWNS the ID3DXEffect (+620), ID3DXFont (+612)
+    // and ID3DXSprite (+608), and itself calls their OnLostDevice (@0x69DE3E) then, after
+    // the Reset (@0x69DE55), their OnResetDevice (@0x69DE9B). On the ClientSource side these
+    // D3DX objects belong to higher layers (SceneManager -> LoginScene/GameHud/GameWindows ->
+    // Font/SpriteBatch): the transposition therefore goes through an observer.
+    // WITHOUT registration, Reset() is called without notifying the ID3DXSprite/ID3DXFont and
+    // restoring after a device loss (Alt+Tab, resolution change) is IMPOSSIBLE.
     //
-    // CÂBLAGE REQUIS (hors de ce front — à poser par l'orchestrateur dans App.cpp) : ce hook
-    // est INERTE tant que personne ne l'enregistre (onLost_/onReset_ restent nullptr => la
-    // chaîne OnLostDevice/OnResetDevice ne tourne jamais = code mort). Le point d'attache est
-    // ts2::App::Init, JUSTE APRÈS le bloc GxdRenderer::DeviceReinit qui réussit (App.cpp:379,
-    // après l'accolade fermante ligne 379), sur la chaîne ts2::SceneManager::OnDeviceLost/
-    // OnDeviceReset (SceneManager.h:98-99, publiques) :
+    // WIRING REQUIRED (outside this front — to be placed by the orchestrator in App.cpp): this
+    // hook is INERT until someone registers it (onLost_/onReset_ stay nullptr => the
+    // OnLostDevice/OnResetDevice chain never runs = dead code). The attach point is
+    // ts2::App::Init, RIGHT AFTER the GxdRenderer::DeviceReinit block succeeds (App.cpp:379,
+    // after the closing brace on line 379), onto the ts2::SceneManager::OnDeviceLost/
+    // OnDeviceReset chain (SceneManager.h:98-99, public):
     //     renderer_.SetDeviceCallbacks(
     //         [](void* u){ static_cast<SceneManager*>(u)->OnDeviceLost();  },
     //         [](void* u){ static_cast<SceneManager*>(u)->OnDeviceReset(); },
     //         &scene_);
-    // (lambdas sans capture -> conversion en DeviceNotifyFn ; `scene_` = membre App.h:42.)
+    // (capture-less lambdas -> convert to DeviceNotifyFn; `scene_` = member App.h:42.)
     void SetDeviceCallbacks(DeviceNotifyFn onLost, DeviceNotifyFn onReset, void* user);
 
     IDirect3D9*      D3D() const { return d3d_; }
@@ -58,41 +58,40 @@ public:
     void SetClearColor(uint32_t argb) { clearColor_ = argb; }
 
 private:
-    // Gfx_HandleDeviceLostReset 0x69DD40 — appelée INCONDITIONNELLEMENT en tête de frame
-    // (le binaire l'appelle en tête de CHAQUE Scene_*Render : 0x518894, 0x519274, 0x51B044,
+    // Gfx_HandleDeviceLostReset 0x69DD40 — called UNCONDITIONALLY at the top of every frame
+    // (the binary calls it at the top of EVERY Scene_*Render: 0x518894, 0x519274, 0x51B044,
     // 0x51CEF4, 0x52C284, 0x52D10D/0x52D15A/0x52D1C5 — 8 xrefs).
-    // CONTRAT DE RETOUR (contre-intuitif, fidèle au binaire) :
-    //   true  <=> TestCooperativeLevel a renvoyé D3D_OK (@0x69DD79, seul `return 1`) -> on rend.
-    //   false dans TOUS les autres cas, Y COMPRIS après un Reset() RÉUSSI (LABEL_42 @0x69E251 :
-    //         *a5=0 puis `return 0`) : la frame du reset est SAUTÉE, on rend à la suivante.
+    // RETURN CONTRACT (counter-intuitive, faithful to the binary):
+    //   true  <=> TestCooperativeLevel returned D3D_OK (@0x69DD79, the only `return 1`) -> render.
+    //   false in ALL other cases, INCLUDING after a SUCCESSFUL Reset() (LABEL_42 @0x69E251:
+    //         *a5=0 then `return 0`): the reset frame is SKIPPED, rendering resumes next frame.
     bool HandleDeviceLost();
 
-    // Pose les sampler states (stages 0/1) + render states initiaux EXACTS d'Object A,
-    // tirés directement de Gfx_InitDevice 0x69c470..0x69c543 (LINEAR fixe, PAS anisotrope ;
-    // l'ancienne ancre GXD_ConfigSamplerStates 0x403B50 appartenait à Object B / GxdRenderer).
-    // Sampler/render states ne survivent pas à Reset() : rappelée après CreateDevice ET après
-    // chaque Reset() réussi (HandleDeviceLost).
+    // Sets the sampler states (stages 0/1) + initial render states EXACTLY as Object A does,
+    // taken directly from Gfx_InitDevice 0x69c470..0x69c543 (fixed LINEAR, NOT anisotropic;
+    // the old GXD_ConfigSamplerStates 0x403B50 anchor belonged to Object B / GxdRenderer).
+    // Sampler/render states don't survive Reset(): re-invoked after CreateDevice AND after
+    // every successful Reset() (HandleDeviceLost).
     void ApplyInitialDeviceStates();
 
     IDirect3D9*           d3d_        = nullptr; // pD3D9 @+240 (0x7FFF08)   ex-VeryOldClient: mDirect3D
     IDirect3DDevice9*     device_     = nullptr; // pDevice @+604 (0x800074) ex-VeryOldClient: mGraphicDevice
     D3DPRESENT_PARAMETERS pp_         = {};      // ex-VeryOldClient: mGraphicPresentParameters (PLAUSIBLE)
-    uint32_t              clearColor_ = 0x00000000; // noir pur (ARGB), fidèle au clear d'origine
+    uint32_t              clearColor_ = 0x00000000; // pure black (ARGB), faithful to the original clear
 
-    // Observateurs de perte/restauration (cf. SetDeviceCallbacks). Non possédés.
-    // Tiennent lieu des appels directs OnLostDevice/OnResetDevice sur Effect(+620)/
-    // Font(+612)/Sprite(+608) de Gfx_HandleDeviceLostReset 0x69DD40.
+    // Loss/restore observers (cf. SetDeviceCallbacks). Not owned.
+    // Stand in for the direct OnLostDevice/OnResetDevice calls on Effect(+620)/
+    // Font(+612)/Sprite(+608) made by Gfx_HandleDeviceLostReset 0x69DD40.
     DeviceNotifyFn        onLost_     = nullptr;
     DeviceNotifyFn        onReset_    = nullptr;
     void*                 notifyUser_ = nullptr;
 
-    // NB : il n'existe PLUS de drapeau `deviceLost_`. Le binaire ne mémorise AUCUN état de
-    // perte : Gfx_Present 0x69E270 appelle EndScene (vtbl+168) puis Present (vtbl+68) et
-    // n'inspecte JAMAIS le HRESULT de Present ; la détection passe exclusivement par le
-    // TestCooperativeLevel (vtbl+12 @0x69DD4C) fait en tête de chaque frame. L'ancien
-    // drapeau (posé par EndFrame sur D3DERR_DEVICELOST, lu par BeginFrame) était une
-    // invention locale qui, en prime, empêchait toute reprise si la perte survenait
-    // ailleurs qu'au Present.
+    // NB: there is NO MORE `deviceLost_` flag. The binary stores NO loss state at all:
+    // Gfx_Present 0x69E270 calls EndScene (vtbl+168) then Present (vtbl+68) and NEVER
+    // inspects Present's HRESULT; detection goes exclusively through TestCooperativeLevel
+    // (vtbl+12 @0x69DD4C) done at the top of every frame. The former flag (set by EndFrame
+    // on D3DERR_DEVICELOST, read by BeginFrame) was a local invention that, on top of that,
+    // prevented any recovery if the loss occurred anywhere other than at Present.
 };
 
 } // namespace ts2::gfx

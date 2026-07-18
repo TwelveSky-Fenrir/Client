@@ -1,14 +1,14 @@
-// World/TerrainPicker.cpp — picking écran -> monde (cf. bandeau de World/TerrainPicker.h
-// pour la carte complète des ancres IDA et les preuves).
+// World/TerrainPicker.cpp — screen -> world picking (see the banner in World/TerrainPicker.h
+// for the full map of IDA anchors and proofs).
 
 #include "World/TerrainPicker.h"
 
-// ⚠ ORDRE D'INCLUSION LOAD-BEARING (convention Winsock du projet : <winsock2.h> AVANT
-// <windows.h>). Game/AutoTargetCombatGate.h tire transitivement Game/ComboPickupTick.h ->
-// Net/NetClient.h, qui fait `#include <winsock2.h>` PUIS `#include <windows.h>` (NetClient.h
-// :19-20). Gfx/Camera.h, lui, inclut <windows.h> nu (Camera.h:29). Ce bloc DOIT donc rester
-// AVANT l'include de Gfx/Camera.h, sinon windows.h serait vu en premier et les redéfinitions
-// Winsock casseraient la compilation.
+// LOAD-BEARING INCLUSION ORDER (project convention: <winsock2.h> BEFORE
+// <windows.h>). Game/AutoTargetCombatGate.h transitively pulls in Game/ComboPickupTick.h ->
+// Net/NetClient.h, which does `#include <winsock2.h>` THEN `#include <windows.h>` (NetClient.h
+// :19-20). Gfx/Camera.h, on the other hand, includes plain <windows.h> (Camera.h:29). This block MUST
+// therefore stay BEFORE the Gfx/Camera.h include, otherwise windows.h would be seen first and the
+// Winsock redefinitions would break the build.
 #include "Game/AutoTargetCombatGate.h" // Combat_IsTargetablePlayerState/MonsterState,
                                        // AutoTarget_PlayerRecordPopulated/MonsterActionState
 
@@ -22,7 +22,7 @@
 namespace ts2::world {
 namespace {
 
-// Math_Dist3D 0x53FAA0 — distance euclidienne 3D pleine entre deux vec3.
+// Math_Dist3D 0x53FAA0 — full 3D Euclidean distance between two vec3.
 float Dist3D(const float a[3], const float b[3]) {
     const float dx = a[0] - b[0];
     const float dy = a[1] - b[1];
@@ -30,10 +30,10 @@ float Dist3D(const float a[3], const float b[3]) {
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-// Cam_ScreenRayVsAABB 0x6A0670 — construit le rayon écran depuis les paramètres caméra puis
-// teste le segment contre l'AABB. PROUVÉ strictement équivalent à la composition ci-dessous
-// (cf. §0 du bandeau .h) : @0x6A0682..0x6A0725 == collision::BuildScreenRay (formule et
-// offsets identiques), @0x6A0746 == Collide_SegmentAABB 0x69FB20 == collision::SegmentAABB.
+// Cam_ScreenRayVsAABB 0x6A0670 — builds the screen ray from camera parameters then
+// tests the segment against the AABB. PROVEN strictly equivalent to the composition below
+// (cf. §0 of the .h banner): @0x6A0682..0x6A0725 == collision::BuildScreenRay (identical formula and
+// offsets), @0x6A0746 == Collide_SegmentAABB 0x69FB20 == collision::SegmentAABB.
 bool ScreenRayVsAABB(const collision::ScreenPickCamera& cam, int sx, int sy,
                      const float bmin[3], const float bmax[3]) {
     float origin[3], dir[3];
@@ -41,7 +41,7 @@ bool ScreenRayVsAABB(const collision::ScreenPickCamera& cam, int sx, int sy,
     return collision::SegmentAABB(origin, dir, bmin, bmax); // 0x6A0746
 }
 
-// Scene_RayHitPlayerBox 0x5415E0 — AABB [x±4.5, y..y+20, z±4.5] autour de a1[63..65]
+// Scene_RayHitPlayerBox 0x5415E0 — AABB [x±4.5, y..y+20, z±4.5] around a1[63..65]
 // (== record+252/256/260 == PlayerEntity::x/y/z).
 bool RayHitPlayerBox(const collision::ScreenPickCamera& cam, int sx, int sy,
                      const game::PlayerEntity& p) {
@@ -50,8 +50,8 @@ bool RayHitPlayerBox(const collision::ScreenPickCamera& cam, int sx, int sy,
     return ScreenRayVsAABB(cam, sx, sy, bmin, bmax);               // 0x54166F
 }
 
-// Scene_RayHitNodeBox 0x541920 — AABB [x±4.5, y..y+11, z±4.5] autour de a1[6..8]
-// (== record+24/28/32 == les 3 premiers floats de ZoneObjectEntity::body).
+// Scene_RayHitNodeBox 0x541920 — AABB [x±4.5, y..y+11, z±4.5] around a1[6..8]
+// (== record+24/28/32 == the first 3 floats of ZoneObjectEntity::body).
 bool RayHitNodeBox(const collision::ScreenPickCamera& cam, int sx, int sy,
                    const float pos[3]) {
     const float bmin[3] = { pos[0] - 4.5f, pos[1],         pos[2] - 4.5f }; // 0x54193B/0x541944/0x541953
@@ -59,13 +59,13 @@ bool RayHitNodeBox(const collision::ScreenPickCamera& cam, int sx, int sy,
     return ScreenRayVsAABB(cam, sx, sy, bmin, bmax);                        // 0x54199D
 }
 
-// Scene_RayHitNpcBox 0x541680 — AABB dimensionnée par le record mNPC : w = def+1328,
-// h = def+1332, d = def+1336 (== NpcDefRecord::fieldF[0..2]). Le binaire lit ces champs en
-// `*(int*)` puis les promeut en double avant multiplication -> reproduit tel quel.
+// Scene_RayHitNpcBox 0x541680 — AABB sized from the mNPC record: w = def+1328,
+// h = def+1332, d = def+1336 (== NpcDefRecord::fieldF[0..2]). The binary reads these fields as
+// `*(int*)` then promotes them to double before multiplying -> reproduced as-is.
 bool RayHitNpcBox(const collision::ScreenPickCamera& cam, int sx, int sy,
                   const game::NpcRenderEntry& n) {
-    if (!n.def) return false; // le binaire déréférence *(_DWORD*)a1 sans garde ; ici le slot
-                              // peut porter un def nul (cf. GameState.h:303-306) -> pas de hit.
+    if (!n.def) return false; // the binary dereferences *(_DWORD*)a1 without a guard; here the slot
+                              // may carry a null def (cf. GameState.h:303-306) -> treated as no hit.
     const double w = static_cast<double>(static_cast<int32_t>(n.def->fieldF[0])); // +1328
     const double h = static_cast<double>(static_cast<int32_t>(n.def->fieldF[1])); // +1332
     const double d = static_cast<double>(static_cast<int32_t>(n.def->fieldF[2])); // +1336
@@ -78,14 +78,14 @@ bool RayHitNpcBox(const collision::ScreenPickCamera& cam, int sx, int sy,
     return ScreenRayVsAABB(cam, sx, sy, bmin, bmax);            // 0x54172E
 }
 
-// Scene_RayHitMonsterBox 0x541780 — AABB dimensionnée par le record MONSTER_INFO :
-// w = def+248, h = def+252, d = def+256, yOff = def+260 (== MonsterInfo::collDim[0..2] et
-// ::field260). `MonsterEntity::def` EST un MonsterInfo* : Game/EntityManager.cpp:148
-// (`ResolveMobDef` -> `reinterpret_cast<const uint8_t*>(GetMonsterInfo(id))`) puis :523
-// (`m->def = def`). Même promotion int -> double que le binaire.
+// Scene_RayHitMonsterBox 0x541780 — AABB sized from the MONSTER_INFO record:
+// w = def+248, h = def+252, d = def+256, yOff = def+260 (== MonsterInfo::collDim[0..2] and
+// ::field260). `MonsterEntity::def` IS a MonsterInfo* : Game/EntityManager.cpp:148
+// (`ResolveMobDef` -> `reinterpret_cast<const uint8_t*>(GetMonsterInfo(id))`) then :523
+// (`m->def = def`). Same int -> double promotion as the binary.
 bool RayHitMonsterBox(const collision::ScreenPickCamera& cam, int sx, int sy,
                       const game::MonsterEntity& m) {
-    if (!m.def) return false; // def nul -> pas de boîte (le spawn est normalement rejeté sans def)
+    if (!m.def) return false; // null def -> no box (spawn is normally rejected without a def)
     const game::MonsterInfo* def = static_cast<const game::MonsterInfo*>(m.def);
     const double w    = static_cast<double>(def->collDim[0]); // +248
     const double h    = static_cast<double>(def->collDim[1]); // +252
@@ -95,26 +95,26 @@ bool RayHitMonsterBox(const collision::ScreenPickCamera& cam, int sx, int sy,
                             static_cast<float>(yOff + m.y),       // 0x5417BC
                             static_cast<float>(m.z - d * 0.5) };  // 0x5417D7
     const float bmax[3] = { static_cast<float>(w * 0.5 + m.x),    // 0x5417F2
-                            static_cast<float>(h + m.y + yOff),   // 0x541813 (ordre d'origine)
+                            static_cast<float>(h + m.y + yOff),   // 0x541813 (original order)
                             static_cast<float>(d * 0.5 + m.z) };  // 0x54182E
     return ScreenRayVsAABB(cam, sx, sy, bmin, bmax);              // 0x54184B
 }
 
-// --- Offsets RECORD (== base du slot) des champs joueur lus par 0x538AB0 ------------------
-// PlayerEntity::body démarre à record+0x18 (24) -> offset body = offset record - 24. Les
-// offsets record ci-dessous sont ceux de Game/NameplateLogic.h:123/134/135, qui modélise le
-// MÊME enregistrement (mêmes adresses dérivées).
-constexpr std::size_t kBodyAffiliation = 40  - 24; // byte_168725C  (record+40)  : nom d'affiliation
-constexpr std::size_t kBodyElement     = 88  - 24; // dword_168728C (record+88)  : élément
-constexpr std::size_t kBodyPkLevel     = 236 - 24; // dword_1687320 (record+236) : rang PK
-// Bornes du nom d'affiliation : record+40 -> record+60 (champ suivant, NameplateLogic.h:124).
+// --- RECORD offsets (== slot base) of player fields read by 0x538AB0 -----------------------
+// PlayerEntity::body starts at record+0x18 (24) -> body offset = record offset - 24. The
+// record offsets below are those of Game/NameplateLogic.h:123/134/135, which models the
+// SAME record (same derived addresses).
+constexpr std::size_t kBodyAffiliation = 40  - 24; // byte_168725C  (record+40)  : affiliation name
+constexpr std::size_t kBodyElement     = 88  - 24; // dword_168728C (record+88)  : element
+constexpr std::size_t kBodyPkLevel     = 236 - 24; // dword_1687320 (record+236) : PK rank
+// Bounds of the affiliation name: record+40 -> record+60 (next field, NameplateLogic.h:124).
 constexpr std::size_t kAffiliationMaxLen = 60 - 40;
-// Triplet de la catégorie 2 (partenaire d'échange) — noms IDA g_TradePartnerIdLo /
+// Category-2 triplet (trade partner) — IDA names g_TradePartnerIdLo /
 // dword_1687420 / dword_1687424, records +488/+492/+496.
-// ⚠ AMBIGUÏTÉ SIGNALÉE (non tranchée, sans effet ici) : Game/NameplateLogic.h:141 interprète
-// ce MÊME record+488 comme `isAdminTitle ((+122)==1)`. Les deux lectures sont incompatibles,
-// mais la condition est reproduite LITTÉRALEMENT (comparaisons brutes de dwords) — donc le
-// comportement est correct quelle que soit la sémantique réelle du champ.
+// AMBIGUITY FLAGGED (unresolved, no effect here): Game/NameplateLogic.h:141 interprets
+// this SAME record+488 as `isAdminTitle ((+122)==1)`. The two readings are incompatible,
+// but the condition is reproduced LITERALLY (raw dword comparisons) — so the
+// behavior is correct regardless of the field's real semantics.
 constexpr std::size_t kBodyTradeFlag = 488 - 24;
 constexpr std::size_t kBodyTradeA    = 492 - 24;
 constexpr std::size_t kBodyTradeB    = 496 - 24;
@@ -125,7 +125,7 @@ int32_t ReadI32(const game::PlayerEntity& p, std::size_t bodyOff) {
     return v;
 }
 
-// Chaîne C bornée lue dans le corps (les champs du binaire ne sont pas garantis NUL-terminés).
+// Bounded C string read from the body (the binary's fields are not guaranteed NUL-terminated).
 std::string ReadCString(const game::PlayerEntity& p, std::size_t bodyOff, std::size_t maxLen) {
     const char* s = reinterpret_cast<const char*>(p.body.data()) + bodyOff;
     std::size_t n = 0;
@@ -133,17 +133,17 @@ std::string ReadCString(const game::PlayerEntity& p, std::size_t bodyOff, std::s
     return std::string(s, n);
 }
 
-// Filtre élémentaire des monstres @0x53905E..0x539083 — cf. §2 du bandeau .h.
-// def+232 ∈ {10,11,12,13} -> K = def+232 - 10 ; ciblable ssi element != K && element != Paired(K).
+// Monster elemental filter @0x53905E..0x539083 — cf. §2 of the .h banner.
+// def+232 in {10,11,12,13} -> K = def+232 - 10 ; targetable iff element != K && element != Paired(K).
 bool MonsterPassesElementGate(const game::MonsterInfo& def, int localElement,
                               const game::ElementPairTable& pairs) {
     const int32_t cls = def.field232; // +232
-    if (cls < 10 || cls > 13) return true; // hors {10..13} : aucune restriction
+    if (cls < 10 || cls > 13) return true; // outside {10..13} : no restriction
     const int k = static_cast<int>(cls) - 10;
     return localElement != k && localElement != pairs.Paired(k); // Char_GetPairedElement 0x557C00
 }
 
-// Zone courante interdisant la catégorie 1 (@0x538CFD).
+// Current zone forbidding category 1 (@0x538CFD).
 bool ZoneBlocksNeutralPlayer(int zoneId) {
     for (int z : kZonesBlockingNeutralPlayer)
         if (zoneId == z) return true;
@@ -153,7 +153,7 @@ bool ZoneBlocksNeutralPlayer(int zoneId) {
 } // namespace
 
 // ===========================================================================
-// TerrainPicker — implémenteur de game::ITerrainPicker (G-PICK-06).
+// TerrainPicker — implementer of game::ITerrainPicker (G-PICK-06).
 // ===========================================================================
 
 bool TerrainPicker::IsPointBlocked(const float pos[3]) {
@@ -162,13 +162,13 @@ bool TerrainPicker::IsPointBlocked(const float pos[3]) {
 
 bool TerrainPicker::PickRayScreen(int screenX, int screenY, CollisionSlot slot, bool twoSide,
                                    float outPos[3]) {
-    uint32_t faceIndex = 0; // *a4 d'origine (index de face touchée) : non consommé par
-                            // Skill_CanCastAtCursor, qui ne lit que le point 3D (v7).
+    uint32_t faceIndex = 0; // original *a4 (hit face index): unused by
+                            // Skill_CanCastAtCursor, which only reads the 3D point (v7).
     return assets_->PickRayScreen(slot, cam_, screenX, screenY, faceIndex, outPos, twoSide);
 }                                                                   // Terrain_PickRayScreen 0x699A80
 
 // ===========================================================================
-// BuildScreenPickCamera — cf. §0 du bandeau .h.
+// BuildScreenPickCamera — cf. §0 of the .h banner.
 // ===========================================================================
 
 collision::ScreenPickCamera BuildScreenPickCamera(const gfx::Camera& camera,
@@ -185,7 +185,7 @@ collision::ScreenPickCamera BuildScreenPickCamera(const gfx::Camera& camera,
     D3DXMatrixInverse(&invView, nullptr, &view); // unk_800194 (= g_GfxRenderer+892)
     std::memcpy(cam.invView, &invView, sizeof(cam.invView)); // 16 floats row-major
 
-    // MÊME calcul d'aspect que Gfx_InitDevice 0x69BFC6 et Scene/WorldRenderer.cpp:556-559.
+    // SAME aspect ratio calc as Gfx_InitDevice 0x69BFC6 and Scene/WorldRenderer.cpp:556-559.
     const float aspect = (screenH > 0)
         ? static_cast<float>(screenW) / static_cast<float>(screenH)
         : 1.0f;
@@ -200,7 +200,7 @@ collision::ScreenPickCamera BuildScreenPickCamera(const gfx::Camera& camera,
 }
 
 // ===========================================================================
-// World_PickEntityAtCursor 0x538AB0 — cf. §1..§4 du bandeau .h.
+// World_PickEntityAtCursor 0x538AB0 — cf. §1..§4 of the .h banner.
 // ===========================================================================
 
 bool World_PickEntityAtCursor(const game::GameWorld& world,
@@ -212,12 +212,12 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
     outKind  = 0;   // *a3 = 0  @0x538ABC
     outIndex = -1;  // *a4 = -1 @0x538AC5
 
-    // v14 : distance de la meilleure candidate. Non initialisée dans le binaire — jamais lue
-    // avant d'avoir été posée, car chaque test est gardé par `*a3` (== outKind != 0).
+    // v14 : distance of the best candidate. Uninitialized in the binary — never read
+    // before being set, since every test is guarded by `*a3` (== outKind != 0).
     float best = 0.0f;
 
-    // Position du joueur local (flt_1687330 == g_EntityArray[0]+252 == players[0].x/y/z).
-    // Même repli que Scene/WorldRenderer.cpp:567-570 si le pool est vide.
+    // Local player position (flt_1687330 == g_EntityArray[0]+252 == players[0].x/y/z).
+    // Same fallback as Scene/WorldRenderer.cpp:567-570 if the pool is empty.
     float selfPos[3] = { 0.0f, 0.0f, 0.0f };
     if (!world.players.empty()) {
         selfPos[0] = world.players[0].x;
@@ -225,9 +225,10 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
         selfPos[2] = world.players[0].z;
     }
 
-    // « Retenir la candidate » : comparaison STRICTE `v14 > dist` -> à égalité, le PREMIER
-    // trouvé gagne. Forme unique des 8 sites (les variantes if/else imbriqué des catégories
-    // 1/2/3/7 et `!*a3 || v14 > d` des catégories 4/5/6 sont sémantiquement identiques).
+    // "Keep the candidate": STRICT `v14 > dist` comparison -> on a tie, the FIRST
+    // one found wins. Single form for all 8 sites (the nested if/else variants of
+    // categories 1/2/3/7 and `!*a3 || v14 > d` of categories 4/5/6 are semantically
+    // identical).
     const auto take = [&](int kind, int index, float dist) {
         if (outKind == 0 || best > dist) {
             outKind  = kind;
@@ -236,17 +237,15 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
         }
     };
 
-    // ----------------------------------------------------------------------
-    // Catégories 1/2/3 — joueurs distants. Boucle @0x538ACB : `for (i = 1; i < g_EntityCount;
-    // ++i)` -> l'index 0 (self) est EXCLU. Même convention d'itération que
+    // Categories 1/2/3 — remote players. Loop @0x538ACB : `for (i = 1; i < g_EntityCount;
+    // ++i)` -> index 0 (self) is EXCLUDED. Same iteration convention as
     // Game/AutoTargetCombatGate.cpp:69.
-    // ----------------------------------------------------------------------
     const int  localElement = world.self.element;              // g_LocalElement 0x1673194
-    // g_SelfMorphNpcId 0x1675A98 == id de zone courant (cf. Game/SkillCombat.h:33 pour la
-    // preuve). On lit g_World.zoneId et NON g_Client.VarGet(0x1675A98) : cette clé
-    // d'échappatoire n'a AUCUN écrivain dans tout ClientSource (vérifié) et renverrait donc
-    // toujours 0, rendant la garde morte. Scene/SceneManager.cpp:374/462 établit
-    // l'équivalence (`worldMap_->SetCurrentZoneId(zoneId); // g_SelfMorphNpcId 0x1675A98`).
+    // g_SelfMorphNpcId 0x1675A98 == current zone id (cf. Game/SkillCombat.h:33 for the
+    // proof). We read g_World.zoneId and NOT g_Client.VarGet(0x1675A98): that
+    // escape-hatch key has NO writer anywhere in ClientSource (verified) and would therefore
+    // always return 0, making the guard dead. Scene/SceneManager.cpp:374/462 establishes
+    // the equivalence (`worldMap_->SetCurrentZoneId(zoneId); // g_SelfMorphNpcId 0x1675A98`).
     const bool zoneBlocksNeutral = ZoneBlocksNeutralPlayer(world.zoneId);
 
     for (std::size_t i = 1; i < world.players.size(); ++i) {
@@ -260,7 +259,7 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
         const float dist   = Dist3D(pos, cam.eye);                       // 0x538B7E (vs g_CameraPos)
         const int   idx    = static_cast<int>(i);
 
-        // --- Catégorie 2 : partenaire d'échange (@0x538BCC) ---
+        // --- Category 2 : trade partner (@0x538BCC) ---
         const game::PlayerEntity& self0 = world.players[0];
         const bool tradePair =
             ReadI32(self0, kBodyTradeFlag) == 1 &&
@@ -272,8 +271,8 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
             continue;
         }
 
-        // --- Catégorie 3 : joueur attaquable (@0x538C4E) ---
-        // Combat_CanTargetOnMap 0x558740 — non portée, déléguée à l'hôte (défaut : false).
+        // --- Category 3 : attackable player (@0x538C4E) ---
+        // Combat_CanTargetOnMap 0x558740 — not ported, delegated to the host (default: false).
         const bool canTarget = host.CanTargetOnMap
             ? host.CanTargetOnMap(static_cast<int>(ReadI32(p, kBodyElement)),
                                    static_cast<int>(ReadI32(p, kBodyPkLevel)),
@@ -284,19 +283,17 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
             continue;
         }
 
-        // --- Catégorie 1 : joueur neutre (@0x538CFD garde de zone, @0x538D07 gating) ---
+        // --- Category 1 : neutral player (@0x538CFD zone guard, @0x538D07 gating) ---
         if (zoneBlocksNeutral) continue;
-        // Gating modificateur : allowModifierTargets==false -> TOUJOURS éligible ;
-        //                       ==true -> exige byte_8013FE < 0 (DIK_LSHIFT enfoncée).
+        // Modifier gating: allowModifierTargets==false -> ALWAYS eligible ;
+        //                  ==true -> requires byte_8013FE < 0 (DIK_LSHIFT held).
         if (allowModifierTargets && !modifierKeyDown) continue;          // @0x538D15
         take(1, idx, dist);                                              // @0x538D22 / @0x538D4A
     }
 
-    // ----------------------------------------------------------------------
-    // Catégorie 4 — PNJ (pool de rendu g_NpcRenderArray 0x1764D14, stride 88). Boucle
-    // @0x538DAC. SEULE boucle à porter le filtre de portée 500.0, mesuré contre la position
-    // du JOUEUR (flt_1687330) et non de la caméra.
-    // ----------------------------------------------------------------------
+    // Category 4 — NPCs (render pool g_NpcRenderArray 0x1764D14, stride 88). Loop
+    // @0x538DAC. ONLY loop carrying the 500.0 range filter, measured against the PLAYER
+    // position (flt_1687330), not the camera.
     for (std::size_t j = 0; j < world.npcRenderEntries.size(); ++j) {
         const game::NpcRenderEntry& n = world.npcRenderEntries[j];
         if (!n.active) continue;                                         // dword_1764D18[22j]
@@ -306,9 +303,7 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
         take(4, static_cast<int>(j), Dist3D(pos, cam.eye));              // @0x538E48 / @0x538E83
     }
 
-    // ----------------------------------------------------------------------
-    // Catégorie 5 — monstres (dword_1766F74, stride 280). Boucle @0x538E9C.
-    // ----------------------------------------------------------------------
+    // Category 5 — monsters (dword_1766F74, stride 280). Loop @0x538E9C.
     const game::ElementPairTable pairs = game::Combat_ReadLocalElementPairs(); // Char_GetPairedElement 0x557C00
     for (std::size_t k = 0; k < world.monsters.size(); ++k) {
         const game::MonsterEntity& m = world.monsters[k];
@@ -324,22 +319,18 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
         take(5, static_cast<int>(k), Dist3D(pos, cam.eye));              // @0x539083 / @0x5390BE
     }
 
-    // ----------------------------------------------------------------------
-    // Catégorie 6 — objets au sol (dword_17AB534, stride 152, Scene_RayHitItemModel 0x5418B0).
-    // TODO [0x5418B0 / 0x6A0750 / 0x4D7130] : NON PORTÉE — triple blocage, AUCUN effet
-    // observable aujourd'hui (cf. §4 du bandeau .h) : (a) game::g_World.groundItems est vide
-    // par conception (structure 152 o non modélisée, Game/GameState.h:605-613) ; (b) ce
-    // hit-test est un test d'OBB (ModelObj_GetBoneMatrix 0x4D7130 + Collide_SegmentOBB
-    // 0x6A0750), aucune des deux briques n'étant portée. Quand (a) tombera, rétablir la
-    // boucle ICI (l'ordre compte pour la règle « premier trouvé gagne » à égalité).
-    // ----------------------------------------------------------------------
+    // Category 6 — ground items (dword_17AB534, stride 152, Scene_RayHitItemModel 0x5418B0).
+    // TODO [0x5418B0 / 0x6A0750 / 0x4D7130] : NOT PORTED — triple blocker, NO observable
+    // effect today (cf. §4 of the .h banner): (a) game::g_World.groundItems is empty
+    // by design (152-byte structure not modeled, Game/GameState.h:605-613) ; (b) this
+    // hit-test is an OBB test (ModelObj_GetBoneMatrix 0x4D7130 + Collide_SegmentOBB
+    // 0x6A0750), neither of which is ported. When (a) falls, restore the
+    // loop HERE (order matters for the "first found wins" tie rule).
 
-    // ----------------------------------------------------------------------
-    // Catégorie 7 — objets de zone (g_ZoneObjectArray 0x180EEF4, stride 76). Boucle @0x5391A7.
-    // Position = g_ZoneObjectPayload 0x180EF0C == record+24 == les 3 premiers floats du body
-    // (ZoneObjectEntity::body est à record+0x18 == +24). Même gating modificateur que la
-    // catégorie 1 (@0x539220), et AUCUN autre filtre.
-    // ----------------------------------------------------------------------
+    // Category 7 — zone objects (g_ZoneObjectArray 0x180EEF4, stride 76). Loop @0x5391A7.
+    // Position = g_ZoneObjectPayload 0x180EF0C == record+24 == the first 3 floats of the body
+    // (ZoneObjectEntity::body is at record+0x18 == +24). Same modifier gating as
+    // category 1 (@0x539220), and NO other filter.
     for (std::size_t n = 0; n < world.zoneObjects.size(); ++n) {
         const game::ZoneObjectEntity& z = world.zoneObjects[n];
         if (!z.active) continue;                                         // g_ZoneObjectArray[19n]
@@ -354,29 +345,29 @@ bool World_PickEntityAtCursor(const game::GameWorld& world,
 }
 
 // ===========================================================================
-// CursorSlotForPickCategory — table du switch @0x530FC7..0x53120B.
+// CursorSlotForPickCategory — table of the switch @0x530FC7..0x53120B.
 // ===========================================================================
 
 int CursorSlotForPickCategory(int kind, float gameTimeSec, bool canCastAtCursor) {
     if (kind < 0 || kind > 7) return -1;               // `cmp 7 / ja default` @0x530FB4
 
-    // Catégorie 0 : PAS d'animation — 7 si castable, 8 sinon (Skill_CanCastAtCursor 0x540E60
-    // appelé @0x530FE1, son UNIQUE appelant).
+    // Category 0: NO animation — 7 if castable, 8 otherwise (Skill_CanCastAtCursor 0x540E60
+    // called @0x530FE1, its ONLY caller).
     if (kind == 0) return canCastAtCursor ? 7 : 8;     // @0x530FEA / @0x530FF8
 
-    // blink = ((int)(2.0f * g_GameTimeSec)) % 2 — idiome SIGNÉ du binaire (`fadd st,st` +
-    // Crt_ftol + `and eax,80000001h` / `jns` / `dec` / `or eax,0FFFFFFFEh` / `inc`), qui
-    // correspond exactement au `%` de C++ (division tronquée). Alternance à 2 Hz.
+    // blink = ((int)(2.0f * g_GameTimeSec)) % 2 — the binary's SIGNED idiom (`fadd st,st` +
+    // Crt_ftol + `and eax,80000001h` / `jns` / `dec` / `or eax,0FFFFFFFEh` / `inc`), which
+    // exactly matches C++'s `%` (truncated division). 2 Hz alternation.
     const int blink = static_cast<int>(2.0f * gameTimeSec) % 2;
 
     switch (kind) {
-        case 1: return blink + 1; // @0x531022 — joueur neutre
-        case 2: return blink + 3; // @0x531075 — partenaire d'échange
-        case 3: return blink + 3; // @0x5310C8 — joueur attaquable
-        case 4: return blink + 1; // @0x53111B — PNJ
-        case 5: return blink + 3; // @0x53116B — monstre
-        case 6: return blink + 5; // @0x5311B9 — objet au sol
-        case 7: return blink + 1; // @0x5311E2 — objet de zone
+        case 1: return blink + 1; // @0x531022 — neutral player
+        case 2: return blink + 3; // @0x531075 — trade partner
+        case 3: return blink + 3; // @0x5310C8 — attackable player
+        case 4: return blink + 1; // @0x53111B — NPC
+        case 5: return blink + 3; // @0x53116B — monster
+        case 6: return blink + 5; // @0x5311B9 — ground item
+        case 7: return blink + 1; // @0x5311E2 — zone object
         default: return -1;
     }
 }

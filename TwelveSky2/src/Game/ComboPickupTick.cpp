@@ -1,5 +1,5 @@
-// Game/ComboPickupTick.cpp — voir ComboPickupTick.h pour la table EA -> fonction et les
-// notes de fidélité (GINFO2 non modélisée, réutilisation NpcInteraction/QuestSystem/
+// Game/ComboPickupTick.cpp — see ComboPickupTick.h for the EA -> function table and the
+// fidelity notes (GINFO2 not modeled, reuse of NpcInteraction/QuestSystem/
 // SkillCombat/StringTables/Rng).
 #include "Game/ComboPickupTick.h"
 #include <cmath>
@@ -9,9 +9,9 @@ namespace ts2::game {
 
 namespace {
 
-// Distance euclidienne 3D (Math_Dist3D 0x53FAA0 : sqrt(dx^2+dy^2+dz^2)), même formule que
-// Game/ItemPickupSystem.cpp / Game/NpcInteraction.cpp (redéclarée localement, non exportée
-// ailleurs).
+// 3D Euclidean distance (Math_Dist3D 0x53FAA0: sqrt(dx^2+dy^2+dz^2)), same formula as
+// Game/ItemPickupSystem.cpp / Game/NpcInteraction.cpp (redeclared locally, not exported
+// elsewhere).
 inline float Dist3D(float ax, float ay, float az, float bx, float by, float bz) {
     const float dx = ax - bx, dy = ay - by, dz = az - bz;
     return std::sqrt(dx * dx + dy * dy + dz * dz);
@@ -29,9 +29,9 @@ bool Combat_IsElementAllowedOnMap(int mapElement, int selfMorphNpcId, const Elem
     };
     const int paired = pairs.Paired(mapElement);
 
-    // Char_GetPairedElement est borné à {-1,0,1,2,3} ; chaque switch interne ci-dessous
-    // couvre exhaustivement ces 5 valeurs -> les "default" (goto LABEL_47/92/137/182 du
-    // binaire) sont du code mort. Reproduits en `false`, jamais atteints en pratique.
+    // Char_GetPairedElement is bounded to {-1,0,1,2,3}; each inner switch below covers
+    // these 5 values exhaustively -> the "default" cases (binary's goto LABEL_47/92/137/182)
+    // are dead code. Reproduced as `false`, never reached in practice.
     switch (mapElement) {
     case 0:
         switch (paired) {
@@ -91,12 +91,12 @@ int Combo_FindNearbyFollowup(int motionId, float selfX, float selfY, float selfZ
 
 // ===========================================================================
 // BeginComboMorph EA 0x52CF69.
-// ex-VeryOldClient: EFFECT_OBJECT type 11 (aura de transformation) + SetSantaEffect (type 14) —
-//   PLAUSIBLE (Docs/TS2_FX_ROSETTA.md §1 « Fx_DrawZoneAura » + §4 gap-render). CE bloc porte
-//   seulement l'ÉTAT du morph (g_SelfMorphNpcId 0x1675A98, dword_1675A88..) ; le VISUEL de
-//   l'aura = Fx_DrawZoneAura 0x583F90 (aura animée en boucle sur g_GameTimeSec, gate
-//   g_SelfMorphNpcId) = GAP DE RENDU (couche Gfx, FRONT 2 NON POSSÉDÉ) — NE PAS l'implémenter
-//   ici (build-safe). L'aura consomme le MÊME g_SelfMorphNpcId que cet état.
+// ex-VeryOldClient: EFFECT_OBJECT type 11 (transform aura) + SetSantaEffect (type 14) —
+//   PLAUSIBLE (Docs/TS2_FX_ROSETTA.md §1 "Fx_DrawZoneAura" + §4 render gap). This block only
+//   carries the morph STATE (g_SelfMorphNpcId 0x1675A98, dword_1675A88..); the aura's VISUAL =
+//   Fx_DrawZoneAura 0x583F90 (looping aura driven by g_GameTimeSec, gated on
+//   g_SelfMorphNpcId) = RENDER GAP (Gfx layer, FRONT 2 NOT OWNED) — NOT implemented
+//   here (build-safe). The aura consumes the SAME g_SelfMorphNpcId as this state.
 // ===========================================================================
 void BeginComboMorph(ComboMorphState& state, int followupMotionId, int currentMotionId,
                       net::NetClient& netClient, const ComboMotionOriginLookup& originLookup) {
@@ -105,11 +105,11 @@ void BeginComboMorph(ComboMorphState& state, int followupMotionId, int currentMo
     state.unk90            = 0;                 // dword_1675A90 = 0    (EA 0x52cedc)
     state.followupMotionId = followupMotionId;  // dword_1675A9C = v24  (EA 0x52cee9)
 
-    // Crt_Memset(&dword_1675AA0, 0, 72) -> réinitialisation intégrale du bloc warp.
+    // Crt_Memset(&dword_1675AA0, 0, 72) -> full reset of the warp block.
     state.warp = ComboMorphWarpBlock{};
-    state.warp.flag0 = 0;   // EA 0x52ceff (redondant avec le memset)
-    state.warp.flag1 = 1;   // EA 0x52cf09 (ÉCRASE le memset -> "armé")
-    state.warp.timer = 0.0f; // EA 0x52cf15 (redondant)
+    state.warp.flag0 = 0;   // EA 0x52ceff (redundant with the memset)
+    state.warp.flag1 = 1;   // EA 0x52cf09 (OVERWRITES the memset -> "armed")
+    state.warp.timer = 0.0f; // EA 0x52cf15 (redundant)
 
     float originPos[3] = {0.0f, 0.0f, 0.0f};
     if (originLookup) originLookup(followupMotionId, currentMotionId, originPos); // EA 0x52cf30
@@ -119,14 +119,14 @@ void BeginComboMorph(ComboMorphState& state, int followupMotionId, int currentMo
 
     const float rotation = static_cast<float>(net::DefaultRng().NextMod(360)); // EA 0x52cf48
     state.warp.rotationCurrent = rotation; // EA 0x52cf48
-    state.warp.rotationTarget  = rotation; // EA 0x52cf54 (== rotationCurrent à l'init)
+    state.warp.rotationTarget  = rotation; // EA 0x52cf54 (== rotationCurrent at init)
 
     net::Net_SendPacket_Op20(netClient, static_cast<int8_t>(state.phase),
                               static_cast<int8_t>(followupMotionId)); // EA 0x52cf69
 }
 
 // ===========================================================================
-// Ramassage automatique des 5 emplacements de proximité (EA 0x52CF94..0x52D067).
+// Automatic pickup of the 5 nearby slots (EA 0x52CF94..0x52D067).
 // ===========================================================================
 void TickNearbyPickupSlots(float selfX, float selfY, float selfZ, net::NetClient& netClient) {
     for (int slot = 0; slot < kNearbyPickupSlotCount; ++slot) {
@@ -135,12 +135,12 @@ void TickNearbyPickupSlots(float selfX, float selfY, float selfZ, net::NetClient
         float& sy = g_Client.VarF(base + 4u);
         float& sz = g_Client.VarF(base + 8u);
 
-        if (sx == 0.0f && sy == 0.0f && sz == 0.0f) continue; // EA 0x52d023 (les 3 == 0.0)
+        if (sx == 0.0f && sy == 0.0f && sz == 0.0f) continue; // EA 0x52d023 (all 3 == 0.0)
         if (Dist3D(sx, sy, sz, selfX, selfY, selfZ) >= kNearbyPickupRadius) continue; // < 100.0 strict
 
         sx = 0.0f; sy = 0.0f; sz = 0.0f; // EA 0x52d02d/0x52d03b/0x52d049
 
-        const float selfPos[3] = {selfX, selfY, selfZ}; // payload = position du JOUEUR (fidèle)
+        const float selfPos[3] = {selfX, selfY, selfZ}; // payload = PLAYER position (faithful)
         net::Net_SendOp106(netClient, static_cast<int8_t>(slot), selfPos); // EA 0x52d05d
     }
 }
@@ -169,13 +169,13 @@ void Quest_UpdateMarkerTimer(QuestMarkerState& marker, const QuestProgressState&
     if (gameTimeSec - marker.lastTimerSec < 600.0f) return; // EA 0x510dd6
     marker.lastTimerSec = gameTimeSec; // EA 0x510de6
 
-    marker.lastObjectiveState = Quest_CheckObjectiveState(progress); // EA 0x510df7 (RÉUTILISE QuestSystem.h)
+    marker.lastObjectiveState = Quest_CheckObjectiveState(progress); // EA 0x510df7 (REUSES QuestSystem.h)
     const int32_t v2 = marker.lastObjectiveState;
     if (v2 == 0) return; // EA 0x510e0d
 
     if (v2 == 1) {
-        // EA 0x510e40 : NpcTbl_FindByTypeAndId(mQUEST, zoneId, npcQuestId+1) -> RÉUTILISE
-        // QuestSystem.h::LookupQuestStep (même signature/table).
+        // EA 0x510e40: NpcTbl_FindByTypeAndId(mQUEST, zoneId, npcQuestId+1) -> REUSES
+        // QuestSystem.h::LookupQuestStep (same signature/table).
         const QuestStepRecord* rec = LookupQuestStep(progress.zoneId, progress.npcQuestId + 1);
         if (rec && !matches(rec->field92)) { // EA 0x510e6e
             if (playMarkerSound) playMarkerSound(); // EA 0x510e80
@@ -184,7 +184,7 @@ void Quest_UpdateMarkerTimer(QuestMarkerState& marker, const QuestProgressState&
             marker.markerVariant     = 0;             // EA 0x510ea4
         }
     } else {
-        // EA 0x510ecc : NpcTbl_FindByTypeAndId(mQUEST, zoneId, npcQuestId) sans +1.
+        // EA 0x510ecc: NpcTbl_FindByTypeAndId(mQUEST, zoneId, npcQuestId) without +1.
         const QuestStepRecord* rec = LookupQuestStep(progress.zoneId, progress.npcQuestId);
         if (rec && !matches(rec->field92)) { // EA 0x510eff
             marker.active           = true;                                   // EA 0x510f09
@@ -198,15 +198,15 @@ void Quest_UpdateMarkerTimer(QuestMarkerState& marker, const QuestProgressState&
 // Tips002_RotateUpdate 0x4C1840.
 // ===========================================================================
 void Tips_RotateUpdate(TipsTable& tips, float gameTimeSec) {
-    if (tips.Advance(gameTimeSec)) { // timer/index déjà fidèle (Game/StringTables.h)
-        // EA 0x4c18c6 : Msg_AppendChatLine(g_ChatManager, texte, 3, &String). Le "3" est un
-        // INDEX de palette mFONTCOLOR (ColorTable_InitPalette 0x4C1D60), PAS un ARGB : le
-        // binaire le stocke brut et le résout au DESSIN via ColorTable_GetColor 0x4C1FE0
-        // (colors[3] = -256 = 0xFFFFFF00, jaune opaque). MessageLog::Chat prend un ARGB
-        // (architecture préexistante, ~500 sites d'appel hors périmètre) : on résout donc
-        // ici, chez le producteur (déviation du point de résolution documentée, même pixel).
-        // Sans ce fix, passer 3 comme ARGB donnait 0x00000003 (alpha 0) -> bandeau invisible.
-        g_Client.msg.Chat(tips.Current(), g_Strings.colors.Get(3)); // 0x4C1FE0 : Get(3) -> 0xFFFFFF00
+    if (tips.Advance(gameTimeSec)) { // timer/index already faithful (Game/StringTables.h)
+        // EA 0x4c18c6: Msg_AppendChatLine(g_ChatManager, text, 3, &String). The "3" is a
+        // mFONTCOLOR palette INDEX (ColorTable_InitPalette 0x4C1D60), NOT an ARGB: the
+        // binary stores it raw and resolves it at DRAW time via ColorTable_GetColor
+        // 0x4C1FE0 (colors[3] = -256 = 0xFFFFFF00, opaque yellow). MessageLog::Chat takes
+        // an ARGB (pre-existing architecture, ~500 call sites out of scope): resolved here,
+        // at the producer (documented deviation of the resolution point, same pixel).
+        // Without this fix, passing 3 as an ARGB gave 0x00000003 (alpha 0) -> invisible banner.
+        g_Client.msg.Chat(tips.Current(), g_Strings.colors.Get(3)); // 0x4C1FE0: Get(3) -> 0xFFFFFF00
     }
 }
 

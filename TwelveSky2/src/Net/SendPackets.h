@@ -1,5 +1,5 @@
-// Net/SendPackets.h — builders de paquets SORTANTS (C->S) de TwelveSky2.
-// GÉNÉRÉ (workflow ts2-net-builders-codegen). Framing sortant + XOR via PacketWriter.
+// Net/SendPackets.h — outbound (C->S) packet builders for TwelveSky2.
+// GENERATED (workflow ts2-net-builders-codegen). Outbound framing + XOR via PacketWriter.
 #pragma once
 #include "Net/NetClient.h"
 #include "Net/Framing.h"
@@ -8,11 +8,11 @@
 
 namespace ts2::net {
 
-// Net_SendPacket_Op12 0x4B43C0 (EnterWorld, opcode 0x0C, 222 o).
-// Renvoie true si la trame est integralement partie (EA 0x4b4564 : return 1), false si
-// send() a echoue sur une erreur != WSAEWOULDBLOCK, socket alors fermee (EA 0x4b4538 :
-// return 0). L'appelant Scene_EnterWorldUpdate 0x52BFF0 teste ce retour (EA 0x52c194)
-// pour choisir entre l'etat 3 et la notice 67 + etat 4 (EA 0x52c1a2/0x52c1b7).
+// Net_SendPacket_Op12 0x4B43C0 (EnterWorld, opcode 0x0C, 222 B).
+// Returns true if the frame went out fully (EA 0x4b4564: return 1), false if
+// send() failed with an error != WSAEWOULDBLOCK, socket then closed (EA 0x4b4538:
+// return 0). The caller Scene_EnterWorldUpdate 0x52BFF0 tests this return value (EA 0x52c194)
+// to choose between state 3 and notice 67 + state 4 (EA 0x52c1a2/0x52c1b7).
 bool Net_SendPacket_Op12(NetClient& nc, const void* head128, const void* name13, const void* tail72);
 void Net_SendPacket_Op20(NetClient& nc, int8_t arg1, int8_t arg2);
 void Net_SendPacket_Op28(NetClient& nc, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4);
@@ -218,12 +218,12 @@ void Net_SendCmd_13(NetClient& nc, int32_t value);
 void Net_SendGuarded_1(NetClient& nc, const void* payload13);
 void Net_SendGuarded_9(NetClient& nc, const void* payload13, int8_t value);
 void Net_SendMenu_2(NetClient& nc, const void* payload13);
-// Net_SendPacket_Op19 0x4B4E70 : builder unique du canal 0x13. Emet
-// [sous-code:u32 LE @+9][bloc:100 o @+13], longueur fil 113. 'payload' DOIT pointer sur
-// au moins 100 octets (copie inconditionnelle, EA 0x4b4f24).
-// ATTENTION : 'subCmd' est un u32 (plage reelle 201..256 et 501..531/534) — le suffixe
-// des noms Net_SendCmd_*/Net_SendVaultReq_* vaut (sous-code & 0xFF) et NON le sous-code
-// (Net_SendCmd_5 emet 517, Net_SendCmd_22 emet 534, Net_SendVaultReq_0 emet 256...).
+// Net_SendPacket_Op19 0x4B4E70: sole builder of channel 0x13. Emits
+// [sub-code:u32 LE @+9][block:100 B @+13], wire length 113. 'payload' MUST point to
+// at least 100 bytes (unconditional copy, EA 0x4b4f24).
+// WARNING: 'subCmd' is a u32 (real range 201..256 and 501..531/534) — the suffix
+// of the Net_SendCmd_*/Net_SendVaultReq_* names equals (sub-code & 0xFF) and NOT the sub-code
+// (Net_SendCmd_5 emits 517, Net_SendCmd_22 emits 534, Net_SendVaultReq_0 emits 256...).
 void Net_SendPacket_Op19(NetClient& nc, uint32_t subCmd, const void* payload);
 void Net_SendPacket_Op27(NetClient& nc, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3);
 void Net_SendPacket_Op35(NetClient& nc, int8_t flag, const void* name13, int8_t arg0, int8_t arg1, int8_t arg2, int8_t arg3, int8_t arg4, int8_t arg5, int8_t arg6);
@@ -254,18 +254,18 @@ void Net_SendGuarded_2(NetClient& nc, int32_t ctxId);
 void Net_SendGuarded_10(NetClient& nc, const void* data13, const void* data5);
 void Net_SendMenu_3(NetClient& nc, const void* data13);
 
-// --- Alias metier warp/teleportation -------------------------------------
-// Paquet de warp/teleportation de carte. Net_SendPacket_Op20 0x4B5000, opcode 0x14.
-// Emet [warpModeCode:i32 LE @+9][targetZoneId:i32 LE @+13], longueur 17. Les DEUX
-// champs sont des ENTIERS : dans le binaire a2=int et a3=v3[a1]/dword_1675A8C sont
-// pousses sur 32 bits et ZERO-etendus (EA 0x5f5dd6 : Op20(&g_AutoPlayMgr, 6, v3[a1])
-// avec v3={138,139,165,166}). D'ou i32, PAS int8_t : Net_SendPacket_Op20(int8_t)
-// sign-etendrait tout id >= 128 (0x8A -> 0x8AFFFFFF au lieu de 0x0000008A). Les 5
-// destinations warp (140/138/139/165/166) sont TOUTES >= 128 -> alias i32 obligatoire.
+// --- Business alias: warp / teleport --------------------------------------
+// Map warp/teleport packet. Net_SendPacket_Op20 0x4B5000, opcode 0x14.
+// Emits [warpModeCode:i32 LE @+9][targetZoneId:i32 LE @+13], length 17. BOTH
+// fields are INTEGERS: in the binary a2=int and a3=v3[a1]/dword_1675A8C are
+// pushed as 32 bits and ZERO-extended (EA 0x5f5dd6: Op20(&g_AutoPlayMgr, 6, v3[a1])
+// with v3={138,139,165,166}). Hence i32, NOT int8_t: Net_SendPacket_Op20(int8_t)
+// would sign-extend any id >= 128 (0x8A -> 0x8AFFFFFF instead of 0x0000008A). The 5
+// warp destinations (140/138/139/165/166) are ALL >= 128 -> i32 alias mandatory.
 void Net_SendWarpRequest(NetClient& nc, int32_t warpModeCode, int32_t targetZoneId);
 
-// Synchro apparence + config auto-hunt. Net_SendOp99 0x4BD140, opcode 0x63, longueur 125.
-// Alias semantique de Net_SendOp99 (a2=drapeau, orig. g_InvDirtyEnable ; 0 cote warp).
+// Appearance + auto-hunt config sync. Net_SendOp99 0x4BD140, opcode 0x63, length 125.
+// Semantic alias of Net_SendOp99 (a2=flag, orig. g_InvDirtyEnable; 0 on the warp side).
 void Net_SendAutoHuntSync(NetClient& nc, int8_t stateFlag,
                           const void* appearance68, const void* autoHunt44);
 

@@ -1,61 +1,59 @@
-// Game/AutoTargetCombatGate.h — SYSTEME AUTO-CIBLE / GATE DE COMBAT : réécriture C++
-// fidèle de deux blocs décompilés via idaTs2 (Hex-Rays). Module Game/*.h/.cpp AUTONOME
-// (mission dédiée, 2026-07-14) : n'édite PAS Scene/SceneManager.*, App/App.*, ni aucun
-// autre fichier « DÉJÀ ÉCRIT » — l'agent de consolidation câble les fonctions ci-dessous
-// sur InGameTickFlowHost::ValidateAutoTarget / ::IsCombatAllowedOnMap (Game/InGameTickFlow.h,
-// déjà déclarés là-bas comme hooks opaques std::function, non branchés côté SceneManager.cpp
-// à ce jour — cf. son commentaire EA 0x52cca7/0x52cf8e).
+// Game/AutoTargetCombatGate.h — AUTO-TARGET SYSTEM / COMBAT GATE: faithful C++ rewrite of
+// two blocks decompiled via idaTs2 (Hex-Rays). Self-contained Game/*.h/.cpp module
+// (dedicated mission, 2026-07-14): does NOT edit Scene/SceneManager.*, App/App.*, or any
+// other "ALREADY WRITTEN" file — the consolidation agent wires the functions below onto
+// InGameTickFlowHost::ValidateAutoTarget / ::IsCombatAllowedOnMap (Game/InGameTickFlow.h,
+// already declared there as opaque std::function hooks, not wired on the SceneManager.cpp
+// side to date — see its EA comment 0x52cca7/0x52cf8e).
 //
-// Vérité = le désassemblage de TwelveSky2.exe (imagebase 0x400000), décompilé directement
-// via MCP idaTs2 pour cette mission (Docs/TS2_GROUNDFX_AUTOTARGET.md et
-// Docs/TS2_COMBAT_ELEMENT_GATING.md n'existaient PAS encore au moment de ce travail —
-// décompilation directe effectuée à la place, cf. détail des EA ci-dessous).
+// Source of truth = the TwelveSky2.exe disassembly (imagebase 0x400000), decompiled
+// directly via MCP idaTs2 for this mission (Docs/TS2_GROUNDFX_AUTOTARGET.md and
+// Docs/TS2_COMBAT_ELEMENT_GATING.md did NOT exist yet at the time of this work — direct
+// decompilation was done instead, see the EA details below).
 //
-// ---------------------------------------------------------------------------------------
-// 1) ValidateAutoTarget — bloc EA 0x52CCA7..0x52CE77 de Scene_InGameUpdate 0x52C600
-//    (switch(dword_1675B24), appelé UNIQUEMENT quand la porte de gating de l'étape 12 du
-//    tick InGame laisse passer — cf. Game/InGameTickFlow.h, hors périmètre ici).
+// 1) ValidateAutoTarget — EA block 0x52CCA7..0x52CE77 of Scene_InGameUpdate 0x52C600
+//    (switch(dword_1675B24), called ONLY when step 12's gating gate of the InGame tick
+//    lets it through — see Game/InGameTickFlow.h, out of scope here).
 //    + Char_IsTargetablePlayerState 0x558AE0, Char_IsTargetableMonsterState 0x558B10
-//      (prédicats triviaux, décompilés directement : return a1 != 12 / a1 != 12 && a1 != 19).
+//      (trivial predicates, directly decompiled: return a1 != 12 / a1 != 12 && a1 != 19).
 //
-// 2) IsCombatAllowedOnMap — NOM DE MISSION donné à Combat_IsElementAllowedOnMap 0x55CBF0.
-//    IMPORTANT (écart entre l'intitulé de mission et le binaire réel, relevé par
-//    décompilation directe) : malgré son nom IDA « ...OnMap », cette fonction ne consulte
-//    AUCUN identifiant de carte/zone et n'implémente PAS une notion de « zone PVP/safe » —
-//    c'est une matrice de compatibilité ÉLÉMENT COURANT (mapElement=g_LocalElement) x PAIRE
-//    D'ALLIANCE (Char_GetPairedElement) x MORPH ACTIF (g_SelfMorphNpcId), qui gate en réalité
-//    le ramassage automatique des marqueurs de combo élémentaire (flt_1676130, 5
-//    emplacements) — PAS le combat PVP. Aucune table « carte -> PVP/safe » n'existe dans le
-//    binaire à ce site d'appel (seul appelant confirmé : EA 0x52cf7a, cf. xrefs_to). Cette
-//    fonction est DÉJÀ intégralement portée par Game/ComboPickupTick.h/.cpp
-//    (Combat_IsElementAllowedOnMap, même EA, même logique confirmée par décompilation
-//    indépendante ci-dessous) : ce fichier ne la RÉIMPLÉMENTE PAS, il l'expose sous le nom
-//    demandé par la mission (wrapper direct, cf. IsCombatAllowedOnMap ci-dessous) pour
-//    satisfaire le nom du hook InGameTickFlowHost::IsCombatAllowedOnMap.
+// 2) IsCombatAllowedOnMap — MISSION NAME given to Combat_IsElementAllowedOnMap 0x55CBF0.
+//    IMPORTANT (gap between the mission's naming and the real binary, found via direct
+//    decompilation): despite its IDA name "...OnMap", this function consults NO map/zone
+//    identifier and does NOT implement a "PVP/safe zone" notion — it is a compatibility
+//    matrix of CURRENT ELEMENT (mapElement=g_LocalElement) x ALLIANCE PAIR
+//    (Char_GetPairedElement) x ACTIVE MORPH (g_SelfMorphNpcId), which in reality gates
+//    automatic pickup of elemental combo markers (flt_1676130, 5 slots) — NOT PVP combat.
+//    No "map -> PVP/safe" table exists in the binary at this call site (sole confirmed
+//    caller: EA 0x52cf7a, see xrefs_to). This function is ALREADY fully ported by
+//    Game/ComboPickupTick.h/.cpp (Combat_IsElementAllowedOnMap, same EA, same logic
+//    confirmed by independent decompilation below): this file does NOT REIMPLEMENT it, it
+//    exposes it under the name requested by the mission (direct wrapper, see
+//    IsCombatAllowedOnMap below) to satisfy the name of the
+//    InGameTickFlowHost::IsCombatAllowedOnMap hook.
 //
-// ---------------------------------------------------------------------------------------
-// AMBIGUÏTÉ SIGNALÉE (même politique que GroupIdentity dans Game/GameState.h) :
-// dword_1675B24 (adresse du « mode » de cible auto ci-dessous) est RÉUTILISÉ tel quel par
-// Net/GameHandlers_VendorTrade.cpp / UI/PlayerTradeWindow.h comme « état d'échange entre
-// joueurs » — MÊME adresse mémoire, sémantique DIFFÉRENTE. Aucun conflit réel côté binaire :
-// les deux systèmes ne s'exécutent jamais simultanément (fenêtre d'échange modale piloté par
-// les paquets 0x31/0x33 vs ciblage auto du tick InGame). Reproduit ici via le MÊME
-// échappatoire game::g_Client.Var (Game/ClientRuntime.h) déjà utilisé pour CES TROIS
-// adresses précises par Game/AutoPlaySystem.cpp (cf. UpdateTargeting, EA 0x45D080) — AUCUNE
-// duplication de stockage introduite par ce fichier.
+// FLAGGED AMBIGUITY (same policy as GroupIdentity in Game/GameState.h):
+// dword_1675B24 (address of the auto-target "mode" below) is REUSED as-is by
+// Net/GameHandlers_VendorTrade.cpp / UI/PlayerTradeWindow.h as "player-to-player trade
+// state" — SAME memory address, DIFFERENT semantics. No real conflict on the binary side:
+// the two systems never run simultaneously (modal trade window driven by packets 0x31/0x33
+// vs. the InGame tick's auto-targeting). Reproduced here via the SAME
+// game::g_Client.Var (Game/ClientRuntime.h) escape hatch already used for THESE THREE
+// specific addresses by Game/AutoPlaySystem.cpp (see UpdateTargeting, EA 0x45D080) — NO
+// storage duplication introduced by this file.
 //
-// RÉUTILISATION (règle de la mission — ne PAS dupliquer un système déjà écrit) :
-//   - Combat_IsElementAllowedOnMap + ElementPairTable sont déjà portés par
-//     Game/SkillCombat.h / Game/ComboPickupTick.h — RÉUTILISÉS tels quels (wrapper, cf. ci-
-//     dessus), aucune réimplémentation de la matrice élément/morph ici.
-//   - g_Client.Var/VarF (Game/ClientRuntime.h) — échappatoire globals déjà standard dans
-//     tout ClientSource, réutilisée pour dword_1675B24/28/2C ET g_SelfMorphNpcId
-//     (0x1675A98, MÊME convention que Net/GameVarDispatch.cpp / Net/WorldEntityDispatch.cpp
-//     / Game/AnimationTick.cpp — aucune instance CombatMorphState globale n'existe à ce
-//     jour dans ClientSource, lu en lecture seule ici comme partout ailleurs).
-//   - g_World.self.element (SelfState::element, Game/GameState.h, MÊME adresse
-//     g_LocalElement 0x1673194) — même convention de lecture que
-//     Net/GameHandlers_InvDispatch.cpp ligne ~214.
+// REUSE (mission rule — do NOT duplicate an already-written system):
+//   - Combat_IsElementAllowedOnMap + ElementPairTable are already ported by
+//     Game/SkillCombat.h / Game/ComboPickupTick.h — REUSED as-is (wrapper, see above), no
+//     reimplementation of the element/morph matrix here.
+//   - g_Client.Var/VarF (Game/ClientRuntime.h) — the globals escape hatch already standard
+//     throughout ClientSource, reused for dword_1675B24/28/2C AND g_SelfMorphNpcId
+//     (0x1675A98, SAME convention as Net/GameVarDispatch.cpp / Net/WorldEntityDispatch.cpp
+//     / Game/AnimationTick.cpp — no global CombatMorphState instance exists in ClientSource
+//     to date, read here read-only just like everywhere else).
+//   - g_World.self.element (SelfState::element, Game/GameState.h, SAME address
+//     g_LocalElement 0x1673194) — same read convention as
+//     Net/GameHandlers_InvDispatch.cpp line ~214.
 #pragma once
 #include <cstdint>
 #include <cstddef>
@@ -67,176 +65,167 @@
 
 namespace ts2::game {
 
-// ===========================================================================
-// 1) ValidateAutoTarget — état/adresses d'origine.
-// ===========================================================================
+// 1) ValidateAutoTarget — original state/addresses.
 
-// Adresses d'origine des 3 globales pilotant la cible auto verrouillée.
-inline constexpr uint32_t kAutoTargetModeAddr   = 0x1675B24u; // dword_1675B24 : mode (0/1/2/3/4/5/7)
-inline constexpr uint32_t kAutoTargetIdHiAddr   = 0x1675B28u; // dword_1675B28 : id.hi (modes 1/2/3/5) OU index brut (modes 4/7)
-inline constexpr uint32_t kAutoTargetIdLoAddr   = 0x1675B2Cu; // dword_1675B2C : id.lo (modes 1/2/3/5 uniquement)
-inline constexpr float    kAutoTargetRangeLimit = 500.0f;     // EA 0x52cd91/0x52ce6b (invalide si distance > 500.0, strict)
+// Original addresses of the 3 globals driving the locked auto-target.
+inline constexpr uint32_t kAutoTargetModeAddr   = 0x1675B24u; // dword_1675B24: mode (0/1/2/3/4/5/7)
+inline constexpr uint32_t kAutoTargetIdHiAddr   = 0x1675B28u; // dword_1675B28: id.hi (modes 1/2/3/5) OR raw index (modes 4/7)
+inline constexpr uint32_t kAutoTargetIdLoAddr   = 0x1675B2Cu; // dword_1675B2C: id.lo (modes 1/2/3/5 only)
+inline constexpr float    kAutoTargetRangeLimit = 500.0f;     // EA 0x52cd91/0x52ce6b (invalid if distance > 500.0, strict)
 
-// Char_IsTargetablePlayerState 0x558AE0 — EA confirmée par décompilation directe :
+// Char_IsTargetablePlayerState 0x558AE0 — EA confirmed by direct decompilation:
 //   BOOL __stdcall Char_IsTargetablePlayerState(int a1) { return a1 != 12; }
-// (TODO non résolu ailleurs à ce jour dans ClientSource — cf. Game/ActionStateMachine.cpp,
-// commentaire EA 0x571B8F qui l'approxime encore par « active && id correspond » ; ce
-// fichier fournit l'implémentation exacte pour SON propre usage, sans éditer ce fichier-là).
+// (TODO unresolved elsewhere in ClientSource to date — see Game/ActionStateMachine.cpp,
+// EA comment 0x571B8F, which still approximates it as "active && id matches"; this file
+// provides the exact implementation for ITS OWN use, without editing that other file).
 inline bool Combat_IsTargetablePlayerState(int actionState) { return actionState != 12; }
 
-// Char_IsTargetableMonsterState 0x558B10 — idem : return a1 != 12 && a1 != 19.
+// Char_IsTargetableMonsterState 0x558B10 — same: return a1 != 12 && a1 != 19.
 inline bool Combat_IsTargetableMonsterState(int actionState) {
     return actionState != 12 && actionState != 19;
 }
 
-// dword_168724C[227*kk] — lecture du 1er dword du payload spawn joueur, = PlayerEntity::
-// body[0..3]. Adresse EXACTE confirmée par arithmétique (dword_1687234=active@+0 ->
-// +4/+8=id -> +0xC=timestamp -> +0x18(24)=body[0], et dword_168724C-dword_1687234=0x18) :
-// dword_168724C EST body[0..3] réinterprété en int32. Sémantique fine non déterminée
-// (probablement id de classe/apparence, même famille que NpcEntity/MonsterEntity::body[0]
-// = mob id) ; testé pour simple non-nullité (« enregistrement peuplé »), fidèle au binaire
-// qui ne teste QUE la vérité/fausseté de ce dword (aucune comparaison de valeur).
+// dword_168724C[227*kk] — reads the 1st dword of the player spawn payload, =
+// PlayerEntity::body[0..3]. EXACT address confirmed by arithmetic (dword_1687234=active@+0
+// -> +4/+8=id -> +0xC=timestamp -> +0x18(24)=body[0], and dword_168724C-dword_1687234=0x18):
+// dword_168724C IS body[0..3] reinterpreted as int32. Fine-grained semantics undetermined
+// (probably a class/appearance id, same family as NpcEntity/MonsterEntity::body[0] = mob
+// id); tested for simple non-zero-ness ("record populated"), faithful to the binary, which
+// only tests this dword's truthiness (no value comparison).
 inline bool AutoTarget_PlayerRecordPopulated(const PlayerEntity& p) {
     int32_t v = 0;
     std::memcpy(&v, p.body.data(), sizeof(v));
     return v != 0;
 }
 
-// dword_1766F8C[70*mm] — état d'action « brut » du monstre LU DIRECTEMENT depuis le corps,
-// PAS MonsterEntity::anim.state. Adresse EXACTE confirmée par arithmétique (dword_1766F74=
-// active@+0 -> +4/+8=id -> +0xC=timestamp -> +0x10(16)=body début, cohérent avec
+// dword_1766F8C[70*mm] — monster's "raw" action state read DIRECTLY from the body, NOT
+// MonsterEntity::anim.state. EXACT address confirmed by arithmetic (dword_1766F74=
+// active@+0 -> +4/+8=id -> +0xC=timestamp -> +0x10(16)=body start, consistent with
 // GameState.h "def +0x60" = 16+80 -> dword_1766F8C-dword_1766F74=0x18(24) = body[24-16=8..11]).
-// Ce champ N'EST PAS garanti identique à MonsterEntity::anim.state (extrait par une AUTRE
-// fonction, Char_Update 0x581E10, offsets propres non confirmés alignés sur celui-ci) : lu
-// ici depuis le corps brut pour rester fidèle à CETTE lecture précise du binaire, sans
-// dépendre d'une hypothèse non prouvée sur anim.state.
+// This field is NOT guaranteed identical to MonsterEntity::anim.state (extracted by ANOTHER
+// function, Char_Update 0x581E10, with its own offsets not confirmed to align with this
+// one): read here from the raw body to stay faithful to THIS exact binary read, without
+// relying on an unproven assumption about anim.state.
 inline int32_t AutoTarget_MonsterActionState(const MonsterEntity& m) {
     int32_t v = 0;
     std::memcpy(&v, m.body.data() + 8, sizeof(v));
     return v;
 }
 
-// Oracle de position pour les modes « objet à portée » (4 = MÊME pool 88o exposé côté
-// ClientSource sous g_World.groundItems (dword_1764D14/g_NpcRenderArray) ; 7 =
-// ZoneObjectEntity/g_World.zoneObjects). `mode` reçoit la valeur brute de dword_1675B24 (4 ou
-// 7) pour que l'appelant distingue les deux pools. Renvoie faux -> cible considérée hors de
-// portée (repli sûr, MÊMES conséquences qu'un pool vide/index invalide côté binaire).
+// Position oracle for the "in-range object" modes (4 = SAME 88-byte pool exposed on the
+// ClientSource side as g_World.groundItems (dword_1764D14/g_NpcRenderArray); 7 =
+// ZoneObjectEntity/g_World.zoneObjects). `mode` receives the raw value of dword_1675B24 (4
+// or 7) so the caller can distinguish the two pools. Returns false -> target considered out
+// of range (safe fallback, SAME consequences as an empty pool/invalid index on the binary
+// side).
 //
-// *** CORRECTIF SÉMANTIQUE (mission « AutoTargetRangeLookup non câblé », 2026-07-14,
-// décompilation fraîche indépendante de Item_PickupTarget 0x539EC0 ET
-// World_PickEntityAtCursor 0x538AB0) *** : le paragraphe ci-dessous (et celui de
-// AutoTarget_DefaultRangeLookup) affirmait que dword_1764D14/g_NpcRenderArray était « LE
-// MÊME tableau g_World.groundItems » au sens gameplay (« objets au sol »). C'est CONFIRMÉ
-// FAUX à l'usage : World_PickEntityAtCursor traite CE MÊME tableau (boucle `j`, stride 22 dw,
-// borne g_NpcCount) comme catégorie de clic **4 = NPC**, via `Scene_RayHitNpcBox` (nom IDA
-// explicite, PAS un raycast d'objet) ; et Item_PickupTarget 0x539EC0 (qui LIT CE MÊME
-// tableau, MÊME offset unk_1764D28, pour la garde de portée du mode 4 ci-dessous) n'effectue
-// JAMAIS de ramassage : son seul effet observable est `UI_NpcWin_Open(&g_NpcRenderArray[...])`
-// — une fenêtre de DIALOGUE NPC. Le VRAI pool "objet ramassable au sol" est un AUTRE tableau,
-// dword_17AB534 (stride 38 dw/152 o, catégorie de clic **6** dans World_PickEntityAtCursor,
-// raycast `Scene_RayHitItemModel`) — celui-là même que GameState.h modélise (à l'envers,
-// même confusion) sous le nom `NpcEntity`/`g_World.npcs`. CONCLUSION (même diagnostic déjà
-// posé indépendamment par Game/GroundAuraWorldObjectTick.h, § « MISE À JOUR audit étapes
-// 5-8 » — confirmé ici par une 4e trace croisée) : `g_World.groundItems` est un NOM DE CHAMP
-// erroné hérité de GameState.h (fichier socle partagé, HORS PÉRIMÈTRE d'édition de cette
-// mission) — le pool qu'il porte réellement est un tableau de NPCs, pas d'objets au sol. CE
-// QUI NE CHANGE RIEN AU CÂBLAGE CI-DESSOUS : le mode 4 de g_PendingOrderKind (walk-to/target
-// NPC, cohérent avec la séquence 1-3=joueur, 4=npc, 5=monstre, 7=objet de zone dans
-// World_PickEntityAtCursor) a TOUJOURS besoin de lire CE tableau précis (adresse+stride+
-// offset), et `g_World.groundItems` EST structurellement ce tableau (même adresse dérivée,
-// même stride 88, mêmes offsets x/y/z) — c'est donc le SEUL conteneur ClientSource correct à
-// utiliser ici, malgré son nom. Aucun autre pool ne convient : `g_World.npcs` (dword_17AB534)
-// a un stride/offset totalement différent (152 o) et correspond en réalité au tableau
-// d'objets-modèles (catégorie 6), PAS à celui lu par ce switch. Renommer le champ
-// GameState.h::groundItems -> npcRenderEntries (et vice-versa pour npcs) est une correction
-// de fond qui déborde du périmètre Game/AutoTargetCombatGate.*.h de cette mission (fichier
-// socle partagé) — signalé ici pour une future passe de cohérence, PAS appliqué.
+// *** SEMANTIC FIX (mission "AutoTargetRangeLookup not wired", 2026-07-14, fresh independent
+// decompilation of Item_PickupTarget 0x539EC0 and World_PickEntityAtCursor 0x538AB0) ***:
+// dword_1764D14/g_NpcRenderArray is NOT ground-loot storage despite its ClientSource field
+// name g_World.groundItems — World_PickEntityAtCursor treats this exact array (loop `j`,
+// stride 22 dw, bound g_NpcCount) as click category **4 = NPC** via `Scene_RayHitNpcBox`, and
+// Item_PickupTarget 0x539EC0 (reading the same array/offset unk_1764D28 for mode 4's range
+// guard below) never picks anything up — its only observable effect is
+// `UI_NpcWin_Open(&g_NpcRenderArray[...])`, an NPC dialog window. The REAL ground-loot pool is
+// a DIFFERENT array, dword_17AB534 (stride 38 dw/152 bytes, click category **6**, raycast
+// `Scene_RayHitItemModel`) — the very one GameState.h mismodels as `NpcEntity`/`g_World.npcs`.
+// Same diagnosis independently reached by Game/GroundAuraWorldObjectTick.h (§ "audit steps
+// 5-8 update"), now confirmed by a 4th cross-trace. `g_World.groundItems` is therefore a
+// MISNAMED field inherited from GameState.h (shared foundation file, OUT OF SCOPE for this
+// mission) — it actually carries an NPC array, not ground loot. This changes NOTHING about
+// the wiring below: mode 4 of g_PendingOrderKind (walk-to/target NPC, consistent with the
+// World_PickEntityAtCursor sequence 1-3=player, 4=npc, 5=monster, 7=zone object) always needs
+// to read this exact array (address+stride+offset), and `g_World.groundItems` structurally
+// IS that array (same derived address, same 88-byte stride, same x/y/z offsets) — the only
+// correct ClientSource container to use here, despite its name. No other pool fits:
+// `g_World.npcs` (dword_17AB534) has a totally different stride/offset (152 bytes) and is
+// actually the model-object array (category 6), not the one read by this switch. Renaming
+// GameState.h::groundItems -> npcRenderEntries (and vice versa for npcs) is a deeper fix
+// outside this mission's Game/AutoTargetCombatGate.*.h scope (shared foundation file) —
+// flagged here for a future consistency pass, NOT applied.
 using AutoTargetRangeLookup = std::function<bool(int mode, int index, float outPos[3])>;
 
-// Oracle par défaut : mode==4 -> x/y/z lus depuis g_World.groundItems (storage RÉUTILISÉ tel
-// quel — cf. correctif sémantique ci-dessus : ce pool est en réalité le tableau NPC
-// g_NpcRenderArray/dword_1764D14, PAS des objets ramassables, mais c'est bien le tableau EXACT
-// que ce mode doit lire) ; mode==7 -> x/y/z = 3 premiers floats de ZoneObjectEntity::body.
+// Default oracle: mode==4 -> x/y/z read from g_World.groundItems (storage REUSED as-is —
+// see the semantic fix above: this pool is actually the NPC array g_NpcRenderArray/
+// dword_1764D14, NOT pickable objects, but it is indeed the EXACT array this mode must
+// read); mode==7 -> x/y/z = the first 3 floats of ZoneObjectEntity::body.
 //
-// mode==4, EA 0x52cd91 : `Math_Dist3D((char*)&unk_1764D28 + 88*g_PendingOrderGridX,
-// flt_1687330)`. unk_1764D28 - g_NpcRenderArray(dword_1764D14) == 0x14 (20 o), stride 88 o,
-// index brut = g_PendingOrderGridX -- adresse/stride/offset RE-CONFIRMÉS par 2 décompilations
-// indépendantes supplémentaires cette mission (Item_PickupTarget 0x539EC0, MÊME expression
-// `unk_1764D28 + 22*index` ; World_PickEntityAtCursor 0x538AB0, boucle `j` MÊME tableau/
-// stride/borne g_NpcCount). AUCUN test d'activité (`active`) dans le binaire pour ce mode
-// (contrairement à ce qu'on pourrait attendre) — reproduit fidèlement : seul un bounds-check
-// défensif est ajouté ci-dessous (nécessaire car g_World.groundItems est un std::vector à
-// croissance paresseuse côté ClientSource, PAS un tableau C de capacité fixe garantie comme
-// l'original).
+// mode==4, EA 0x52cd91: `Math_Dist3D((char*)&unk_1764D28 + 88*g_PendingOrderGridX,
+// flt_1687330)`. unk_1764D28 - g_NpcRenderArray(dword_1764D14) == 0x14 (20 bytes), stride 88
+// bytes, raw index = g_PendingOrderGridX -- address/stride/offset RE-CONFIRMED by 2
+// additional independent decompilations this mission (Item_PickupTarget 0x539EC0, SAME
+// expression `unk_1764D28 + 22*index`; World_PickEntityAtCursor 0x538AB0, loop `j` on the
+// SAME array/stride/bound g_NpcCount). NO activity test (`active`) in the binary for this
+// mode (contrary to what one might expect) — faithfully reproduced: only a defensive
+// bounds-check is added below (needed because g_World.groundItems is a lazily-growing
+// std::vector on the ClientSource side, NOT a fixed-capacity C array guaranteed like the
+// original).
 //
-// mode==7, EA 0x52ce6b : fidélité confirmée sur l'adresse (unk_180EF0C - g_ZoneObjectArray ==
-// 0x18 == ZoneObjectEntity::body offset 0, cf. GameState.h) ET RE-CONFIRMÉE par
-// World_PickEntityAtCursor (boucle `n`, catégorie 7 = g_ZoneObjectArray, MÊME tableau). Le
-// binaire NE TESTE PAS non plus z.active pour ce mode -- SEUL le bounds-check défensif (même
-// raison que mode 4) est appliqué ici, sans filtrer sur l'activité du slot.
+// mode==7, EA 0x52ce6b: address fidelity confirmed (unk_180EF0C - g_ZoneObjectArray == 0x18
+// == ZoneObjectEntity::body offset 0, see GameState.h) AND RE-CONFIRMED by
+// World_PickEntityAtCursor (loop `n`, category 7 = g_ZoneObjectArray, SAME array). The binary
+// ALSO does NOT test z.active for this mode -- ONLY the defensive bounds-check (same reason
+// as mode 4) is applied here, without filtering on slot activity.
 bool AutoTarget_DefaultRangeLookup(const GameWorld& world, int mode, int index, float outPos[3]);
 
-// ValidateAutoTarget — bloc EA 0x52CCA7..0x52CE77 de Scene_InGameUpdate (switch sur
-// dword_1675B24). Valide la cible actuellement verrouillée et RAZ le mode
-// (g_Client.Var(kAutoTargetModeAddr)=0) si elle n'est plus valide — sinon ne touche à RIEN
-// (fidèle : le binaire ne modifie jamais dword_1675B28/2C ici, seul le mode peut retomber
-// à 0).
-//   mode 1/2/3 : cible = joueur distant (world.players[1..], l'index 0 = self est ignoré,
-//                fidèle à la boucle `for (kk=1; kk<g_EntityCount; ...)`) — retrouvé par
+// ValidateAutoTarget — EA block 0x52CCA7..0x52CE77 of Scene_InGameUpdate (switch on
+// dword_1675B24). Validates the currently locked target and resets the mode
+// (g_Client.Var(kAutoTargetModeAddr)=0) if it's no longer valid — otherwise touches
+// NOTHING (faithful: the binary never modifies dword_1675B28/2C here, only the mode can
+// fall back to 0).
+//   mode 1/2/3: target = remote player (world.players[1..], index 0 = self is skipped,
+//                faithful to the `for (kk=1; kk<g_EntityCount; ...)` loop) — found via
 //                (active && AutoTarget_PlayerRecordPopulated && Combat_IsTargetablePlayerState
-//                (anim.state) && id.hi==dword_1675B28 && id.lo==dword_1675B2C). RAZ si AUCUN
-//                joueur ne correspond (fidèle : recherche exhaustive, PAS de test de
-//                distance pour ces 3 modes).
-//   mode 5     : cible = monstre (world.monsters[0..]) — même patron, via
+//                (anim.state) && id.hi==dword_1675B28 && id.lo==dword_1675B2C). Reset if NO
+//                player matches (faithful: exhaustive search, NO distance test for these 3
+//                modes).
+//   mode 5     : target = monster (world.monsters[0..]) — same pattern, via
 //                Combat_IsTargetableMonsterState(AutoTarget_MonsterActionState(m)).
-//   mode 4     : cible = « NPC à portée » (PAS un objet au sol malgré le nom du champ
-//                g_World.groundItems qui porte ce pool côté ClientSource -- cf. correctif
-//                sémantique dans le bandeau de AutoTarget_DefaultRangeLookup) — index BRUT =
-//                dword_1675B28 (PAS un id réseau, fidèle : le binaire indexe directement le
-//                pool g_NpcRenderArray, aucun scan d'existence, ET AUCUN test d'activité du
-//                slot -- RE-VÉRIFIÉ, cf. AutoTarget_DefaultRangeLookup).
-//   mode 7     : cible = « objet de zone à portée » (ZoneObjectEntity/g_World.zoneObjects) —
-//                même patron d'indexation brute que le mode 4.
-//                RAZ (modes 4 et 7) si `rangedLookup` renvoie faux OU distance > 500.0 de self.
-//   défaut     : aucune action (fidèle : le binaire ignore silencieusement tout autre mode,
-//                y compris 0 déjà nul et toute valeur jamais observée dans ce switch, ex 6 —
-//                catégorie "objet ramassable"/dword_17AB534 dans World_PickEntityAtCursor,
-//                absente de CE switch précis).
-// `rangedLookup` par défaut (nul) => AutoTarget_DefaultRangeLookup(world, ...) (modes 4 ET 7,
-// cf. bandeau ci-dessus -- mode 4 résolu via world.groundItems, storage réutilisé tel quel).
+//   mode 4     : target = "NPC in range" (NOT a ground object despite the ClientSource field
+//                name g_World.groundItems carrying this pool -- see the semantic fix in the
+//                AutoTarget_DefaultRangeLookup banner) — RAW index = dword_1675B28 (NOT a
+//                network id, faithful: the binary directly indexes the g_NpcRenderArray
+//                pool, no existence scan, AND NO slot-activity test -- RE-VERIFIED, see
+//                AutoTarget_DefaultRangeLookup).
+//   mode 7     : target = "zone object in range" (ZoneObjectEntity/g_World.zoneObjects) —
+//                same raw-indexing pattern as mode 4.
+//                Reset (modes 4 and 7) if `rangedLookup` returns false OR distance > 500.0 from self.
+//   default    : no action (faithful: the binary silently ignores any other mode, including
+//                0, already null, and any value never observed in this switch, e.g. 6 —
+//                "pickable object" category/dword_17AB534 in World_PickEntityAtCursor,
+//                absent from THIS particular switch).
+// Default `rangedLookup` (null) => AutoTarget_DefaultRangeLookup(world, ...) (modes 4 AND 7,
+// see banner above -- mode 4 resolved via world.groundItems, storage reused as-is).
 void ValidateAutoTarget(GameWorld& world,
                          const AutoTargetRangeLookup& rangedLookup = nullptr);
 
-// ===========================================================================
-// 2) IsCombatAllowedOnMap — wrapper EXACT de Combat_IsElementAllowedOnMap (déjà porté).
-// ===========================================================================
+// 2) IsCombatAllowedOnMap — EXACT wrapper of Combat_IsElementAllowedOnMap (already ported).
 
-// Wrapper direct de Game::Combat_IsElementAllowedOnMap (Game/ComboPickupTick.h, EA
-// 0x55CBF0) — RÉUTILISÉ tel quel, AUCUNE réimplémentation de la matrice élément/morph.
-// Exposé sous le nom demandé par la mission ET par le hook
-// InGameTickFlowHost::IsCombatAllowedOnMap (Game/InGameTickFlow.h). `pairs` = table de
-// paires d'éléments du personnage (g_LocalPlayerSheet+455..458) — AUCUNE instance globale
-// n'existe dans ClientSource à ce jour (cf. Scene/SceneManager.cpp, commentaire EA
-// 0x52cf8e) ; {} (4x -1, « aucune paire enregistrée ») est le repli par défaut le plus
-// proche d'un personnage n'ayant jamais reçu cette donnée réseau — PAS un raccourci
-// « toujours faux » : le résultat dépend TOUJOURS réellement de `selfMorphNpcId` (cf.
-// Combat_IsElementAllowedOnMap, branche -1/« soi » de chaque switch interne, EA 0x55cc38
-// et suivants).
+// Direct wrapper of Game::Combat_IsElementAllowedOnMap (Game/ComboPickupTick.h, EA
+// 0x55CBF0) — REUSED as-is, NO reimplementation of the element/morph matrix. Exposed
+// under the name requested by the mission AND by the
+// InGameTickFlowHost::IsCombatAllowedOnMap hook (Game/InGameTickFlow.h). `pairs` = the
+// character's element pair table (g_LocalPlayerSheet+455..458) — NO global instance exists
+// in ClientSource to date (see Scene/SceneManager.cpp, EA comment 0x52cf8e); {} (4x -1, "no
+// pair registered") is the closest default fallback for a character that never received
+// this network data — NOT an "always false" shortcut: the result ALWAYS genuinely depends
+// on `selfMorphNpcId` (see Combat_IsElementAllowedOnMap, the -1/"self" branch of each
+// internal switch, EA 0x55cc38 onward).
 inline bool IsCombatAllowedOnMap(int mapElement, int selfMorphNpcId,
                                   const ElementPairTable& pairs = {}) {
     return Combat_IsElementAllowedOnMap(mapElement, selfMorphNpcId, pairs);
 }
 
-// Variante « zéro-argument » directement branchable sur
-// InGameTickFlowHost::IsCombatAllowedOnMap (std::function<bool()>, EA 0x52cf6e-0x52cf94) :
+// "Zero-argument" variant directly wireable to InGameTickFlowHost::IsCombatAllowedOnMap
+// (std::function<bool()>, EA 0x52cf6e-0x52cf94):
 //   mov ecx, g_LocalPlayerSheet ; push g_LocalElement ; call Combat_IsElementAllowedOnMap
-// mapElement = world.self.element (g_LocalElement 0x1673194, même convention de lecture que
-// Net/GameHandlers_InvDispatch.cpp) ; selfMorphNpcId = g_Client.VarGet(0x1675A98)
-// (échappatoire g_SelfMorphNpcId, même convention que Net/GameVarDispatch.cpp /
-// Net/WorldEntityDispatch.cpp / Game/AnimationTick.cpp). NOTE : le binaire combine ce
-// résultat avec `&& !g_GmAuthLevel` AU SITE D'APPEL (0x52cf8e) — Game/InGameTickFlow.cpp
-// applique déjà cette combinaison via un hook IsGm SÉPARÉ (étape 12d) ; cette fonction ne
-// renvoie QUE le résultat de Combat_IsElementAllowedOnMap, fidèle au découpage établi.
+// mapElement = world.self.element (g_LocalElement 0x1673194, same read convention as
+// Net/GameHandlers_InvDispatch.cpp); selfMorphNpcId = g_Client.VarGet(0x1675A98)
+// (g_SelfMorphNpcId escape hatch, same convention as Net/GameVarDispatch.cpp /
+// Net/WorldEntityDispatch.cpp / Game/AnimationTick.cpp). NOTE: the binary combines this
+// result with `&& !g_GmAuthLevel` AT THE CALL SITE (0x52cf8e) — Game/InGameTickFlow.cpp
+// already applies this combination via a SEPARATE IsGm hook (step 12d); this function
+// returns ONLY the Combat_IsElementAllowedOnMap result, faithful to the established split.
 bool IsCombatAllowedOnMapForSelf(const GameWorld& world, const ElementPairTable& pairs = {});
 
 } // namespace ts2::game

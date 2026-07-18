@@ -1,25 +1,25 @@
-// Net/GameServerDomains.h — table des hôtes de serveur de jeu (Net_SelectServerDomain 0x53FE90).
+// Net/GameServerDomains.h — game server host table (Net_SelectServerDomain 0x53FE90).
 //
-// Reproduction FIDÈLE (transcription 1:1, désassemblage confirmé bit-identique) de la table
-// de résolution `domainId -> hostname` du client TwelveSky2. La fonction d'origine est PURE
-// (aucun socket) : deux `switch` imbriqués sur `g_ServerModeFlag 0x166918C` puis sur
-// `domainId`, écrivant un littéral via `Crt_StringInit 0x75CAB0`. Hex-Rays échoue dessus
-// (~30 branches convergentes) ; le layout est prouvé par disasm intégral (288 instr.,
-// jump tables `jpt_53FEE4`/`jpt_54019F`). Cf. Docs/TS2_GAMESERVER_DOMAINS.md.
+// FAITHFUL reproduction (1:1 transcription, disassembly-confirmed bit-identical) of the
+// TwelveSky2 client's `domainId -> hostname` resolution table. The original function is PURE
+// (no socket): two nested `switch` on `g_ServerModeFlag 0x166918C` then on `domainId`,
+// writing a literal via `Crt_StringInit 0x75CAB0`. Hex-Rays fails on it
+// (~30 converging branches); the layout is proven by full disasm (288 instr.,
+// jump tables `jpt_53FEE4`/`jpt_54019F`). See Docs/TS2_GAMESERVER_DOMAINS.md.
 //
-// Le `domainId` (1..20) et le `gamePort` sont fournis DYNAMIQUEMENT par le login/CharSelect
-// server dans la réponse à l'opcode 22 (`Net_ReqEnterCharInfo 0x52B070`) ou le paquet
-// `Pkt_GameServerConnectResult 0x469CF0` (opcode 0x18) ; le client ne fait que traduire
-// l'entier reçu en hostname via cette table codée en dur, résolu ensuite par DNS
-// (`gethostbyname`, cf. Net/Login.cpp::ConnectGameServer, Net_ConnectGameServer 0x462A70).
+// `domainId` (1..20) and `gamePort` are provided DYNAMICALLY by the login/CharSelect
+// server in the response to opcode 22 (`Net_ReqEnterCharInfo 0x52B070`) or the packet
+// `Pkt_GameServerConnectResult 0x469CF0` (opcode 0x18); the client just translates
+// the received integer into a hostname via this hardcoded table, resolved afterwards by DNS
+// (`gethostbyname`, see Net/Login.cpp::ConnectGameServer, Net_ConnectGameServer 0x462A70).
 #pragma once
 #include <string>
 
 namespace ts2::net {
 
-// Mode 0 (LIVE, `g_ServerModeFlag==0` = lancement /0/0/2/1024/768) : 20 sous-domaines
-// `*.geniusorc.com` DISTINCTS, index 1..20 (cases jumptable 0x53FEEB..0x54007B ; littéraux
-// contigus 0x7A9C18 descendant à 0x7A996C, pas 0x24). 32 caractères + NUL -> char[33].
+// Mode 0 (LIVE, `g_ServerModeFlag==0` = launched with /0/0/2/1024/768): 20 DISTINCT
+// `*.geniusorc.com` subdomains, index 1..20 (jumptable cases 0x53FEEB..0x54007B; contiguous
+// literals 0x7A9C18 descending to 0x7A996C, stride 0x24). 32 chars + NUL -> char[33].
 inline constexpr char kGameServerHostsLive[20][33] = {
     "3A6k9d1G4b5j8H2f7C.geniusorc.com", //  1  0x7A9C18
     "7E4b1f9I3g2D6a5J8c.geniusorc.com", //  2  0x7A9BF4
@@ -43,38 +43,38 @@ inline constexpr char kGameServerHostsLive[20][33] = {
     "4K8b2c7I9j5G6h3D1f.geniusorc.com", // 20  0x7A996C
 };
 
-// Modes 1 & 2 (staging) : 2 hôtes `.geniusorc.org`, index 1..2 (0x5400D0/0x5400E3 pour le
-// mode 1, 0x540138/0x54014B pour le mode 2 — MÊMES 2 littéraux 0x7A9948/0x7A9924).
+// Modes 1 & 2 (staging): 2 `.geniusorc.org` hosts, index 1..2 (0x5400D0/0x5400E3 for
+// mode 1, 0x540138/0x54014B for mode 2 — SAME 2 literals 0x7A9948/0x7A9924).
 inline constexpr char kGameServerHostsStaging[2][33] = {
     "9B1x8Y5k3C1d8da2dd.geniusorc.org", // 1  0x7A9948
     "6T2y4L1i5S9ddd8a9d.geniusorc.org", // 2  0x7A9924
 };
 
-// Mode dev (tout autre `g_ServerModeFlag`) : le MÊME hôte pour index 1..10 (0x7A9910).
+// Dev mode (any other `g_ServerModeFlag`): the SAME host for index 1..10 (0x7A9910).
 inline constexpr char kGameServerHostDev[] = "test_ts2_zone.co.kr";
 
-// Repli hors-plage (toutes branches) : littéral non routable "0.0.0.0" (0x7A9714).
+// Out-of-range fallback (all branches): non-routable literal "0.0.0.0" (0x7A9714).
 inline constexpr char kGameServerHostInvalid[] = "0.0.0.0";
 
-// Miroir de `g_ServerModeFlag 0x166918C` (= GameConfig::buildVariant, 1er jeton cmdline,
-// écrit par WinMain @0x4609XX). Posé UNE FOIS par LoginScene::Init (avant tout connect
-// game-server) — le login précède toujours l'entrée en monde dans le flux.
+// Mirror of `g_ServerModeFlag 0x166918C` (= GameConfig::buildVariant, 1st cmdline
+// token, written by WinMain @0x4609XX). Set ONCE by LoginScene::Init (before any
+// game-server connect) — login always precedes world entry in the flow.
 inline int g_ServerMode = 0;
 
-// GARDE (décision utilisateur, session 2026-07-17 : « connexion prod réelle ») : true =
-// résolution + connexion RÉELLE aux hôtes de production ci-dessus. C'est le comportement
-// FIDÈLE du binaire (`Net_ConnectGameServer 0x462A70` résout puis connecte l'hôte de table).
-// Autorisation explicite et informée (caveat « infra de production potentiellement active »).
+// GUARD (user decision, session 2026-07-17: "real prod connection"): true =
+// REAL resolution + connection to the production hosts above. This is the FAITHFUL
+// behavior of the binary (`Net_ConnectGameServer 0x462A70` resolves then connects the table
+// host). Explicit and informed authorization (caveat: "potentially live production infra").
 inline constexpr bool kResolveRealGameHosts = true;
 
-// Résolveur FIDÈLE de `Net_SelectServerDomain 0x53FE90` : donnée pure, aucun effet de bord.
-// `serverMode` = g_ServerModeFlag ; `domainId` = index reçu du serveur (1..20).
+// FAITHFUL resolver of `Net_SelectServerDomain 0x53FE90`: pure data, no side effect.
+// `serverMode` = g_ServerModeFlag; `domainId` = index received from the server (1..20).
 std::string ResolveGameServerDomainRaw(int serverMode, int domainId);
 
-// Résolveur à POLITIQUE utilisé par le câblage (unique point gardé). Garde ON (D1) -> hôte
-// de table pour `domainId` ; sur index HORS-PLAGE ("0.0.0.0") retombe sur `loginFallbackHost`
-// (dégradation gracieuse documentée — un serveur correct n'émet jamais d'index hors [1,20]).
-// Garde OFF -> `loginFallbackHost` (repli login, aucune connexion prod).
+// POLICY resolver used by the wiring (single gated entry point). Guard ON (D1) -> table
+// host for `domainId`; on OUT-OF-RANGE index ("0.0.0.0") falls back to `loginFallbackHost`
+// (documented graceful degradation — a correct server never emits an index outside [1,20]).
+// Guard OFF -> `loginFallbackHost` (login fallback, no prod connection).
 std::string SelectGameServerHost(int domainId, const char* loginFallbackHost);
 
 } // namespace ts2::net

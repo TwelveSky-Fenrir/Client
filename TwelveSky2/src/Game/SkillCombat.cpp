@@ -1,26 +1,24 @@
-// Game/SkillCombat.cpp — implémentation de l'intégration combat des compétences.
-// Transcription fidèle du désassemblage de TwelveSky2.exe. Cf. SkillCombat.h.
+// Game/SkillCombat.cpp — implementation of skill combat integration.
+// Faithful transcription of the TwelveSky2.exe disassembly. See SkillCombat.h.
 #include "Game/SkillCombat.h"
 #include <cmath>
 
 namespace ts2::game {
 namespace {
 
-// Comparaison d'étiquette 13 o (mirroir Crt_Strcmp 0x75CF20 appliqué à des buffers
-// bornés, terminés par un octet nul comme le reste des chaînes du binaire).
+// 13-byte tag comparison (mirrors Crt_Strcmp 0x75CF20 applied to bounded
+// buffers, NUL-terminated like the rest of the binary's strings).
 bool TagEquals(const char a[13], const char b[13]) {
     return std::strncmp(a, b, 13) == 0;
 }
 
-// ---------------------------------------------------------------------------
-// Transcription FIDÈLE de Motion_InitFrameTable 0x4F1380 (EA 0x4F1380..0x4F69E7),
-// switch(i) sur 350 cas codés en dur -- SEUL le bloc {min@+0,max@+4} est repris ici
-// (le bloc {comboGroup,flag} à +700 dwords appartient à SkillBranchTable, déjà porté
-// ailleurs dans ce fichier via sub_4FAB60 -- hors périmètre de cette table). `i` reste
-// le même index 0-based que le binaire (i = skillId-1, cohérent avec
-// SkillLevelTable::Min/Max qui indexent déjà record(skillId-1), cf. SkillSystem.cpp) :
-// aucune renumérotation, transcription case-par-case pour éliminer tout risque de
-// décalage d'index.
+// FAITHFUL transcription of Motion_InitFrameTable 0x4F1380 (EA 0x4F1380..0x4F69E7),
+// switch(i) over 350 hardcoded cases -- ONLY the {min@+0,max@+4} block is reproduced here
+// (the {comboGroup,flag} block at +700 dwords belongs to SkillBranchTable, already ported
+// elsewhere in this file via sub_4FAB60 -- out of scope for this table). `i` stays the
+// same 0-based index as the binary (i = skillId-1, consistent with
+// SkillLevelTable::Min/Max which already index record(skillId-1), cf. SkillSystem.cpp):
+// no renumbering, case-by-case transcription to eliminate any risk of index drift.
 SkillLevelTable BuildSkillLevelTableHardcoded() {
     SkillLevelTable t;
     t.table.count  = 350;
@@ -213,7 +211,7 @@ SkillLevelTable BuildSkillLevelTableHardcoded() {
         case 321:                               set(i, 157, 157); break;
         case 339:                               set(i, 157, 157); break;
         default:
-            break; // reste {0,0}, fidèle (skillId hors table, jamais assigné par le switch)
+            break; // stays {0,0}, faithful (skillId out of table, never assigned by the switch)
         }
     }
     return t;
@@ -221,7 +219,7 @@ SkillLevelTable BuildSkillLevelTableHardcoded() {
 
 } // namespace
 
-// ===================== Exposition globale (Docs/TS2_COMBAT_ELEMENT_GATING.md) ======
+// ===================== Global exposure (Docs/TS2_COMBAT_ELEMENT_GATING.md) ======
 
 ElementPairTable Combat_ReadLocalElementPairs() {
     ElementPairTable t;
@@ -237,7 +235,7 @@ const SkillLevelTable& GetSkillLevelTable() {
     return table;
 }
 
-// ===================== Stances actives ======================================
+// ===================== Active stances ========================================
 
 int Skill_GetActiveStance(const SelfState& self, const CombatMorphState& morph,
                            const SkillLevelTable& lvlTbl) {
@@ -278,7 +276,7 @@ bool Skill_IsCurrentStanceSet(int currentActionId) {
            currentActionId == 53;
 }
 
-// ===================== Tables de motion =====================================
+// ===================== Motion tables =========================================
 
 int Skill_GetComboMotionId(int weaponType, int index) {
     switch (weaponType) {
@@ -434,7 +432,7 @@ bool Skill_IsCurrentBuff(int currentActionId) {
     return currentActionId >= 297 && currentActionId <= 299;
 }
 
-// ===================== Remappage par arme ===================================
+// ===================== Weapon-based remapping ================================
 
 int Skill_RemapByWeapon(int weaponType, int skillId, const SkillBranchTable& branch,
                          const ElementPairTable& pairs) {
@@ -457,7 +455,7 @@ int Skill_RemapByWeapon(int weaponType, int skillId, const SkillBranchTable& bra
             return (v >= 0 && (v <= 1 || v == 3)) ? 38 : 11;
         }
         case 3: {
-            // Comparaison NON SIGNÉE fidèle au binaire (`> 2u`) : -1 (0xFFFFFFFF) échoue.
+            // UNSIGNED comparison, faithful to the binary (`> 2u`): -1 (0xFFFFFFFF) fails.
             const uint32_t v = static_cast<uint32_t>(branch.Get(skillId));
             return (v > 2u) ? 140 : 38;
         }
@@ -466,7 +464,7 @@ int Skill_RemapByWeapon(int weaponType, int skillId, const SkillBranchTable& bra
     }
 }
 
-// ===================== Hotkeys ==============================================
+// ===================== Hotkeys ================================================
 
 bool Skill_IsHotkeyPressed(const HotkeyBindTable& binds, int page, int slot,
                             const HotkeySnapshot& keys, int morphUiMode, int opcode) {
@@ -479,7 +477,7 @@ bool Skill_IsHotkeyPressed(const HotkeyBindTable& binds, int page, int slot,
     return keys.Pressed(slot, morphUiMode);
 }
 
-// ===================== Cast au curseur ======================================
+// ===================== Cast at cursor ========================================
 
 bool Skill_CanCastAtCursor(const float selfPos[3], const SelfState& self, const GameDatabases& db,
                             const CombatMorphState& morph, const SelectedCastSlot& slot,
@@ -490,21 +488,21 @@ bool Skill_CanCastAtCursor(const float selfPos[3], const SelfState& self, const 
     if (!targeted) {
         if (picker.IsPointBlocked(selfPos)) return false;                  // 0x540F5C
         float hit[3] = {0, 0, 0};
-        // 0x540F83 : `mov ecx, offset dword_14A88E4` (= Main/.WM) + dernier arg = 0.
-        // ⚠ La branche NON verrouillée passe twoSide=0, PAS 1 (le dossier de gaps l'omet) :
-        // seuls les DEUX appels de la branche verrouillée ci-dessous passent 1.
+        // 0x540F83: `mov ecx, offset dword_14A88E4` (= Main/.WM) + last arg = 0.
+        // WARNING: the UNLOCKED branch passes twoSide=0, NOT 1 (the gap tracker omits this):
+        // only the TWO calls in the locked branch below pass 1.
         return picker.PickRayScreen(screenX, screenY, world::CollisionSlot::Main,
                                      /*twoSide=*/false, hit);
     }
 
     if (!Skill_IsCurrentAttackSet(morph.currentActionId)) return false;    // 0x540FA2
 
-    // Picking « à cible verrouillée » : le binaire interroge DEUX MAILLES DIFFÉRENTES —
-    // .WJ d'abord (@0x540FC4 `mov ecx, offset dword_14A898C`), puis .WM en repli
-    // (@0x54105F `mov ecx, offset dword_14A88E4`), les deux avec twoSide=1.
-    // CORRECTIF G-PICK-03 : l'ancien code rappelait DEUX FOIS LA MÊME requête (même
-    // fonction pure, mêmes arguments) — le repli était mathématiquement mort et la branche
-    // « cast à cible verrouillée » perdait tout picking dès que la maille .WJ ne touchait pas.
+    // "Locked target" picking: the binary queries TWO DIFFERENT MESHES —
+    // .WJ first (@0x540FC4 `mov ecx, offset dword_14A898C`), then .WM as a fallback
+    // (@0x54105F `mov ecx, offset dword_14A88E4`), both with twoSide=1.
+    // FIX G-PICK-03: the old code called the SAME query TWICE (same pure function,
+    // same arguments) — the fallback was mathematically dead and the "locked target
+    // cast" branch lost all picking whenever the .WJ mesh didn't hit.
     float hit[3] = {0, 0, 0};
     if (!picker.PickRayScreen(screenX, screenY, world::CollisionSlot::WJ,
                                /*twoSide=*/true, hit) &&
@@ -525,7 +523,7 @@ bool Skill_CanCastAtCursor(const float selfPos[3], const SelfState& self, const 
     return range >= dist;
 }
 
-// ===================== Cast d'une compétence en attente =====================
+// ===================== Casting a pending skill ================================
 
 int Skill_ResolveCastOpGroup(int skillId) {
     switch (skillId) {
@@ -567,9 +565,9 @@ SkillCastAttemptResult Skill_CastStoredAtTarget(SelfState& self, const GameDatab
                                                  ISkillCastSink& sink) {
     SkillCastAttemptResult out;
 
-    // Coût MP réel (ftol(InterpStat#1) - régén%) : réutilise EXACTEMENT la formule déjà
-    // câblée dans SkillSystem (Skill_CalcRegenPct + Skill_CalcRealMpCost), mirroir des
-    // lignes 0x53E772..0x53E7A6 du binaire.
+    // Real MP cost (ftol(InterpStat#1) - regen%): reuses EXACTLY the formula already
+    // wired in SkillSystem (Skill_CalcRegenPct + Skill_CalcRealMpCost), mirroring
+    // lines 0x53E772..0x53E7A6 of the binary.
     const int regenPct = Skill_CalcRegenPct(self, db.item);
     out.mpCost = Skill_CalcRealMpCost(db.skill, pending.skillId, pending.level, regenPct);
 
@@ -588,8 +586,8 @@ SkillCastAttemptResult Skill_CastStoredAtTarget(SelfState& self, const GameDatab
     const int32_t category = Skill_ReadI32(rec, skillinfo::kOffCategory);      // idx136
     const int32_t recSkillId = Skill_ReadI32(rec, skillinfo::kOffSkillId);     // idx0
 
-    // Garde « forme incompatible » : morph transformé 88/54 + compétence de posture
-    // (catégorie 4/5) ou compétence sentinelle 78.
+    // "Incompatible form" guard: morph transformed 88/54 + stance skill
+    // (category 4/5) or sentinel skill 78.
     if ((morph.currentActionId == 88 || morph.currentActionId == 54) &&
         (category == 4 || category == 5 || recSkillId == 78)) {
         g_Client.msg.System(Str(1920));
@@ -603,7 +601,7 @@ SkillCastAttemptResult Skill_CastStoredAtTarget(SelfState& self, const GameDatab
         return out;
     }
 
-    // Groupe 38 (skillId 4/23/42) : garde de posture supplémentaire + blocage morph.
+    // Group 38 (skillId 4/23/42): additional stance guard + morph blocking.
     if (opGroup == 38) {
         const bool stanceOk = Skill_IsCurrentStanceSet(morph.currentActionId) ||
                                Skill_IsCurrentSpecial(morph.currentActionId) ||
@@ -627,23 +625,23 @@ SkillCastAttemptResult Skill_CastStoredAtTarget(SelfState& self, const GameDatab
         return out;
     }
 
-    // Débit MP réel : DÉLÈGUE à Skill_TryConsumeMp (SkillSystem.h, non édité) — la
-    // suffisance a déjà été vérifiée ci-dessus et rien n'a pu modifier self.mp entre
-    // temps, donc cet appel débite exactement `out.mpCost` (mirroir de
-    // `dword_1687378[0] -= v15` exécuté uniquement APRÈS succès du builder réseau
-    // d'origine, cf. 0x53E98A et suivants).
+    // Real MP debit: DELEGATES to Skill_TryConsumeMp (SkillSystem.h, not edited) — the
+    // sufficiency check already happened above and nothing could have modified self.mp
+    // in between, so this call debits exactly `out.mpCost` (mirrors
+    // `dword_1687378[0] -= v15` executed only AFTER success of the original network
+    // builder, cf. 0x53E98A onward).
     const SkillCastResult mp = Skill_TryConsumeMp(self, db.skill, db.item, pending.skillId, pending.level);
     out.ok = mp.ok;
     out.mpCost = mp.cost;
     return out;
 }
 
-// ===================== Prérequis du cast principal ==========================
-// Transcription 1:1 de la chaîne de prérequis de Player_CastSkill 0x53BC40
-// (EA 0x53BD12..0x53BEA0) : record -> forme -> élément -> arme -> coût MP.
-// Cf. le bandeau de SkillCombat.h : NON CONSOMMÉE à ce jour (aucune des 4 entrées
-// joueur du binaire n'est portée) — dette explicite, à câbler par le front qui
-// portera Game_OnHotkey / Game_OnWorldLeftClick / Game_UseFirstReadySkill /
+// ===================== Main cast prerequisites =================================
+// 1:1 transcription of the prerequisite chain of Player_CastSkill 0x53BC40
+// (EA 0x53BD12..0x53BEA0): record -> form -> element -> weapon -> MP cost.
+// See the banner in SkillCombat.h: NOT CONSUMED to date (none of the binary's 4
+// player entry points are ported) — explicit debt, to be wired by whichever front-end
+// ports Game_OnHotkey / Game_OnWorldLeftClick / Game_UseFirstReadySkill /
 // AutoPlay_Update.
 
 SkillCastAttemptResult Skill_CheckCastPrereqs(const SelfState& self, const GameDatabases& db,
@@ -653,31 +651,31 @@ SkillCastAttemptResult Skill_CheckCastPrereqs(const SelfState& self, const GameD
 
     // --- (0) Record @0x53BD12 ---------------------------------------------------
     // `call SkillGrowthTbl_GetRecord ; cmp [ebp+var_40],0 ; jnz 53BD27 ; xor eax,eax`
-    // -> échec SILENCIEUX (aucun message) si le record est introuvable.
+    // -> SILENT failure (no message) if the record is not found.
     const uint8_t* rec = Skill_GetRecord(db.skill, skillId);
     if (!rec) {
         out.reason = SkillCastFailReason::UnknownSkill;
         return out;
     }
 
-    // --- (1) Garde FORME @0x53BD27 ----------------------------------------------
+    // --- (1) FORM guard @0x53BD27 ----------------------------------------------
     // `cmp g_SelfMorphNpcId, 58h ; jz 53BD39 ; cmp g_SelfMorphNpcId, 36h ; jnz 53BD81`
-    // puis `cmp [ecx+220h],4 / ,5` et `cmp [eax],4Eh` -> msg 780h (1920) @0x53BD60.
-    // ⚠ FIDÉLITÉ : ce message n'est PAS gaté par arg_C (aucun test de arg_C entre
-    // 0x53BD39 et 0x53BD59) — il est émis même quand showErr est faux.
+    // then `cmp [ecx+220h],4 / ,5` and `cmp [eax],4Eh` -> msg 780h (1920) @0x53BD60.
+    // WARNING FIDELITY: this message is NOT gated by arg_C (no arg_C test between
+    // 0x53BD39 and 0x53BD59) — it is emitted even when showErr is false.
     if (morph.currentActionId == 88 || morph.currentActionId == 54) {
         const int32_t category   = Skill_ReadI32(rec, skillinfo::kOffCategory);  // +0x220
         const int32_t recSkillId0 = Skill_ReadI32(rec, skillinfo::kOffSkillId);  // rec[0]
         if (category == 4 || category == 5 || recSkillId0 == 78) {
-            g_Client.msg.System(Str(1920));   // push 780h @0x53BD60 — NON gaté par showErr
+            g_Client.msg.System(Str(1920));   // push 780h @0x53BD60 — NOT gated by showErr
             out.reason = SkillCastFailReason::IncompatibleForm;
             return out;                        // xor eax,eax @0x53BD7A
         }
     }
 
-    // --- (2) Garde ÉLÉMENT @0x53BD84 -------------------------------------------
-    // `cmp dword ptr [edx+228h], 1 ; jz 53BDCF` -> 1 = neutre, passe.
-    // sinon `mov ecx,[eax+228h] ; sub ecx,2 ; cmp ecx, g_LocalElementSecondary` (0x1673198).
+    // --- (2) ELEMENT guard @0x53BD84 -------------------------------------------
+    // `cmp dword ptr [edx+228h], 1 ; jz 53BDCF` -> 1 = neutral, passes.
+    // otherwise `mov ecx,[eax+228h] ; sub ecx,2 ; cmp ecx, g_LocalElementSecondary` (0x1673198).
     const int32_t reqElement = Skill_ReadI32(rec, skillinfo::kOffReqElement); // +0x228
     if (reqElement != 1 && (reqElement - 2) != self.elementSecondary) {
         if (showErr) g_Client.msg.System(Str(145));  // push 91h @0x53BDAE, gate arg_C @0x53BDA1
@@ -685,16 +683,16 @@ SkillCastAttemptResult Skill_CheckCastPrereqs(const SelfState& self, const GameD
         return out;                                   // xor eax,eax @0x53BDC8
     }
 
-    // --- (3) Garde ARME @0x53BDD2 ----------------------------------------------
-    // `cmp dword ptr [eax+22Ch], 1 ; jz 53BE41` -> 1 = neutre, passe.
+    // --- (3) WEAPON guard @0x53BDD2 ----------------------------------------------
+    // `cmp dword ptr [eax+22Ch], 1 ; jz 53BE41` -> 1 = neutral, passes.
     const int32_t reqWeaponType = Skill_ReadI32(rec, skillinfo::kOffReqWeaponType); // +0x22C
     if (reqWeaponType != 1) {
         // MobDb_GetEntry(&mITEM, dword_1673248) @0x53BDE7 — dword_1673248 == g_EquipMain
-        // (0x16731D8) + 7*16 = l'itemId de l'arme équipée (self.equip[7].itemId).
+        // (0x16731D8) + 7*16 = itemId of the equipped weapon (self.equip[7].itemId).
         const uint8_t* weaponRec = Skill_ItemRecord(db.item, self.equip[7].itemId);
         if (!weaponRec) {
-            // @0x53BDEF-0x53BDF7 : `cmp [ebp+var_48],0 ; jnz 53BDFC ; xor eax,eax` —
-            // sortie SILENCIEUSE, AUCUN message (ne pas confondre avec le msg 146).
+            // @0x53BDEF-0x53BDF7: `cmp [ebp+var_48],0 ; jnz 53BDFC ; xor eax,eax` —
+            // SILENT exit, NO message (do not confuse with msg 146).
             out.reason = SkillCastFailReason::WeaponRecordMissing;
             return out;
         }
@@ -707,40 +705,40 @@ SkillCastAttemptResult Skill_CheckCastPrereqs(const SelfState& self, const GameD
         }
     }
 
-    // --- (4) Coût MP @0x53BE41 --------------------------------------------------
-    // Ordre exact : InterpStat(mSKILL, rec[0], level, 1) @0x53BE52 -> Crt_ftol @0x53BE57
-    // -> Char_CalcRegen @0x53BE64 -> si régén>0 : cost -= cost*régén/100 (idiv, division
-    // ENTIÈRE @0x53BE72-0x53BE86). Skill_CalcRealMpCost (SkillSystem.cpp) reproduit déjà
-    // exactement cette chaîne (ftol + réduction entière) : on la réutilise, pas de copie.
-    // ⚠ `mov edx,[ecx]` @0x53BE4A : le skillId passé à InterpStat vient du RECORD, pas de
-    // l'argument (identiques en pratique — le validateur impose rec[0] == index+1 — mais on
-    // reste sur la source du binaire).
+    // --- (4) MP cost @0x53BE41 --------------------------------------------------
+    // Exact order: InterpStat(mSKILL, rec[0], level, 1) @0x53BE52 -> Crt_ftol @0x53BE57
+    // -> Char_CalcRegen @0x53BE64 -> if regen>0: cost -= cost*regen/100 (idiv, INTEGER
+    // division @0x53BE72-0x53BE86). Skill_CalcRealMpCost (SkillSystem.cpp) already
+    // reproduces this exact chain (ftol + integer reduction): reused here, no copy.
+    // WARNING `mov edx,[ecx]` @0x53BE4A: the skillId passed to InterpStat comes from the
+    // RECORD, not the argument (identical in practice — the validator enforces
+    // rec[0] == index+1 — but we stay faithful to the binary's source).
     const int32_t recSkillId = Skill_ReadI32(rec, skillinfo::kOffSkillId);
     const int regenPct = Skill_CalcRegenPct(self, db.item);   // Char_CalcRegen 0x4D67F0
     out.mpCost = Skill_CalcRealMpCost(db.skill, recSkillId, level, regenPct);
 
-    // `mov eax, ds:dword_1687378 ; cmp eax,[ebp+var_28] ; jge 53BEEB` @0x53BE89 :
-    // échec si self.mp < coût (dword_1687378 == self.mp).
+    // `mov eax, ds:dword_1687378 ; cmp eax,[ebp+var_28] ; jge 53BEEB` @0x53BE89:
+    // fails if self.mp < cost (dword_1687378 == self.mp).
     if (self.mp < out.mpCost) {
         if (showErr) g_Client.msg.System(Str(147));  // push 93h @0x53BEA0, gate arg_C @0x53BE93
-        // SECONDE émission du msg 147 @0x53BEBA : `cmp ds:g_InvDirtyEnable(0x16755AC),1 ;
-        // jnz 0x53BEE4` -> push 93h @0x53BECA. NON gatée par showErr : pendant l'auto-hunt
-        // (où showErr est le plus souvent faux) c'est CE site qui fait surfacer « PM
-        // insuffisant ». Même global et même lecture que Net/GameVarDispatch.cpp:351/392
-        // (VarGet(0x16755AC)==1). Les deux émissions peuvent se déclencher (showErr ET
-        // auto-hunt -> 2 lignes). Détail omis par l'audit initial (la chaîne prouvée ne
-        // s'arrête pas à 0x53BEA0) — re-vérifié au désassemblage 0x53BEBA-0x53BEDF.
+        // SECOND emission of msg 147 @0x53BEBA: `cmp ds:g_InvDirtyEnable(0x16755AC),1 ;
+        // jnz 0x53BEE4` -> push 93h @0x53BECA. NOT gated by showErr: during auto-hunt
+        // (where showErr is usually false) THIS site is what surfaces "not enough
+        // MP". Same global and same read as Net/GameVarDispatch.cpp:351/392
+        // (VarGet(0x16755AC)==1). Both emissions can fire (showErr AND
+        // auto-hunt -> 2 lines). Detail missed by the initial audit (the proven chain
+        // does not stop at 0x53BEA0) — re-verified against the disassembly 0x53BEBA-0x53BEDF.
         if (g_Client.VarGet(0x16755ACu) == 1) g_Client.msg.System(Str(147));
         out.reason = SkillCastFailReason::NotEnoughMp;
         return out;
     }
 
-    // Succès : le binaire poursuit @0x53BEEB (suite du cast). Le MP n'est PAS débité ici.
+    // Success: the binary continues @0x53BEEB (rest of the cast). MP is NOT debited here.
     out.ok = true;
     return out;
 }
 
-// ===================== Disponibilité par carte ==============================
+// ===================== Per-map availability ===================================
 
 int SkillLoadoutTable::Compare(const char currentTag[13], int branch) const {
     if (branch < 0 || branch > 3) return 0;
@@ -777,7 +775,7 @@ bool Skill_IsUsableOnCurrentMap(int mapZoneIndex, int currentActionId,
     return actionOk && loadout.Compare(currentTag, mapZoneIndex) != 0;
 }
 
-// ===================== Hit-test grille de barre ==============================
+// ===================== Skill-bar grid hit-test =================================
 
 int Skill_HitTestSlot(bool panelVisible, int anchorX, int anchorY, int cursorX, int cursorY,
                        int classOffset, const SkillBar& bar) {
@@ -813,7 +811,7 @@ int Skill_HitTestSlot(bool panelVisible, int anchorX, int anchorY, int cursorX, 
     }
 }
 
-// ===================== Ensembles d'action courante ===========================
+// ===================== Current-action sets ======================================
 
 bool Skill_IsCurrentAttackSet(int currentActionId) {
     if (currentActionId <= 299) {

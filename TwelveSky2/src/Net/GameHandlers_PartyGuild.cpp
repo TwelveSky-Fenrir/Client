@@ -1,8 +1,8 @@
-// Net/GameHandlers_PartyGuild.cpp — routage des paquets GROUPE / GUILDE / ALLIANCE / ÉQUIPE.
+// Net/GameHandlers_PartyGuild.cpp — routes PARTY / GUILD / ALLIANCE / TEAM packets.
 //
-// Domaine « party_guild » (RE/handler_domains.json) : invitations (groupe/alliance),
-// roster (membres, ajout/retrait/kick), chat de guilde/faction, valeurs/positions/HP
-// des membres. Sémantique d'origine : RE/net_handler_notes.md.
+// "party_guild" domain (RE/handler_domains.json): invitations (party/alliance),
+// roster (members, add/remove/kick), guild/faction chat, values/positions/HP
+// of members. Original semantics: RE/net_handler_notes.md.
 //   0x2e PartyInvitePrompt   0x2f PartyInviteDecline  0x30 PartyJoinResult
 //   0x34 AllyInvitePrompt    0x35 AllyInviteDecline   0x36 AllyJoinResult
 //   0x37 GuildMemberInfo     0x38 GuildInfoUpdate     0x3d PartyResultDialog
@@ -17,19 +17,19 @@
 #include "Net/SendPackets.h"
 #include "Config/GameOptions.h"
 #include "Game/ClientRuntime.h"
-#include "Game/GameState.h"    // game::g_World (résolution d'entité par identité réseau)
+#include "Game/GameState.h"    // game::g_World (entity resolution by network identity)
 #include "Game/GuildSystem.h"  // game::g_Guild (Guild_SelectNextMember)
 #include "Game/StatEngine.h"   // game::StatEngine::CalcAttackRatingMin/Max (0x4CD970/0x4CE3F0)
-#include "Game/MapWarp.h"      // game::BeginWarpToFactionTown (résolution warp, pas l'envoi)
-#include "Game/MotionPoolsCoordResolver.h" // game::g_CoordResolver (coordonnées réelles 003.BIN)
-// PREMIÈRE arête Net -> UI du dépôt (jusqu'ici Net/ n'incluait AUCUN UI/). Introduite
-// délibérément pour câbler UNE ancre précise : Net_OnPartyMemberNameSet 0x4909A0 appelle
-// UI_MemberSelectWnd_Open @0x4909F8 SANS AUCUNE GARDE (la garde arène est *dans* _Open,
-// @0x66726E). C'est l'AMORCE de toute la chaîne du sélecteur de membre : sans elle, les
-// émissions Op57/Op58 de UI/PartyWindow restent du code mort (cf. UI/PartyWindow.h:71-83).
-// Placé APRÈS Net/SendPackets.h -> Net/NetClient.h, qui tire <winsock2.h> AVANT <windows.h>
-// (UI/GameWindows.h tire <windows.h> transitivement via UIManager.h -> <d3d9.h>) : l'ordre
-// Winsock du projet est donc préservé.
+#include "Game/MapWarp.h"      // game::BeginWarpToFactionTown (warp resolution, not the send)
+#include "Game/MotionPoolsCoordResolver.h" // game::g_CoordResolver (real coordinates 003.BIN)
+// FIRST Net -> UI edge in the repo (until now Net/ included NO UI/ header). Introduced
+// deliberately to wire ONE precise anchor: Net_OnPartyMemberNameSet 0x4909A0 calls
+// UI_MemberSelectWnd_Open @0x4909F8 WITHOUT ANY GUARD (the arena guard is *inside* _Open,
+// @0x66726E). This is the TRIGGER for the whole member-selector chain: without it, the
+// Op57/Op58 sends from UI/PartyWindow remain dead code (cf. UI/PartyWindow.h:71-83).
+// Placed AFTER Net/SendPackets.h -> Net/NetClient.h, which pulls <winsock2.h> BEFORE <windows.h>
+// (UI/GameWindows.h transitively pulls <windows.h> via UIManager.h -> <d3d9.h>): the project's
+// Winsock ordering is therefore preserved.
 #include "UI/GameWindows.h"                // ts2::ui::GameWindows::Instance()->Party()
 #include <cstdint>
 #include <cstring>
@@ -39,23 +39,23 @@ namespace ts2::net {
 
 namespace {
 
-// Couleurs de canal de chat (placeholders fidèles pour g_ChatColor_Guild 0x84DFE8 /
-// g_ChatColor_Faction 0x84DFEC du binaire ; valeurs D3DCOLOR exactes à réextraire).
-// Vérifié par decompilation+xrefs idaTs2 (2026-07-14, cf. GameHandlers_ChatSocial.cpp) :
-// ces globals sont à 0 dans .data et n'ont aucun site d'écriture dans le binaire —
-// valeur réelle posée hors binaire statique (config/skin runtime), pas un oubli.
+// Chat channel colors (faithful placeholders for the binary's g_ChatColor_Guild 0x84DFE8 /
+// g_ChatColor_Faction 0x84DFEC; exact D3DCOLOR values to be re-extracted).
+// Verified by decompilation+xrefs idaTs2 (2026-07-14, cf. GameHandlers_ChatSocial.cpp):
+// these globals are 0 in .data and have no write site in the binary —
+// the real value is set outside the static binary (config/runtime skin), not an oversight.
 constexpr uint32_t kChatColorGuild   = 0xFF66FF66u; // g_ChatColor_Guild
 constexpr uint32_t kChatColorFaction = 0xFFFFCC33u; // g_ChatColor_Faction
 
-// Lit un champ char[N] (13 o) terminé NUL en std::string propre.
+// Reads a char[N] (13 bytes) NUL-terminated field into a clean std::string.
 template <size_t N>
 inline std::string Name(const char (&s)[N]) {
     return std::string(s, ::strnlen(s, N));
 }
 
-// Résout l'index d'une entité joueur par identité réseau (idHi,idLo) SANS l'ajouter
-// (le handler d'origine ne fait qu'un scan linéaire : dword_1687238/168723C[227*e]).
-// index 0 = self. Retourne -1 si absent.
+// Resolves a player entity index by network identity (idHi,idLo) WITHOUT adding it
+// (the original handler only does a linear scan: dword_1687238/168723C[227*e]).
+// index 0 = self. Returns -1 if absent.
 int FindPlayerIndex(uint32_t hi, uint32_t lo) {
     auto& players = ts2::game::g_World.players;
     for (size_t i = 0; i < players.size(); ++i)
@@ -65,69 +65,70 @@ int FindPlayerIndex(uint32_t hi, uint32_t lo) {
 }
 
 // ---------------------------------------------------------------------------
-// Bloc « identité d'affiliation du joueur local » — 4 buffers de nom de 13 o que le
-// binaire pose TOUJOURS ENSEMBLE : ici 0x53 cases 1 (0x491F36..0x491F87) / 4
-// (0x492442..0x49248C) / 6 (0x492668..0x4926B2), et 0x5E cases 102/107 (côté
-// Net/WorldEntityDispatch.cpp). RE-PROUVÉ dans IDA (vague W11 / WARP-03).
+// "local player affiliation identity" block — 4 name buffers of 13 bytes that the
+// binary ALWAYS writes TOGETHER: here in 0x53 cases 1 (0x491F36..0x491F87) / 4
+// (0x492442..0x49248C) / 6 (0x492668..0x4926B2), and 0x5E cases 102/107 (on the
+// Net/WorldEntityDispatch.cpp side). RE-PROVEN in IDA (wave W11 / WARP-03).
 //
-// FAUX AMI LEVÉ — `Crt_StringInit 0x75CAB0` n'est PAS un « constructeur de std::string »
-// (ce que dit le commentaire IDA, et ce que répétaient les TODO ci-dessous) : c'est
-// `strcpy(dest, src)`. Preuve — c'est l'entrée alternative de `Crt_Strcat 0x75CAC0` qui
-// SAUTE le scan de fin de chaîne, les deux partageant le même corps de copie :
+// FALSE FRIEND DISPELLED — `Crt_StringInit 0x75CAB0` is NOT a "std::string
+// constructor" (as the IDB comment claims, and as the TODOs below used to repeat):
+// it's `strcpy(dest, src)`. Proof — it's the alternate entry point of
+// `Crt_Strcat 0x75CAC0` that SKIPS the end-of-string scan, both sharing the same
+// copy body:
 //     0x75CAB0  push edi
-//     0x75CAB1  mov  edi, [esp+4+arg_0]   ; edi = dest TEL QUEL (aucun scan)
-//     0x75CAB5  jmp  loc_75CB25           ; -> corps COMMUN
-//     0x75CB25  mov  ecx, [esp+4+arg_4]   ; ecx = src, puis boucle de copie src -> edi
-// (strcat, lui, atteint 0x75CB25 via `lea edi,[ecx-1]` @0x75CB13 = FIN de dest.)
-// Donc : 2 arguments (dest, src), et l'appel COPIE — ce ne sont ni des « init » ni des
-// « clear ». `offset String` 0x7EC95F a son octet 0 à 0x00 -> chaîne vide, si bien que
-// « strcpy(dest, String) » est le vrai clear (même infra que GameHandlers_ChatSocial.cpp).
+//     0x75CAB1  mov  edi, [esp+4+arg_0]   ; edi = dest AS-IS (no scan)
+//     0x75CAB5  jmp  loc_75CB25           ; -> COMMON body
+//     0x75CB25  mov  ecx, [esp+4+arg_4]   ; ecx = src, then copy loop src -> edi
+// (strcat, on the other hand, reaches 0x75CB25 via `lea edi,[ecx-1]` @0x75CB13 = END of dest.)
+// So: 2 arguments (dest, src), and the call COPIES — these are neither "init" nor
+// "clear" calls. `offset String` 0x7EC95F has byte 0 at 0x00 -> empty string, so
+// "strcpy(dest, String)" is the real clear (same pattern as GameHandlers_ChatSocial.cpp).
 //
-// DEUX STORES DISTINCTS — ce n'est pas un choix esthétique, chacun a sa preuve :
-//   • 0x16746A8 / 0x16746BC : globals AUTONOMES -> `g_Client.Blob` (longue traîne).
-//     0x16746A8 a un lecteur VIVANT : UI/ClanContextMenu.cpp:550 `BlobNonEmpty(kVarGuildTag)`
-//     -> `Blob(0x16746A8, 13)`. La taille de clé 13 est IMPOSÉE : `Blob` fige la taille au
-//     PREMIER appelant (ClientRuntime.h:179-183, `if (b.empty()) b.assign(size,0)`) — ouvrir
-//     cette clé à 16 ailleurs déborderait silencieusement le tas. Le slot binaire fait 16 o
-//     (0x16746B8 - 0x16746A8), mais le champ FIL fait 13 (strides T1/T2 de 0x5E) -> 13 partout.
-//   • 0x168725C / 0x1687270 : PAS des globals autonomes. Ce sont des champs de
-//     g_EntityArray 0x1687234 (stride 908, index 0 = self — GameState.h:122) :
-//         0x168725C = entity[0]+40 = body+16   (le body démarre à entity+0x18)
+// TWO DISTINCT STORES — this isn't an aesthetic choice, each has its own proof:
+//   • 0x16746A8 / 0x16746BC: STANDALONE globals -> `g_Client.Blob` (long tail).
+//     0x16746A8 has a LIVE reader: UI/ClanContextMenu.cpp:550 `BlobNonEmpty(kVarGuildTag)`
+//     -> `Blob(0x16746A8, 13)`. The key size 13 is MANDATORY: `Blob` locks the size at the
+//     FIRST caller (ClientRuntime.h:179-183, `if (b.empty()) b.assign(size,0)`) — opening
+//     this key at 16 elsewhere would silently overflow the heap. The binary's slot is 16 bytes
+//     (0x16746B8 - 0x16746A8), but the WIRE field is 13 (T1/T2 strides of 0x5E) -> 13 everywhere.
+//   • 0x168725C / 0x1687270: NOT standalone globals. These are fields of
+//     g_EntityArray 0x1687234 (stride 908, index 0 = self — GameState.h:122):
+//         0x168725C = entity[0]+40 = body+16   (body starts at entity+0x18)
 //         0x1687270 = entity[0]+60 = body+36
-//     Leur home MODÉLISÉ est donc `g_World.players[0].body`, et body+16 a DEUX lecteurs
-//     vivants : Scene/WorldRenderer.cpp:803 (`ReadBodyCString(p.body, 40-24, …)` ->
-//     actor.affiliationName, plaque de nom) et World/TerrainPicker.cpp:280. Les poser en
-//     `Blob(0x168725C)` créerait un SECOND store que PERSONNE ne lit — exactement le défaut
-//     « produit-mais-non-consommé » que la campagne traque. -> on écrit dans le body.
+//     Their MODELED home is therefore `g_World.players[0].body`, and body+16 has TWO
+//     live readers: Scene/WorldRenderer.cpp:803 (`ReadBodyCString(p.body, 40-24, …)` ->
+//     actor.affiliationName, name plate) and World/TerrainPicker.cpp:280. Storing them as
+//     `Blob(0x168725C)` would create a SECOND store that NO ONE reads — exactly the
+//     "produced-but-never-consumed" defect this campaign hunts down. -> write into the body instead.
 //
-// CORROBORATION STRUCTURELLE (les deux groupes sont des miroirs EXACTS) :
-//     0x16746A8 (nom, 16 o) | 0x16746B8 (scalaire) | 0x16746BC (nom)
-//     entity+40 (nom, 16 o) | entity+56 (scalaire) | entity+60 (nom)
-//   écarts +16 / +20 identiques des deux côtés -> 0x16746A8 est le miroir scalaire de
-//   l'affiliation de self, recopié dans la fiche d'entité de self pour l'affichage.
+// STRUCTURAL CORROBORATION (the two groups are EXACT mirrors):
+//     0x16746A8 (name, 16 bytes) | 0x16746B8 (scalar) | 0x16746BC (name)
+//     entity+40 (name, 16 bytes) | entity+56 (scalar) | entity+60 (name)
+//   identical +16 / +20 gaps on both sides -> 0x16746A8 is the scalar mirror of
+//   self's affiliation, copied into self's entity record for display.
 // ---------------------------------------------------------------------------
 constexpr uint32_t kLocalAffilName  = 0x16746A8; // dword_16746A8 (= UI/ClanContextMenu::kVarGuildTag)
 constexpr uint32_t kLocalAffilName2 = 0x16746BC; // unk_16746BC
 constexpr size_t   kSelfBodyAffil   = 40 - 24;   // byte_168725C (= WorldRenderer::kNpBodyAffiliation)
 constexpr size_t   kSelfBodyAffil2  = 60 - 24;   // unk_1687270
 
-// `strcpy(dest, src)` fidèle vers un buffer de nom 13 o de la longue traîne (store Blob).
-// ÉCART ASSUMÉ vs le binaire : strcpy laisse la QUEUE de la destination intacte (résidu de
-// l'ancien nom), on la zero-fill. Inobservable — tous les lecteurs de ces buffers sont des
-// strcmp/%s qui s'arrêtent au 1er NUL ; et le zero-fill garantit la NUL-terminaison là où le
-// binaire dépend d'un NUL présent dans sa source.
+// Faithful `strcpy(dest, src)` into a 13-byte long-tail name buffer (Blob store).
+// ASSUMED DEVIATION vs the binary: strcpy leaves the TAIL of the destination intact
+// (leftover from the old name), we zero-fill it. Not observable — every reader of these
+// buffers is a strcmp/%s that stops at the 1st NUL; and the zero-fill guarantees NUL
+// termination where the binary relies on a NUL present in its source.
 void SetBlobName13(uint32_t addr, const char* src) {
     auto& b = ts2::game::g_Client.Blob(addr, 13);
     size_t n = 0;
-    while (n < 13 && src[n] != 0) ++n;   // strcpy : arrêt au 1er NUL
+    while (n < 13 && src[n] != 0) ++n;   // strcpy: stop at 1st NUL
     b.assign(13, 0);
     std::memcpy(b.data(), src, n);
 }
 
-// `strcpy(dest, src)` vers un champ nom de la fiche d'entité de SELF (g_EntityArray[0]).
-// Garde `!players.empty()` : même convention que App/App.cpp:1161-1165 — on ne fabrique PAS
-// de self fantôme (cf. l'avertissement App.cpp:770 ; `g_World.Self()` ferait un emplace_back),
-// là où le binaire écrit dans un tableau statique toujours présent.
+// `strcpy(dest, src)` into a name field of SELF's entity record (g_EntityArray[0]).
+// Guard `!players.empty()`: same convention as App/App.cpp:1161-1165 — we do NOT
+// fabricate a ghost self (cf. the warning in App.cpp:770; `g_World.Self()` would
+// emplace_back), where the binary writes into a static array that's always present.
 void SetSelfBodyName13(size_t bodyOffset, const char* src) {
     auto& players = ts2::game::g_World.players;
     if (players.empty()) return;
@@ -139,14 +140,14 @@ void SetSelfBodyName13(size_t bodyOffset, const char* src) {
     std::memcpy(body.data() + bodyOffset, src, n);
 }
 
-// Bloc de remise à zéro d'état de guilde partagé À L'IDENTIQUE par Net_OnTeamFormationDispatch
-// (0x491E70) case 4 (0x492442-0x4924F3) et case 6 (0x492668-0x492719) — mêmes écritures, mêmes
-// ordres, seul le message final diffère (478 vs 470). Factorisé ici car le binaire duplique
-// littéralement la séquence (ce n'est pas un refactor : les deux sites sont identiques).
+// Shared guild-state-reset block, IDENTICAL between Net_OnTeamFormationDispatch
+// (0x491E70) case 4 (0x492442-0x4924F3) and case 6 (0x492668-0x492719) — same writes, same
+// order, only the final message differs (478 vs 470). Factored out here because the binary
+// literally duplicates the sequence (this is not a refactor: both sites are identical).
 void ResetGuildStateBlock() {
     auto& c = ts2::game::g_Client;
-    // Les 4 strcpy(dest, "") de tête — cf. bandeau ci-dessus (ex-TODO « buffers non
-    // modélisés » : levé, le store existait déjà des deux côtés).
+    // The 4 leading strcpy(dest, "") — cf. banner above (ex-TODO "buffers not
+    // modeled": resolved, the store already existed on both sides).
     SetBlobName13(kLocalAffilName,  "");   // 0x492442 / 0x492668
     SetBlobName13(kLocalAffilName2, "");   // 0x49245E / 0x492684
     SetSelfBodyName13(kSelfBodyAffil,  ""); // 0x492470 / 0x492696
@@ -155,22 +156,22 @@ void ResetGuildStateBlock() {
     c.Var(0x168726C) = 0;   // 0x492478 / 0x49269E
     c.Var(0x1687450) = 0;   // 0x492494 / 0x4926BA
     c.Var(0x168744C) = 0;   // 0x49249E / 0x4926C4
-    c.Var(0x1675664) = 0;   // 0x4924A8 / 0x4926CE — dword_1675664[0] (index 0, PAS [slot])
+    c.Var(0x1675664) = 0;   // 0x4924A8 / 0x4926CE — dword_1675664[0] (index 0, NOT [slot])
     c.Var(0x1675660) = 0;   // 0x4924B2 / 0x4926D8
     c.Var(0x1675668) = 0;   // 0x4924BC / 0x4926E2
     c.Var(0x167566C) = 0;   // 0x4924C6 / 0x4926EC
-    // Char_CalcAttackRatingMin/Max(g_EquipSnapshotScratch) : g_EquipSnapshotScratch (0x8E719C)
-    // = snapshot du self -> façade StatEngine sur g_World.self/db (précédent établi et
-    // documenté : Net/CharStatDeltaDispatch.cpp:144, Net/GameHandlers_Misc.cpp:79).
+    // Char_CalcAttackRatingMin/Max(g_EquipSnapshotScratch): g_EquipSnapshotScratch (0x8E719C)
+    // = self's snapshot -> StatEngine facade over g_World.self/db (established and
+    // documented precedent: Net/CharStatDeltaDispatch.cpp:144, Net/GameHandlers_Misc.cpp:79).
     c.Var(0x168736C) = ts2::game::StatEngine::CalcAttackRatingMin(   // 0x4924DA / 0x492700
         ts2::game::g_World.self, ts2::game::g_World.db);
     c.Var(0x1687374) = ts2::game::StatEngine::CalcAttackRatingMax(   // 0x4924E9 / 0x49270F
         ts2::game::g_World.self, ts2::game::g_World.db);
-    // TODO(ui) [0x4924F3 / 0x492719] UI_RemoveActiveBuffSlot (0x55D5B0) — UI non détenue ici.
+    // TODO(ui) [0x4924F3 / 0x492719] UI_RemoveActiveBuffSlot (0x55D5B0) — UI not owned here.
 }
 
-// Ferme la notice modale (registre dword_18225D0/18225D8 d'origine, distinct du
-// msgbox g_Client.prompt = dword_1822440/1822450). Modélisée via Var pour fidélité.
+// Closes the modal notice (original dword_18225D0/18225D8 registry, distinct from
+// the msgbox g_Client.prompt = dword_1822440/1822450). Modeled via Var for fidelity.
 void CloseNotice(int type) {
     auto& c = ts2::game::g_Client;
     if (c.VarGet(0x18225D0) && c.VarGet(0x18225D8) == type)
@@ -182,8 +183,8 @@ void CloseNotice(int type) {
 void RegisterPartyGuildHandlers(NetSystem& sys) {
     using namespace game;   // g_Client, g_World, Str()
 
-    // 0x2e PartyInvitePrompt — invitation de groupe : ouvre la boîte oui/non (type 8) si le
-    // filtre est actif ; sinon refus automatique (Net_SendOp45(2), fidèle à Pkt_PartyInvitePrompt).
+    // 0x2e PartyInvitePrompt — party invite: opens the yes/no box (type 8) if the
+    // filter is active; otherwise auto-declines (Net_SendOp45(2), faithful to Pkt_PartyInvitePrompt).
     OnPacket<PartyInvitePrompt>(sys, 0x2e, [&sys](const PartyInvitePrompt& p) {
         const std::string nm = Name(p.inviterName);
         if (config::g_Options.FilterPartyInvite) {
@@ -195,26 +196,27 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         }
     });
 
-    // 0x2f PartyInviteDecline — invitation de groupe refusée : ferme le prompt 8 + str307.
+    // 0x2f PartyInviteDecline — party invite declined: closes prompt 8 + str307.
     OnTrigger(sys, 0x2f, []() {
         g_Client.prompt.CloseIf(8);
         g_Client.msg.System(Str(307));
     });
 
-    // 0x30 PartyJoinResult — résultat d'adhésion au groupe : ferme la notice 4, str308..313.
-    // La jumptable jpt_48FC18 (Pkt_PartyJoinResult 0x48FBD0) couvre EXACTEMENT les cas 0..5
-    // (case 0 = str 0x134 = 308 à 0x48FC25) et son `default` retourne sans rien afficher :
-    // un code > 5 doit donc être MUET, pas afficher un Str() arbitraire du module voisin.
+    // 0x30 PartyJoinResult — party-join result: closes notice 4, str308..313.
+    // The jpt_48FC18 jump table (Pkt_PartyJoinResult 0x48FBD0) covers EXACTLY cases 0..5
+    // (case 0 = str 0x134 = 308 at 0x48FC25) and its `default` returns without displaying
+    // anything: a code > 5 must therefore be SILENT, not show an arbitrary Str() from the
+    // neighboring module.
     OnPacket<PartyJoinResult>(sys, 0x30, [&sys](const PartyJoinResult& p) {
         CloseNotice(4);
-        if (p.resultCode <= 5) // 0x48FC18 (jumptable 6 cas) ; default -> aucun message
+        if (p.resultCode <= 5) // 0x48FC18 (6-case jump table); default -> no message
             g_Client.msg.System(Str(308 + static_cast<int>(p.resultCode)));
-        if (p.resultCode == 0)  // 0x48FC44 : adhésion confirmée -> demande d'infos de groupe (opcode 0x2E, sans payload).
+        if (p.resultCode == 0)  // 0x48FC44: join confirmed -> requests party info (opcode 0x2E, no payload).
             Net_SendOp46(sys.Client());
     });
 
-    // 0x34 AllyInvitePrompt — invitation d'alliance : mémorise l'invitant + prompt (type 9)
-    // si le filtre est actif ; sinon refus automatique (Net_SendOp49(2)).
+    // 0x34 AllyInvitePrompt — alliance invite: remembers the inviter + prompt (type 9)
+    // if the filter is active; otherwise auto-declines (Net_SendOp49(2)).
     OnPacket<AllyInvitePrompt>(sys, 0x34, [&sys](const AllyInvitePrompt& p) {
         const std::string nm = Name(p.name);
         if (config::g_Options.FilterAllyInvite) {
@@ -227,55 +229,55 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         }
     });
 
-    // 0x35 AllyInviteDecline — invitation d'alliance refusée : ferme le prompt 9 + str327.
+    // 0x35 AllyInviteDecline — alliance invite declined: closes prompt 9 + str327.
     OnTrigger(sys, 0x35, []() {
         g_Client.prompt.CloseIf(9);
         g_Client.msg.System(Str(327));
     });
 
-    // 0x36 AllyJoinResult — résultat d'adhésion alliance : ferme la notice 5, str328..333/2237.
-    // La jumptable jpt_490138 (Pkt_AllyJoinResult 0x4900F0) couvre EXACTEMENT les cas 0..6 :
-    // str 328..333 pour 0..5 (case 0 = 0x148 = 328 à 0x490145) et str 2237 (0x8BD à 0x490252)
-    // pour le SEUL cas 6 ; le `default` est muet. L'ancienne forme `code <= 5 ? ... : Str(2237)`
-    // affichait 2237 pour TOUT code >= 6, et — `code` étant un int issu d'un uint32_t —
-    // resultCode=0xFFFFFFFF donnait code=-1, passait `code <= 5` et lisait Str(327).
-    // Switch explicite sur la valeur NON SIGNÉE, calqué sur la jumptable.
+    // 0x36 AllyJoinResult — alliance-join result: closes notice 5, str328..333/2237.
+    // The jpt_490138 jump table (Pkt_AllyJoinResult 0x4900F0) covers EXACTLY cases 0..6:
+    // str 328..333 for 0..5 (case 0 = 0x148 = 328 at 0x490145) and str 2237 (0x8BD at 0x490252)
+    // for the SINGLE case 6; `default` is silent. The old form `code <= 5 ? ... : Str(2237)`
+    // displayed 2237 for EVERY code >= 6, and — `code` being an int derived from a uint32_t —
+    // resultCode=0xFFFFFFFF gave code=-1, passed `code <= 5` and read Str(327).
+    // Explicit switch on the UNSIGNED value, modeled after the jump table.
     OnPacket<AllyJoinResult>(sys, 0x36, [&sys](const AllyJoinResult& p) {
         CloseNotice(5);
-        switch (p.resultCode) { // 0x490138 (jumptable 7 cas)
+        switch (p.resultCode) { // 0x490138 (7-case jump table)
             case 0: case 1: case 2: case 3: case 4: case 5:
                 g_Client.msg.System(Str(328 + static_cast<int>(p.resultCode)));
                 break;
             case 6: g_Client.msg.System(Str(2237)); break; // 0x49024B (0x8BD)
-            default: break;                                // muet, fidèle au default
+            default: break;                                // silent, faithful to default
         }
         if (p.resultCode == 0) {
-            // 0x49015F-0x490169 : `push offset unk_182296C` (src) / `push offset unk_1822828`
-            // (dest) / `call Crt_StringInit` = COPIE 0x182296C -> 0x1822828, et NON une remise
-            // à vide (le pseudocode affiche « Crt_StringInit() » sans argument, d'où l'erreur
-            // de lecture précédente : `Blob(0x1822828,1).assign(1,0)`).
-            // NON REPRODUIT DÉLIBÉRÉMENT : 0x1822828 est une globale WRITE-ONLY dans tout le
-            // binaire — xrefs_to = 2, toutes deux en ÉCRITURE (0x49002B Pkt_AllyInvitePrompt,
-            // 0x490164 ici), AUCUN lecteur. Modéliser la copie n'aurait aucun effet observable
-            // et 0x182296C n'est pas modélisé côté C++ ; on documente plutôt que d'inventer.
+            // 0x49015F-0x490169: `push offset unk_182296C` (src) / `push offset unk_1822828`
+            // (dest) / `call Crt_StringInit` = COPY 0x182296C -> 0x1822828, NOT a reset
+            // to empty (the pseudocode shows "Crt_StringInit()" with no argument, hence the
+            // previous misreading: `Blob(0x1822828,1).assign(1,0)`).
+            // DELIBERATELY NOT REPRODUCED: 0x1822828 is a WRITE-ONLY global across the whole
+            // binary — xrefs_to = 2, both of them WRITES (0x49002B Pkt_AllyInvitePrompt,
+            // 0x490164 here), NO reader. Modeling the copy would have no observable effect
+            // and 0x182296C isn't modeled on the C++ side; we document instead of inventing.
             g_Client.Var(0x1822838) = g_Client.VarGet(0x1822984) + g_Client.VarGet(0x1822980) +
                                        g_Client.VarGet(0x182297C); // 0x490171-0x490183
-            Net_SendOp50(sys.Client());  // demande du roster d'alliance (opcode 0x32, sans payload).
+            Net_SendOp50(sys.Client());  // requests the alliance roster (opcode 0x32, no payload).
         }
     });
 
-    // 0x37 GuildMemberInfo — bloc d'infos/liste de membres de guilde : str334.
+    // 0x37 GuildMemberInfo — guild member info/list block: str334.
     OnPacket<GuildMemberInfo>(sys, 0x37, [](const GuildMemberInfo&) {
         g_Client.msg.System(Str(334));
         // TODO(ui): UI_ItemListWin_Open(field0, blockA[128], blockB[96], field228)
-        //   — décoder noms/stats des membres.
+        //   — decode member names/stats.
     });
 
-    // 0x38 GuildInfoUpdate — maj info + roster guilde : header/footer + 8 membres {id,val1,val2}.
+    // 0x38 GuildInfoUpdate — guild info + roster update: header/footer + 8 members {id,val1,val2}.
     OnPacket<GuildInfoUpdate>(sys, 0x38, [](const GuildInfoUpdate& p) {
         g_Client.Var(0x1822848) = static_cast<int32_t>(p.header); // dword_1822848
         g_Client.Var(0x1822934) = static_cast<int32_t>(p.footer); // dword_1822934
-        for (int i = 0; i < 8; ++i) {                             // 8 membres x 12 o
+        for (int i = 0; i < 8; ++i) {                             // 8 members x 12 bytes
             uint32_t id = 0, v1 = 0, v2 = 0;
             std::memcpy(&id, p.members + 12 * i + 0, 4);
             std::memcpy(&v1, p.members + 12 * i + 4, 4);
@@ -285,15 +287,15 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
             g_Client.Var(0x18228D4 + 12 * i) = static_cast<int32_t>(v2); // dword_18228D4[3*i]
         }
         // Crt_Memcpy(dword_182284C, &v5, 0x80u) — 0x490417 (Pkt_GuildInfoUpdate 0x490360).
-        // Ce bloc de 128 o n'est PAS un « nom/notice de guilde » (lecture erronée d'origine,
-        // cf. commentaire à corriger RecvPackets.h:1111) : c'est un STAGING structuré, prouvé
-        // par son unique consommateur. xrefs_to(0x182284C) = 2 exactement : l'écriture ici
-        // (0x490412) et la lecture 0x4905D2 dans Net_OnFactionBoardSync (0x490560, opcode
-        // 0x3a), qui le relit champ par champ (0x4905D8-0x490620) via dword_182284C[4*i],
-        // dword_1822850[4*i], dword_1822854[4*i], dword_1822858[4*i] — soit 8 enregistrements
-        // de 4 dwords, stride 16 o = exactement les 128 octets. Même motif que la boucle des
-        // 8 membres ci-dessus, qui stage déjà 0x18228CC/D0/D4 pour ce même consommateur.
-        for (int i = 0; i < 8; ++i) { // 8 x {4 dwords}, stride 16 o
+        // This 128-byte block is NOT a "guild name/notice" (a misreading of the original,
+        // cf. field comment to fix RecvPackets.h:1111): it's a structured STAGING buffer,
+        // proven by its sole consumer. xrefs_to(0x182284C) = exactly 2: the write here
+        // (0x490412) and the read at 0x4905D2 in Net_OnFactionBoardSync (0x490560, opcode
+        // 0x3a), which reads it back field by field (0x4905D8-0x490620) via dword_182284C[4*i],
+        // dword_1822850[4*i], dword_1822854[4*i], dword_1822858[4*i] — i.e. 8 records
+        // of 4 dwords, stride 16 bytes = exactly the 128 bytes. Same pattern as the 8-member
+        // loop above, which already stages 0x18228CC/D0/D4 for this same consumer.
+        for (int i = 0; i < 8; ++i) { // 8 x {4 dwords}, stride 16 bytes
             uint32_t a = 0, b = 0, c = 0, d = 0;
             std::memcpy(&a, p.block128 + 16 * i + 0,  4);
             std::memcpy(&b, p.block128 + 16 * i + 4,  4);
@@ -304,36 +306,36 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
             g_Client.Var(0x1822854 + 16 * i) = static_cast<int32_t>(c); // dword_1822854[4*i]
             g_Client.Var(0x1822858 + 16 * i) = static_cast<int32_t>(d); // dword_1822858[4*i]
         }
-        // NOTE (câblage hors périmètre) : ce staging n'est OBSERVABLE que si le handler 0x3a
-        // le commite (Net_OnFactionBoardSync 0x490560 : 0x49059A/0x4905A5 + boucle
-        // 0x4905AA-0x490668). Ce handler vit dans Net/GameHandlers_ChatSocial.cpp, non détenu
-        // par ce front -> signalé au rapport pour routage (anti-pattern « produit-mais-non-
-        // consommé » assumé et tracé, pas ignoré).
+        // NOTE (wiring out of scope): this staging buffer is only OBSERVABLE if handler 0x3a
+        // commits it (Net_OnFactionBoardSync 0x490560: 0x49059A/0x4905A5 + loop
+        // 0x4905AA-0x490668). That handler lives in Net/GameHandlers_ChatSocial.cpp, not owned
+        // by this front -> flagged in the report for routing (the "produced-but-never-
+        // consumed" anti-pattern, assumed and tracked, not ignored).
     });
 
-    // 0x3d PartyResultDialog (Net_OnPartyResultDialog 0x490800) — résultat d'action de groupe :
-    // ferme la notice 6, str492..497. Comme 0x30/0x36, le switch est BORNÉ : 0x49083B
-    // `cmp [ebp+var_C],5` / 0x49083F `ja def_490848` (« switch 6 cases », case 0 = 0x1EC = 492
-    // à 0x490855) -> un code > 5 est MUET. (Défaut non relevé par le recon, trouvé en
-    // re-prouvant le scan ci-dessous ; même nature et même correctif que le cas 0x30.)
+    // 0x3d PartyResultDialog (Net_OnPartyResultDialog 0x490800) — party action result:
+    // closes notice 6, str492..497. Like 0x30/0x36, the switch is BOUNDED: 0x49083B
+    // `cmp [ebp+var_C],5` / 0x49083F `ja def_490848` ("6-case switch", case 0 = 0x1EC = 492
+    // at 0x490855) -> a code > 5 is SILENT. (Deviation not flagged by recon, found while
+    // re-proving the scan below; same nature and same fix as case 0x30.)
     OnPacket<PartyResultDialog>(sys, 0x3d, [&sys](const PartyResultDialog& p) {
         CloseNotice(6);
-        if (p.resultCode <= 5) // 0x49083B/0x49083F ; default -> aucun message
+        if (p.resultCode <= 5) // 0x49083B/0x49083F; default -> no message
             g_Client.msg.System(Str(492 + static_cast<int>(p.resultCode)));
         if (p.resultCode == 0) {
-            // Premier slot VIDE de g_PartyRosterNames -> demande ses infos (Net_SendOp56).
-            // Polarité re-prouvée au DÉSASSEMBLAGE (2026-07-16) — elle était INVERSÉE ici :
-            //   0x490887 `push offset String` (src = "" @0x7EC95F, 1er octet NUL vérifié)
+            // First EMPTY slot of g_PartyRosterNames -> requests its info (Net_SendOp56).
+            // Polarity RE-PROVEN at DISASSEMBLY (2026-07-16) — it was INVERTED here:
+            //   0x490887 `push offset String` (src = "" @0x7EC95F, byte 0 verified NUL)
             //   0x490892 `add edx, offset g_PartyRosterNames` (dest = names + 13*i)
             //   0x490899 `call Crt_Strcmp` / 0x4908A1 `test eax,eax`
-            //   0x4908A3 `jnz short loc_4908A7` -> 0x4908A7 `jmp loc_490878` = INCRÉMENT
-            // => strcmp != 0 (nom NON vide) CONTINUE la boucle ; la sortie se fait sur
-            //    strcmp == 0, c.-à-d. au 1er slot VIDE.
-            // Contre-preuve interne (les deux polarités sont RÉELLEMENT opposées dans le
-            // binaire, le C++ les avait uniformisées à tort) : le handler frère 0x3f
-            // (Net_OnPartyMemberValueSet 0x490A10) teste `jz loc_490A9B` (0x490A89) et
-            // 0x490A9B = `jmp loc_490A5F` = incrément -> là c'est bien le 1er NON vide qui
-            // déclenche Net_SendOp57 ; le 0x3f ci-dessous est correct, ne pas l'aligner.
+            //   0x4908A3 `jnz short loc_4908A7` -> 0x4908A7 `jmp loc_490878` = INCREMENT
+            // => strcmp != 0 (name NOT empty) CONTINUES the loop; the exit happens on
+            //    strcmp == 0, i.e. at the 1st EMPTY slot.
+            // Cross-proof (the two polarities are REALLY opposite in the binary, the C++ had
+            // wrongly unified them): sibling handler 0x3f
+            // (Net_OnPartyMemberValueSet 0x490A10) tests `jz loc_490A9B` (0x490A89) and
+            // 0x490A9B = `jmp loc_490A5F` = increment -> there it's really the 1st non-empty
+            // that triggers Net_SendOp57; the 0x3f handler below is correct, don't align it.
             auto& names = g_World.partyRoster.names;
             for (size_t i = 0; i < names.size(); ++i) { // 0x490881 `cmp var_4,0Ah` / jge
                 if (names[i].empty()) {
@@ -341,38 +343,38 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                     break;
                 }
             }
-            // Roster plein (i == 10) : 0x4908A9 `cmp var_4,0Ah` / 0x4908AD `jnz loc_4908B4`
-            // -> 0x4908AF `jmp def_490848` = AUCUN envoi (le `break` ci-dessus n'est jamais
-            // pris, donc aucun Net_SendOp56 — fidèle sans garde supplémentaire).
+            // Full roster (i == 10): 0x4908A9 `cmp var_4,0Ah` / 0x4908AD `jnz loc_4908B4`
+            // -> 0x4908AF `jmp def_490848` = NO send (the `break` above is never
+            // taken, so no Net_SendOp56 — faithful without an extra guard).
         }
     });
 
-    // 0x3e PartyMemberNameSet (Net_OnPartyMemberNameSet 0x4909A0) — pose le nom d'un membre
-    // dans un slot du roster de groupe (g_PartyRosterNames, cf. Game/GameState.h::PartyRoster).
+    // 0x3e PartyMemberNameSet (Net_OnPartyMemberNameSet 0x4909A0) — sets a member's name
+    // in a party roster slot (g_PartyRosterNames, cf. Game/GameState.h::PartyRoster).
     OnPacket<PartyMemberNameSet>(sys, 0x3e, [](const PartyMemberNameSet& p) {
         const std::string nm = Name(p.name);
         if (p.slotIndex < g_World.partyRoster.names.size())
             g_World.partyRoster.names[p.slotIndex] = nm;
-        // 0x4909F8 : `return UI_MemberSelectWnd_Open(g_MemberSelectWnd);` — dernière
-        // instruction du handler, INCONDITIONNELLE (re-vérifiée au décompilé 2026-07-16 :
-        // le corps entier est memcpy(index) / memcpy(nom 13 o) / Crt_StringInit / ce call ;
-        // AUCUNE garde). La garde arène (Str 1352) vit DANS _Open @0x66726E, transcrite
-        // par PartyWindow::OpenMemberSelect — ne pas la dupliquer ici.
-        // Aucun message système côté handler d'origine.
-        // L'instance est nulle hors scène InGame (GameWindows est créé/détruit avec le HUD) :
-        // le paquet est alors simplement sans effet UI, l'écriture du roster ci-dessus ayant
-        // déjà eu lieu — même ordre que le binaire (écriture PUIS ouverture).
+        // 0x4909F8: `return UI_MemberSelectWnd_Open(g_MemberSelectWnd);` — last
+        // instruction of the handler, UNCONDITIONAL (re-verified against decompiled output
+        // 2026-07-16: the whole body is memcpy(index) / memcpy(name 13 bytes) / Crt_StringInit /
+        // this call; NO guard). The arena guard (Str 1352) lives INSIDE _Open @0x66726E,
+        // ported by PartyWindow::OpenMemberSelect — don't duplicate it here.
+        // No system message from the original handler.
+        // The instance is null outside the InGame scene (GameWindows is created/destroyed with
+        // the HUD): the packet then simply has no UI effect, the roster write above having
+        // already happened — same order as the binary (write THEN open).
         if (ts2::ui::GameWindows* gw = ts2::ui::GameWindows::Instance())
             gw->Party().OpenMemberSelect();
     });
 
-    // 0x3f PartyMemberValueSet (Net_OnPartyMemberValueSet 0x490A10) — fixe une valeur de
-    // membre si le groupe est actif, puis rescanne le roster de noms pour paginer.
+    // 0x3f PartyMemberValueSet (Net_OnPartyMemberValueSet 0x490A10) — sets a member value
+    // if the party is active, then rescans the name roster to paginate.
     OnPacket<PartyMemberValueSet>(sys, 0x3f, [&sys](const PartyMemberValueSet& p) {
-        if (g_Client.VarGet(0x184BE40)) { // dword_184BE40 = groupe actif
+        if (g_Client.VarGet(0x184BE40)) { // dword_184BE40 = party active
             g_Client.Var(0x184BE50 + 4 * static_cast<int>(p.index)) = static_cast<int32_t>(p.value);
-            // Balaye g_PartyRosterNames[index+1..9] ; au premier nom non vide, redemande le
-            // suivant (Net_SendOp57) — pagination du roster (RE/net_handler_notes.md).
+            // Scans g_PartyRosterNames[index+1..9]; at the first non-empty name, requests the
+            // next one (Net_SendOp57) — roster pagination (RE/net_handler_notes.md).
             auto& names = g_World.partyRoster.names;
             for (size_t i = static_cast<size_t>(p.index) + 1; i < names.size(); ++i) {
                 if (!names[i].empty()) {
@@ -383,34 +385,34 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         }
     });
 
-    // 0x40 PartyMemberClear (Net_OnPartyMemberClear 0x490AB0) — vide le nom d'un slot du
-    // roster de groupe. Comportement CORRECT, mais l'ancienne justification (« Crt_StringInit
-    // 1 argument sur le binaire = vrai clear-à-vide ») était FAUSSE : Crt_StringInit est un
-    // strcpy et prend TOUJOURS 2 arguments (le pseudocode Hex-Rays masque simplement les
-    // arguments). Ce clear est réel parce que la SOURCE poussée est `offset String`
-    // (0x490AC7 = "" @0x7EC95F), le dest étant g_PartyRosterNames + 13*idx (0x490AD2/0x490AD8).
-    // C'est ce critère — et non un nombre d'arguments — qui distingue un clear d'une copie.
+    // 0x40 PartyMemberClear (Net_OnPartyMemberClear 0x490AB0) — clears a party roster
+    // slot's name. Behavior CORRECT, but the old justification ("Crt_StringInit
+    // with 1 argument in the binary = a real clear-to-empty") was WRONG: Crt_StringInit
+    // is a strcpy and ALWAYS takes 2 arguments (the Hex-Rays pseudocode simply hides the
+    // argument). This clear is real because the SOURCE pushed is `offset String`
+    // (0x490AC7 = "" @0x7EC95F), the dest being g_PartyRosterNames + 13*idx (0x490AD2/0x490AD8).
+    // It's THIS criterion — not an argument count — that distinguishes a clear from a copy.
     OnPacket<PartyMemberClear>(sys, 0x40, [](const PartyMemberClear& p) {
         if (p.slotIndex < g_World.partyRoster.names.size())
             g_World.partyRoster.names[p.slotIndex].clear();
     });
 
-    // 0x4a GuildRosterReset (Net_OnGuildRosterReset 0x4911D0) — malgré son nom, ce handler
-    // ne réinitialise RIEN : il CHARGE le roster d'alliance avec les 5 noms du payload.
-    // Prouvé au désassemblage (2026-07-16) : Crt_StringInit(arg1=dest, arg2=src) est un
-    // strcpy — le pseudocode Hex-Rays l'affiche « Crt_StringInit() » sans argument, ce qui
-    // avait induit un `Reset()` erroné ici. Un vrai clear-à-vide se reconnaît à son
-    // `push offset String` (0x7EC95F = chaîne vide, vérifié : 1er octet NUL) ; AUCUN des 6
-    // appels de 0x4a n'en pousse — ce sont 6 copies :
+    // 0x4a GuildRosterReset (Net_OnGuildRosterReset 0x4911D0) — despite its name, this handler
+    // resets NOTHING: it LOADS the alliance roster with the 5 payload names.
+    // Proven at disassembly (2026-07-16): Crt_StringInit(arg1=dest, arg2=src) is a
+    // strcpy — the Hex-Rays pseudocode shows it as "Crt_StringInit()" with no argument, which
+    // had induced a bogus `Reset()` here. A real clear-to-empty is recognized by its
+    // `push offset String` (0x7EC95F = empty string, verified: byte 0 is NUL); NONE of the 6
+    // calls of 0x4a push it — these are 6 copies:
     //   0x49125B slot0 = name1 (payload+4)    0x49126C slot1 = name2 (payload+17)
     //   0x49127D slot2 = name3 (payload+30)   0x49128E slot3 = name4 (payload+43)
     //   0x49129F slot4 = name5 (payload+56)
     //   0x4912B1 g_LocalGuildName (0x168740C) = g_AllianceRosterNames[0] (0x16749B8)
-    //            -> le nom du fondateur/leader SERT de nom de guilde.
-    // PLACEMENT : les 6 copies (0x491252-0x4912B6) précèdent le test de mode
-    // (0x4912B9 `mov edx,[ebp+var_58]` / 0x4912BF `cmp [ebp+var_5C],1`) : elles sont donc
-    // INCONDITIONNELLES et ont lieu pour TOUS les modes, y compris le mode 3 et les modes
-    // inconnus (0x4912CF `jz loc_491316` / 0x4912D1 `jmp loc_491316` : sortie muette).
+    //            -> the founder/leader's name IS the guild name.
+    // PLACEMENT: the 6 copies (0x491252-0x4912B6) precede the mode test
+    // (0x4912B9 `mov edx,[ebp+var_58]` / 0x4912BF `cmp [ebp+var_5C],1`): they are therefore
+    // UNCONDITIONAL and happen for ALL modes, including mode 3 and unknown modes
+    // (0x4912CF `jz loc_491316` / 0x4912D1 `jmp loc_491316`: silent exit).
     OnPacket<GuildRosterReset>(sys, 0x4a, [](const GuildRosterReset& p) {
         auto& ar = g_World.allianceRoster;
         ar.memberNames[0] = Name(p.name1);  // 0x49125B
@@ -418,94 +420,94 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         ar.memberNames[2] = Name(p.name3);  // 0x49127D
         ar.memberNames[3] = Name(p.name4);  // 0x49128E
         ar.memberNames[4] = Name(p.name5);  // 0x49129F
-        ar.guildName      = ar.memberNames[0]; // 0x4912B1 (copie du slot 0, PAS un vidage)
-        // Slot par slot, sans compactage : un nom vide du payload laisse le slot vide.
+        ar.guildName      = ar.memberNames[0]; // 0x4912B1 (copy of slot 0, NOT a clear)
+        // Slot by slot, no compaction: an empty payload name leaves the slot empty.
         if (p.mode == 1)      g_Client.msg.System(Str(349)); // 0x4912D3 (0x15D)
         else if (p.mode == 2) g_Client.msg.System(Str(881)); // 0x4912F5 (0x371)
-        // mode 3 / défaut -> loc_491316 : aucun message (fidèle).
+        // mode 3 / default -> loc_491316: no message (faithful).
     });
 
-    // 0x4b GuildMemberJoin (Net_OnGuildMemberJoin 0x491330) — nouveau membre : inscrit dans
-    // la 1re case libre du roster alliance (slots 1..4, slot 0 = leader jamais réattribué),
-    // puis annonce "<str350> [nom]<str351>".
-    // La garde 0x491397 `if (i != 5)` englobe À LA FOIS l'écriture du slot (0x4913AF) ET le
-    // message (0x4913C6-0x491405) : roster plein (i==5, boucle 0x491359 `for i=1;i<5` sortie
-    // sur premier slot vide via 0x491383 `Crt_Strcmp(&g_AllianceRosterNames[13*i], "")`) ->
-    // AUCUNE mutation ET AUCUN message. AddMember() renvoie précisément ce booléen.
+    // 0x4b GuildMemberJoin (Net_OnGuildMemberJoin 0x491330) — new member: registered into
+    // the 1st free slot of the alliance roster (slots 1..4, slot 0 = leader, never reassigned),
+    // then announces "<str350> [name]<str351>".
+    // The 0x491397 `if (i != 5)` guard wraps BOTH the slot write (0x4913AF) AND the
+    // message (0x4913C6-0x491405): a full roster (i==5, loop 0x491359 `for i=1;i<5` exits
+    // on the first empty slot via 0x491383 `Crt_Strcmp(&g_AllianceRosterNames[13*i], "")`) ->
+    // NO mutation AND NO message. AddMember() returns precisely that boolean.
     OnPacket<GuildMemberJoin>(sys, 0x4b, [](const GuildMemberJoin& p) {
         const std::string nm = Name(p.name);
-        if (g_World.allianceRoster.AddMember(nm)) // 0x491397 : garde commune écriture+message
+        if (g_World.allianceRoster.AddMember(nm)) // 0x491397: shared write+message guard
             g_Client.msg.System(Str(350) + " [" + nm + "]" + Str(351));
     });
 
-    // 0x4c GuildChatMessage — chat de guilde : "<str350> [expéditeur] message".
+    // 0x4c GuildChatMessage — guild chat: "<str350> [sender] message".
     OnPacket<GuildChatMessage>(sys, 0x4c, [](const GuildChatMessage& p) {
         const std::string sender = Name(p.senderName);
         const std::string body   = std::string(p.message, ::strnlen(p.message, sizeof p.message));
-        // Original : posté seulement si g_ChatShow_Guild==1 (flag non modélisé -> toujours posté).
+        // Original: only posted if g_ChatShow_Guild==1 (flag not modeled -> always posted).
         g_Client.msg.Chat(Str(350) + " [" + sender + "] " + body, kChatColorGuild, sender.c_str());
     });
 
-    // 0x4d GuildMemberLeave (Net_OnGuildMemberLeave 0x4914D0) — un membre quitte l'alliance :
-    // si `nm` == nom local -> vide tout le roster (départ de MOI-même) + Str(882) ; sinon
-    // retire `nm` du roster et compacte (cf. AllianceRoster::RemoveMember ci-dessus, note de
-    // fidélité sur l'algorithme de compactage). SelfState::localPlayerName vide par défaut
-    // (non peuplé par aucun handler à ce jour) -> tant qu'il ne l'est pas, cette branche est
-    // simplement jamais prise (dégradation honnête, cf. commentaire GameState.h).
+    // 0x4d GuildMemberLeave (Net_OnGuildMemberLeave 0x4914D0) — a member leaves the alliance:
+    // if `nm` == the local name -> clears the whole roster (I myself left) + Str(882); otherwise
+    // removes `nm` from the roster and compacts (cf. AllianceRoster::RemoveMember above, fidelity
+    // note on the compaction algorithm). SelfState::localPlayerName is empty by default
+    // (not populated by any handler so far) -> until it is, this branch is simply
+    // never taken (honest degradation, cf. GameState.h comment).
     OnPacket<GuildMemberLeave>(sys, 0x4d, [](const GuildMemberLeave& p) {
         const std::string nm = Name(p.name);
         if (!g_World.self.localPlayerName.empty() && nm == g_World.self.localPlayerName) {
             g_World.allianceRoster.Reset();
             g_Client.msg.System(Str(882));
-        } else if (g_World.allianceRoster.RemoveMember(nm)) { // 0x4915E7 : garde commune
-            // 0x4915E7 `if (i != 5)` englobe le compactage (0x4915FF + boucle 0x49160D) ET le
-            // message (0x491670-0x4916AF) : nom absent du roster -> aucun message.
+        } else if (g_World.allianceRoster.RemoveMember(nm)) { // 0x4915E7: shared guard
+            // 0x4915E7 `if (i != 5)` wraps the compaction (0x4915FF + loop 0x49160D) AND the
+            // message (0x491670-0x4916AF): name absent from roster -> no message.
             g_Client.msg.System(Str(350) + " [" + nm + "]" + Str(352));
         }
     });
 
-    // 0x4e GuildMemberKick (Net_OnGuildMemberKick 0x4916D0) — un membre est expulsé : même
-    // logique que GuildMemberLeave ci-dessus (self -> reset + Str(883) ; sinon retire+compacte).
+    // 0x4e GuildMemberKick (Net_OnGuildMemberKick 0x4916D0) — a member is kicked: same
+    // logic as GuildMemberLeave above (self -> reset + Str(883); otherwise remove+compact).
     OnPacket<GuildMemberKick>(sys, 0x4e, [](const GuildMemberKick& p) {
         const std::string nm = Name(p.name);
         if (!g_World.self.localPlayerName.empty() && nm == g_World.self.localPlayerName) {
             g_World.allianceRoster.Reset();
             g_Client.msg.System(Str(883));
-        } else if (g_World.allianceRoster.RemoveMember(nm)) { // 0x4917E7 : garde commune
-            // Idem 0x4d : 0x4917E7 `if (i != 5)` englobe compactage ET message str353.
+        } else if (g_World.allianceRoster.RemoveMember(nm)) { // 0x4917E7: shared guard
+            // Same as 0x4d: 0x4917E7 `if (i != 5)` wraps compaction AND the str353 message.
             g_Client.msg.System(Str(350) + " [" + nm + "]" + Str(353));
         }
     });
 
-    // 0x4f GuildRosterUpdate (Net_OnGuildRosterUpdate 0x4918D0) — dispatcher à 3 cas.
-    //   cas 1 (0x491943) : reset intégral (5 slots + guildName, tous en `push offset String`),
-    //     str350+" "+str354. Vérifié au désassemblage — fidèle.
-    //   cas 2 (0x491A00) : message seul str350+" "+str884 (0x374), AUCUNE mutation.
-    //   cas 3 (0x491A51) : test leader `Crt_Strcmp(g_AllianceRosterNames[0], byte_1673184)`
-    //     (0x491A5B) puis `test eax,eax` / 0x491A65 `jnz loc_491B28`. Sémantique RÉELLE,
-    //     re-prouvée au désasm (2026-07-16) — l'implémentation précédente l'avait INVERSÉE :
-    //       strcmp==0  (slot 0 == mon nom -> JE SUIS le leader) : chute en 0x491A6B =
-    //         reset intégral + str350+" "+str354 (0x162).  <- 354, PAS 700
-    //       strcmp!=0  (je ne suis PAS le leader) : loc_491B28 = PAS de reset, mais
-    //         0x491B48 g_LocalGuildName = payloadName, puis boucle i=1..4
-    //         (0x491B50-0x491BA6) : 0x491B84 slot[i-1] = slot[i] ; 0x491B9E slot[i] = ""
-    //         => DÉCALAGE d'un cran vers le bas, slot4 vidé ; str350+" "+str700 (0x2BC).
-    //     L'écriture 0x491B34 (slot0 = payloadName) est MORTE — réécrasée dès i=1 par
-    //     slot0 = slot1 — donc non reproduite ici.
-    //   NUANCE (état dégénéré, documentée et NON « corrigée ») : le binaire fait un strcmp
-    //     brut, donc deux chaînes vides s'égalent -> branche reset. IsLeader() renvoie false
-    //     sur nom vide -> branche décalage. Comme SelfState::localPlayerName n'est peuplé par
-    //     aucun handler à ce jour, le cas 3 prendra TOUJOURS la branche non-leader. C'est la
-    //     dégradation la plus fidèle disponible (dans le binaire byte_1673184 est toujours
-    //     renseigné, et un joueur réel non-leader prend bien la branche décalage) ; on garde
-    //     IsLeader() par convention « jamais de faux c'est moi ».
+    // 0x4f GuildRosterUpdate (Net_OnGuildRosterUpdate 0x4918D0) — 3-case dispatcher.
+    //   case 1 (0x491943): full reset (5 slots + guildName, all via `push offset String`),
+    //     str350+" "+str354. Verified at disassembly — faithful.
+    //   case 2 (0x491A00): message only str350+" "+str884 (0x374), NO mutation.
+    //   case 3 (0x491A51): leader test `Crt_Strcmp(g_AllianceRosterNames[0], byte_1673184)`
+    //     (0x491A5B) then `test eax,eax` / 0x491A65 `jnz loc_491B28`. REAL semantics,
+    //     re-proven at disasm (2026-07-16) — the previous implementation had INVERTED it:
+    //       strcmp==0  (slot 0 == my name -> I AM the leader): falls into 0x491A6B =
+    //         full reset + str350+" "+str354 (0x162).  <- 354, NOT 700
+    //       strcmp!=0  (I am NOT the leader): loc_491B28 = NO reset, but
+    //         0x491B48 g_LocalGuildName = payloadName, then loop i=1..4
+    //         (0x491B50-0x491BA6): 0x491B84 slot[i-1] = slot[i]; 0x491B9E slot[i] = ""
+    //         => shifts DOWN by one, slot4 cleared; str350+" "+str700 (0x2BC).
+    //     The write at 0x491B34 (slot0 = payloadName) is DEAD — immediately overwritten at i=1 by
+    //     slot0 = slot1 — so not reproduced here.
+    //   NUANCE (degenerate state, documented and NOT "fixed"): the binary does a raw strcmp,
+    //     so two empty strings are equal -> reset branch. IsLeader() returns false
+    //     on an empty name -> shift branch. Since SelfState::localPlayerName isn't populated by
+    //     any handler so far, case 3 will ALWAYS take the non-leader branch. This is the
+    //     most faithful degradation available (in the binary byte_1673184 is always
+    //     populated, and a real non-leader player does take the shift branch); IsLeader() is
+    //     kept by the convention "never a false I'm-the-leader".
     OnPacket<GuildRosterUpdate>(sys, 0x4f, [](const GuildRosterUpdate& p) {
         switch (p.code) {
-            case 1: // 0x491943 — dissolution : réinitialise tout le roster
+            case 1: // 0x491943 — dissolution: resets the whole roster
                 g_World.allianceRoster.Reset();
                 g_Client.msg.System(Str(350) + " " + Str(354));
                 break;
-            case 2: // 0x491A00 — message informatif seul, aucune mutation
+            case 2: // 0x491A00 — informational message only, no mutation
                 g_Client.msg.System(Str(350) + " " + Str(884));
                 break;
             case 3: {
@@ -524,41 +526,41 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                 }
                 break;
             }
-            default: // 0x4918D0 : aucun autre cas -> sortie muette
+            default: // 0x4918D0: no other case -> silent exit
                 break;
         }
     });
 
-    // 0x53 TeamFormationDispatch (Net_OnTeamFormationDispatch 0x491E70) — MÉGA-DISPATCHER
-    // guilde. statusCode (v88 @0x8156C1) : 0 = succès, >0 = codes d'erreur ; subOpcode
-    // (v86 @0x8156C5) sélectionne le sous-traitement ; guildBlob 0x56C o @0x8156C9.
-    // Le switch maître (0x491EED) traite EXACTEMENT 14 sous-opcodes :
-    //   {1,2,3,4,5,6,7,8,9,0xA,0xC,0xD,0xE,0x11}. 0xB/0xF/0x10 tombent en `default` (no-op) :
-    //   leur ABSENCE est donc FIDÈLE, ce ne sont pas des oublis.
-    // g_GmCmdCooldownLatch = 0 est posé DANS CHACUN des 14 cas (0x491EF4, 0x49200F, 0x492334,
+    // 0x53 TeamFormationDispatch (Net_OnTeamFormationDispatch 0x491E70) — guild
+    // MEGA-DISPATCHER. statusCode (v88 @0x8156C1): 0 = success, >0 = error codes; subOpcode
+    // (v86 @0x8156C5) selects the sub-handler; guildBlob 0x56C bytes @0x8156C9.
+    // The master switch (0x491EED) handles EXACTLY 14 sub-opcodes:
+    //   {1,2,3,4,5,6,7,8,9,0xA,0xC,0xD,0xE,0x11}. 0xB/0xF/0x10 fall through to `default` (no-op):
+    //   their ABSENCE is therefore FAITHFUL, not an oversight.
+    // g_GmCmdCooldownLatch = 0 is set IN EACH of the 14 cases (0x491EF4, 0x49200F, 0x492334,
     //   0x4923FD, 0x49256E, 0x492631, 0x4927BA, 0x49283C, 0x492979, 0x492AC0, 0x492BD6,
-    //   0x492C20, 0x492C6A, 0x492D12) et JAMAIS sur le `default` — il est donc déplacé dans
-    //   les cas (l'ancienne pose inconditionnelle divergeait sur 0xB/0xF/0x10).
-    // Le `TODO(msg)` global est résolu : les ids StrTable005 ci-dessous sont relevés un par un
-    //   au décompilé (EA cités). Les 4 buffers d'identité d'affiliation de self
-    //   (0x16746A8/0x16746BC/0x168725C/0x1687270) sont désormais CÂBLÉS (case 1 + cases 4/6 via
-    //   ResetGuildStateBlock ; store et faux ami StringInit=strcpy documentés dans son bandeau,
-    //   vague W11/WARP-03). Restent HORS PÉRIMÈTRE (Game/GuildSystem.h, fichier non détenu) : le
-    //   roster nom-par-nom (unk_1839D00/183A101, case 17 @0x492D57..) + la grille de sélection
-    //   dword_183A014/018 + le rang dword_1839C38[].
+    //   0x492C20, 0x492C6A, 0x492D12) and NEVER on `default` — it is therefore moved into
+    //   the cases (the old unconditional placement diverged on 0xB/0xF/0x10).
+    // The global `TODO(msg)` is resolved: the StrTable005 ids below are individually taken
+    //   from the decompiled output (EA cited). The 4 self affiliation-identity buffers
+    //   (0x16746A8/0x16746BC/0x168725C/0x1687270) are now WIRED (case 1 + cases 4/6 via
+    //   ResetGuildStateBlock; the store and the StringInit=strcpy false friend are documented in
+    //   its banner, wave W11/WARP-03). Still OUT OF SCOPE (Game/GuildSystem.h, file not owned): the
+    //   name-by-name roster (unk_1839D00/183A101, case 17 @0x492D57..) + the selection grid
+    //   dword_183A014/018 + the rank dword_1839C38[].
     OnPacket<TeamFormationDispatch>(sys, 0x53, [&sys](const TeamFormationDispatch& p) {
         switch (p.subOpcode) { // 0x491EED
-            case 1: // création de guilde — 0x491EED
+            case 1: // guild creation — 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x491EF4
                 if (p.statusCode == 0) {                     // 0x491F0E
-                    // Pose l'identité d'affiliation de self depuis le blob. Le blob 0x56C o est
-                    // memcpy dans var_580 @0x491EBA, et @0x491F2F `lea ecx,[ebp+var_580]` PROUVE
-                    // que la source est le blob à l'OFFSET 0 (aucun déplacement) : src = guildBlob+0.
-                    // -> `strcpy(dword_16746A8, guildBlob)` @0x491F36 (nom d'affiliation) ;
-                    //    `strcpy(byte_168725C = entity[0]+40, guildBlob)` @0x491F6B (miroir fiche).
-                    // Les deux noms « secondaires » (0x16746BC @0x491F57, 0x1687270 @0x491F87) sont
-                    // effacés (src = `offset String` 0x7EC95F, octet 0 = 0). Détails du store et du
-                    // faux ami StringInit=strcpy : bandeau de ResetGuildStateBlock ci-dessus.
+                    // Sets self's affiliation identity from the blob. The 0x56C-byte blob is
+                    // memcpy'd into var_580 @0x491EBA, and @0x491F2F `lea ecx,[ebp+var_580]` PROVES
+                    // that the source is the blob at OFFSET 0 (no displacement): src = guildBlob+0.
+                    // -> `strcpy(dword_16746A8, guildBlob)` @0x491F36 (affiliation name);
+                    //    `strcpy(byte_168725C = entity[0]+40, guildBlob)` @0x491F6B (record mirror).
+                    // The two "secondary" names (0x16746BC @0x491F57, 0x1687270 @0x491F87) are
+                    // cleared (src = `offset String` 0x7EC95F, byte 0 = 0). Store and false-friend
+                    // details (StringInit=strcpy): banner of ResetGuildStateBlock above.
                     SetBlobName13(kLocalAffilName,
                                   reinterpret_cast<const char*>(p.guildBlob));   // 0x491F36
                     g_Client.Var(0x16746B8) = 0;             // 0x491F43
@@ -575,35 +577,35 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                     g_Client.msg.System(Str(394));           // 0x491FF5
                 }
                 break;
-            case 2: // montée de palier de guilde — 0x491EED
+            case 2: // guild tier upgrade — 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x49200F
                 if (p.statusCode == 0) {                     // 0x492029
-                    // Sous-dispatch sur dword_1675B10 (0x492050) — déjà modélisé en
-                    // Net/ClientState.h (posé par SendPackets.cpp:2545 = ctxId de la requête).
-                    // Le binaire n'a PAS de `case 0` : valeur 0 (défaut) -> aucun effet,
-                    // aucun message parasite. Fidèle sans garde supplémentaire.
+                    // Sub-dispatch on dword_1675B10 (0x492050) — already modeled in
+                    // Net/ClientState.h (set by SendPackets.cpp:2545 = request ctxId).
+                    // The binary has NO `case 0`: value 0 (default) -> no effect,
+                    // no stray message. Faithful without an extra guard.
                     switch (dword_1675B10) {
-                        case 1: // 0x49207A : ouvre simplement le gestionnaire
+                        case 1: // 0x49207A: simply opens the manager
                             // TODO(state) [0x49207A] Crt_Memcpy(unk_1839970, blob, 0x56C).
                             // TODO(ui)    [0x492087] UI_GuildMgrWnd_Open(g_Guild) (0x667E20).
                             break;
-                        case 2: { // 0x4920C0 : montée de palier réelle
-                            // TODO(state) [0x4920C0] Crt_Memcpy(unk_1839970, blob, 0x56C) :
-                            //   le blob recouvre l'état DÉJÀ modélisé par g_Guild (roster 50
-                            //   membres) — le poser en Blob brut dupliquerait l'état, donc
-                            //   non forcé (cf. GuildSystem.h, layout partiellement déduit).
+                        case 2: { // 0x4920C0: actual tier upgrade
+                            // TODO(state) [0x4920C0] Crt_Memcpy(unk_1839970, blob, 0x56C):
+                            //   the blob overlaps state ALREADY modeled by g_Guild (50-member
+                            //   roster) — storing it as a raw Blob would duplicate the state, so
+                            //   not forced (cf. GuildSystem.h, layout partially deduced).
                             g_Guild.CountMembers();          // 0x4920CD (Guild_CountMembers)
-                            // dword_1839980 = PALIER DE GUILDE courant : absent de GuildRoster
-                            // (Game/GuildSystem.h non détenu par ce front) et son paquet
-                            // d'origine n'est pas identifié dans ce module -> Var de longue
-                            // traîne plutôt qu'un champ deviné.
+                            // dword_1839980 = current GUILD TIER: absent from GuildRoster
+                            // (Game/GuildSystem.h not owned by this front) and its original
+                            // packet isn't identified in this module -> long-tail Var
+                            // rather than a guessed field.
                             const int32_t tier = g_Client.VarGet(0x1839980);
                             if (g_Guild.memberCount >= 10 * tier) { // 0x4920E1
-                                // Seuils {niveau, poids} par palier — 0x492136.
-                                // NB : le global comparé est g_InvWeight (0x16732AC), que le
-                                // dossier appelait « gold » ; on cite l'adresse, pas l'étiquette.
+                                // {level, weight} thresholds per tier — 0x492136.
+                                // NB: the global compared is g_InvWeight (0x16732AC), which the
+                                // report called "gold"; we cite the address, not the label.
                                 switch (tier) {
-                                    case 1: // 0x492144 / 0x492176 (0x1312D00 = 20 000 000)
+                                    case 1: // 0x492144 / 0x492176 (0x1312D00 = 20,000,000)
                                         if (g_World.self.level < 50)               g_Client.msg.System(Str(570)); // 0x492157
                                         else if (g_Client.inv.weight < 20000000)   g_Client.msg.System(Str(571)); // 0x492189
                                         else Net_SendGuarded_7(sys.Client());                                     // 0x4922F5 (LABEL_42)
@@ -628,30 +630,30 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                                         break;
                                 }
                             } else {
-                                g_Client.msg.System(Str(568)); // 0x4920F3 (membres insuffisants)
+                                g_Client.msg.System(Str(568)); // 0x4920F3 (insufficient members)
                             }
                             break;
                         }
-                        case 3: // 0x4920A2 : simple resynchronisation
-                            // TODO(state) [0x4920A2] Crt_Memcpy(unk_1839970, blob, 0x56C) seul.
+                        case 3: // 0x4920A2: simple resync
+                            // TODO(state) [0x4920A2] Crt_Memcpy(unk_1839970, blob, 0x56C) only.
                             break;
-                        default: break; // pas de case 0 dans le binaire
+                        default: break; // no case 0 in the binary
                     }
                 } else if (p.statusCode == 1) {
                     g_Client.msg.System(Str(391));           // 0x49231A
                 }
                 break;
-            case 3: // 0x491EED (absent du switch C++ précédent)
+            case 3: // 0x491EED (absent from the previous C++ switch)
                 g_GmCmdCooldownLatch = 0;                    // 0x492334
                 switch (p.statusCode) {                      // 0x49235A
                     case 0: g_Client.msg.System(Str(412));  break; // 0x492372
                     case 1: g_Client.msg.System(Str(413));  break; // 0x492398
                     case 2: g_Client.msg.System(Str(414));  break; // 0x4923BD
                     case 3: g_Client.msg.System(Str(2044)); break; // 0x4923E3
-                    default: break;                                // muet
+                    default: break;                                // silent
                 }
                 break;
-            case 4: // sortie/annulation — 0x491EED
+            case 4: // leave/cancel — 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x4923FD
                 if (p.statusCode == 0) {                     // 0x492417
                     ResetGuildStateBlock();                  // 0x492442-0x4924F3
@@ -665,8 +667,8 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
             case 5: // 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x49256E
                 if (p.statusCode == 0) {                     // 0x492588
-                    // TODO(state) [0x4925A2/0x4925B4/0x4925C6/0x4925D8] 4x Crt_StringInit sur
-                    //   des buffers de chaîne non modélisés (mêmes cibles que le cas 1).
+                    // TODO(state) [0x4925A2/0x4925B4/0x4925C6/0x4925D8] 4x Crt_StringInit on
+                    //   string buffers not modeled (same targets as case 1).
                     g_Client.msg.System(Str(544));           // 0x4925F1
                 } else if (p.statusCode == 1) {
                     g_Client.msg.System(Str(545));           // 0x492617
@@ -682,7 +684,7 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                     case 1: g_Client.msg.System(Str(471));  break; // 0x492754
                     case 2: g_Client.msg.System(Str(468));  break; // 0x49277A
                     case 3: g_Client.msg.System(Str(2047)); break; // 0x4927A0
-                    default: break;                                // muet
+                    default: break;                                // silent
                 }
                 break;
             case 7: // invitation — 0x491EED
@@ -694,31 +696,31 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                     g_Client.msg.System(Str(579));           // 0x492822
                 }
                 break;
-            case 8: // exclusion (kick) — 0x491EED
+            case 8: // kick — 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x49283C
                 if (p.statusCode == 0) {                     // 0x492856
-                    // TODO(state) [0x492874-0x492916] comparaisons dword_1839991/183999E vs
-                    //   byte_183A0F4 + 4x Crt_StringInit, et [0x4928EF]
-                    //   dword_1839C38[10*dword_183A014 + dword_183A018] = 0 : la grille de
-                    //   sélection (183A014/018) et rank[] relèvent de GuildRoster
-                    //   (Game/GuildSystem.h), déclarés HORS PÉRIMÈTRE — fichier non détenu.
+                    // TODO(state) [0x492874-0x492916] comparisons dword_1839991/183999E vs
+                    //   byte_183A0F4 + 4x Crt_StringInit, and [0x4928EF]
+                    //   dword_1839C38[10*dword_183A014 + dword_183A018] = 0: the selection
+                    //   grid (183A014/018) and rank[] belong to GuildRoster
+                    //   (Game/GuildSystem.h), declared OUT OF SCOPE — file not owned.
                     g_Guild.CountMembers();                  // 0x492923
                     g_Client.msg.System(Str(475));           // 0x492939
                 } else if (p.statusCode == 1) {
                     g_Client.msg.System(Str(476));           // 0x49295F
                 }
                 break;
-            case 9: // candidature / acceptation — 0x491EED
+            case 9: // application / acceptance — 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x492979
                 if (p.statusCode == 0) {                     // 0x492993
-                    // dword_183A0F0 = sélecteur 1/2 (non modélisé -> Var de longue traîne).
+                    // dword_183A0F0 = 1/2 selector (not modeled -> long-tail Var).
                     const int32_t sel = g_Client.VarGet(0x183A0F0);
                     if (sel == 1) {                          // 0x4929BA
                         // TODO(state) [0x4929D6] dword_1839C38[10*183A014+183A018] = 1 (rank,
-                        //   hors périmètre GuildSystem.h).
+                        //   out of scope, GuildSystem.h).
                         g_Client.msg.System(Str(550));       // 0x4929F1
                     } else if (sel == 2) {                   // 0x4929C3
-                        // TODO(state) [0x492A15] idem = 2.
+                        // TODO(state) [0x492A15] same = 2.
                         g_Client.msg.System(Str(551));       // 0x492A31
                     }
                 } else if (p.statusCode == 1) {              // 0x49299C
@@ -729,73 +731,74 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                 break;
             case 10: // 0xA — 0x491EED
                 g_GmCmdCooldownLatch = 0;                    // 0x492AC0
-                // (1) RÉFUTATION du dossier de gaps, qui affirmait « le cas 0xA n'écrit AUCUN
-                //     état ». FAUX — désasm 0x492AEE-0x492B0C :
+                // (1) REFUTATION of the gap report, which claimed "case 0xA writes NO
+                //     state". FALSE — disasm 0x492AEE-0x492B0C:
                 //       Crt_StringInit(dest = unk_1839D00 + 5*(10*dword_183A014 + dword_183A018),
                 //                      src  = dword_183A101)
-                //     C'est bien une écriture. TODO(state) : unk_1839D00 = « bloc 5 o/membre »
-                //     de g_Guild (+920), explicitement HORS PÉRIMÈTRE dans Game/GuildSystem.h
-                //     (fichier non détenu), indexé par la grille 183A014/018 elle aussi hors
-                //     périmètre. Voir (2) : la source étant toujours vide, c'est en pratique un
-                //     effacement du bloc de 5 o.
-                // (2) dword_183A101 est PROUVÉ CONSTAMMENT VIDE, ce qui fixe les messages sans
-                //     rien deviner : xrefs_to(0x183A101) = 3, et les 3 sont des LECTURES, toutes
-                //     dans cette même fonction (0x492AEE = src du StringInit ci-dessus,
-                //     0x492B19 et 0x492B77 = arg1 des Crt_Strcmp) — AUCUN site d'écriture dans
-                //     tout le binaire ; get_bytes(0x183A101) = 0x0 0x0 ... = chaîne vide.
-                //     Le voisin byte_183A0F4 (écrit, lui, par UI_MsgBox_OnLButtonUp 0x5C0A90) ne
-                //     peut pas déborder dessus : 0x183A101 == 0x183A0F4 + 13, soit exactement la
-                //     taille d'un nom NUL-terminé (12 car. + NUL) — les deux buffers sont
-                //     adjacents mais disjoints.
-                //     => Crt_Strcmp(dword_183A101, "") vaut TOUJOURS 0 (branche « vide »), donc
-                //        les branches 557 (0x492B3B) et 559 (0x492B99) sont du CODE MORT dans le
-                //        binaire livré, et seuls 558/560 sont atteignables. Reproduit tel quel.
+                //     It IS a write. TODO(state): unk_1839D00 = "5-byte block/member"
+                //     of g_Guild (+920), explicitly OUT OF SCOPE in Game/GuildSystem.h
+                //     (file not owned), indexed by the 183A014/018 grid, also out of
+                //     scope. See (2): since the source is always empty, this is in practice
+                //     a clear of the 5-byte block.
+                // (2) dword_183A101 is PROVEN CONSTANTLY EMPTY, which fixes the messages without
+                //     guessing: xrefs_to(0x183A101) = 3, and all 3 are READS, all
+                //     in this same function (0x492AEE = src of the StringInit above,
+                //     0x492B19 and 0x492B77 = arg1 of Crt_Strcmp) — NO write site anywhere in
+                //     the whole binary; get_bytes(0x183A101) = 0x0 0x0 ... = empty string.
+                //     Its neighbor byte_183A0F4 (written, itself, by UI_MsgBox_OnLButtonUp 0x5C0A90) can't
+                //     overflow into it: 0x183A101 == 0x183A0F4 + 13, exactly the
+                //     size of a NUL-terminated name (12 chars + NUL) — the two buffers are
+                //     adjacent but disjoint.
+                //     => Crt_Strcmp(dword_183A101, "") is ALWAYS 0 (the "empty" branch), so
+                //        branches 557 (0x492B3B) and 559 (0x492B99) are DEAD CODE in the
+                //        shipped binary, and only 558/560 are reachable. Reproduced as-is.
                 if (p.statusCode == 0) {                     // 0x492ADA
-                    g_Client.msg.System(Str(558));           // 0x492B5D (branche `strcmp == 0`)
+                    g_Client.msg.System(Str(558));           // 0x492B5D (`strcmp == 0` branch)
                 } else if (p.statusCode == 1) {              // 0x492AE3
-                    g_Client.msg.System(Str(560));           // 0x492BBC (branche `strcmp == 0`)
+                    g_Client.msg.System(Str(560));           // 0x492BBC (`strcmp == 0` branch)
                 }
                 break;
-            case 12: // 0xC — bascule ON (absent du switch C++ précédent)
+            case 12: // 0xC — toggle ON (absent from the previous C++ switch)
                 g_GmCmdCooldownLatch = 0;                    // 0x492BD6
                 if (p.statusCode == 0) {                     // 0x492BF0
-                    // dword_16746C8 : 4 xrefs = 2 écritures ici (0xC/0xD) + 2 VRAIES lectures
-                    //   (cGameHud_Render 0x64A9C4, cGameHud_OnMouseDown 0x62B6CD) — bascule de
-                    //   variante du sprite HUD unk_9465D0 + son hit-test. Ce sprite n'est pas
-                    //   modélisé côté C++ : poser le Var est nécessaire mais pas suffisant pour
-                    //   un effet visible (câblage HUD = gap distinct, à tracer, pas à forcer ici).
+                    // dword_16746C8: 4 xrefs = 2 writes here (0xC/0xD) + 2 REAL reads
+                    //   (cGameHud_Render 0x64A9C4, cGameHud_OnMouseDown 0x62B6CD) — toggles a
+                    //   HUD sprite variant unk_9465D0 + its hit-test. This sprite is not
+                    //   modeled on the C++ side: setting the Var is necessary but not
+                    //   sufficient for a visible effect (HUD wiring = a separate gap, to be tracked,
+                    //   not to be forced here).
                     g_Client.Var(0x16746C8) = 1;             // 0x492BFD
-                    // dword_1687278 : conservé par fidélité d'écriture, mais WRITE-ONLY dans le
-                    //   binaire (xrefs_to = 2, les 2 sont ces écritures — aucun lecteur).
+                    // dword_1687278: kept for write fidelity, but WRITE-ONLY in the
+                    //   binary (xrefs_to = 2, both these writes — no reader).
                     g_Client.Var(0x1687278) = 1;             // 0x492C07
                 }
                 break;
-            case 13: // 0xD — bascule OFF, symétrique de 0xC (absent du switch C++ précédent)
+            case 13: // 0xD — toggle OFF, symmetric to 0xC (absent from the previous C++ switch)
                 g_GmCmdCooldownLatch = 0;                    // 0x492C20
                 if (p.statusCode == 0) {                     // 0x492C3A
                     g_Client.Var(0x16746C8) = 0;             // 0x492C47
                     g_Client.Var(0x1687278) = 0;             // 0x492C51
                 }
                 break;
-            case 14: // 0xE — (absent du switch C++ précédent)
+            case 14: // 0xE — (absent from the previous C++ switch)
                 g_GmCmdCooldownLatch = 0;                    // 0x492C6A
                 switch (p.statusCode) {                      // 0x492C90
-                    case 0: break;                                 // no-op explicite
+                    case 0: break;                                 // explicit no-op
                     case 1: case 5: g_Client.msg.System(Str(223));  break; // 0x492CAD
                     case 2:         g_Client.msg.System(Str(1717)); break; // 0x492CD3
                     case 4:         g_Client.msg.System(Str(1718)); break; // 0x492CF8
-                    default: break;                                // muet
+                    default: break;                                // silent
                 }
                 break;
-            case 17: // 0x11 — départ volontaire / promotion
+            case 17: // 0x11 — voluntary departure / promotion
                 g_GmCmdCooldownLatch = 0;                    // 0x492D12
                 if (p.statusCode == 0) {                     // 0x492D2C
                     // TODO(state) [0x492D57-0x492DE5] 4x Crt_StringInit + [0x492DBE]
-                    //   dword_1839C38[10*183A014+183A018] = 0, puis [0x492DED] scan des 50
-                    //   membres `Crt_Strcmp(unk_18399AB + 13*i, byte_1673184)` et [0x492E2A]
-                    //   dword_1839C38[i] = 2 : rank[]/grille = HORS PÉRIMÈTRE (GuildSystem.h,
-                    //   fichier non détenu). GuildRoster::RemoveMember(name) existe déjà mais
-                    //   ne pose PAS rank=2 -> ne pas l'appeler à la place (sémantique ≠).
+                    //   dword_1839C38[10*183A014+183A018] = 0, then [0x492DED] a scan of the 50
+                    //   members `Crt_Strcmp(unk_18399AB + 13*i, byte_1673184)` and [0x492E2A]
+                    //   dword_1839C38[i] = 2: rank[]/grid = OUT OF SCOPE (GuildSystem.h,
+                    //   file not owned). GuildRoster::RemoveMember(name) already exists but
+                    //   does NOT set rank=2 -> don't call it in its place (different semantics).
                     g_Client.Var(0x16746B8) = 2;             // 0x492E35
                     g_Client.msg.System(Str(2108));          // 0x492E50
                 } else if (p.statusCode == 1) {
@@ -804,24 +807,24 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                     g_Client.msg.System(Str(2109));          // 0x492E95
                 }
                 break;
-            default: // 0xB / 0xF / 0x10 et au-delà : no-op TOTAL, latch NON remis à 0 (fidèle)
+            default: // 0xB / 0xF / 0x10 and beyond: TOTAL no-op, latch NOT reset (faithful)
                 break;
         }
     });
 
-    // 0x54 GuildNoticeChat — message de chat de faction/guilde : "<str543> [nom] message".
+    // 0x54 GuildNoticeChat — guild/faction chat message: "<str543> [name] message".
     OnPacket<GuildNoticeChat>(sys, 0x54, [](const GuildNoticeChat& p) {
         const std::string nm   = Name(p.name);
         const std::string body = std::string(p.message, ::strnlen(p.message, sizeof p.message));
         g_Client.msg.Faction(Str(543) + " [" + nm + "] " + body, kChatColorFaction, nm.c_str());
     });
 
-    // 0x56 TeamSlotAssign — écrit une valeur dans le slot d'équipe courant (curseur global) puis
-    // enchaîne le balayage du roster (Guild_SelectNextMember) ; un balayage réussi (prochain slot
-    // non vide trouvé) envoie Net_SendOp78(name[cursor]) — câblé ici (cf. TODO(send) résolu dans
-    // Game/GuildSystem.h : « à brancher depuis Net/GameHandlers_PartyGuild.cpp »).
+    // 0x56 TeamSlotAssign — writes a value into the current team slot (global cursor) then
+    // continues the roster scan (Guild_SelectNextMember); a successful scan (next non-empty
+    // slot found) sends Net_SendOp78(name[cursor]) — wired here (cf. resolved TODO(send) in
+    // Game/GuildSystem.h: "to be wired from Net/GameHandlers_PartyGuild.cpp").
     OnPacket<TeamSlotAssign>(sys, 0x56, [&sys](const TeamSlotAssign& p) {
-        const int idx = g_Client.VarGet(0x183A020);                     // dword_183A020 = curseur
+        const int idx = g_Client.VarGet(0x183A020);                     // dword_183A020 = cursor
         g_Client.Var(0x1839EDC + 4 * idx) = static_cast<int32_t>(p.value); // dword_1839EDC[idx]
         if (g_Guild.SelectNextMember()) {
             char name13[13] = {};
@@ -832,7 +835,7 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         }
     });
 
-    // 0x5c GuildActionResult — résultat d'action de guilde (3 cas ; extra lu mais inutilisé).
+    // 0x5c GuildActionResult — guild action result (3 cases; extra read but unused).
     OnPacket<GuildActionResult>(sys, 0x5c, [](const GuildActionResult& p) {
         (void)p.extra;
         switch (p.action) {
@@ -846,47 +849,47 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         }
     });
 
-    // 0x5d PartyInviteResult — résultat d'invitation de groupe (5 cas ; certains avec "[param]").
+    // 0x5d PartyInviteResult — party invite result (5 cases; some with "[param]").
     OnPacket<PartyInviteResult>(sys, 0x5d, [](const PartyInviteResult& p) {
         const std::string param = std::to_string(p.param);
         switch (p.code) {
             case 1: g_Client.msg.System(Str(372)); break;
-            case 2: g_Client.msg.System("[" + param + "]" + Str(373)); break; // couleur 3
+            case 2: g_Client.msg.System("[" + param + "]" + Str(373)); break; // color 3
             case 3: g_Client.msg.System(Str(374)); break;
-            case 4: g_Client.msg.System("[" + param + "]" + Str(375)); break; // couleur 2
+            case 4: g_Client.msg.System("[" + param + "]" + Str(375)); break; // color 2
             case 5: g_Client.msg.System(Str(376)); break;
             default: break;
         }
     });
 
-    // 0x7b PartyMemberTargetSet — fixe la cible d'un membre (résolu par identité réseau).
+    // 0x7b PartyMemberTargetSet — sets a member's target (resolved by network identity).
     OnPacket<PartyMemberTargetSet>(sys, 0x7b, [](const PartyMemberTargetSet& p) {
         const int e = FindPlayerIndex(p.idHi, p.idLo);
-        if (e >= 0) // word_1687454[454*e] = (u16)targetVal ; stride entité = 908 o
+        if (e >= 0) // word_1687454[454*e] = (u16)targetVal; entity stride = 908 bytes
             g_Client.Var(0x1687454 + 908 * e) =
                 static_cast<int32_t>(static_cast<uint16_t>(p.targetVal));
     });
 
-    // 0x7f PartyMemberHpSet — pose HP/MP courant+max d'un membre (kind 1/2), message si self.
+    // 0x7f PartyMemberHpSet — sets a member's current+max HP/MP (kind 1/2), messages if self.
     OnPacket<PartyMemberHpSet>(sys, 0x7f, [](const PartyMemberHpSet& p) {
         const int e = FindPlayerIndex(p.entityIdHi, p.entityIdLo);
         if (e >= 0 && (p.kind == 1 || p.kind == 2)) {
             g_Client.Var(0x1687458 + 908 * e) = p.curValue; // dword_1687458[227*e]
             g_Client.Var(0x168745C + 908 * e) = p.maxValue; // dword_168745C[227*e]
-            if (e == 0) {                                   // self : message + action
+            if (e == 0) {                                   // self: message + action
                 g_Client.msg.System(p.kind == 1 ? Str(2012) : Str(2013));
-                // TODO(send): Player_QueueAction_op91 (EA 0x517490) enfile une action sur
-                //   g_PlayerCmdController (dword_1669170, gros struct de commandes joueur — throttling/
-                //   coalescing par tick) qui finit par émettre Net_SendOp91 (opcode 0x5B, sans payload).
-                //   NE PAS FORCER un appel direct à Net_SendOp91 ici : g_PlayerCmdController n'est PAS
-                //   modélisé dans ce module (cf. Net/CombatResultApply.cpp lignes 108/196/240/321/347 et
-                //   Game/MapWarp.cpp — mêmes TODO(net) non résolus, tous en attente de ce même système
-                //   de file de commandes joueur ; précédent délibérément respecté pour rester cohérent).
+                // TODO(send): Player_QueueAction_op91 (EA 0x517490) queues an action onto
+                //   g_PlayerCmdController (dword_1669170, large player-command struct — throttling/
+                //   coalescing per tick) which eventually emits Net_SendOp91 (opcode 0x5B, no payload).
+                //   DO NOT FORCE a direct Net_SendOp91 call here: g_PlayerCmdController isn't
+                //   modeled in this module (cf. Net/CombatResultApply.cpp lines 108/196/240/321/347 and
+                //   Game/MapWarp.cpp — same unresolved TODO(net), all pending this same player
+                //   command queue system; precedent deliberately kept for consistency).
             }
         }
     });
 
-    // 0x80 PartyMemberUpdate — maj d'un champ de membre + gestion de départ (selector 4 = self).
+    // 0x80 PartyMemberUpdate — updates a member field + handles departure (selector 4 = self).
     OnPacket<PartyMemberUpdate>(sys, 0x80, [](const PartyMemberUpdate& p) {
         const int e = FindPlayerIndex(p.idHi, p.idLo);
         if (e < 0) return;
@@ -896,12 +899,12 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
                 g_Client.Var(0x168745C + 908 * e) = static_cast<int32_t>(p.value2);
                 break;
             case 4:
-                if (e == 0) { // self : sortie de groupe -> reset HP/MP + warp ville
+                if (e == 0) { // self: leaves the party -> reset HP/MP + warp to town
                     g_Client.Var(0x1687458) = 0;
                     g_Client.Var(0x168745C) = 0;
                     g_Client.msg.System(Str(117));
-                    // Résout la cible de warp (garde + coords) ; l'envoi réseau reste un
-                    // TODO(send) interne à MapWarp.cpp (Net_SendPacket_Op20, EA 0x55c66f).
+                    // Resolves the warp target (guard + coords); the network send stays a
+                    // TODO(send) internal to MapWarp.cpp (Net_SendPacket_Op20, EA 0x55c66f).
                     BeginWarpToFactionTown(static_cast<int32_t>(net::g_LocalElement), false, 0, &g_CoordResolver);
                 }
                 break;
@@ -909,7 +912,7 @@ void RegisterPartyGuildHandlers(NetSystem& sys) {
         }
     });
 
-    // 0x81 PartyItemResult — pose une cellule d'inventaire (status 1) ou quitte le groupe (2).
+    // 0x81 PartyItemResult — writes an inventory cell (status 1) or leaves the party (2).
     OnPacket<PartyItemResult>(sys, 0x81, [](const PartyItemResult& p) {
         if (p.status == 1) {
             g_Client.inv.Set(p.invRow, p.invCol, p.itemId,

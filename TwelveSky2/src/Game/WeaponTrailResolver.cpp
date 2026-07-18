@@ -1,15 +1,15 @@
-// Game/WeaponTrailResolver.cpp — voir WeaponTrailResolver.h pour les ancres IDA complètes.
-// Transcription octet-exacte du décompilé Hex-Rays de Char_DrawWeaponEffectVariantB 0x56BF90
-// (switch @0x56c001..0x56c3eb, gate @0x56c411), vérifiée identique dans le disasm de
-// Char_DrawWeaponTrailEffect 0x55E9D0 (labels loc_55ED14..loc_55EFxx). AUCUNE valeur inventée.
+// Game/WeaponTrailResolver.cpp — see WeaponTrailResolver.h for the full IDA anchors.
+// Byte-exact transcription of the Hex-Rays decompile of Char_DrawWeaponEffectVariantB 0x56BF90
+// (switch @0x56c001..0x56c3eb, gate @0x56c411), verified identical in the disasm of
+// Char_DrawWeaponTrailEffect 0x55E9D0 (labels loc_55ED14..loc_55EFxx). NO invented values.
 #include "Game/WeaponTrailResolver.h"
 #include <cstdio>
 
 namespace ts2::game {
 
-// Switch weaponAnimSlot -> v6 ∈ [0,41] | -1. Structure de branches PRÉSERVÉE telle quelle depuis
-// le décompilé (arbre de comparaisons + switch imbriqués) pour rester auditable ligne à ligne
-// contre 0x56BF90. Chaque `return` porte l'EA du site correspondant dans 0x56BF90.
+// Switch weaponAnimSlot -> v6 in [0,41] | -1. Branch structure PRESERVED as-is from the
+// decompile (comparison tree + nested switches) to stay auditable line-by-line against
+// 0x56BF90. Each `return` carries the EA of the corresponding site in 0x56BF90.
 int ResolveWeaponTrailIndex(int weaponAnimSlot) {
     const int v4 = weaponAnimSlot;
 
@@ -64,16 +64,16 @@ int ResolveWeaponTrailIndex(int weaponAnimSlot) {
                 }
             } else if (v4 == 2317) {                   // 0x56c113
                 return 31;                             // 0x56c374
-            } else if (v4 > 2285) {                    // 0x56c120  (2286-2316 ; 2317 déjà traité)
+            } else if (v4 > 2285) {                    // 0x56c120  (2286-2316; 2317 already handled)
                 return (v4 == 2316) ? 30 : -1;         // 0x56c170 -> 0x56c36b
             } else if (v4 >= 2276) {                   // 0x56c129  (2276-2285)
                 return 29;                             // 0x56c362
             } else if (v4 >= 2266) {                   // 0x56c13f  (2266-2275)
                 return 28;                             // 0x56c356
-            } else if (v4 <= 1936) {                   // 0x56c159  (1927-1936, dans la branche >1926)
+            } else if (v4 <= 1936) {                   // 0x56c159  (1927-1936, within the >1926 branch)
                 return 33;                             // 0x56c398
             }
-            return -1;                                 // 1937-2265 : default
+            return -1;                                 // 1937-2265: default
         } else if (v4 >= 1917) {                       // 0x56c0c3  (1917-1926)
             return 32;                                 // 0x56c38f
         } else {                                       // 1302-1916
@@ -130,25 +130,25 @@ int ResolveWeaponTrailIndex(int weaponAnimSlot) {
             return 3;                                  // LABEL_38 0x56c22a
         }
     }
-    return -1;                                         // aucune traînée
+    return -1;                                         // no trail
 }
 
-// Gate d'état d'action (switch @0x56c411 sur this+61). Structure : 3 destinations de dessin
-// (motionSub 0/1/2) + default. Transcrit case par case (chaque case dessine le sous-bloc indiqué ;
-// le sous-bloc 2 passe par LABEL_116, gaté frameCount>=1).
+// Action-state gate (switch @0x56c411 on this+61). Structure: 3 draw destinations
+// (motionSub 0/1/2) + default. Transcribed case by case (each case draws the indicated sub-block;
+// sub-block 2 goes through LABEL_116, gated by frameCount>=1).
 int ResolveWeaponTrailMotionSub(int actionState) {
     switch (actionState) {
-        // --- sous-bloc 0 (unk_F54DB4) : dessin inconditionnel (case 1, @0x56c527) ---
+        // --- sub-block 0 (unk_F54DB4): unconditional draw (case 1, @0x56c527) ---
         case 1:
             return 0;
 
-        // --- sous-bloc 1 (unk_F54E50) : dessin inconditionnel (case 2 / 0x20, @0x56c58e) ---
+        // --- sub-block 1 (unk_F54E50): unconditional draw (case 2 / 0x20, @0x56c58e) ---
         case 2:
         case 0x20:
             return 1;
 
-        // --- sous-bloc 2 (unk_F54EEC) : dessin gaté frameCount>=1 via LABEL_116 (@0x56d12d) ---
-        // Ensemble EXACT des états qui atteignent LABEL_116 dans 0x56BF90 (case 0 inclus).
+        // --- sub-block 2 (unk_F54EEC): draw gated by frameCount>=1 via LABEL_116 (@0x56d12d) ---
+        // EXACT set of states that reach LABEL_116 in 0x56BF90 (case 0 included).
         case 0:
         case 5: case 6: case 7:
         case 9: case 0xA: case 0xB: case 0xC: case 0xD:
@@ -165,13 +165,13 @@ int ResolveWeaponTrailMotionSub(int actionState) {
             return 2;
 
         default:
-            return -1;   // default du switch : aucun dessin
+            return -1;   // switch default: no draw
     }
 }
 
-// Stem SObject cat. 9 : "Y%03d001" % (trailIndex+1). Cf. SObject_BuildPath 0x4D89C0 case 9.
+// SObject stem cat. 9: "Y%03d001" % (trailIndex+1). See SObject_BuildPath 0x4D89C0 case 9.
 std::string BuildWeaponTrailStem(int trailIndex) {
-    if (trailIndex < 0 || trailIndex >= 42) return {};   // 42 entrées (boucle i80<42 d'AssetMgr)
+    if (trailIndex < 0 || trailIndex >= 42) return {};   // 42 entries (AssetMgr's i80<42 loop)
     char buf[16];
     std::snprintf(buf, sizeof(buf), "Y%03d001", trailIndex + 1);
     return buf;

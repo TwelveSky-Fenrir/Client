@@ -1,74 +1,73 @@
-// Game/ComboPickupTick.h — Combo/pickup/quête, système d'appoint pour le bloc « étape 12 »
-// du tick InGame (Game/InGameTickFlow.h). Réécriture C++ fidèle (traduction réelle du
-// désassemblage, pas d'invention) du petit cluster suivant. Vérité = le désassemblage de
-// TwelveSky2.exe (imagebase 0x400000) via MCP idaTs2.
+// Game/ComboPickupTick.h — Combo/pickup/quest, support system for the "step 12" block
+// of the InGame tick (Game/InGameTickFlow.h). Faithful C++ rewrite (a real translation
+// of the disassembly, not invention) of the following small cluster. Source of truth =
+// TwelveSky2.exe disassembly (imagebase 0x400000) via MCP idaTs2.
 //
-// Fonctions d'origine traduites (EA -> fonction) :
+// Original functions translated (EA -> function):
 //   Combo_FindNearbyFollowup     0x501270 -> Combo_FindNearbyFollowup()
-//   BeginComboMorph              0x52CF69 -> BeginComboMorph()            (bloc inline de
-//                                             Scene_InGameUpdate, PAS une fonction séparée
-//                                             dans le binaire — même source que le reste de
-//                                             ce fichier, décompilée avec le contexte complet)
+//   BeginComboMorph              0x52CF69 -> BeginComboMorph()            (inline block of
+//                                             Scene_InGameUpdate, NOT a separate function
+//                                             in the binary — same source as the rest of
+//                                             this file, decompiled with full context)
 //   Combat_IsElementAllowedOnMap 0x55CBF0 -> Combat_IsElementAllowedOnMap()
-//   [ramassage 5 emplacements]   0x52CF94..0x52D067 -> TickNearbyPickupSlots() (bloc inline
-//                                             de Scene_InGameUpdate, PAS une fonction séparée
-//                                             — la boucle des 5 slots + Net_SendOp106)
+//   [5-slot pickup]               0x52CF94..0x52D067 -> TickNearbyPickupSlots() (inline
+//                                             block of Scene_InGameUpdate, NOT a separate
+//                                             function — the 5-slot loop + Net_SendOp106)
 //   Quest_UpdateMarkerTimer      0x510D90 -> Quest_UpdateMarkerTimer()
-//   Tips002_RotateUpdate         0x4C1840 -> Tips_RotateUpdate()          (wrapper : la
-//                                             minuterie/rotation d'INDEX est DÉJÀ portée
-//                                             fidèlement par TipsTable::Advance, cf.
-//                                             Game/StringTables.h — ce fichier ajoute
-//                                             uniquement le Msg_AppendChatLine manquant)
-//   Npc_AutoInteractForPet       0x53B5F0 -> DÉJÀ PORTÉ intégralement par
+//   Tips002_RotateUpdate         0x4C1840 -> Tips_RotateUpdate()          (wrapper: the
+//                                             timer/INDEX rotation is ALREADY ported
+//                                             faithfully by TipsTable::Advance, see
+//                                             Game/StringTables.h — this file only adds
+//                                             the missing Msg_AppendChatLine call)
+//   Npc_AutoInteractForPet       0x53B5F0 -> ALREADY FULLY PORTED by
 //                                             NpcInteractionSystem::AutoInteractForPet()
-//                                             (Game/NpcInteraction.h/.cpp) — RÉUTILISÉ tel
-//                                             quel, aucune duplication ici (cf. note ci-dessous).
+//                                             (Game/NpcInteraction.h/.cpp) — REUSED as-is,
+//                                             no duplication here (see note below).
 //
-// Toutes ces fonctions proviennent du MÊME bloc de code source (le switch/case « étape 12 »
-// de Scene_InGameUpdate 0x52C600, cf. Game/InGameTickFlow.h/.cpp pour l'orchestration
-// complète du tick). Elles ont été décompilées ensemble (une seule passe Hex-Rays sur
-// Scene_InGameUpdate) puis éclatées ici en fonctions/API propres réutilisables.
-//
-// ---------------------------------------------------------------------------------------
-// RÉUTILISATION (règle de la mission — ne PAS dupliquer un système déjà écrit) :
-//   - Npc_AutoInteractForPet (0x53B5F0) est déjà intégralement porté par
-//     NpcInteractionSystem::AutoInteractForPet() (Game/NpcInteraction.h). Ce fichier ne le
-//     réimplémente PAS ; le point d'intégration InGameTickFlowHost::AutoInteractNpcForPet
-//     doit appeler CETTE méthode directement (câblage laissé à l'étape de consolidation,
-//     cf. RÈGLE CRITIQUE DE COORDINATION de la mission — SceneManager.cpp n'est pas édité ici).
-//   - Le ramassage au sol « clic souris » (Item_PickupTarget/Item_InteractGround) est déjà
-//     porté par Game/ItemPickupSystem.h — DIFFÉRENT du ramassage AUTOMATIQUE des 5
-//     emplacements de proximité ci-dessous (flt_1676130, alimenté par le paquet serveur 0x82,
-//     cf. Net/GameHandlers_Misc.cpp), qui n'a pas d'équivalent dans ItemPickupSystem.h : ce
-//     fichier l'ajoute (TickNearbyPickupSlots), sans toucher à ItemPickupSystem.h/.cpp.
-//   - Quest_CheckObjectiveState / QuestProgressState / QuestStepRecord / LookupQuestStep sont
-//     déjà portés par Game/QuestSystem.h — Quest_UpdateMarkerTimer ci-dessous les RÉUTILISE
-//     tels quels (n'opère PAS sur un nouveau modèle de données de quête).
-//   - ElementPairTable / CombatMorphState (g_SelfMorphNpcId) sont déjà portés par
-//     Game/SkillCombat.h — Combat_IsElementAllowedOnMap et BeginComboMorph les RÉUTILISENT.
-//   - net::Rng / net::DefaultRng() (Rng_Next 0x7603FD, LCG CRT identique) sont déjà portés
-//     par Net/Rng.h — la rotation aléatoire de BeginComboMorph le RÉUTILISE (même génération
-//     que tous les builders réseau, fidèle : c'est le MÊME rand() côté binaire).
-//   - Net_SendPacket_Op20 / Net_SendOp106 sont déjà déclarés dans Net/SendPackets.h.
-//   - TipsTable (Game/StringTables.h) porte déjà le timer/index (600 s) : Tips_RotateUpdate
-//     ci-dessous complète juste l'effet de bord manquant (append au journal de chat).
+// All these functions come from the SAME source block (the "step 12" switch/case of
+// Scene_InGameUpdate 0x52C600, see Game/InGameTickFlow.h/.cpp for the full tick
+// orchestration). They were decompiled together (a single Hex-Rays pass over
+// Scene_InGameUpdate) then split here into clean, reusable functions/API.
 //
 // ---------------------------------------------------------------------------------------
-// GINFO2 (flt_1555D08, table "motion/combo", ~350 entrées x 805 dwords) : table d'ASSETS
-// non modélisée ailleurs dans ClientSource (aucun chargeur identifié pour ce fichier .IMG
-// dans le périmètre de cette mission — même situation que la table NPC mQUEST de
-// Game/QuestSystem.h, cf. son bandeau "(B) HORS PÉRIMÈTRE"). Combo_FindNearbyFollowup et
-// BeginComboMorph consultent CETTE table pour, respectivement, énumérer les candidats de
-// suivi de combo proches d'une position, et résoudre la position d'origine d'un combo par
-// clé. Les DEUX algorithmes (bornes, boucle, comparaison de distance, ordre des tests) sont
-// reproduits fidèlement ci-dessous ; la table elle-même est injectée par l'appelant via
-// ComboCandidateLookup / ComboMotionOriginLookup (même patron que QuestStepLookup :
-// callback nul -> résultat "aucun candidat"/"position nulle", sûr par défaut).
+// REUSE (mission rule — do NOT duplicate an already-written system):
+//   - Npc_AutoInteractForPet (0x53B5F0) is already fully ported by
+//     NpcInteractionSystem::AutoInteractForPet() (Game/NpcInteraction.h). This file does
+//     NOT reimplement it; the integration point InGameTickFlowHost::AutoInteractNpcForPet
+//     must call THIS method directly (wiring left for the consolidation step, see the
+//     mission's CRITICAL COORDINATION RULE — SceneManager.cpp is not edited here).
+//   - Ground pickup via "mouse click" (Item_PickupTarget/Item_InteractGround) is already
+//     ported by Game/ItemPickupSystem.h — DIFFERENT from the AUTOMATIC pickup of the 5
+//     nearby slots below (flt_1676130, fed by server packet 0x82, see
+//     Net/GameHandlers_Misc.cpp), which has no equivalent in ItemPickupSystem.h: this
+//     file adds it (TickNearbyPickupSlots), without touching ItemPickupSystem.h/.cpp.
+//   - Quest_CheckObjectiveState / QuestProgressState / QuestStepRecord / LookupQuestStep are
+//     already ported by Game/QuestSystem.h — Quest_UpdateMarkerTimer below REUSES them
+//     as-is (does NOT operate on a new quest data model).
+//   - ElementPairTable / CombatMorphState (g_SelfMorphNpcId) are already ported by
+//     Game/SkillCombat.h — Combat_IsElementAllowedOnMap and BeginComboMorph REUSE them.
+//   - net::Rng / net::DefaultRng() (Rng_Next 0x7603FD, identical CRT LCG) are already
+//     ported by Net/Rng.h — BeginComboMorph's random rotation REUSES it (same generation
+//     as all network builders, faithful: it's the SAME rand() on the binary side).
+//   - Net_SendPacket_Op20 / Net_SendOp106 are already declared in Net/SendPackets.h.
+//   - TipsTable (Game/StringTables.h) already carries the timer/index (600 s):
+//     Tips_RotateUpdate below just adds the missing side effect (append to the chat log).
 //
-// Combo_CheckTransition (0x4FD650, callee direct de Combo_FindNearbyFollowup) est une table
-// de compatibilité combo/niveau/élément de plus de 900 lignes (relève de SkillCombat, HORS
-// PÉRIMÈTRE de cette mission précise — seul Combo_FindNearbyFollowup 0x501270 est assigné).
-// Injectée via ComboTransitionCheck, même patron.
+// ---------------------------------------------------------------------------------------
+// GINFO2 (flt_1555D08, "motion/combo" table, ~350 entries x 805 dwords): ASSET table not
+// modeled elsewhere in ClientSource (no loader identified for this .IMG file within the
+// scope of this mission — same situation as the NPC mQUEST table in Game/QuestSystem.h,
+// see its "(B) OUT OF SCOPE" banner). Combo_FindNearbyFollowup and BeginComboMorph query
+// THIS table to, respectively, enumerate nearby combo-followup candidates for a position,
+// and resolve a combo's origin position by key. BOTH algorithms (bounds, loop, distance
+// comparison, test order) are reproduced faithfully below; the table itself is injected
+// by the caller via ComboCandidateLookup / ComboMotionOriginLookup (same pattern as
+// QuestStepLookup: null callback -> "no candidate"/"null position" result, safe by default).
+//
+// Combo_CheckTransition (0x4FD650, direct callee of Combo_FindNearbyFollowup) is a
+// 900+ line combo/level/element compatibility table (belongs to SkillCombat, OUT OF
+// SCOPE for this specific mission — only Combo_FindNearbyFollowup 0x501270 is assigned).
+// Injected via ComboTransitionCheck, same pattern.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -85,27 +84,27 @@
 namespace ts2::game {
 
 // ===========================================================================
-// Combat_IsElementAllowedOnMap 0x55CBF0 — matrice élément-vs-carte.
+// Combat_IsElementAllowedOnMap 0x55CBF0 — element-vs-map matrix.
 // ===========================================================================
 //
-// Appel d'origine (confirmé par désassemblage, EA 0x52CF75-0x52CF7A) :
-//   mov ecx, offset g_LocalPlayerSheet ; this = fiche du joueur local (Char_GetPairedElement)
-//   push g_LocalElement               ; a2   = élément testé (= mapElement ici)
+// Original call (confirmed by disassembly, EA 0x52CF75-0x52CF7A):
+//   mov ecx, offset g_LocalPlayerSheet ; this = local player sheet (Char_GetPairedElement)
+//   push g_LocalElement               ; a2   = tested element (= mapElement here)
 //   call Combat_IsElementAllowedOnMap
-// "this" n'est utilisé QUE pour résoudre Char_GetPairedElement(this, a2) : reproduit ici via
-// `pairs` (Game/SkillCombat.h::ElementPairTable, même donnée g_LocalPlayerSheet+455..458).
+// "this" is ONLY used to resolve Char_GetPairedElement(this, a2): reproduced here via
+// `pairs` (Game/SkillCombat.h::ElementPairTable, same data g_LocalPlayerSheet+455..458).
 //
-// Structure fidèle : switch(mapElement){0,1,2,3} -> switch(paired){-1/soi,0,1,2,3} -> test
-// d'appartenance de `selfMorphNpcId` (g_SelfMorphNpcId 0x1675A98, cf.
-// Game/SkillCombat.h::CombatMorphState::currentActionId) à un ensemble figé de 8 ou 12 ids.
-// NOTE : dans le binaire, les cas "default" internes (goto LABEL_47/92/137/182) sont du code
-// mort — Char_GetPairedElement ne renvoie jamais que {-1,0,1,2,3}, valeurs TOUTES couvertes
-// explicitement par chaque switch interne. Reproduits ici comme `return false` (jamais
-// atteints en pratique, mêmes constantes d'entrée).
+// Faithful structure: switch(mapElement){0,1,2,3} -> switch(paired){-1/self,0,1,2,3} ->
+// membership test of `selfMorphNpcId` (g_SelfMorphNpcId 0x1675A98, see
+// Game/SkillCombat.h::CombatMorphState::currentActionId) against a fixed set of 8 or 12 ids.
+// NOTE: in the binary, the internal "default" cases (goto LABEL_47/92/137/182) are dead
+// code — Char_GetPairedElement only ever returns {-1,0,1,2,3}, values ALL covered
+// explicitly by each inner switch. Reproduced here as `return false` (never reached in
+// practice, same input constants).
 bool Combat_IsElementAllowedOnMap(int mapElement, int selfMorphNpcId, const ElementPairTable& pairs);
 
 // ===========================================================================
-// Combo_FindNearbyFollowup 0x501270 — cible de combo de suivi à proximité.
+// Combo_FindNearbyFollowup 0x501270 — nearby combo-followup target.
 // ===========================================================================
 //
 // int __thiscall Combo_FindNearbyFollowup(_DWORD *this, int a2, int a3)
@@ -117,104 +116,105 @@ bool Combat_IsElementAllowedOnMap(int mapElement, int selfMorphNpcId, const Elem
 //       return *(this + 805*a2 + i - 501);
 //   return -1;
 // }
-// this=flt_1555D08 (GINFO2), a2=motionId courant (g_SelfMorphNpcId), a3=&flt_1687330 (self).
-// Cf. bandeau GINFO2 en tête de fichier pour l'injection de la table.
+// this=flt_1555D08 (GINFO2), a2=current motionId (g_SelfMorphNpcId), a3=&flt_1687330 (self).
+// See the GINFO2 banner at the top of this file for table injection.
 
-// Un candidat de suivi : id de motion + position 3D associée (extrait de GINFO2).
+// A followup candidate: motion id + associated 3D position (extracted from GINFO2).
 struct ComboMotionCandidate {
     int32_t id = -1;
     float   x = 0.0f, y = 0.0f, z = 0.0f;
 };
 
-// Énumère les candidats de suivi liés à `motionId` (GINFO2, non modélisée ici — cf. bandeau).
-// nullptr/non branché -> aucun candidat (Combo_FindNearbyFollowup renvoie alors -1, sûr).
+// Enumerates the followup candidates linked to `motionId` (GINFO2, not modeled here —
+// see banner). nullptr/not wired -> no candidate (Combo_FindNearbyFollowup then returns
+// -1, safe).
 using ComboCandidateLookup = std::function<std::vector<ComboMotionCandidate>(int motionId)>;
 
-// Combo_CheckTransition 0x4FD650 (SkillCombat, HORS PÉRIMÈTRE de cette mission) : renvoie
-// 1 (transition valide au niveau courant), 2 (transition connue mais niveau insuffisant) ou
-// 0 (transition inconnue/hors bornes). Seul le code 1 valide un candidat ici (fidèle :
-// `== 1` exact dans le binaire). nullptr/non branché -> 0 constant (aucun candidat valide).
+// Combo_CheckTransition 0x4FD650 (SkillCombat, OUT OF SCOPE for this mission): returns
+// 1 (valid transition at current level), 2 (known transition but insufficient level) or
+// 0 (unknown/out-of-bounds transition). Only code 1 validates a candidate here (faithful:
+// exact `== 1` in the binary). nullptr/not wired -> constant 0 (no valid candidate).
 using ComboTransitionCheck = std::function<int(int fromMotionId, int toMotionId)>;
 
-// Renvoie l'id de motion du PREMIER candidat trouvé (ordre de la table) à distance 3D < 30.0
-// de (selfX,selfY,selfZ) ET dont la transition (motionId -> candidat.id) vaut exactement 1,
-// ou -1 si aucun (ou motionId hors [1,350], garde fidèle EA 0x501286).
+// Returns the motion id of the FIRST candidate found (table order) at 3D distance < 30.0
+// from (selfX,selfY,selfZ) AND whose transition (motionId -> candidate.id) is exactly 1,
+// or -1 if none (or motionId out of [1,350], faithful guard EA 0x501286).
 int Combo_FindNearbyFollowup(int motionId, float selfX, float selfY, float selfZ,
                               const ComboCandidateLookup& candidates,
                               const ComboTransitionCheck& transitionCheck);
 
 // ===========================================================================
-// BeginComboMorph EA 0x52CF69 — démarrage du morph de combo (bloc inline de
-// Scene_InGameUpdate, cf. Game/InGameTickFlow.h étape 12c pour le contexte d'appel : appelé
-// UNIQUEMENT quand Combo_FindNearbyFollowup a trouvé un candidat ET qu'aucun morph n'est déjà
-// en cours — gardes reproduites côté INGameTickFlow_Update, PAS ici).
-// ex-VeryOldClient: EFFECT_OBJECT type 11 (aura de transformation attachée à un bone) +
-// SetSantaEffect (type 14) — PLAUSIBLE (Docs/TS2_FX_ROSETTA.md §1 + §4 gap-render). CE bloc porte
-// seulement l'ÉTAT du morph (g_SelfMorphNpcId 0x1675A98) ; le VISUEL de l'aura =
-// Fx_DrawZoneAura 0x583F90 = GAP DE RENDU (couche Gfx, FRONT 2 NON POSSÉDÉ) — non implémenté ici.
+// BeginComboMorph EA 0x52CF69 — combo morph start (inline block of
+// Scene_InGameUpdate, see Game/InGameTickFlow.h step 12c for the call context: called
+// ONLY when Combo_FindNearbyFollowup found a candidate AND no morph is already in
+// progress — guards reproduced on the INGameTickFlow_Update side, NOT here).
+// ex-VeryOldClient: EFFECT_OBJECT type 11 (transform aura attached to a bone) +
+// SetSantaEffect (type 14) — PLAUSIBLE (Docs/TS2_FX_ROSETTA.md §1 + §4 render gap). This
+// block only carries the morph STATE (g_SelfMorphNpcId 0x1675A98); the aura's VISUAL =
+// Fx_DrawZoneAura 0x583F90 = RENDER GAP (Gfx layer, FRONT 2 NOT OWNED) — not implemented here.
 // ===========================================================================
 //
 //   g_MorphInProgress = 1;                       // 0x1675A88
 //   dword_1675A8C = 4;                            // phase
-//   dword_1675A90 = 0;                            // (jamais relu ailleurs dans cette fonction)
+//   dword_1675A90 = 0;                            // (never read again elsewhere in this function)
 //   dword_1675A9C = v24;                          // followupMotionId
-//   Crt_Memset(&dword_1675AA0, 0, 72);             // reset bloc warp (72 o)
-//   dword_1675AA0 = 0;                             // +0  (redondant avec le memset)
-//   dword_1675AA4 = 1;                             // +4  (ÉCRASE le memset -> "armé")
-//   flt_1675AA8 = 0.0;                             // +8  (redondant)
+//   Crt_Memset(&dword_1675AA0, 0, 72);             // reset the warp block (72 bytes)
+//   dword_1675AA0 = 0;                             // +0  (redundant with the memset)
+//   dword_1675AA4 = 1;                             // +4  (OVERWRITES the memset -> "armed")
+//   flt_1675AA8 = 0.0;                             // +8  (redundant)
 //   GInfo2_FindVec3ByKey(flt_1555D08, v24, g_SelfMorphNpcId, &flt_1675AAC); // +12/+16/+20
-//   flt_1675AC4 = (float)(Rng_Next() % 360);       // +36 rotation courante
-//   flt_1675AC8 = flt_1675AC4;                     // +40 rotation cible (= courante à l'init)
+//   flt_1675AC4 = (float)(Rng_Next() % 360);       // +36 current rotation
+//   flt_1675AC8 = flt_1675AC4;                     // +40 target rotation (== current at init)
 //   Net_SendPacket_Op20(client, dword_1675A8C, v24);
 
-// Bloc warp de 72 o (dword_1675AA0..dword_1675AA0+72 = 0x1675AA0..0x1675AE8), layout fidèle
-// aux offsets nommés du binaire ; les zones sans consommateur identifié dans
-// Scene_InGameUpdate restent des octets opaques (memset à zéro uniquement, jamais relus ici).
+// 72-byte warp block (dword_1675AA0..dword_1675AA0+72 = 0x1675AA0..0x1675AE8), layout
+// faithful to the binary's named offsets; regions with no identified consumer in
+// Scene_InGameUpdate remain opaque bytes (memset to zero only, never read here).
 #pragma pack(push, 1)
 struct ComboMorphWarpBlock {
-    int32_t flag0            = 0;    // +0  dword_1675AA0 (reset, réécrit à 0)
-    int32_t flag1            = 0;    // +4  dword_1675AA4 (réécrit à 1 après le memset -> "armé")
+    int32_t flag0            = 0;    // +0  dword_1675AA0 (reset, rewritten to 0)
+    int32_t flag1            = 0;    // +4  dword_1675AA4 (rewritten to 1 after the memset -> "armed")
     float   timer             = 0.0f; // +8  flt_1675AA8 (reset)
     float   targetX = 0.0f, targetY = 0.0f, targetZ = 0.0f; // +12/+16/+20 (GInfo2_FindVec3ByKey)
-    uint8_t _unknown24[12]   = {};    // +24..+35 : zéroés par le memset, aucun consommateur
-                                       // identifié dans Scene_InGameUpdate.
+    uint8_t _unknown24[12]   = {};    // +24..+35: zeroed by the memset, no identified
+                                       // consumer in Scene_InGameUpdate.
     float   rotationCurrent   = 0.0f; // +36 flt_1675AC4 (Rng_Next() % 360)
-    float   rotationTarget    = 0.0f; // +40 flt_1675AC8 (== rotationCurrent à l'init)
-    uint8_t _unknown44[28]   = {};    // +44..+71 : zéroés par le memset, aucun consommateur
-                                       // identifié dans Scene_InGameUpdate.
+    float   rotationTarget    = 0.0f; // +40 flt_1675AC8 (== rotationCurrent at init)
+    uint8_t _unknown44[28]   = {};    // +44..+71: zeroed by the memset, no identified
+                                       // consumer in Scene_InGameUpdate.
 };
 #pragma pack(pop)
 static_assert(sizeof(ComboMorphWarpBlock) == 72,
-              "ComboMorphWarpBlock doit faire 72 o (cf. Crt_Memset(&dword_1675AA0, 0, 72))");
+              "ComboMorphWarpBlock must be 72 bytes (see Crt_Memset(&dword_1675AA0, 0, 72))");
 
-// État runtime du morph de combo (mirroir g_MorphInProgress/dword_1675A8C/90/9C + bloc warp).
+// Combo morph runtime state (mirrors g_MorphInProgress/dword_1675A8C/90/9C + warp block).
 struct ComboMorphState {
     bool                 inProgress       = false; // g_MorphInProgress 0x1675A88
-    int32_t              phase            = 0;     // dword_1675A8C (4 une fois démarré)
-    int32_t              unk90            = 0;     // dword_1675A90 (toujours 0 ici, jamais relu)
+    int32_t              phase            = 0;     // dword_1675A8C (4 once started)
+    int32_t              unk90            = 0;     // dword_1675A90 (always 0 here, never read again)
     int32_t              followupMotionId = 0;     // dword_1675A9C
     ComboMorphWarpBlock  warp;
 };
 
-// GInfo2_FindVec3ByKey 0x4FD540 (même table GINFO2, cf. bandeau) : résout la position
-// d'origine associée à la clé `originKey` (= motionId COURANT, g_SelfMorphNpcId) dans la
-// liste du combo `followupMotionId`. `outPos` DOIT être écrit (x,y,z) — {0,0,0} si absent,
-// fidèle au binaire qui zéro le vec3 avant recherche et le laisse tel quel si non trouvé.
-// nullptr/non branché -> {0,0,0} constant.
+// GInfo2_FindVec3ByKey 0x4FD540 (same GINFO2 table, see banner): resolves the origin
+// position associated with key `originKey` (= CURRENT motionId, g_SelfMorphNpcId) in the
+// followup list for combo `followupMotionId`. `outPos` MUST be written (x,y,z) — {0,0,0}
+// if absent, faithful to the binary which zeroes the vec3 before the lookup and leaves it
+// as-is if not found. nullptr/not wired -> constant {0,0,0}.
 using ComboMotionOriginLookup = std::function<void(int followupMotionId, int originKey, float outPos[3])>;
 
-// Démarre le morph de combo vers `followupMotionId` (AUCUNE garde ici : "followup != -1" et
-// "!morphInProgress" sont la responsabilité de l'appelant, cf. bandeau ci-dessus et
-// Game/InGameTickFlow.cpp). `currentMotionId` = g_SelfMorphNpcId au moment de l'appel (clé
-// d'origine passée à GInfo2_FindVec3ByKey). Émet Net_SendPacket_Op20(phase, followupMotionId)
-// via `netClient` (Net/SendPackets.h, déjà porté). Rotation aléatoire via net::DefaultRng()
-// (Net/Rng.h — MÊME générateur que Rng_Next() d'origine, réutilisé tel quel).
+// Starts the combo morph toward `followupMotionId` (NO guard here: "followup != -1" and
+// "!morphInProgress" are the caller's responsibility, see banner above and
+// Game/InGameTickFlow.cpp). `currentMotionId` = g_SelfMorphNpcId at call time (origin key
+// passed to GInfo2_FindVec3ByKey). Emits Net_SendPacket_Op20(phase, followupMotionId) via
+// `netClient` (Net/SendPackets.h, already ported). Random rotation via net::DefaultRng()
+// (Net/Rng.h — SAME generator as the original Rng_Next(), reused as-is).
 void BeginComboMorph(ComboMorphState& state, int followupMotionId, int currentMotionId,
                       net::NetClient& netClient, const ComboMotionOriginLookup& originLookup);
 
 // ===========================================================================
-// Ramassage automatique des 5 emplacements de proximité — bloc inline
-// Scene_InGameUpdate EA 0x52CF94..0x52D067 (PAS une fonction séparée dans le binaire).
+// Automatic pickup of the 5 nearby slots — inline block of
+// Scene_InGameUpdate EA 0x52CF94..0x52D067 (NOT a separate function in the binary).
 // ===========================================================================
 //
 //   for ( nn = 0; nn < 5; ++nn )
@@ -222,72 +222,72 @@ void BeginComboMorph(ComboMorphState& state, int followupMotionId, int currentMo
 //       && Math_Dist3D(&flt_1676130[3*nn], flt_1687330) < 100.0 )
 //     {
 //       flt_1676130[3*nn] = flt_1676130[3*nn+1] = flt_1676130[3*nn+2] = 0.0;
-//       Net_SendOp106(client, nn, flt_1687330);   // payload = POSITION DU JOUEUR (pas du slot)
+//       Net_SendOp106(client, nn, flt_1687330);   // payload = PLAYER position (not the slot's)
 //     }
 //
-// flt_1676130 (15 floats = 5 x vec3) est DÉJÀ alimenté par le handler du paquet serveur 0x82
-// (Net/GameHandlers_Misc.cpp, via g_Client.VarF(0x1676130 + i*4)) — ce fichier LIT/ÉCRIT ces
-// MÊMES emplacements via g_Client.VarF, sans dupliquer le stockage.
+// flt_1676130 (15 floats = 5 x vec3) is ALREADY fed by the server packet 0x82 handler
+// (Net/GameHandlers_Misc.cpp, via g_Client.VarF(0x1676130 + i*4)) — this file READS/WRITES
+// these SAME locations via g_Client.VarF, without duplicating the storage.
 inline constexpr int      kNearbyPickupSlotCount   = 5;
 inline constexpr float    kNearbyPickupRadius       = 100.0f; // EA 0x52d023 (< 100.0 strict)
 inline constexpr uint32_t kNearbyPickupSlotBaseAddr = 0x1676130u; // flt_1676130 (g_Client.VarF)
 
-// Efface + Net_SendOp106 pour chaque emplacement non nul à distance 3D < 100.0 de
-// (selfX,selfY,selfZ). Payload réseau = position du JOUEUR local (fidèle : PAS la position
-// du slot, cf. Net_SendOp106(client, nn, flt_1687330) dans le binaire).
+// Clears + Net_SendOp106 for each non-null slot within 3D distance < 100.0 of
+// (selfX,selfY,selfZ). Network payload = LOCAL PLAYER position (faithful: NOT the slot's
+// position, see Net_SendOp106(client, nn, flt_1687330) in the binary).
 void TickNearbyPickupSlots(float selfX, float selfY, float selfZ, net::NetClient& netClient);
 
 // ===========================================================================
-// Quest_UpdateMarkerTimer 0x510D90 — minuterie d'affichage du marqueur de quête (30 s/600 s).
+// Quest_UpdateMarkerTimer 0x510D90 — quest marker display timer (30 s/600 s).
 // ===========================================================================
 //
-// Opère sur le MÊME struct g_PlayerCmdController (0x1669170) que Game/QuestSystem.h ::
-// QuestProgressState (zoneId +10249*4=40996, npcQuestId +11553*4=46212 — RÉUTILISÉS tels
-// quels, PAS un nouveau modèle) + 5 champs propres à CETTE fonction (+51576..+51592, hors
-// périmètre de QuestSystem.h -> QuestMarkerState ci-dessous, même patron que
-// NpcInteraction.h::NpcInteractionExt : struct parallèle, pas un overlay mémoire).
+// Operates on the SAME g_PlayerCmdController (0x1669170) struct as Game/QuestSystem.h ::
+// QuestProgressState (zoneId +10249*4=40996, npcQuestId +11553*4=46212 — REUSED as-is,
+// NOT a new model) + 5 fields specific to THIS function (+51576..+51592, out of scope for
+// QuestSystem.h -> QuestMarkerState below, same pattern as NpcInteraction.h::
+// NpcInteractionExt: a parallel struct, not a memory overlay).
 struct QuestMarkerState {
-    bool     active            = false; // +51576 dword_this+51576 (marqueur affiché)
-    float    lastTimerSec       = 0.0f;  // +51580 (réutilisé pour les DEUX minuteries 30s/600s)
-    int32_t  lastObjectiveState = 0;    // +51584 (résultat mis en cache de Quest_CheckObjectiveState)
-    uint32_t targetNpcQuestKey  = 0;    // +51588 (champ "+92" == QuestStepRecord::field92 du
-                                         //         record NPC mQUEST résolu, cf. QuestSystem.h)
-    int32_t  markerVariant      = 0;    // +51592 (0 pour le cas "objectif rempli" v2==1 ;
-                                         //         Rng_Next()%3+1 pour le cas "en cours")
+    bool     active            = false; // +51576 dword_this+51576 (marker displayed)
+    float    lastTimerSec       = 0.0f;  // +51580 (reused for BOTH the 30s/600s timers)
+    int32_t  lastObjectiveState = 0;    // +51584 (cached result of Quest_CheckObjectiveState)
+    uint32_t targetNpcQuestKey  = 0;    // +51588 (the "+92" field == QuestStepRecord::field92
+                                         //         of the resolved mQUEST NPC record, see QuestSystem.h)
+    int32_t  markerVariant      = 0;    // +51592 (0 for the "objective complete" case v2==1;
+                                         //         Rng_Next()%3+1 for the "in progress" case)
 };
 
-// g_WarehouseWindowOpen && dword_1822ED0 && *dword_1822ED0 == targetNpcQuestKey — état de
-// fenêtre entrepôt/quête ouverte (UI, HORS PÉRIMÈTRE de ce fichier). Appelé DEUX FOIS avec
-// des clés DIFFÉRENTES dans le binaire (une fois contre le marqueur déjà armé, une fois
-// contre le NOUVEAU candidat résolu) : callback plutôt qu'un bool figé, pour rester fidèle.
-// nullptr/non branché -> false constant (aucune fenêtre ne "consomme" jamais le marqueur).
+// g_WarehouseWindowOpen && dword_1822ED0 && *dword_1822ED0 == targetNpcQuestKey — warehouse
+// window/quest-open state (UI, OUT OF SCOPE for this file). Called TWICE with DIFFERENT
+// keys in the binary (once against the already-armed marker, once against the NEW resolved
+// candidate): a callback rather than a fixed bool, to stay faithful. nullptr/not wired ->
+// constant false (no window ever "consumes" the marker).
 using WarehouseTargetMatch = std::function<bool(uint32_t targetNpcQuestKey)>;
 
-// Snd3D_PlayScaledVolume 0x4DA380 (audio, HORS PÉRIMÈTRE) : joué UNIQUEMENT dans la branche
-// v2==1 ("objectif rempli", cf. binaire EA 0x510e80). nullptr/non branché -> silencieux.
+// Snd3D_PlayScaledVolume 0x4DA380 (audio, OUT OF SCOPE): played ONLY in the v2==1 branch
+// ("objective complete", see binary EA 0x510e80). nullptr/not wired -> silent.
 using QuestMarkerSoundCallback = std::function<void()>;
 
 // `gameTimeSec` = g_World.gameTimeSec. `isArenaZone` = Map_IsArenaZone(&unk_1685740) 0x54B690
-// (garde globale de tête de fonction, HORS PÉRIMÈTRE — non modélisée ailleurs dans
-// ClientSource ; true -> la fonction ne fait RIEN, fidèle).
+// (global guard at function head, OUT OF SCOPE — not modeled elsewhere in ClientSource;
+// true -> the function does NOTHING, faithful).
 void Quest_UpdateMarkerTimer(QuestMarkerState& marker, const QuestProgressState& progress,
                               float gameTimeSec, bool isArenaZone,
                               const WarehouseTargetMatch& warehouseTargetMatches,
                               const QuestMarkerSoundCallback& playMarkerSound = nullptr);
 
 // ===========================================================================
-// Tips002_RotateUpdate 0x4C1840 — rotation des astuces (bandeau d'annonces mGAMENOTICE).
+// Tips002_RotateUpdate 0x4C1840 — tips rotation (mGAMENOTICE announcement banner).
 // ===========================================================================
 //
-// Le timer/index (600 s, wrap à 0) est DÉJÀ porté fidèlement par TipsTable::Advance
-// (Game/StringTables.h) — CE fichier ajoute uniquement l'effet de bord manquant :
+// The timer/index (600 s, wraps to 0) is ALREADY ported faithfully by TipsTable::Advance
+// (Game/StringTables.h) — THIS file only adds the missing side effect:
 //   Msg_AppendChatLine((char*)this + 101*currentIndex + 4, 3, &String); // 0x4c18c6
-// c.-à-d. append du nouveau texte d'astuce au journal de chat. Le "3" est un INDEX de
-// palette mFONTCOLOR (ColorTable_InitPalette 0x4C1D60) — PAS un ARGB : le binaire le
-// stocke brut et le résout au dessin via ColorTable_GetColor 0x4C1FE0. La résolution
-// est désormais faite chez le producteur (g_Strings.colors.Get(3) = 0xFFFFFF00, jaune
-// opaque), cf. Tips_RotateUpdate dans le .cpp — l'ancienne note « même limitation que
-// g_SysMsgColor » est LEVÉE (l'accesseur réel 0x4C1FE0 a été retrouvé et branché).
+// i.e. appending the new tip text to the chat log. The "3" is a mFONTCOLOR palette
+// INDEX (ColorTable_InitPalette 0x4C1D60) — NOT an ARGB: the binary stores it raw and
+// resolves it at draw time via ColorTable_GetColor 0x4C1FE0. The resolution is now done
+// at the producer (g_Strings.colors.Get(3) = 0xFFFFFF00, opaque yellow), see
+// Tips_RotateUpdate in the .cpp — the old note "same limitation as g_SysMsgColor" is
+// LIFTED (the real accessor 0x4C1FE0 was found and wired).
 void Tips_RotateUpdate(TipsTable& tips, float gameTimeSec);
 
 } // namespace ts2::game

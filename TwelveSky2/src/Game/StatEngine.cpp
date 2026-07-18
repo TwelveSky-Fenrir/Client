@@ -1,9 +1,9 @@
-// Game/StatEngine.cpp — délègue à Game/StatFormulas (décompilation IDA directe,
-// workflow ts2-ida-gameplay-core), plus fidèle que l'implémentation initiale
-// (qui aplatissait explicitement le scaling par niveau — cf. historique). Le
-// scaling exact (seuils 112/145/156), l'ordre des ftol et les facteurs de set
-// sont désormais reproduits dans StatFormulas.cpp. StatEngine reste la façade
-// publique stable pour les appelants existants (ItemSystem/CombatSystem/UI).
+// Game/StatEngine.cpp — delegates to Game/StatFormulas (direct IDA decompilation,
+// ts2-ida-gameplay-core workflow), more faithful than the initial implementation
+// (which explicitly flattened per-level scaling — see history). The exact scaling
+// (thresholds 112/145/156), ftol ordering, and set factors are now reproduced in
+// StatFormulas.cpp. StatEngine remains the stable public facade for existing
+// callers (ItemSystem/CombatSystem/UI).
 #include "Game/StatEngine.h"
 #include "Game/StatFormulas.h"
 
@@ -23,35 +23,35 @@ int StatEngine::CalcAttackRatingMax (const SelfState& s, const GameDatabases& db
 int StatEngine::CalcAttackSpeed     (const SelfState& s, const GameDatabases& db) { return static_cast<int>(game::CalcAttackSpeed(s, db)); }
 
 // ===========================================================================
-// Recompute — remplit tous les champs dérivés du SelfState.
+// Recompute — fills in all derived fields of SelfState.
 //
-// ⚠ CÂBLAGE MANQUANT (constaté vague W9, 2026-07-16) — À TRAITER HORS DE CE FICHIER.
-// Grep exhaustif sur src/ : `StatEngine::Recompute` n'a AUCUN appelant, et les 12 champs
-// dérivés de SelfState (maxHp/maxMp/extAtk/intAtk/extDef/intDef/accuracy/evasion/critRate/
-// atkRatingMin/atkRatingMax/attackSpeed) ne sont écrits NULLE PART ailleurs (aucun memcpy ni
-// affectation d'agrégat — vérifié). Conséquence : 9 des 12 canaux de formules ne sont jamais
-// évalués. Seuls CalcAttackRatingMin/Max (via Net/*), CalcEvasion (Game/NameplateLogic.cpp:322)
-// et CalcElementResist (Game/SkillCombat.cpp:512) sont atteints — et ceux-là appellent
-// game::Calc* DIRECTEMENT, sans passer par Recompute.
+// ⚠ MISSING WIRING (found wave W9, 2026-07-16) — TO FIX OUTSIDE THIS FILE.
+// Exhaustive grep over src/: `StatEngine::Recompute` has NO caller, and the 12 derived
+// SelfState fields (maxHp/maxMp/extAtk/intAtk/extDef/intDef/accuracy/evasion/critRate/
+// atkRatingMin/atkRatingMax/attackSpeed) are never written anywhere else (no memcpy, no
+// aggregate assignment — verified). Result: 9 of the 12 formula channels are never
+// evaluated. Only CalcAttackRatingMin/Max (via Net/*), CalcEvasion
+// (Game/NameplateLogic.cpp:322), and CalcElementResist (Game/SkillCombat.cpp:512) are
+// reached — and those call game::Calc* DIRECTLY, bypassing Recompute.
 //
-// FIDÉLITÉ — ne PAS se contenter d'appeler Recompute aux points de dispatch réseau : le binaire
-// ne procède pas ainsi. Découpage prouvé par les xrefs :
-//   * Char_CalcMaxHP 0x4D4ED0 / Char_CalcAccuracy 0x4D42D0 -> appelant UNIQUE cDrawWin_Draw
-//     0x629960 (reachable via UI_RenderAllDialogs 0x5AE2D0) : ce sont des calculs de FICHE
-//     PERSO, recalculés À CHAQUE RENDU. => à câbler INLINE dans UI/CharacterStatsWindow.cpp
-//     (~l.432-445, qui lit déjà self.maxHp/…) en appelant StatEngine::CalcMaxHp(self, db) etc.
-//   * Barres PV/PM du HUD : alimentées par le canal de combat body+288/+296
-//     (Char_CalcAttackRatingMin/Max 0x4CD970/0x4CE3F0, déjà câblé via RecomputeSelfBars) et
-//     NON par Char_CalcMaxHP. => UI/GameHud.cpp (~l.636-637) doit se synchroniser sur ce canal,
-//     en symétrie du sync déjà fait pour self.hp/mp.
-//   * Char_CalcAttackSpeed 0x4CCAB0 -> 16 appelants binaires (Game_OnWorldLeftClick,
+// FIDELITY — do NOT just call Recompute at network dispatch points: that's not how the
+// binary works. Split proven by xrefs:
+//   * Char_CalcMaxHP 0x4D4ED0 / Char_CalcAccuracy 0x4D42D0 -> SOLE caller cDrawWin_Draw
+//     0x629960 (reachable via UI_RenderAllDialogs 0x5AE2D0): these are CHARACTER SHEET
+//     calculations, recomputed on EVERY RENDER. => wire INLINE into
+//     UI/CharacterStatsWindow.cpp (~l.432-445, which already reads self.maxHp/…) by calling
+//     StatEngine::CalcMaxHp(self, db) etc.
+//   * HUD HP/MP bars: fed by the combat channel body+288/+296 (Char_CalcAttackRatingMin/Max
+//     0x4CD970/0x4CE3F0, already wired via RecomputeSelfBars) and NOT by Char_CalcMaxHP.
+//     => UI/GameHud.cpp (~l.636-637) must sync on this channel, mirroring the sync already
+//     done for self.hp/mp.
+//   * Char_CalcAttackSpeed 0x4CCAB0 -> 16 binary callers (Game_OnWorldLeftClick,
 //     Player_CastSkill, Player_AttackTargetMonster/Player, Npc_Interact, Gather_InteractNode,
-//     AutoPlay_*) : à câbler dans le combat/interaction pour le timing d'attaque.
-// Ces trois fichiers ne sont pas la propriété du front stat-gems-ench (règle 5) -> escaladé.
-// Tant que ce câblage n'est pas posé, les correctifs W9 portant sur CalcMaxHP/MaxMP/ExtAtk/
-// IntAtk/ExtDef/IntDef/Accuracy (boucles d'enchant, talisman, +5/+1) restent NON OBSERVABLES ;
-// ceux sur CalcAttackRatingMin/Max, CalcEvasion et CalcElementResist sont, eux, immédiatement
-// effectifs car ces canaux sont câblés.
+//     AutoPlay_*): wire into combat/interaction for attack timing.
+// These three files aren't owned by the stat-gems-ench front (rule 5) -> escalated. Until
+// this wiring lands, W9 fixes on CalcMaxHP/MaxMP/ExtAtk/IntAtk/ExtDef/IntDef/Accuracy (enchant
+// loops, talisman, +5/+1) stay NON-OBSERVABLE; fixes on CalcAttackRatingMin/Max, CalcEvasion,
+// and CalcElementResist are immediately effective since those channels are wired.
 // ===========================================================================
 void StatEngine::Recompute(SelfState& s, const GameDatabases& db) {
     s.maxHp        = CalcMaxHp(s, db);
@@ -66,7 +66,7 @@ void StatEngine::Recompute(SelfState& s, const GameDatabases& db) {
     s.atkRatingMin = CalcAttackRatingMin(s, db);
     s.atkRatingMax = CalcAttackRatingMax(s, db);
     s.attackSpeed  = CalcAttackSpeed(s, db);
-    // hp/mp courants restent pilotés par le serveur ; on ne les recalcule pas ici.
+    // current hp/mp remain server-authoritative; not recalculated here.
 }
 
 void StatEngine::Recompute(SelfState& s) { Recompute(s, g_World.db); }

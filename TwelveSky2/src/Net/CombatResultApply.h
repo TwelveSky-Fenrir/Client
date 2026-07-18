@@ -1,22 +1,22 @@
-// Net/CombatResultApply.h — décodeur du paquet « résultat de combat » (op 0x15).
+// Net/CombatResultApply.h — decoder for the "combat result" packet (op 0x15).
 //
-// Réécriture FIDÈLE de cGameData_ApplyCombatResult (EA 0x55A380), appelée par le
-// trampoline Pkt_OnCombatResult (EA 0x468340) qui recopie 76 octets depuis le
-// tampon de réception (unk_8156C1) puis délègue ici.
+// FAITHFUL rewrite of cGameData_ApplyCombatResult (EA 0x55A380), called by the
+// Pkt_OnCombatResult trampoline (EA 0x468340), which copies 76 bytes from the
+// receive buffer (unk_8156C1) then delegates here.
 //
-// Le bloc de 76 octets = 19 DWORD. Cette fonction met à jour les PV des entités
-// concernées dans ts2::game::g_World, empile les lignes de journal de combat dans
-// g_Client.msg et positionne le drapeau « self mort ». Les effets purement
-// visuels/sonores (Fx_*, Snd3D_*) et les renvois réseau (Net_QueueAction9/10) sont
-// laissés en TODO précis, hors périmètre gameplay.
+// The 76-byte block = 19 DWORD. This function updates the HP of the entities
+// involved in ts2::game::g_World, pushes combat log lines into
+// g_Client.msg, and sets the "self dead" flag. Purely visual/audio effects
+// (Fx_*, Snd3D_*) and network resends (Net_QueueAction9/10) are
+// left as precise TODOs, out of gameplay scope.
 #pragma once
 #include <cstdint>
 
 namespace ts2::game {
 
-// [game] Applique un bloc « résultat de combat » (op 0x15) — EA 0x55A380.
-//   block : 76 octets bruts (19 DWORD) tels que reçus après le trampoline 0x468340.
-//   len   : longueur du bloc (attendue = 76).
+// [game] Applies a "combat result" block (op 0x15) — EA 0x55A380.
+//   block: raw 76 bytes (19 DWORD) as received after the 0x468340 trampoline.
+//   len  : block length (expected = 76).
 void ApplyCombatResult(const uint8_t* block, uint32_t len);
 
 } // namespace ts2::game

@@ -1,12 +1,12 @@
-// UI/PartyWindow.cpp — sélecteur de membre (UI_MemberSelectWnd) + panneau HUD « Groupe ».
-// Voir UI/PartyWindow.h pour le contrat, le layout prouvé de g_MemberSelectWnd 0x184BE38,
-// et le bandeau « câblage manquant » (les 3 déclencheurs vivent dans des fichiers non
-// possédés par cette vague).
+// UI/PartyWindow.cpp — member selector (UI_MemberSelectWnd) + "Party" HUD panel.
+// See UI/PartyWindow.h for the contract, the proven layout of g_MemberSelectWnd
+// 0x184BE38, and the "missing wiring" banner (the 3 triggers live in files not
+// owned by this wave).
 //
-// Ordre d'inclusion : Net/ EN PREMIER (NetClient.h tire <winsock2.h> avant
-// <windows.h>, qu'UI/PartyWindow.h tire transitivement via UIManager.h -> <d3d9.h>)
-// — même convention que UI/GuildWindow.cpp / UI/ChatWindow.cpp.
-#include "Net/SendPackets.h"   // -> Net/NetClient.h : winsock2 puis windows (ordre sûr)
+// Include order: Net/ FIRST (NetClient.h pulls <winsock2.h> before <windows.h>,
+// which UI/PartyWindow.h pulls transitively via UIManager.h -> <d3d9.h>)
+// — same convention as UI/GuildWindow.cpp / UI/ChatWindow.cpp.
+#include "Net/SendPackets.h"   // -> Net/NetClient.h: winsock2 before windows (safe order)
 #include "Net/NetClient.h"     // net::GlobalNetClient() (singleton g_NetClient 0x8156A0)
 #include "UI/PartyWindow.h"
 #include "UI/PanelSkin.h"
@@ -16,132 +16,132 @@
 namespace ts2::ui {
 
 namespace {
-// Fond de panneau réel (best effort) : gabarit étroit/haut (252,440), le PLUS
-// répété (63 occurrences non consécutives) du dossier atlas UI
-// G03_GDATA/D01_GIMAGE2D/001 — candidat NON CONFIRMÉ par IDA, retenu par
-// défaut pour ce panneau HUD étroit (210 px de large, hauteur dynamique selon
-// le nombre de membres ; cf. méthodologie détaillée dans UI/PanelSkin.h).
-// Repli automatique sur kColBg si absent.
+// Real panel background (best effort): narrow/tall (252,440) template, the MOST
+// repeated (63 non-consecutive occurrences) in the UI atlas folder
+// G03_GDATA/D01_GIMAGE2D/001 — candidate NOT CONFIRMED by IDA, picked by default
+// for this narrow HUD panel (210 px wide, height dynamic on member count; cf.
+// detailed methodology in UI/PanelSkin.h). Automatic fallback to kColBg if absent.
 const PanelSkin kPanelBg("G03_GDATA\\D01_GIMAGE2D\\001\\001_00472.IMG");
 
-// Formatage sans allocation dynamique excessive (snprintf -> std::string).
+// Formatting without excessive dynamic allocation (snprintf -> std::string).
 std::string Fmt(const char* fmt, size_t v) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), fmt, v);
     return std::string(buf);
 }
 
-// Map_IsArenaZone 0x54B690 : `return g_SelfMorphNpcId >= 270 && g_SelfMorphNpcId <= 274;`
-// (le global 0x1675A98 est g_SelfMorphNpcId malgré le libellé « map id » du commentaire
-// IDB). Porté ici plutôt que dans un en-tête partagé : cette vague ne possède que les
-// fichiers PartyWindow/SocialWindow. Les autres appelants du binaire (Scene/SceneManager.cpp:934,
-// Game/WarehouseSystem.h) portent encore un TODO « Map_IsArenaZone non modélisé » —
-// à mutualiser dans une vague ultérieure qui possédera Game/MapWarp.h.
+// Map_IsArenaZone 0x54B690: `return g_SelfMorphNpcId >= 270 && g_SelfMorphNpcId <= 274;`
+// (global 0x1675A98 is g_SelfMorphNpcId despite the IDB comment's "map id" label).
+// Ported here rather than in a shared header: this wave only owns
+// PartyWindow/SocialWindow. The binary's other callers (Scene/SceneManager.cpp:934,
+// Game/WarehouseSystem.h) still carry a "Map_IsArenaZone not modeled" TODO —
+// to be consolidated in a later wave that owns Game/MapWarp.h.
 bool Map_IsArenaZone() {
     const int32_t morphNpcId = game::g_Client.VarGet(0x1675A98u); // g_SelfMorphNpcId
     return morphNpcId >= 270 && morphNpcId <= 274;               // EA 0x54B6BE
 }
 
-// g_SysMsgColor 0x84DFD8 — non modélisé en champ propre, longue traîne via Var()
-// (même convention que Game/SocialSystem.cpp:68).
+// g_SysMsgColor 0x84DFD8 — not modeled as its own field, long-tailed via Var()
+// (same convention as Game/SocialSystem.cpp:68).
 uint32_t SysMsgColor() {
     return static_cast<uint32_t>(game::g_Client.VarGet(0x84DFD8u));
 }
 } // namespace
 
 // ===========================================================================
-// Sélecteur de membre — UI_MemberSelectWnd (la vraie fenêtre « Groupe »)
+// Member selector — UI_MemberSelectWnd (the real "Party" window)
 // ===========================================================================
 
 bool PartyWindow::MemberSelectOpen() const {
-    // *(this+2) — champ +8 de g_MemberSelectWnd 0x184BE38 (garde 0x66737D / 0x66758B).
+    // *(this+2) — field +8 of g_MemberSelectWnd 0x184BE38 (guard 0x66737D / 0x66758B).
     return game::g_Client.VarGet(kVarMemberSelectOpen) != 0;
 }
 
 // UI_MemberSelectWnd_Open 0x667260.
 void PartyWindow::OpenMemberSelect() {
-    // --- Garde arène : refus TOTAL, message système, aucune émission (0x66726E) ---
+    // --- Arena guard: TOTAL refusal, system message, no emission (0x66726E) ---
     if (Map_IsArenaZone()) {
-        // EA 0x667287 : StrTable005_Get(g_LangId, 1352) ; 0x667292 : Msg_AppendSystemLine.
+        // EA 0x667287: StrTable005_Get(g_LangId, 1352) ; 0x667292: Msg_AppendSystemLine.
         game::g_Client.msg.System(game::Str(kStrArenaRefused), SysMsgColor());
-        return; // le binaire RETOURNE ici : ni bOpen, ni reset, ni Op57.
+        return; // the binary RETURNS here: no bOpen, no reset, no Op57.
     }
 
-    // --- bOpen = 1 (0x66729F) : c'est CE write qui ressuscite la garde du handler
-    // 0x3f (Net/GameHandlers_PartyGuild.cpp:186), jamais écrite jusqu'ici. ---
+    // --- bOpen = 1 (0x66729F): this write is what resurrects the guard of
+    // handler 0x3f (Net/GameHandlers_PartyGuild.cpp:186), never written until now. ---
     game::g_Client.Var(kVarMemberSelectOpen) = 1;
 
-    // Latches de boutons remis à 0 (0x6672C4 : boucle i<2 sur *(this+3..4)).
+    // Button latches reset to 0 (0x6672C4 : loop i<2 over *(this+3..4)).
     msCloseLatch_   = false;
     msConfirmLatch_ = false;
 
-    // Sélection = -1 (0x6672D1 : *(this+5) = -1).
+    // Selection = -1 (0x6672D1 : *(this+5) = -1).
     game::g_Client.Var(kVarSelectedSlot) = kSlotUnset;
 
-    // Valeurs des 10 slots = -2 (0x6672F6 : boucle j<10, *(this+j+6) = -2).
+    // Values of the 10 slots = -2 (0x6672F6 : loop j<10, *(this+j+6) = -2).
     for (int j = 0; j < kRosterSlots; ++j)
         game::g_Client.Var(kVarSlotValuesBase + 4u * static_cast<uint32_t>(j)) = kValueUnset;
 
-    // --- Premier slot de roster NON VIDE -> Net_SendOp57(slot) (0x667300..0x667344) ---
-    // Le binaire fait `return Net_SendOp57(&g_AutoPlayMgr, k)` DANS la boucle : un seul
-    // envoi, sur le PREMIER slot non vide (Crt_Strcmp(g_PartyRosterNames + 13*k, "") != 0).
-    // Le serveur répond par 0x3f (valeur du slot), dont le handler relance Op57 sur le
-    // slot suivant : pagination une-requête-par-réponse.
+    // --- First NON-EMPTY roster slot -> Net_SendOp57(slot) (0x667300..0x667344) ---
+    // The binary does `return Net_SendOp57(&g_AutoPlayMgr, k)` INSIDE the loop: a single
+    // send, on the FIRST non-empty slot (Crt_Strcmp(g_PartyRosterNames + 13*k, "") != 0).
+    // The server replies with 0x3f (the slot's value), whose handler relaunches Op57 on
+    // the next slot: one-request-per-response pagination.
     //
-    // NB fidélité : `&g_AutoPlayMgr` (0x846C08) est le TAMPON d'émission, PAS le client
-    // réseau — Net_SendOp57 0x4B90D0 lit la clé XOR (0x8156A4), la séquence (0x8156A5) et
-    // le socket (0x8156AC) DIRECTEMENT dans g_NetClient 0x8156A0. Côté C++ le tampon est
-    // interne à PacketWriter et le singleton est net::GlobalNetClient().
+    // NB fidelity: `&g_AutoPlayMgr` (0x846C08) is the emission BUFFER, NOT the network
+    // client — Net_SendOp57 0x4B90D0 reads the XOR key (0x8156A4), the sequence
+    // (0x8156A5) and the socket (0x8156AC) DIRECTLY from g_NetClient 0x8156A0. On the
+    // C++ side the buffer is internal to PacketWriter and the singleton is
+    // net::GlobalNetClient().
     const auto& names = game::g_World.partyRoster.names;
     for (int k = 0; k < kRosterSlots && k < static_cast<int>(names.size()); ++k) {
-        if (names[k].empty()) continue;             // strcmp(..., "") == 0 -> slot vide
+        if (names[k].empty()) continue;             // strcmp(..., "") == 0 -> empty slot
         net::NetClient* nc = net::GlobalNetClient();
-        // Le test nc != nullptr n'est PAS une garde de complaisance : sur le chemin réel
-        // il est TOUJOURS vrai (le roster n'est peuplé que par le handler 0x3e, donc
-        // seulement une fois la session de jeu établie). Il ne couvre que l'appel
-        // théorique hors session, où le binaire n'aurait de toute façon rien à émettre.
+        // The nc != nullptr check is NOT a courtesy guard: on the real path it is
+        // ALWAYS true (the roster is only populated by handler 0x3e, hence only once a
+        // game session is established). It only covers the theoretical call outside a
+        // session, where the binary would have nothing to emit anyway.
         if (nc)
             net::Net_SendOp57(*nc, static_cast<int8_t>(k)); // opcode 0x39 — EA 0x667344
-        break;                                              // `return` dans la boucle
+        break;                                              // `return` inside the loop
     }
 }
 
-// UI_MemberSelectWnd_Close 0x667350 : *(this+2) = 0, rien d'autre.
+// UI_MemberSelectWnd_Close 0x667350: *(this+2) = 0, nothing else.
 void PartyWindow::CloseMemberSelect() {
     game::g_Client.Var(kVarMemberSelectOpen) = 0; // EA 0x667365
 }
 
 void PartyWindow::Close() {
-    // UIManager::CloseAll/ResetAll (UI_CloseAllDialogs 0x5AC590) doit refermer le
-    // sélecteur : fidèle, 0x6677C4 ferme tous les dialogues avant de l'ouvrir.
+    // UIManager::CloseAll/ResetAll (UI_CloseAllDialogs 0x5AC590) must close the
+    // selector too: faithful, 0x6677C4 closes all dialogs before opening it.
     CloseMemberSelect();
     Dialog::Close();
 }
 
-// UI_MemberSelectWnd_ProcNet 0x667730 (code file UI 33) : bascule.
+// UI_MemberSelectWnd_ProcNet 0x667730 (UI file code 33): toggle.
 void PartyWindow::Toggle() {
     if (MemberSelectOpen()) {
         CloseMemberSelect();  // EA 0x66783C
         return;
     }
-    // Ouverture conditionnée à l'état de scène (EA 0x667756 : g_SceneMgr == 6 &&
-    // g_SceneSubState == 4 = en jeu). Le binaire ferme d'abord tous les dialogues
-    // (UI_CloseAllDialogs(dword_1821D4C, 1), EA 0x6677C4) puis ouvre (EA 0x6677CC).
-    // TODO [ancre 0x667756] g_SceneMgr 0x1676180 / g_SceneSubState 0x1676184 ne sont pas
-    // modélisés en Var() par les fichiers possédés ici : la garde de scène n'est donc PAS
-    // portée. L'appelant à câbler (barre d'outils / raccourci) est déjà, dans le binaire,
-    // atteignable seulement en jeu — la garde y est redondante mais devra être rétablie
-    // si Toggle() venait à être appelé depuis une autre scène.
+    // Opening conditioned on scene state (EA 0x667756: g_SceneMgr == 6 &&
+    // g_SceneSubState == 4 = in-game). The binary first closes all dialogs
+    // (UI_CloseAllDialogs(dword_1821D4C, 1), EA 0x6677C4) then opens (EA 0x6677CC).
+    // TODO [anchor 0x667756] g_SceneMgr 0x1676180 / g_SceneSubState 0x1676184 are not
+    // modeled as Var() by the files owned here: the scene guard is therefore NOT
+    // ported. The caller to be wired (toolbar / shortcut) is already, in the binary,
+    // reachable only in-game — the guard is redundant there but should be restored
+    // if Toggle() ever gets called from another scene.
     UIManager::Instance().CloseAll();
     OpenMemberSelect();
 }
 
 PartyWindow::MsLayout PartyWindow::ComputeMsLayout(int screenW, int screenH) const {
-    // Centrage écran, recalculé à chaque événement/frame comme le binaire :
+    // Screen centering, recomputed on every event/frame like the binary:
     //   *this      = nWidth/2  - Sprite2D_GetWidth(unk_90265C)/2   (EA 0x6673AD)
     //   *(this+1)  = nHeight/2 - Sprite2D_GetHeight(unk_90265C)/2  (EA 0x6673D2)
-    // TODO [ancre 0x6673AD] kMsW/kMsH sont DÉDUITS : les dimensions réelles viennent du
-    // sprite .IMG unk_90265C résolu au runtime, inconnu statiquement.
+    // TODO [anchor 0x6673AD] kMsW/kMsH are DERIVED: the real dimensions come from the
+    // .IMG sprite unk_90265C resolved at runtime, unknown statically.
     MsLayout m;
     m.w = kMsW;
     m.h = kMsH;
@@ -154,25 +154,25 @@ void PartyWindow::MsSlotRect(const MsLayout& m, int i, int& rx, int& ry, int& rw
     // EA 0x667438 : Sprite2D_HitTest(unk_9026F0, *this + 17, *(this+1) + 20*i + 81, ...)
     rx = m.x + kMsSlotDX;
     ry = m.y + kMsSlotDY0 + kMsSlotStep * i;
-    rw = kMsSlotW; rh = kMsSlotH; // TODO [ancre 0x667438] dims déduites (sprite unk_9026F0)
+    rw = kMsSlotW; rh = kMsSlotH; // TODO [anchor 0x667438] derived dims (sprite unk_9026F0)
 }
 
 void PartyWindow::MsCloseRect(const MsLayout& m, int& rx, int& ry, int& rw, int& rh) const {
     // EA 0x6674D2 : Sprite2D_HitTest(unk_8F3798, *this + 252, *(this+1) + 24, ...)
     rx = m.x + kMsCloseDX;
     ry = m.y + kMsCloseDY;
-    rw = kMsCloseW; rh = kMsCloseH; // TODO [ancre 0x6674D2] dims déduites (sprite unk_8F3798)
+    rw = kMsCloseW; rh = kMsCloseH; // TODO [anchor 0x6674D2] derived dims (sprite unk_8F3798)
 }
 
 void PartyWindow::MsConfirmRect(const MsLayout& m, int& rx, int& ry, int& rw, int& rh) const {
     // EA 0x667521 : Sprite2D_HitTest(unk_902A68, *this + 214, *(this+1) + 298, ...)
     rx = m.x + kMsOkDX;
     ry = m.y + kMsOkDY;
-    rw = kMsOkW; rh = kMsOkH; // TODO [ancre 0x667521] dims déduites (sprite unk_902A68)
+    rw = kMsOkW; rh = kMsOkH; // TODO [anchor 0x667521] derived dims (sprite unk_902A68)
 }
 
 // ===========================================================================
-// Panneau HUD « raid frame » (invention conservée, cf. bandeau .h)
+// "Raid frame" HUD panel (kept invention, cf. .h banner)
 // ===========================================================================
 
 PartyWindow::Layout PartyWindow::BuildLayout(int screenW, int screenH) const {
@@ -182,16 +182,17 @@ PartyWindow::Layout PartyWindow::BuildLayout(int screenW, int screenH) const {
     auto& client = game::g_Client;
     auto& world  = game::g_World;
 
-    // Garde de visibilité : présence d'au moins une entité joueur connue.
+    // Visibility guard: presence of at least one known player entity.
     //
-    // CORRECTION (vague W6) : la garde `Var(0x184BE40) != 0` qui figurait ici a été
-    // RETIRÉE. Elle reposait sur une identification erronée (« flag groupe actif ») :
-    // 0x184BE40 est en réalité le champ bOpen de g_MemberSelectWnd (cf. bandeau .h), il
-    // n'a aucun rapport avec « le groupe est actif ». Comme personne ne l'écrivait,
-    // cette garde était TOUJOURS fausse et rendait ce panneau intégralement mort. Le
-    // contrat que ce panneau se donne (« visible tant qu'au moins un membre est résolu »)
-    // est déjà assuré par le test `src.empty()` plus bas — c'est la seule garde légitime.
-    if (world.players.empty()) return L; // L.visible reste false
+    // CORRECTION (wave W6): the `Var(0x184BE40) != 0` guard that used to be here has
+    // been REMOVED. It relied on a misidentification ("active party flag"):
+    // 0x184BE40 is actually the bOpen field of g_MemberSelectWnd (cf. .h banner), it
+    // has nothing to do with "the party is active". Since no one wrote it, this
+    // guard was ALWAYS false and made this whole panel dead. The contract this
+    // panel gives itself ("visible while at least one member is resolved") is
+    // already ensured by the `src.empty()` test below — that's the only legitimate
+    // guard.
+    if (world.players.empty()) return L; // L.visible stays false
 
     struct RowSrc {
         std::string name;
@@ -202,7 +203,7 @@ PartyWindow::Layout PartyWindow::BuildLayout(int screenW, int screenH) const {
     std::vector<RowSrc> src;
     src.reserve(kMaxRows);
 
-    // --- Soi (toujours en tête si présent, source réelle SelfState -> StatEngine) ---
+    // --- Self (always first if present, real source SelfState -> StatEngine) ---
     if (world.players[0].active) {
         RowSrc r;
         r.name   = "Moi";
@@ -214,43 +215,44 @@ PartyWindow::Layout PartyWindow::BuildLayout(int screenW, int screenH) const {
         src.push_back(std::move(r));
     }
 
-    // --- Autres membres : un slot du tableau joueurs est traité comme « membre de
-    // groupe résolu » si PartyMemberHpSet/PartyMemberUpdate (opcodes 0x7f/0x80) a
-    // déjà écrit une PV MAX non nulle pour ce slot. Ces deux opcodes sont émis par
-    // le serveur UNIQUEMENT pour de véritables membres de groupe (contrairement à
-    // world.players[], qui contient TOUT joueur visible à proximité) — c'est donc
-    // le meilleur signal disponible pour ne pas afficher des inconnus. ---
+    // --- Other members: a slot of the player array is treated as a "resolved
+    // party member" if PartyMemberHpSet/PartyMemberUpdate (opcodes 0x7f/0x80) has
+    // already written a non-zero max HP for that slot. These two opcodes are
+    // emitted by the server ONLY for real party members (unlike world.players[],
+    // which contains ANY nearby visible player) — so this is the best available
+    // signal to avoid showing strangers. ---
     for (size_t i = 1; i < world.players.size() && src.size() < static_cast<size_t>(kMaxRows); ++i) {
         if (!world.players[i].active) continue;
         const uint32_t addr = static_cast<uint32_t>(kMemberStride * i);
         const int hpMax = client.VarGet(kVarMemberHpMaxBase + addr);
-        if (hpMax <= 0) continue; // aucune donnée de groupe reçue pour ce slot
+        if (hpMax <= 0) continue; // no party data received for this slot
 
         RowSrc r;
-        // Nom réel : g_PartyRosterNames (game::g_World.partyRoster.names), peuplé par
+        // Real name: g_PartyRosterNames (game::g_World.partyRoster.names), populated by
         // Net_OnPartyMemberNameSet/_Clear (opcodes 0x3e/0x40, Net/GameHandlers_PartyGuild.cpp).
-        // ATTENTION (best-effort, cf. Game/GameState.h::PartyRoster) : `i` est ici un index
-        // d'ENTITÉ (world.players, résolu par identité réseau via PartyMemberHpSet/Update),
-        // alors que le roster de noms est indexé par un slot ASSIGNÉ PAR LE SERVEUR sans lien
-        // prouvé avec l'index d'entité. On lit quand même names[i] en repli le plus probable
-        // (aucune clé de jointure connue dans le désassemblage) ; si ce slot est vide/pas
-        // encore reçu, on retombe sur un libellé générique plutôt que d'inventer un nom.
-        // NB : cette jointure douteuse ne contamine PAS le chemin réseau — Op57/Op58
-        // transportent un index de ROSTER, lu directement dans partyRoster.names.
+        // NOTE (best-effort, cf. Game/GameState.h::PartyRoster): `i` here is an ENTITY
+        // index (world.players, resolved by network identity via
+        // PartyMemberHpSet/Update), while the name roster is indexed by a
+        // SERVER-ASSIGNED slot with no proven link to the entity index. We still read
+        // names[i] as the most likely fallback (no known join key in the
+        // disassembly); if this slot is empty/not yet received, we fall back to a
+        // generic label rather than inventing a name.
+        // NB: this dubious join does NOT contaminate the network path — Op57/Op58
+        // carry a ROSTER index, read directly from partyRoster.names.
         const std::string& rosterName =
             (i < world.partyRoster.names.size()) ? world.partyRoster.names[i] : std::string();
         r.name = !rosterName.empty() ? rosterName : "Membre";
         r.hp    = client.VarGet(kVarMemberHpBase + addr);
         r.hpMax = hpMax;
-        r.hasMp = false; // PartyMemberHpSet écrit la MÊME adresse pour kind==1 (PV)
-                          // et kind==2 (PM) : aucune adresse distincte pour le PM
-                          // des coéquipiers dans l'état actuel du handler.
+        r.hasMp = false; // PartyMemberHpSet writes the SAME address for kind==1 (HP)
+                          // and kind==2 (MP): no distinct address for teammates' MP
+                          // in the handler's current state.
         src.push_back(std::move(r));
     }
 
-    if (src.empty()) return L; // aucun membre résolu -> masqué
+    if (src.empty()) return L; // no resolved member -> hidden
 
-    // --- Géométrie (ancré haut-gauche, indépendant de la résolution écran) ---
+    // --- Geometry (top-left anchored, independent of screen resolution) ---
     L.visible = true;
     L.x = kMarginX;
     L.y = kMarginY;
@@ -283,39 +285,39 @@ PartyWindow::Layout PartyWindow::BuildLayout(int screenW, int screenH) const {
 }
 
 // ===========================================================================
-// Routage
+// Routing
 // ===========================================================================
 
 // UI_MemberSelectWnd_OnMouseDown 0x667370.
 bool PartyWindow::OnMouseDown(int x, int y) {
     if (MemberSelectOpen()) {
-        // Recentrage AVANT hit-test, comme le binaire (0x667394..0x6673D2).
+        // Re-center BEFORE the hit-test, like the binary (0x667394..0x6673D2).
         const MsLayout m = ComputeMsLayout(lastScreenW_, lastScreenH_);
 
         const auto& names = game::g_World.partyRoster.names;
 
-        // --- 10 slots de noms : seuls les slots NON VIDES sont cliquables (0x667438) ---
+        // --- 10 name slots: only NON-EMPTY slots are clickable (0x667438) ---
         for (int i = 0; i < kRosterSlots && i < static_cast<int>(names.size()); ++i) {
             if (names[i].empty()) continue;
             int rx, ry, rw, rh;
             MsSlotRect(m, i, rx, ry, rw, rh);
             if (!PointInRect(x, y, rx, ry, rw, rh)) continue;
 
-            // Déjà sélectionné -> consommé, aucun effet (0x66744A).
+            // Already selected -> consumed, no effect (0x66744A).
             if (i == game::g_Client.VarGet(kVarSelectedSlot)) return true;
 
-            // 0x667461 : Snd3D_PlayScaledVolume — son non porté (couche audio).
+            // 0x667461: Snd3D_PlayScaledVolume — sound not ported (audio layer).
             game::g_Client.Var(kVarSelectedSlot) = i; // 0x66746C
 
-            // 0x66747A : si la valeur du slot est > 0 -> g_WhisperPresetSlot = 0 (0x66747C)
-            // puis Crt_StringInit() (0x667498 : vide la chaîne de chuchotement associée —
-            // buffer non modélisé ici, seul le flag l'est).
+            // 0x66747A: if the slot's value is > 0 -> g_WhisperPresetSlot = 0 (0x66747C)
+            // then Crt_StringInit() (0x667498: clears the associated whisper string —
+            // buffer not modeled here, only the flag is).
             if (game::g_Client.VarGet(kVarSlotValuesBase + 4u * static_cast<uint32_t>(i)) > 0)
                 game::g_Client.Var(kVarWhisperPreset) = 0;
             return true; // 0x667577
         }
 
-        // --- Boutons (atteints seulement si AUCUN slot n'a été touché, i >= 10) ---
+        // --- Buttons (reached only if NO slot was hit, i.e. i >= 10) ---
         int bx, by, bw, bh;
         MsCloseRect(m, bx, by, bw, bh);
         if (PointInRect(x, y, bx, by, bw, bh)) {
@@ -327,12 +329,12 @@ bool PartyWindow::OnMouseDown(int x, int y) {
             msConfirmLatch_ = true; // *(this+4) = 1 — 0x66753D
             return true;
         }
-        // Clic ailleurs : consommé si dans le panneau (0x66756C), sinon non.
+        // Click elsewhere: consumed if inside the panel (0x66756C), otherwise not.
         if (PointInRect(x, y, m.x, m.y, m.w, m.h)) return true;
     }
 
-    // --- Raid frame : consomme uniquement le clic tombant SUR le panneau dessiné
-    // (évite le clic-traversant vers le monde 3D). Panneau d'information pure. ---
+    // --- Raid frame: consumes only clicks landing ON the drawn panel (avoids
+    // click-through into the 3D world). Pure information panel. ---
     if (!lastVisible_) return false;
     return PointInRect(x, y, lastX_, lastY_, lastW_, lastH_);
 }
@@ -340,20 +342,20 @@ bool PartyWindow::OnMouseDown(int x, int y) {
 // UI_MemberSelectWnd_OnClick 0x667580.
 bool PartyWindow::OnClick(int x, int y) {
     if (MemberSelectOpen()) {
-        // Recentrage AVANT hit-test (0x6675A2..0x6675E0).
+        // Re-center BEFORE the hit-test (0x6675A2..0x6675E0).
         const MsLayout m = ComputeMsLayout(lastScreenW_, lastScreenH_);
 
-        // --- Bouton « Fermer » (latch *(this+3)) — 0x6675E6 ---
+        // --- "Close" button (latch *(this+3)) — 0x6675E6 ---
         if (msCloseLatch_) {
             msCloseLatch_ = false;                    // 0x6675EF
             int bx, by, bw, bh;
             MsCloseRect(m, bx, by, bw, bh);
             if (PointInRect(x, y, bx, by, bw, bh))
                 CloseMemberSelect();                  // 0x66762F
-            return true;                              // consommé même si le hit échoue (0x667622)
+            return true;                              // consumed even if the hit fails (0x667622)
         }
 
-        // --- Bouton « Valider » (latch *(this+4)) — 0x667641 ---
+        // --- "Confirm" button (latch *(this+4)) — 0x667641 ---
         if (msConfirmLatch_) {
             msConfirmLatch_ = false;                  // 0x66764E
             int bx, by, bw, bh;
@@ -361,37 +363,37 @@ bool PartyWindow::OnClick(int x, int y) {
             if (!PointInRect(x, y, bx, by, bw, bh)) return true; // 0x667683
 
             if (game::g_Client.VarGet(kVarSelectedSlot) == kSlotUnset) {
-                // Aucun membre sélectionné : message système, AUCUNE émission (0x667691).
+                // No member selected: system message, NO emission (0x667691).
                 game::g_Client.msg.System(game::Str(kStrNoSelection), SysMsgColor()); // 0x6676AF
             } else {
                 // UI_MsgBox_Open(dword_1822438, 21, StrTable005_Get(g_LangId, 530), "")
-                // — EA 0x6676D7. Le contextType 21 du binaire (this+24) est remplacé
-                // côté C++ par le callback de résultat ci-dessous.
+                // — EA 0x6676D7. The binary's contextType 21 (this+24) is replaced
+                // on the C++ side by the result callback below.
                 UIManager::Instance().MsgBox().Open(
                     game::Str(kStrConfirmBody), std::string(),
                     [](int button) {
                         // UI_MsgBox_OnLButtonUp 0x5C0A90.
                         // OK -> jpt_5C0BE5 case 21 = 0x5C11E9.
-                        // Annuler -> jpt_5C2DC3 : case 21 tombe dans def_5C2DC3
-                        // (« default case, cases 4-7,11-13,15-18,21-36 ») = AUCUNE
-                        // émission, aucun effet — vérifié au désassemblage.
+                        // Cancel -> jpt_5C2DC3: case 21 falls into def_5C2DC3
+                        // ("default case, cases 4-7,11-13,15-18,21-36") = NO
+                        // emission, no effect — verified in disassembly.
                         if (button != MsgBoxDialog::kBtnOk) return;
 
                         const int32_t slot = game::g_Client.VarGet(kVarSelectedSlot); // 0x5C11E9
                         net::NetClient* nc = net::GlobalNetClient();
-                        // Non-garde de complaisance : cette boîte ne peut s'ouvrir que
-                        // depuis un sélecteur ouvert en session de jeu, où nc est établi.
+                        // Not a courtesy guard: this box can only open from a selector
+                        // opened during a game session, where nc is established.
                         if (nc)
                             net::Net_SendOp58(*nc, static_cast<int8_t>(slot)); // opcode 0x3A — 0x5C11F5
-                        // Reset APRÈS l'envoi, inconditionnel (ordre exact 0x5C11F5 -> 0x5C11FA).
+                        // Reset AFTER the send, unconditional (exact order 0x5C11F5 -> 0x5C11FA).
                         game::g_Client.Var(kVarSelectedSlot) = kSlotUnset;
                     },
-                    true /* withCancel : la boîte 21 a bien une branche Annuler (no-op) */);
+                    true /* withCancel: box 21 does have a Cancel branch (no-op) */);
             }
             return true; // 0x6676B4
         }
 
-        // Aucun latch armé : NON consommé (0x6676E3) — le binaire renvoie 0 ici.
+        // No latch armed: NOT consumed (0x6676E3) — the binary returns 0 here.
     }
 
     if (!lastVisible_) return false;
@@ -399,13 +401,13 @@ bool PartyWindow::OnClick(int x, int y) {
 }
 
 // ===========================================================================
-// Rendu
+// Rendering
 // ===========================================================================
 
 void PartyWindow::RenderMemberSelect(const UiContext& ctx, int cursorX, int cursorY) {
     (void)cursorX; (void)cursorY;
 
-    // UI_MemberSelectWnd_Render 0x667860 : recentrage écran à chaque frame.
+    // UI_MemberSelectWnd_Render 0x667860: screen re-centering every frame.
     const MsLayout m = ComputeMsLayout(ctx.screenW, ctx.screenH);
 
     const auto& names = game::g_World.partyRoster.names;
@@ -416,7 +418,7 @@ void PartyWindow::RenderMemberSelect(const UiContext& ctx, int cursorX, int curs
         ctx.DrawFrame(m.x, m.y, m.w, m.h, kColBorder, 1);
 
         for (int i = 0; i < kRosterSlots && i < static_cast<int>(names.size()); ++i) {
-            if (names[i].empty()) continue; // slots vides non cliquables (0x667438)
+            if (names[i].empty()) continue; // empty slots not clickable (0x667438)
             int rx, ry, rw, rh;
             MsSlotRect(m, i, rx, ry, rw, rh);
             ctx.FillRect(rx, ry, rw, rh, (i == selected) ? kColSelBg : kColSlotBg);
@@ -434,10 +436,10 @@ void PartyWindow::RenderMemberSelect(const UiContext& ctx, int cursorX, int curs
         return;
     }
 
-    // Phase texte. Libellés : le binaire les tire de StrTable005 via des identifiants
-    // non relevés pour ce panneau — game::Str() rend un placeholder stable « #<id> »
-    // tant que la table n'est pas déchiffrée, donc on s'en tient à des libellés neutres.
-    // TODO [ancre 0x667860] identifiants StrTable005 du titre et des boutons non relevés.
+    // Text phase. Labels: the binary pulls them from StrTable005 via ids not
+    // recorded for this panel — game::Str() renders a stable "#<id>" placeholder
+    // until the table is deciphered, so we stick to neutral labels.
+    // TODO [anchor 0x667860] StrTable005 ids for the title and buttons not recorded.
     const char* title = "Groupe";
     ctx.Text(title, m.x + (m.w - ctx.MeasureText(title)) / 2, m.y + 24, kColTitle);
 
@@ -461,11 +463,11 @@ void PartyWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
 
     const Layout L = BuildLayout(ctx.screenW, ctx.screenH);
 
-    // bOpen_/x_/y_ (champs protégés de Dialog) reflètent l'état auto-masqué,
-    // recalculé à CHAQUE Render (les deux phases donnent le même résultat dans la
-    // même frame). Le sélecteur modal compte lui aussi comme « ouvert » : IsOpen()
-    // doit être vrai tant qu'il est affiché (UIManager n'ouvre/ferme rien de lui-même,
-    // mais les appelants externes testent IsOpen()).
+    // bOpen_/x_/y_ (Dialog's protected fields) reflect the auto-hidden state,
+    // recomputed on EVERY Render (both phases give the same result within the
+    // same frame). The modal selector also counts as "open": IsOpen() must be
+    // true while it's shown (UIManager doesn't open/close anything on its own,
+    // but external callers test IsOpen()).
     const bool msOpen = MemberSelectOpen();
     bOpen_ = L.visible || msOpen;
     x_ = L.x;
@@ -474,8 +476,8 @@ void PartyWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     lastVisible_ = L.visible;
     lastX_ = L.x; lastY_ = L.y; lastW_ = L.w; lastH_ = L.h;
 
-    // Dims écran pour le hit-test inter-frames du sélecteur (cf. .h) : le binaire
-    // recentre à chaque événement à partir de nWidth/nHeight courants.
+    // Screen dims for the selector's cross-frame hit-test (cf. .h): the binary
+    // re-centers on every event from the current nWidth/nHeight.
     lastScreenW_ = ctx.screenW;
     lastScreenH_ = ctx.screenH;
 
@@ -493,13 +495,13 @@ void PartyWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
             ctx.DrawFrame(L.x, L.y, L.w, L.h, kColBorder, 1);
 
             for (const auto& r : L.rows) {
-                // Barre PV (toujours des données réelles pour les lignes affichées).
+                // HP bar (always real data for the displayed rows).
                 ctx.FillRect(r.hpX, r.hpY, r.hpW, r.hpH, kColHpBg);
                 const int hpFillW = static_cast<int>(r.hpW * BarFill(r.hp, r.hpMax));
                 if (hpFillW > 0) ctx.FillRect(r.hpX, r.hpY, hpFillW, r.hpH, kColHpFill);
                 ctx.DrawFrame(r.hpX, r.hpY, r.hpW, r.hpH, kColBorder, 1);
 
-                // Barre PM : grisée/vide si aucune donnée réelle (cf. bandeau .h).
+                // MP bar: greyed out/empty if no real data (cf. .h banner).
                 if (r.hasMp) {
                     ctx.FillRect(r.mpX, r.mpY, r.mpW, r.mpH, kColMpBg);
                     const int mpFillW = static_cast<int>(r.mpW * BarFill(r.mp, r.mpMax));
@@ -519,10 +521,10 @@ void PartyWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         }
     }
 
-    // Le sélecteur modal se dessine PAR-DESSUS le raid frame (même dialogue, donc même
-    // rang de rendu). Cf. bandeau .h : party_ étant enregistré en fin de liste
-    // (UI/GameWindows.cpp:59), ce modal passe sous les autres fenêtres — à arbitrer par
-    // l'orchestrateur (fichier non possédé).
+    // The modal selector draws OVER the raid frame (same dialog, hence same
+    // render rank). Cf. .h banner: since party_ is registered at the end of the
+    // list (UI/GameWindows.cpp:59), this modal renders below other windows — to
+    // be arbitrated by the orchestrator (file not owned here).
     if (msOpen) RenderMemberSelect(ctx, cursorX, cursorY);
 }
 

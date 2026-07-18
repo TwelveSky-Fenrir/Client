@@ -1,15 +1,13 @@
-// Asset/Texture.cpp — fidèle à RE/asset_parsers/textures.py (validé 203/205).
+// Asset/Texture.cpp — faithful to RE/asset_parsers/textures.py (validated 203/205).
 #include "Asset/Texture.h"
 #include "Asset/FileUtil.h"
-#include "Asset/ImgFile.h"   // matérialisation .IMG famille T (LoadFromImgFile) — Asset_DecompressImg 0x53F5E0
+#include "Asset/ImgFile.h"   // materializes .IMG family T (LoadFromImgFile) — Asset_DecompressImg 0x53F5E0
 #include "Core/Log.h"
 #include <cstring>
 
 namespace ts2::asset {
 
-// ---------------------------------------------------------------------------
-// Helpers locaux
-// ---------------------------------------------------------------------------
+// Local helpers
 namespace {
 
 inline uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] | (p[1] << 8)); }
@@ -19,9 +17,9 @@ inline uint32_t Rd32(const uint8_t* p) {
 inline bool Pow2(uint32_t v) { return v > 0 && (v & (v - 1)) == 0; }
 inline uint8_t Scale5(uint32_t v) { return uint8_t((v << 3) | (v >> 2)); } // 5 bits -> 8 bits
 
-// Nombre d'octets d'un bloc DXT (DXT1=8, DXT2..5=16). 0 => non-DXT.
+// Number of bytes in a DXT block (DXT1=8, DXT2..5=16). 0 => non-DXT.
 // Tex_LoadFromFile 0x6A9910 (Format ∈ {DXT1/DXT3/DXT5}). ex-VeryOldClient: TEXTURE_FOR_GXD
-// (Load2/LoadGXCW « exige DXT ») — calcul mip + FourCC byte-exact (CONFIRMED).
+// (Load2/LoadGXCW "requires DXT") — mip calc + FourCC byte-exact (CONFIRMED).
 size_t DxtBlockBytes(uint32_t fourccVal) {
     switch (fourccVal) {
         case kFourCC_DXT1: return 8;   // "DXT1"
@@ -33,7 +31,7 @@ size_t DxtBlockBytes(uint32_t fourccVal) {
     }
 }
 
-// Taille (octets) d'un niveau DXT WxH (identique à dxt_level_bytes du parseur).
+// Size (bytes) of a DXT level WxH (identical to dxt_level_bytes in the parser).
 size_t DxtLevelBytes(uint32_t w, uint32_t h, size_t blockBytes) {
     size_t bw = (w + 3) / 4; if (bw < 1) bw = 1;
     size_t bh = (h + 3) / 4; if (bh < 1) bh = 1;
@@ -46,18 +44,16 @@ void Texture::Clear() {
     *this = Texture{};
 }
 
-// ---------------------------------------------------------------------------
-// Détection de famille (cf. sniff() de textures.py — même ordre de priorité)
-// ---------------------------------------------------------------------------
+// Family detection (cf. sniff() in textures.py — same priority order)
 TextureFamily Texture::Sniff(const uint8_t* b, size_t n) {
     if (n >= 4 && std::memcmp(b, "DDS ", 4) == 0) return TextureFamily::Dds;
     if (n >= 4 && std::memcmp(b, "PK\x03\x04", 4) == 0) return TextureFamily::ImgZip;
-    // Enveloppe GXD [rawSize:u32][packedSize:u32][flux zlib 78 01/9C/DA].
+    // GXD envelope [rawSize:u32][packedSize:u32][zlib stream 78 01/9C/DA].
     if (n >= 10 && b[8] == 0x78 && (b[9] == 0x01 || b[9] == 0x9C || b[9] == 0xDA)) {
         uint32_t raw = Rd32(b), packed = Rd32(b + 4);
         if (size_t(8) + packed <= n + 4 && raw >= packed) return TextureFamily::ImgGxd;
     }
-    // TGA : pas de magic ; heuristique sur l'en-tête.
+    // TGA: no magic; heuristic on the header.
     if (n >= 18) {
         uint8_t cmaptype = b[1], imgtype = b[2], bpp = b[16];
         bool typeOk = (imgtype == 0 || imgtype == 1 || imgtype == 2 || imgtype == 3 ||
@@ -68,9 +64,7 @@ TextureFamily Texture::Sniff(const uint8_t* b, size_t n) {
     return TextureFamily::Unknown;
 }
 
-// ---------------------------------------------------------------------------
-// Chargeurs fichier
-// ---------------------------------------------------------------------------
+// File loaders
 bool Texture::LoadFile(const std::string& path) {
     Clear();
     std::vector<uint8_t> data;
@@ -84,29 +78,29 @@ bool Texture::LoadFile(const std::string& path) {
         case TextureFamily::Tga:
             return LoadFromTgaMemory(data.data(), data.size());
         case TextureFamily::ImgZip:
-            // GLS.IMG (launcher, PAS le client de jeu) : archive ZIP(store) de membres
-            // zlib. Détecté uniquement (family/pixels vides) : ImgFile::Load() refuse
-            // volontairement ce cas (hors périmètre), aucun décodeur ZIP n'existe dans
-            // cette couche Asset/ — le client de jeu ne charge jamais de .IMG au format
-            // ZIP (seul le launcher, hors périmètre de ClientSource, le fait).
+            // GLS.IMG (launcher, NOT the game client): ZIP(store) archive of zlib
+            // members. Detected only (family/pixels empty): ImgFile::Load() deliberately
+            // refuses this case (out of scope), no ZIP decoder exists in this Asset/
+            // layer — the game client never loads .IMG in ZIP format (only the launcher,
+            // out of scope for ClientSource, does).
             family = TextureFamily::ImgZip;
             TS2_WARN("Texture : enveloppe IMG-ZIP (PK) detectee -- format launcher (GLS.IMG), "
                      "non decode (hors perimetre du client de jeu) : %s", path.c_str());
             return true;
         case TextureFamily::ImgGxd: {
-            // Enveloppe GXD [rawSize][packedSize][zlib]. Décompression + classification
-            // déléguées à ImgFile (qui encapsule Asset_DecompressImg 0x53F5E0), puis
-            // matérialisation de la famille T. cTexture_LoadFromImgFile 0x457A20.
+            // GXD envelope [rawSize][packedSize][zlib]. Decompression + classification
+            // delegated to ImgFile (which wraps Asset_DecompressImg 0x53F5E0), then
+            // family T materialization. cTexture_LoadFromImgFile 0x457A20.
             const uint32_t rawSz    = Rd32(data.data());
             const uint32_t packedSz = Rd32(data.data() + 4);
             ImgFile img;
             if (img.Load(path) && img.Kind() == ImgKind::TextureDxt && LoadFromImgFile(img)) {
-                imgRawSize    = rawSz;    // LoadFromImgFile()->Clear() les a effacées : ré-expose
-                imgPackedSize = packedSz; // les tailles d'enveloppe (informatives).
+                imgRawSize    = rawSz;    // LoadFromImgFile()->Clear() erased them: re-expose
+                imgPackedSize = packedSz; // the envelope sizes (informative).
                 return true;
             }
-            // Famille D (table de données) ou matérialisation impossible : enveloppe détectée,
-            // pixels vides (comportement historique préservé pour les non-textures).
+            // Family D (data table) or materialization not possible: envelope detected,
+            // pixels empty (historical behavior preserved for non-textures).
             Clear();
             family        = TextureFamily::ImgGxd;
             imgRawSize    = rawSz;
@@ -141,11 +135,9 @@ bool Texture::LoadDDS(const std::string& path) {
     return LoadFromDdsMemory(data.data(), data.size());
 }
 
-// ---------------------------------------------------------------------------
-// DDS (.SHADOW et DDS bruts) — cf. parse_dds() ; Tex_LoadFromFile 0x6A9910 (rejette non-DXT).
-// ex-VeryOldClient: TEXTURE_FOR_GXD::LoadFromDDS (CONFIRMED) — heuristique alpha DXT1 VeryOld
-// (alphaMode = data[65] >= data[64] ? 1 : 2) recoupe la question ouverte IDA (u16 @128/130).
-// ---------------------------------------------------------------------------
+// DDS (.SHADOW and raw DDS) — cf. parse_dds(); Tex_LoadFromFile 0x6A9910 (rejects non-DXT).
+// ex-VeryOldClient: TEXTURE_FOR_GXD::LoadFromDDS (CONFIRMED) — VeryOld DXT1 alpha heuristic
+// (alphaMode = data[65] >= data[64] ? 1 : 2) cross-checks the open IDA question (u16 @128/130).
 bool Texture::LoadFromDdsMemory(const uint8_t* b, size_t n) {
     Clear();
     if (n < 128) { TS2_ERR("DDS : fichier < 128 o (en-tete incomplet)"); return false; }
@@ -164,7 +156,7 @@ bool Texture::LoadFromDdsMemory(const uint8_t* b, size_t n) {
     mipCount    = dwMips;
     fourCCValue = fccVal;
 
-    // Nom FourCC lisible (octets 84..87, nuls de fin retirés).
+    // Readable FourCC name (bytes 84..87, trailing nulls stripped).
     char fcc[5] = { char(b[84]), char(b[85]), char(b[86]), char(b[87]), 0 };
     for (int i = 3; i >= 0 && fcc[i] == 0; --i) fcc[i] = 0;
     fourCC.assign(fcc);
@@ -172,14 +164,14 @@ bool Texture::LoadFromDdsMemory(const uint8_t* b, size_t n) {
 
     size_t blockBytes = DxtBlockBytes(fccVal);
     if (blockBytes == 0) {
-        // DDS non-DXT (pixelformat RGB/A) : on ne calcule pas la taille exacte,
-        // on conserve simplement les octets bruts après le header.
+        // Non-DXT DDS (RGB/A pixelformat): exact size not computed,
+        // raw bytes after the header are kept as-is.
         format = PixelFormat::DdsRaw;
         pixels.assign(b + 128, b + n);
         return true;
     }
 
-    // Taille attendue = somme des niveaux de mip (comme parse_dds).
+    // Expected size = sum of mip levels (like parse_dds).
     uint32_t levels = dwMips > 0 ? dwMips : 1;
     size_t total = 0;
     uint32_t w = dwWidth, h = dwHeight;
@@ -194,41 +186,39 @@ bool Texture::LoadFromDdsMemory(const uint8_t* b, size_t n) {
         Clear();
         return false;
     }
-    // On conserve exactement `total` octets de blocs (ignore un éventuel footer).
+    // Keep exactly `total` bytes of blocks (ignore any footer).
     format = PixelFormat::DxtBlocks;
     pixels.assign(b + 128, b + 128 + total);
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// .IMG texture GXD (famille T) — cTexture_LoadFromImgFile 0x457A20 / Tex_LoadCompressedDDS 0x6A2E80
+// .IMG GXD texture (family T) — cTexture_LoadFromImgFile 0x457A20 / Tex_LoadCompressedDDS 0x6A2E80
 //
-// Format PROUVÉ (les DEUX loaders sont byte-identiques ; désassemblage + extraction réelle
-// sur 001_00001/002, 002_00001, Z001_MINIMAP01/02) — le payload décompressé est :
-//   +0  u32 width       (LOGIQUE,  ex. 261)   -> copié brut dans le sprite : qmemcpy 0x1C @0x457B67
-//   +4  u32 height      (LOGIQUE,  ex. 90)
-//   +8  u32[5]          (dw2=1 dw3=1 dw4=0x14/0x15 dw5=3 dw6=2 ; flags/type, NON lus par le loader)
-//   +28 u32 D3DFORMAT   (FourCC "DXT1"/"DXT3")               -> v11[7], passé comme Format à D3DX
-//   +32 u32 dataSize    (taille du fichier image embarqué)   -> v11[8], SrcDataSize
-//   +36 u8[dataSize]    = fichier DDS Microsoft STANDARD ("DDS ", header 124 o), déjà pow2
-// Le binaire fait : D3DXCreateTextureFromFileInMemoryEx(dev, payload+36, dataSize,
+// PROVEN format (BOTH loaders are byte-identical; disassembly + real extraction
+// on 001_00001/002, 002_00001, Z001_MINIMAP01/02) — the decompressed payload is:
+//   +0  u32 width       (LOGICAL,  e.g. 261)   -> copied raw into the sprite: qmemcpy 0x1C @0x457B67
+//   +4  u32 height      (LOGICAL,  e.g. 90)
+//   +8  u32[5]          (dw2=1 dw3=1 dw4=0x14/0x15 dw5=3 dw6=2; flags/type, NOT read by the loader)
+//   +28 u32 D3DFORMAT   (FourCC "DXT1"/"DXT3")               -> v11[7], passed as Format to D3DX
+//   +32 u32 dataSize    (size of the embedded image file)    -> v11[8], SrcDataSize
+//   +36 u8[dataSize]    = STANDARD Microsoft DDS file ("DDS ", 124-byte header), already pow2
+// The binary does: D3DXCreateTextureFromFileInMemoryEx(dev, payload+36, dataSize,
 //   NextPow2(width), NextPow2(height), 1 mip, DXTn, D3DPOOL_MANAGED, ...) — 0x457BC5 / 0x6A3040.
 //
-// RÉSOLUTION de la question ouverte "2 sous-formes" (TS2_ASSET_ROSETTA.md / gap G5) : il n'y a
-// qu'UN format. Le DDS embarqué est DÉJÀ arrondi à la puissance de 2 (261x90 logique -> DDS
-// 512x128), donc NextPow2(logique) == dimensions du DDS et D3DX ne redimensionne PAS. On
-// matérialise donc le DDS tel quel (width/height = dims physiques pow2) et on conserve les
-// dimensions LOGIQUES à part (imgLogicalWidth/Height), exactement comme le sprite d'origine
-// (qmemcpy de l'en-tête brut AVANT NextPow2 ; getters Sprite2D_GetWidth/GetHeight 0x4D6CD0/0x4D6D20).
+// RESOLUTION of the open "2 subforms" question (TS2_ASSET_ROSETTA.md / gap G5): there is only
+// ONE format. The embedded DDS is ALREADY rounded to a power of 2 (261x90 logical -> DDS
+// 512x128), so NextPow2(logical) == DDS dimensions and D3DX does NOT resize. We therefore
+// materialize the DDS as-is (width/height = physical pow2 dims) and keep the LOGICAL
+// dimensions separately (imgLogicalWidth/Height), exactly like the original sprite
+// (qmemcpy of the raw header BEFORE any NextPow2; getters Sprite2D_GetWidth/GetHeight 0x4D6CD0/0x4D6D20).
 //
-// COUCHE CPU PURE — pas de "upload D3D9" ici : Asset/ ne dépend PAS de d3d9/d3dx9 (sinon tout
-// consommateur headless d'Asset — AssetSelfTest, parseurs — hériterait du SDK Direct3D, et on
-// dupliquerait gfx::GpuTexture). L'upload GPU via le device existant reste donc dans la couche
-// Gfx, déjà fidèle et gardée (`if(!dev) return false`) :
-//   - gfx::GpuTexture::CreateFromTexture(dev, asset::Texture)  -> blocs DXT via CreateTexture+LockRect
-//     (consomme le résultat de CE parse : PixelFormat::DxtBlocks + width/height/fourCC/mipCount),
-//   - gfx::GpuTexture::CreateFromImgFile(dev, asset::ImgFile)  -> réplique D3DX exacte de 0x457A20.
-// ---------------------------------------------------------------------------
+// PURE CPU LAYER — no "D3D9 upload" here: Asset/ does NOT depend on d3d9/d3dx9 (otherwise any
+// headless consumer of Asset — AssetSelfTest, parsers — would inherit the Direct3D SDK, and we'd
+// duplicate gfx::GpuTexture). GPU upload via the existing device therefore stays in the
+// Gfx layer, already faithful and guarded (`if(!dev) return false`):
+//   - gfx::GpuTexture::CreateFromTexture(dev, asset::Texture)  -> DXT blocks via CreateTexture+LockRect
+//     (consumes the result of THIS parse: PixelFormat::DxtBlocks + width/height/fourCC/mipCount),
+//   - gfx::GpuTexture::CreateFromImgFile(dev, asset::ImgFile)  -> exact D3DX replica of 0x457A20.
 bool Texture::LoadFromImgTexturePayload(const uint8_t* payload, size_t size) {
     Clear();
     if (!payload || size < 36) {
@@ -236,31 +226,31 @@ bool Texture::LoadFromImgTexturePayload(const uint8_t* payload, size_t size) {
         return false;
     }
 
-    const uint32_t w0     = Rd32(payload + 0);   // width  logique (en-tête GXD +0)
-    const uint32_t h0     = Rd32(payload + 4);   // height logique (en-tête GXD +4)
-    const uint32_t fccVal = Rd32(payload + 28);  // FourCC/D3DFORMAT (en-tête GXD +28)
-    const uint32_t dataSz = Rd32(payload + 32);  // taille du fichier embarqué (en-tête GXD +32)
+    const uint32_t w0     = Rd32(payload + 0);   // logical width (GXD header +0)
+    const uint32_t h0     = Rd32(payload + 4);   // logical height (GXD header +4)
+    const uint32_t fccVal = Rd32(payload + 28);  // FourCC/D3DFORMAT (GXD header +28)
+    const uint32_t dataSz = Rd32(payload + 32);  // size of the embedded file (GXD header +32)
 
-    if (dataSz > size - 36) {   // size >= 36 garanti ci-dessus -> pas d'overflow (Win32 size_t 32-bit)
+    if (dataSz > size - 36) {   // size >= 36 guaranteed above -> no overflow (Win32 32-bit size_t)
         TS2_ERR("IMG-tex : bloc image hors payload (dataSize=%u, payload=%zu)", dataSz, size);
         return false;
     }
-    const uint8_t* embedded = payload + 36;      // fichier image embarqué (SrcData)
+    const uint8_t* embedded = payload + 36;      // embedded image file (SrcData)
 
-    // Sous-forme PROUVÉE (11839/11839 .IMG famille T) : le fichier embarqué est un DDS standard.
+    // PROVEN subform (11839/11839 .IMG family T): the embedded file is a standard DDS.
     if (dataSz >= 4 && std::memcmp(embedded, "DDS ", 4) == 0) {
-        if (!LoadFromDdsMemory(embedded, dataSz)) return false;  // width/height=pow2, fourCC, blocs DXT
-        // Conserve les dimensions LOGIQUES de l'en-tête GXD (LoadFromDdsMemory a mis les pow2).
+        if (!LoadFromDdsMemory(embedded, dataSz)) return false;  // width/height=pow2, fourCC, DXT blocks
+        // Keep the LOGICAL dimensions from the GXD header (LoadFromDdsMemory set the pow2 ones).
         imgLogicalWidth  = w0;
         imgLogicalHeight = h0;
         return true;
     }
 
-    // Sous-forme NON observée dans le corpus. D3DXCreateTextureFromFileInMemoryEx accepterait
-    // aussi BMP/TGA/PNG, mais aucun décodeur CPU de ces conteneurs n'existe dans cette couche.
-    // TODO(0x457A20 @0x457BC5 / D3DXCreateTextureFromFileInMemoryEx @0x6BB660) : si un tel
-    // fichier apparaissait, le matérialiser passerait par le pont GPU gfx::GpuTexture::
-    // CreateFromImgFile (chemin D3DX déjà fidèle), PAS ici — Asset/ reste sans dépendance D3D9.
+    // Subform NOT observed in the corpus. D3DXCreateTextureFromFileInMemoryEx would also
+    // accept BMP/TGA/PNG, but no CPU decoder for these containers exists in this layer.
+    // TODO(0x457A20 @0x457BC5 / D3DXCreateTextureFromFileInMemoryEx @0x6BB660): if such a
+    // file appeared, materializing it would go through the gfx::GpuTexture::
+    // CreateFromImgFile GPU bridge (D3DX path already faithful), NOT here — Asset/ stays free of D3D9 dependency.
     TS2_ERR("IMG-tex : fichier embarque non-DDS (FourCC en-tete 0x%08X) non decode en CPU",
             static_cast<unsigned>(fccVal));
     return false;
@@ -275,14 +265,12 @@ bool Texture::LoadFromImgFile(const ImgFile& img) {
     return LoadFromImgTexturePayload(pl.data(), pl.size());
 }
 
-// ---------------------------------------------------------------------------
-// TGA — cf. parse_tga() + décodage effectif des pixels en RGBA8 top-down.
+// TGA — cf. parse_tga() + actual pixel decoding to top-down RGBA8.
 // Tex_LoadTgaConvert 0x417180 / Tex_LoadDDS 0x6A2680.
-// ex-VeryOldClient: TEXTURE_FOR_GXD::LoadFromTGA (CONFIRMED pour le format on-disk).
-// GAP G6 (PLAUSIBLE, faible) : la cible re-encode TGA 24/32 en DXT1/DXT3 via
-// D3DXCreateTextureFromFileInMemoryEx (+ DDS temp « HONGCHANGWOO ») ; ici on matérialise
-// RGBA8 (visuellement équivalent, bit-exactitude DXT non reproduite).
-// ---------------------------------------------------------------------------
+// ex-VeryOldClient: TEXTURE_FOR_GXD::LoadFromTGA (CONFIRMED for the on-disk format).
+// GAP G6 (PLAUSIBLE, low confidence): the target re-encodes TGA 24/32 to DXT1/DXT3 via
+// D3DXCreateTextureFromFileInMemoryEx (+ temp DDS "HONGCHANGWOO"); here we materialize
+// RGBA8 (visually equivalent, DXT bit-exactness not reproduced).
 bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
     Clear();
     if (n < 18) { TS2_ERR("TGA : fichier < 18 o (en-tete incomplet)"); return false; }
@@ -298,7 +286,7 @@ bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
     const uint8_t  bppS = b[16];
     const uint8_t  desc = b[17];
 
-    // Types connus (TGA_TYPE du parseur).
+    // Known types (TGA_TYPE from the parser).
     const bool known = (imgtype == 0 || imgtype == 1 || imgtype == 2 || imgtype == 3 ||
                         imgtype == 9 || imgtype == 10 || imgtype == 11);
     if (!known) { TS2_ERR("TGA : image type inconnu %u", imgtype); return false; }
@@ -307,13 +295,13 @@ bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
     const bool topO   = (desc & 0x20) != 0;
     const bool rightO = (desc & 0x10) != 0;
 
-    // Offsets (identiques au parseur).
+    // Offsets (same as the parser).
     const size_t headerAndId = size_t(18) + idlen;
     size_t cmapBytes = 0;
     if (cmaptype == 1) cmapBytes = size_t(cmLen) * ((cmEnt + 7) / 8);
     const size_t pixelOff = headerAndId + cmapBytes;
 
-    // Vérification de taille pour les formats non compressés (types 2 et 3).
+    // Size check for uncompressed formats (types 2 and 3).
     if (imgtype == 2 || imgtype == 3) {
         const size_t need = pixelOff + size_t(w) * h * (bppS / 8);
         if (n < need) {
@@ -327,31 +315,31 @@ bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
     const bool isGray      = (imgtype == 3 || imgtype == 11);
     const bool isRLE       = (imgtype == 9 || imgtype == 10 || imgtype == 11);
 
-    // Octets par unité source lue (index colormap ou pixel direct).
+    // Bytes per source unit read (colormap index or direct pixel).
     const size_t srcBpp = (bppS + 7) / 8; // 8->1, 15/16->2, 24->3, 32->4
 
-    // Décode un échantillon direct (non colormap) en RGBA.
+    // Decode a direct (non-colormap) sample into RGBA.
     auto sampleRGBA = [&](const uint8_t* s, uint8_t& r, uint8_t& g, uint8_t& bl, uint8_t& a) {
         if (isGray) {
             uint8_t v = s[0]; r = g = bl = v; a = (srcBpp >= 2) ? s[1] : 255;
-        } else if (srcBpp >= 4) {          // 32 bpp : B,G,R,A
+        } else if (srcBpp >= 4) {          // 32 bpp: B,G,R,A
             bl = s[0]; g = s[1]; r = s[2]; a = s[3];
-        } else if (srcBpp == 3) {          // 24 bpp : B,G,R
+        } else if (srcBpp == 3) {          // 24 bpp: B,G,R
             bl = s[0]; g = s[1]; r = s[2]; a = 255;
-        } else {                           // 15/16 bpp : A RRRRR GGGGG BBBBB
+        } else {                           // 15/16 bpp: A RRRRR GGGGG BBBBB
             uint16_t v = uint16_t(s[0] | (s[1] << 8));
             r  = Scale5((v >> 10) & 31);
             g  = Scale5((v >> 5) & 31);
             bl = Scale5(v & 31);
-            a  = 255; // le bit d'alpha 16 bpp est ignoré (opaque), comme le converter
+            a  = 255; // the 16 bpp alpha bit is ignored (opaque), like the converter
         }
     };
 
-    // Palette (colormap) décodée en RGBA, indexée par index absolu.
-    std::vector<uint8_t> pal; // 4 o/entrée
+    // Palette (colormap) decoded to RGBA, indexed by absolute index.
+    std::vector<uint8_t> pal; // 4 bytes/entry
     if (isColormap && cmaptype == 1) {
         const size_t entBytes = (cmEnt + 7) / 8;
-        const size_t palStart = headerAndId; // la colormap suit l'ID field
+        const size_t palStart = headerAndId; // the colormap follows the ID field
         if (palStart + size_t(cmLen) * entBytes > n) {
             TS2_ERR("TGA : colormap hors fichier");
             return false;
@@ -371,13 +359,13 @@ bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
         }
     }
 
-    // Buffer de scan : RGBA dans l'ordre de stockage du fichier (avant normalisation).
+    // Scan buffer: RGBA in the file's storage order (before normalization).
     const size_t pixelCount = size_t(w) * h;
     std::vector<uint8_t> scan(pixelCount * 4);
 
-    size_t cur = pixelOff; // curseur de lecture dans b
+    size_t cur = pixelOff; // read cursor into b
 
-    // Écrit un pixel (index de scan) à partir d'une unité source à `cur`.
+    // Write a pixel (scan index) from a source unit at `cur`.
     auto emit = [&](size_t idx) -> bool {
         if (cur + srcBpp > n) return false;
         const uint8_t* s = b + cur;
@@ -402,13 +390,13 @@ bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
             if (!emit(i)) { TS2_ERR("TGA : donnees pixel tronquees"); return false; }
         }
     } else {
-        // RLE : paquets [header:u8] ; bit7 => run (1 pixel répété), sinon raw (count pixels).
+        // RLE: packets [header:u8]; bit7 => run (1 repeated pixel), otherwise raw (count pixels).
         size_t i = 0;
         while (i < pixelCount) {
             if (cur >= n) { TS2_ERR("TGA : flux RLE tronque"); return false; }
             uint8_t hdr = b[cur++];
             size_t count = size_t(hdr & 0x7F) + 1;
-            if (hdr & 0x80) { // run-length : une unité source, répétée
+            if (hdr & 0x80) { // run-length: one source unit, repeated
                 if (cur + srcBpp > n) { TS2_ERR("TGA : run RLE tronque"); return false; }
                 const uint8_t* s = b + cur;
                 uint8_t r, g, bl, a;
@@ -426,7 +414,7 @@ bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
                     uint8_t* d = &scan[i * 4];
                     d[0] = r; d[1] = g; d[2] = bl; d[3] = a;
                 }
-            } else { // raw : count unités source consécutives
+            } else { // raw: count consecutive source units
                 for (size_t k = 0; k < count && i < pixelCount; ++k, ++i) {
                     if (!emit(i)) { TS2_ERR("TGA : raw RLE tronque"); return false; }
                 }
@@ -434,8 +422,8 @@ bool Texture::LoadFromTgaMemory(const uint8_t* b, size_t n) {
         }
     }
 
-    // Normalisation en top-down, gauche-à-droite (RGBA8).
-    // top_origin=0 => rangées stockées de bas en haut ; right_origin=1 => miroir X.
+    // Normalize to top-down, left-to-right (RGBA8).
+    // top_origin=0 => rows stored bottom-up; right_origin=1 => X mirror.
     pixels.resize(pixelCount * 4);
     for (uint32_t y = 0; y < h; ++y) {
         uint32_t srcRow = topO ? y : (h - 1 - y);

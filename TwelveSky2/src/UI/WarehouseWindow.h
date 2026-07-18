@@ -1,77 +1,77 @@
-// UI/WarehouseWindow.h — fenêtre ENTREPÔT (Warehouse/Storage) du client TS2.
+// UI/WarehouseWindow.h — WAREHOUSE (Warehouse/Storage) window of the TS2 client.
 //
-// Vue 5x5 sur game::g_Warehouse (Game/WarehouseSystem.h, déjà écrit). Le blob
-// réseau de 1232 o (WarehouseGrid) est déjà décodé côté handlers Pkt_WarehouseOpen/
-// Pkt_WarehouseUpdate ; cette fenêtre AFFICHE la grille 5x5 qui en résulte et
-// pilote les actions de sélection/échange/retrait :
-//   - clic sur une cellule non vide, aucune sélection en cours
-//       -> WarehouseState::SelectPendingMove(row,col). RETOUR VISUEL — CORRIGÉ
-//          par désassemblage (mission « retour visuel du glisser-déposer »,
-//          2026-07-14, décompilation Item_BeginDragTransaction 0x5AFDF0 +
+// 5x5 view onto game::g_Warehouse (Game/WarehouseSystem.h, already written). The
+// 1232-byte network blob (WarehouseGrid) is already decoded on the
+// Pkt_WarehouseOpen/Pkt_WarehouseUpdate handler side; this window DISPLAYS the
+// resulting 5x5 grid and drives the selection/swap/withdraw actions:
+//   - click on a non-empty cell, no selection currently active
+//       -> WarehouseState::SelectPendingMove(row,col). VISUAL FEEDBACK — FIXED
+//          by disassembly ("drag-and-drop visual feedback" mission, 2026-07-14,
+//          decompilation of Item_BeginDragTransaction 0x5AFDF0 +
 //          Inv_RemoveItemQuantity 0x5B0340 case 18/19/27/28 + UI_StorageWin_Draw
-//          0x5D6610 + maybe_UI_QuickSlotBar_Render 0x5BE340) : l'ancienne
-//          hypothèse « cellule source grisée » (kColDragSource/kColDragSourceOverlay)
-//          était FAUSSE — le binaire retire l'objet de la grille source dès la
-//          saisie (Inv_RemoveItemQuantity y met l'itemId à 0), donc
-//          UI_StorageWin_Draw (qui ne dessine l'icône QUE si `champ >= 1`) ne
-//          dessine RIEN à cet emplacement : la case source redevient une case
-//          VIDE ORDINAIRE, sans teinte particulière. En contrepartie, l'objet
-//          saisi est dessiné CENTRÉ SUR LE CURSEUR à chaque frame tant que le
-//          glisser est actif (maybe_UI_QuickSlotBar_Render, dispatch sur
-//          g_DragCtx, case 27/28 = type entrepôt), ce que l'implémentation
-//          précédente ne faisait PAS du tout. Voir Render() dans le .cpp.
-//   - reclic sur la MÊME cellule déjà sélectionnée
-//       -> désélection (WarehouseState::CancelPendingMove)
-//   - reclic sur une AUTRE cellule de la grille (vide ou occupée)
-//       -> WarehouseState::SwapCells (échange local, « tri »). AUCUN PAQUET.
-//   - clic sur le bouton « Retirer -> Sac » (actif seulement si une cellule est
-//     sélectionnée) -> WarehouseState::CommitCellToInventory. AUCUN PAQUET.
-//   - clic sur « Valider » -> Net_SendPacket_Op32(nc, 1), INCONDITIONNEL.
-//   - fermeture -> Net_SendPacket_Op32(nc, 1) (chemin UI_StorageWin_CommitGrid).
+//          0x5D6610 + maybe_UI_QuickSlotBar_Render 0x5BE340): the old
+//          "grayed-out source cell" hypothesis (kColDragSource/kColDragSourceOverlay)
+//          was FALSE — the binary removes the item from the source grid as soon
+//          as it's picked up (Inv_RemoveItemQuantity sets its itemId to 0 there),
+//          so UI_StorageWin_Draw (which only draws the icon IF `field >= 1`)
+//          draws NOTHING at that spot: the source cell becomes an ORDINARY EMPTY
+//          cell, with no particular tint. In exchange, the picked-up item is
+//          drawn CENTERED ON THE CURSOR every frame while the drag is active
+//          (maybe_UI_QuickSlotBar_Render, dispatch on g_DragCtx, case 27/28 =
+//          warehouse type), which the previous implementation did NOT do at all.
+//          See Render() in the .cpp.
+//   - re-click on the SAME already-selected cell
+//       -> deselect (WarehouseState::CancelPendingMove)
+//   - re-click on ANOTHER grid cell (empty or occupied)
+//       -> WarehouseState::SwapCells (local swap, "sort"). NO PACKET.
+//   - click on "Retirer -> Sac" button (active only when a cell is
+//     selected) -> WarehouseState::CommitCellToInventory. NO PACKET.
+//   - click on "Valider" -> Net_SendPacket_Op32(nc, 1), UNCONDITIONAL.
+//   - close -> Net_SendPacket_Op32(nc, 1) (via UI_StorageWin_CommitGrid path).
 //
 // ===========================================================================
-// RÉSEAU — RÉÉCRIT le 2026-07-16 (vague W6) sur preuve IDA. L'état précédent
-// était FAUX sur trois points, tous corrigés ici :
+// NETWORK — REWRITTEN 2026-07-16 (wave W6) on IDA evidence. The previous state
+// was WRONG on three points, all fixed here:
 //
-//  1. PAQUET INVENTÉ. L'ancien code émettait Net_SendPacket_Op31 avec kind=5
-//     (« tri ») / kind=4 (« retrait »). Le balayage de UI_StorageWin_OnLUp
-//     0x5d5400 ne trouve QUE DEUX sites Op31 dans tout le binaire, et aucun
-//     n'est l'entrepôt : EA 0x5d576c = case 1 (mon étal) sélecteur 1, et
-//     EA 0x5d5dd6 = case 5 (boutique-joueur) sélecteur 2. Les sélecteurs 4 et 5
-//     d'Op31 N'EXISTENT NULLE PART. L'entrepôt (mode 2) n'émet JAMAIS Op31.
+//  1. INVENTED PACKET. The old code emitted Net_SendPacket_Op31 with kind=5
+//     ("sort") / kind=4 ("withdraw"). Scanning UI_StorageWin_OnLUp
+//     0x5d5400 finds ONLY TWO Op31 sites in the entire binary, and neither
+//     is the warehouse: EA 0x5d576c = case 1 (my stall) selector 1, and
+//     EA 0x5d5dd6 = case 5 (player shop) selector 2. Op31 selectors 4 and 5
+//     DO NOT EXIST ANYWHERE. The warehouse (mode 2) NEVER emits Op31.
 //
-//  2. ÉMISSION PAR ACTION. Le binaire n'émet RIEN pour la manipulation de la
-//     grille : UI_StorageWin_OnLDown 0x5d4240 et UI_StorageWin_OnKey 0x5d6330 ne
-//     contiennent aucun `call Net_Send*`. Glisser-déposer, échange de cellule et
-//     saisie de quantité sont du STAGING 100 % LOCAL. Seuls « Valider » et
-//     « Fermer » émettent, et ils émettent Net_SendPacket_Op32(&g_AutoPlayMgr, 1) :
-//       - Valider (verrou +24, sprite unk_901064 @ (x+167, y+411)) : EA 0x5d5947,
-//         INCONDITIONNEL — aucune garde morph/verrou, aucun verrou posé.
-//       - Fermer (verrou +12, sprite unk_8F3798 @ (x+8, y+6)) : EA 0x5d57ce ->
-//         UI_StorageWin_CommitGrid(this) 0x5d2f70, dont le case 2 (= ENTREPÔT)
-//         déverse la grille 5x5 puis émet Op32(1) à l'EA 0x5d373f.
-//     Pagination (verrous +16/+20) : purement locale (page 0..4, EA 0x5d585b /
-//     0x5d58dc) — les « onglets » d'entrepôt n'existent pas ; les onglets (+1328)
-//     et le déplacement d'or (Net_SendOp110, EA 0x5d5ea3) appartiennent au
-//     mode 5 = BOUTIQUE-JOUEUR, pas à l'entrepôt.
+//  2. PER-ACTION EMISSION. The binary emits NOTHING for grid manipulation:
+//     UI_StorageWin_OnLDown 0x5d4240 and UI_StorageWin_OnKey 0x5d6330
+//     contain no `call Net_Send*`. Drag-and-drop, cell swap, and quantity
+//     entry are 100% LOCAL STAGING. Only "Validate" and "Close" emit, and
+//     they emit Net_SendPacket_Op32(&g_AutoPlayMgr, 1):
+//       - Validate (lock +24, sprite unk_901064 @ (x+167, y+411)): EA 0x5d5947,
+//         UNCONDITIONAL — no morph/lock guard, no lock set afterward.
+//       - Close (lock +12, sprite unk_8F3798 @ (x+8, y+6)): EA 0x5d57ce ->
+//         UI_StorageWin_CommitGrid(this) 0x5d2f70, whose case 2 (= WAREHOUSE)
+//         dumps the 5x5 grid then emits Op32(1) at EA 0x5d373f.
+//     Pagination (locks +16/+20): purely local (page 0..4, EA 0x5d585b /
+//     0x5d58dc) — warehouse "tabs" do not exist; the tabs (+1328) and gold
+//     transfer (Net_SendOp110, EA 0x5d5ea3) belong to mode 5 = PLAYER SHOP,
+//     not the warehouse.
 //
-//  3. CODE MORT. L'ancien SendGridCommit() commençait par `if (!net_) return;`
-//     alors que Bind() n'était appelé nulle part -> net_ TOUJOURS nul -> aucune
-//     émission possible. Le binaire adresse g_NetClient 0x8156A0 en GLOBAL (les
-//     234 builders le lisent directement, jamais en paramètre). On restaure ce
-//     pattern via net::GlobalNetClient() (Net/NetClient.h:67-68), renseigné par
-//     ConnectGameServer — même idiome que Game/MapWarp.cpp:86. Bind()/net_ sont
-//     donc SUPPRIMÉS (aucun appelant : vérifié sur tout l'arbre).
+//  3. DEAD CODE. The old SendGridCommit() began with `if (!net_) return;`
+//     while Bind() was never called anywhere -> net_ ALWAYS null -> no
+//     emission possible. The binary addresses g_NetClient 0x8156A0 as a
+//     GLOBAL (the 234 builders read it directly, never as a parameter). This
+//     pattern is restored via net::GlobalNetClient() (Net/NetClient.h:67-68),
+//     set by ConnectGameServer — same idiom as Game/MapWarp.cpp:86. Bind()/net_
+//     are therefore REMOVED (no caller: verified across the whole tree).
 //
-// Analogue de a1[2] : le binaire garde l'entrée de UI_StorageWin_OnLUp par
-// `if (!*(this+8)) return 0;` (dword_1822998, EA 0x5d540d) et le corps de
-// UI_StorageWin_CommitGrid par `if (a1[2])` (EA 0x5d2f7e) — c'est le drapeau
-// « fenêtre active ». On prend bOpen_ (Dialog) comme analogue VIVANT de ce
-// drapeau : mêmes rôle et emplacement dans le flux.
+// Analog of a1[2]: the binary guards the entry point of UI_StorageWin_OnLUp with
+// `if (!*(this+8)) return 0;` (dword_1822998, EA 0x5d540d) and the body of
+// UI_StorageWin_CommitGrid with `if (a1[2])` (EA 0x5d2f7e) — this is the
+// "window active" flag. bOpen_ (Dialog) is taken as the LIVING analog of this
+// flag: same role and same position in the flow.
 // ===========================================================================
 //
-// Règle du projet : ce fichier n'édite AUCUN header existant ; il inclut
-// UI/UIManager.h, Game/WarehouseSystem.h et Game/ClientRuntime.h en lecture seule.
+// Project rule: this file does NOT edit any existing header; it includes
+// UI/UIManager.h, Game/WarehouseSystem.h, and Game/ClientRuntime.h read-only.
 #pragma once
 #include "UI/UIManager.h"
 #include "Game/WarehouseSystem.h"
@@ -89,15 +89,15 @@ class WarehouseWindow : public Dialog {
 public:
     WarehouseWindow();
 
-    // Cache GPU d'icônes PARTAGÉ (mutualisation mémoire, cf. Gfx/IconTextureCache.h) :
-    // injecté par UI/GameWindows.cpp, même instance que InventoryWindow/EnchantWindow/
-    // VendorShopWindow. nullptr (repli) => ownIconCache_ locale (jamais le cas en
-    // production, cf. InventoryWindow::SetIconCache).
+    // SHARED GPU icon cache (memory pooling, cf. Gfx/IconTextureCache.h): injected
+    // by UI/GameWindows.cpp, same instance as InventoryWindow/EnchantWindow/
+    // VendorShopWindow. nullptr (fallback) => local ownIconCache_ (never the case
+    // in production, cf. InventoryWindow::SetIconCache).
     void SetIconCache(gfx::IconTextureCache* c) { sharedIconCache_ = c; }
 
-    // Ouverture/fermeture (Dialog::Open/Close). L'ouverture n'affecte pas la
-    // grille (déjà peuplée par les handlers réseau) ; la fermeture annule une
-    // éventuelle sélection en attente pour ne rien laisser « en l'air ».
+    // Open/close (Dialog::Open/Close). Opening does not affect the grid
+    // (already populated by the network handlers); closing cancels any
+    // pending selection so nothing is left "dangling".
     void Open() override;
     void Close() override;
 
@@ -113,57 +113,58 @@ private:
     Rect PanelRect() const;
     Rect CloseButtonRect() const;
     Rect WithdrawButtonRect() const;
-    // Bouton « Valider » = verrou +24 du binaire (sprite unk_901064 @ (x+167, y+411),
-    // UI_StorageWin_OnLUp case 2, EA 0x5d592d) : SEULE émission explicite de la
-    // fenêtre entrepôt -> Net_SendPacket_Op32(nc, 1) (EA 0x5d5947).
+    // "Validate" button = binary lock +24 (sprite unk_901064 @ (x+167, y+411),
+    // UI_StorageWin_OnLUp case 2, EA 0x5d592d): the ONLY explicit emission of the
+    // warehouse window -> Net_SendPacket_Op32(nc, 1) (EA 0x5d5947).
     Rect ValidateButtonRect() const;
     Rect CellRect(int row, int col) const;
     bool CellAt(int mx, int my, int& outRow, int& outCol) const;
     bool PointInPanel(int mx, int my) const;
 
-    // Recalcule x_/y_ (centrage) depuis les dimensions écran RÉELLES courantes —
-    // appelé à CHAQUE frame par Render() (cf. bandeau de tête du .cpp : bug
-    // "fenêtre figée à la position de conception" corrigé, mission fenêtres mal
-    // ajustées). Même pattern que EnchantWindow::ComputeLayout / MsgBoxDialog::Layout,
-    // conforme au contrat documenté par Dialog::x_/y_ ("position écran recentrée
-    // chaque frame", cf. UI/UIManager.h).
+    // Recomputes x_/y_ (centering) from the current REAL screen dimensions —
+    // called EVERY frame by Render() (cf. .cpp header banner: "window frozen at
+    // design position" bug fixed, misaligned-windows mission). Same pattern as
+    // EnchantWindow::ComputeLayout / MsgBoxDialog::Layout, matching the contract
+    // documented by Dialog::x_/y_ ("screen position recentered every frame",
+    // cf. UI/UIManager.h).
     void RecomputeCenter(int screenW, int screenH);
 
     void HandleCellClick(int row, int col);
     void HandleWithdrawClick();
     void HandleValidateClick();
 
-    // Net_SendPacket_Op32(&g_AutoPlayMgr, 1) — le SEUL paquet de la fenêtre
-    // entrepôt (opcode 0x20, 1 champ char émis sur 4 octets LE, total 13).
-    // Émis par le bouton « Valider » (EA 0x5d5947) et par la fermeture via
-    // UI_StorageWin_CommitGrid case 2 (EA 0x5d373f) — INCONDITIONNEL dans les
-    // deux cas. Cible : net::GlobalNetClient() (g_NetClient 0x8156A0 global),
-    // cf. bandeau de tête de fichier.
+    // Net_SendPacket_Op32(&g_AutoPlayMgr, 1) — the ONLY packet of the warehouse
+    // window (opcode 0x20, 1 char field emitted as 4 bytes LE, total 13).
+    // Emitted by the "Validate" button (EA 0x5d5947) and by closing via
+    // UI_StorageWin_CommitGrid case 2 (EA 0x5d373f) — UNCONDITIONAL in both
+    // cases. Target: net::GlobalNetClient() (global g_NetClient 0x8156A0),
+    // cf. file header banner.
     void SendStorageCommit();
 
     static std::string CellLabel(const game::WarehouseItemCell& cell);
 
-    // --- Icônes d'objet (même pattern que InventoryWindow : résolveur + cache paresseux
-    // + repli sur la cellule colorée existante si la texture ne charge pas). Le device D3D9
-    // n'est accessible qu'au rendu (ctx.renderer), d'où la prise du device en paramètre ici
-    // plutôt qu'un device_ membre comme dans InventoryWindow (cette fenêtre n'a pas d'Init()
-    // dédié — Dialog ne prévoit pas de device au moment de la construction).
+    // --- Item icons (same pattern as InventoryWindow: resolver + lazy cache +
+    // fallback to the existing colored cell if the texture fails to load). The D3D9
+    // device is only accessible at render time (ctx.renderer), hence taking the
+    // device as a parameter here rather than a device_ member like InventoryWindow
+    // (this window has no dedicated Init() — Dialog provides no device at
+    // construction time).
     gfx::GpuTexture* GetIconTex(IDirect3DDevice9* dev, uint32_t itemId);
     gfx::IconTextureCache& ActiveIconCache() { return sharedIconCache_ ? *sharedIconCache_ : ownIconCache_; }
 
     gfx::IconTextureCache  ownIconCache_;
     gfx::IconTextureCache* sharedIconCache_ = nullptr;
 
-    // --- Géométrie (dimensions panneau fixes, référence 1024x768 ; ORIGINE x_/y_ (héritée
-    // de Dialog) recentrée chaque frame par RecomputeCenter() ci-dessus — PAS figée) ---
+    // --- Geometry (fixed panel dimensions, reference 1024x768; x_/y_ ORIGIN (inherited
+    // from Dialog) recentered every frame by RecomputeCenter() above — NOT frozen) ---
     static constexpr int kCellSize  = 48;
     static constexpr int kCellGap   = 4;
     static constexpr int kGridPad   = 12;
     static constexpr int kHeaderH   = 26;
     static constexpr int kFooterH   = 58;
     static constexpr int kCloseSize = 18;
-    // Deux boutons côte à côte dans le pied de fenêtre (« Retirer -> Sac » et
-    // « Valider ») : 2*122 + 8 de gouttière = 252 <= kPanelW - 2*kGridPad = 256.
+    // Two side-by-side buttons in the window footer ("Retirer -> Sac" and
+    // "Valider"): 2*122 + 8 gutter = 252 <= kPanelW - 2*kGridPad = 256.
     static constexpr int kBtnW      = 122;
     static constexpr int kBtnH      = 24;
     static constexpr int kBtnGap    = 8;
@@ -176,22 +177,22 @@ private:
         + (game::WarehouseGrid::kRows - 1) * kCellGap
         + kGridPad + kFooterH;
 
-    // --- Palette (D3DCOLOR = 0xAARRGGBB, cf. consigne de mission) ---
-    static constexpr D3DCOLOR kColPanelBg   = 0xE0202028u; // fond panneau
-    static constexpr D3DCOLOR kColFrame     = 0xFF808080u; // cadre
-    static constexpr D3DCOLOR kColTitle     = 0xFFFFDD66u; // titre
-    static constexpr D3DCOLOR kColText      = 0xFFFFFFFFu; // texte
-    static constexpr D3DCOLOR kColTextDim   = 0xFFAAAAAAu; // texte atténué
-    static constexpr D3DCOLOR kColSelect    = 0xFF4060A0u; // survol (cible potentielle)
-    static constexpr D3DCOLOR kColError     = 0xFFFF6060u; // erreur
-    static constexpr D3DCOLOR kColSuccess   = 0xFF60FF60u; // succès
-    static constexpr D3DCOLOR kColHeaderBg  = 0xFF2A2A34u; // bandeau titre
-    static constexpr D3DCOLOR kColCellBg    = 0xFF34343Eu; // cellule occupée
-    static constexpr D3DCOLOR kColEmptyCell = 0xFF1A1A20u; // cellule vide
-    static constexpr D3DCOLOR kColBtnBg     = 0xFF3A3A46u; // bouton actif
-    static constexpr D3DCOLOR kColBtnBgOff  = 0xFF262629u; // bouton désactivé
+    // --- Palette (D3DCOLOR = 0xAARRGGBB, cf. mission spec) ---
+    static constexpr D3DCOLOR kColPanelBg   = 0xE0202028u; // panel background
+    static constexpr D3DCOLOR kColFrame     = 0xFF808080u; // frame
+    static constexpr D3DCOLOR kColTitle     = 0xFFFFDD66u; // title
+    static constexpr D3DCOLOR kColText      = 0xFFFFFFFFu; // text
+    static constexpr D3DCOLOR kColTextDim   = 0xFFAAAAAAu; // dimmed text
+    static constexpr D3DCOLOR kColSelect    = 0xFF4060A0u; // hover (potential target)
+    static constexpr D3DCOLOR kColError     = 0xFFFF6060u; // error
+    static constexpr D3DCOLOR kColSuccess   = 0xFF60FF60u; // success
+    static constexpr D3DCOLOR kColHeaderBg  = 0xFF2A2A34u; // title bar
+    static constexpr D3DCOLOR kColCellBg    = 0xFF34343Eu; // occupied cell
+    static constexpr D3DCOLOR kColEmptyCell = 0xFF1A1A20u; // empty cell
+    static constexpr D3DCOLOR kColBtnBg     = 0xFF3A3A46u; // active button
+    static constexpr D3DCOLOR kColBtnBgOff  = 0xFF262629u; // disabled button
 
-    std::string statusText_; // dernier résultat d'action (échange/retrait), affiché en pied de fenêtre
+    std::string statusText_; // last action result (swap/withdraw), shown in the window footer
 };
 
 } // namespace ts2::ui

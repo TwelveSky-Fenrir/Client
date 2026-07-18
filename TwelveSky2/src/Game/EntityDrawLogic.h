@@ -1,254 +1,223 @@
-// Game/EntityDrawLogic.h — logique de décision du dispatcher de rendu d'entité.
+// Game/EntityDrawLogic.h — decision logic for the entity render dispatcher.
 //
-// Réécriture C++ PROPRE (pas byte-exact — cf. règle de périmètre : le rendu 3D
-// pixel-exact est hors fidélité, seules les FORMULES/conditions de gameplay le
-// sont) des 5 fonctions relevées dans le désassemblage :
-//   Char_Draw             0x5805C0  (~0x6F1 o)  — dispatcher principal par entité
-//   Char_DrawShadow        0x580CE0  (~0x3A4 o)  — passe ombre
-//   Char_DrawReflection    0x581090  (~0x3A4 o)  — passe reflet (miroir/eau)
-//   Char_DrawOverheadName  0x581440  (~0xA7 o)   — nombre/texte flottant "cliquable"
-//   Char_DrawNameTag       0x583470  (~0x133 o)  — nom(+niveau) au-dessus de la tête
+// Clean C++ rewrite (not byte-exact — per scope rule: pixel-exact 3D rendering
+// is out of fidelity scope, only gameplay FORMULAS/conditions are) of the 5
+// functions identified in the disassembly:
+//   Char_Draw             0x5805C0  (~0x6F1 bytes)  — main per-entity dispatcher
+//   Char_DrawShadow        0x580CE0  (~0x3A4 bytes)  — shadow pass
+//   Char_DrawReflection    0x581090  (~0x3A4 bytes)  — reflection pass (mirror/water)
+//   Char_DrawOverheadName  0x581440  (~0xA7 bytes)   — floating "clickable" number/text
+//   Char_DrawNameTag       0x583470  (~0x133 bytes)  — name(+level) above the head
 //
-// HORS PÉRIMÈTRE (mentionnées ici pour traçabilité uniquement, PAS décompilées —
-// trop volumineuses, effets visuels purs, cf. règle de périmètre) :
-//   Char_DrawWeaponTrailEffect      0x55E9D0 (~0x9F7A o, ~40 Ko)
-//   Char_DrawWeaponEffectVariantA   0x568FE0 (~0x2AFF o, ~11 Ko)
-//   Char_DrawWeaponEffectVariantB   0x56BF90 (~0x2AFF o, ~11 Ko)
-//   // TODO(rendu) : traînées d'armes — shaders/particules, à brancher plus tard
-//   // dans la couche Gfx sans logique de décision associée ici.
+// OUT OF SCOPE (mentioned here for traceability only, NOT decompiled — too
+// large, pure visual effects, per scope rule):
+//   Char_DrawWeaponTrailEffect      0x55E9D0 (~0x9F7A bytes, ~40 KB)
+//   Char_DrawWeaponEffectVariantA   0x568FE0 (~0x2AFF bytes, ~11 KB)
+//   Char_DrawWeaponEffectVariantB   0x56BF90 (~0x2AFF bytes, ~11 KB)
+//   // TODO(rendering): weapon trails — shaders/particles, to be wired later
+//   // in the Gfx layer with no decision logic here.
 //
-// CE FICHIER NE FAIT AUCUN RENDU D3D : pas de VB/IB/shader/texture. Il expose des
-// fonctions PURES (déterministes, sans état, sans I/O) qui transforment un
-// instantané de l'entité + du contexte caméra en DÉCISIONS typées (quoi dessiner,
-// avec quel seuil de distance, dans quel ordre). La couche Gfx (futur
-// EntityRenderer côté Gfx/) consommera ces décisions pour émettre les vrais appels
-// D3D9 (ModelObj_Draw / SObject_DrawEx / SObject_DrawAnimated[2] d'origine).
+// THIS FILE PERFORMS NO D3D RENDERING: no VB/IB/shader/texture. It exposes PURE
+// functions (deterministic, stateless, no I/O) that turn an entity snapshot +
+// camera context into typed DECISIONS (what to draw, at what distance
+// threshold, in what order). The Gfx layer (future EntityRenderer under Gfx/)
+// will consume these decisions to emit the actual D3D9 calls (original
+// ModelObj_Draw / SObject_DrawEx / SObject_DrawAnimated[2]).
 //
-// IMPORTANT — l'objet `this` des 5 fonctions d'origine n'est PAS game::PlayerEntity
-// / MonsterEntity / NpcEntity de GameState.h (qui sont les enregistrements réseau
-// des tableaux d'entités). C'est un objet de rendu 3D séparé (style "cCharObj"),
-// alloué/rafraîchi par le moteur GXD à partir de ces enregistrements, qui porte en
-// plus la position interpolée, l'état d'attache (monture), les échelles d'anim et
-// les indicateurs d'effets attachés. Ses champs sont reconstruits ci-dessous en
-// EntityRenderState avec les offsets d'origine (en octets, relatifs à `this`) —
-// c'est à la couche Gfx de peupler cette vue à partir de son objet interne réel.
+// IMPORTANT — the `this` object of the 5 original functions is NOT
+// game::PlayerEntity / MonsterEntity / NpcEntity from GameState.h (those are
+// the network records of the entity arrays). It is a separate 3D render object
+// (style "cCharObj"), allocated/refreshed by the GXD engine from those
+// records, which additionally carries interpolated position, attach state
+// (mount), anim scales, and attached-effect flags. Its fields are
+// reconstructed below as EntityRenderState with the original offsets (in
+// bytes, relative to `this`) — it is the Gfx layer's job to populate this view
+// from its actual internal object.
 //
-// Convention : les commentaires "+0xNN" citent l'offset d'origine ; "(this+N)"
-// cite la forme telle que vue dans le pseudocode Hex-Rays (this+N en unités de
-// 4 octets, qu'il s'agisse de (_DWORD*)this+N ou (float*)this+N).
+// Convention: "+0xNN" comments cite the original offset; "(this+N)" cites the
+// form as seen in the Hex-Rays pseudocode (this+N in 4-byte units, whether
+// (_DWORD*)this+N or (float*)this+N).
 #pragma once
 #include <cstdint>
 #include <string>
 
 namespace ts2::game {
 
-// Vecteur 3D minimal, indépendant du moteur de rendu (pas de dépendance D3DX ici
-// pour garder ce module testable/pur — la couche Gfx convertira vers D3DXVECTOR3).
+// Minimal 3D vector, independent of the render engine (no D3DX dependency here
+// to keep this module testable/pure — the Gfx layer will convert to D3DXVECTOR3).
 struct Vec3 {
     float x = 0.0f, y = 0.0f, z = 0.0f;
 };
 
-// Distance euclidienne 3D pleine (Math_Dist3D 0x53FAA0).
+// Full 3D Euclidean distance (Math_Dist3D 0x53FAA0).
 float Distance3D(const Vec3& a, const Vec3& b);
 
-// -----------------------------------------------------------------------------
-// Gate de culling "proche caméra" (Target_IsBeyondClickRange 0x5410D0).
-// -----------------------------------------------------------------------------
-// Nom d'origine trompeur : cette fonction sert À LA FOIS de test de portée pour le
-// clic souris (picking de cible) ET, réutilisée telle quelle ici, de garde de
-// rendu "pas trop près/derrière la caméra". Formule exacte relevée :
+// Gate for "near camera" culling (Target_IsBeyondClickRange 0x5410D0).
+// Misleading original name: this function is used BOTH as a range test for
+// mouse-click target picking AND, reused as-is here, as a "not too close/behind
+// the camera" render guard. Exact formula identified:
 //   dx = cameraPos.x - pos.x
-//   dy = cameraPos.y - (pos.y + radius*0.5)   <- décalage vertical au milieu du modèle
+//   dy = cameraPos.y - (pos.y + radius*0.5)   <- vertical offset to model center
 //   dz = cameraPos.z - pos.z
-//   renvoie sqrt(dx²+dy²+dz²) >= 10.0
-// `radius` = info.drawSize (cf. EntityRenderState::Info::drawSize) converti en
-// float par l'appelant, comme dans le désassemblage d'origine.
+//   returns sqrt(dx²+dy²+dz²) >= 10.0
+// `radius` = info.drawSize (see EntityRenderState::Info::drawSize) converted to
+// float by the caller, as in the original disassembly.
 bool IsBeyondCameraNearCull(const Vec3& pos, float radius, const Vec3& cameraPos);
 
-// -----------------------------------------------------------------------------
-// Bloc "info" partagé (this+24 en dword*, soit +96 o) décrivant le modèle/costume
-// courant et ses métadonnées de rendu. Pointé en commun par les 5 fonctions.
-// -----------------------------------------------------------------------------
+// Shared "info" block (this+24 as dword*, i.e. +96 bytes) describing the
+// current model/costume and its render metadata. Referenced in common by
+// the 5 functions.
 struct EntityRenderInfo {
-    int modelCategoryId     = 0; // +0x00 : id costume/modèle courant.
-                                  //   [589..600]  = plage réservée aux morphs de compétence de tribu
-                                  //   {1141..1144} = plage "variante arme spéciale" (alive/dead)
-    int weaponRenderType    = 0; // +0xE8 (+232) : 2 = arme à paliers d'usure animés selon le ratio PV
-    int motionIndex         = 0; // +0xF4 (+244) : index modèle/motion, indexe les tables d'assets
-    int drawSize            = 0; // +0xFC (+252) : taille/rayon entier — utilisé (a) converti en float
-                                  //   comme rayon de IsBeyondCameraNearCull et (b) sommé en int brut
-                                  //   avec nameplateExtraOffset pour la hauteur du nom flottant
-    int nameplateExtraOffset = 0; // +0x104 (+260) : décalage vertical additionnel pour le nom flottant
-    int maxHp                = 0; // +0x170 (+368) : PV max, dénominateur du ratio d'usure de l'arme
+    int modelCategoryId     = 0; // +0x00: current costume/model id.
+                                  //   [589..600]  = range reserved for tribe skill morphs
+                                  //   {1141..1144} = "special weapon variant" range (alive/dead)
+    int weaponRenderType    = 0; // +0xE8 (+232): 2 = weapon with wear stages animated by HP ratio
+    int motionIndex         = 0; // +0xF4 (+244): model/motion index, indexes asset tables
+    int drawSize            = 0; // +0xFC (+252): integer size/radius — used (a) converted to float
+                                  //   as the radius for IsBeyondCameraNearCull and (b) summed as raw
+                                  //   int with nameplateExtraOffset for the floating-name height
+    int nameplateExtraOffset = 0; // +0x104 (+260): additional vertical offset for the floating name
+    int maxHp                = 0; // +0x170 (+368): max HP, denominator of the weapon wear ratio
 };
 
-// -----------------------------------------------------------------------------
-// Objet de rendu d'entité (this des Char_Draw / Char_DrawShadow / Char_DrawReflection
-// / Char_DrawOverheadName — les 4 premières fonctions partagent EXACTEMENT ce layout,
-// vérifié offset par offset dans le pseudocode). Char_DrawNameTag utilise un objet
-// DIFFÉRENT (cf. NameTagRenderState plus bas).
-// -----------------------------------------------------------------------------
+// Entity render object (`this` of Char_Draw / Char_DrawShadow / Char_DrawReflection
+// / Char_DrawOverheadName — the first 4 functions share EXACTLY this layout,
+// verified offset by offset in the pseudocode). Char_DrawNameTag uses a
+// DIFFERENT object (see NameTagRenderState below).
 struct EntityRenderState {
-    bool  active = false;    // +0x00 : slot vivant (this[0] != 0) ; garde commune à tout le dispatcher
+    bool  active = false;    // +0x00: live slot (this[0] != 0); guard common to the whole dispatcher
 
-    Vec3  pos{};              // +0x20..+0x28 (this+8..+10) : position monde courante
-    // CORRECTION mission ROTATION/ORIENTATION (2026-07-14, décompilation directe de
-    // Char_Draw 0x5805C0 + SObject_DrawEx 0x4D9330 + rôle IDB de Model_Render 0x40EBB0
-    // "compose S*Rz*Ry*Rx*T", cf. Game/GameState.h::MonsterEntity::heading pour la preuve
-    // complète) : this+7 = animFrame (move-state+8, PAS un angle) ; this+14 = heading
-    // (move-state+36, cap horizontal en DEGRÉS, injecté comme rotation Y — le vecteur
-    // d'échelle est câblé en DUR à {1,1,1} dans SObject_DrawEx, donc this+14 N'EST PAS
-    // une échelle). Les libellés ci-dessous datent d'une passe antérieure sans accès à
-    // Model_Render (serveur MCP saturé) et sont donc INVERSÉS par rapport à la réalité ;
-    // conservés SANS renommer les champs (Scene/WorldRenderer.cpp les peuple déjà
-    // correctement : facingOrAnimTimer <- PlayerEntity/MonsterEntity::heading, PAS un
-    // minuteur d'anim). scaleY reste à 0.0f partout (jamais peuplé), ce qui dégrade
-    // proprement vers l'échelle de repli 1.0 côté WorldRenderer::renderOne — sans effet
-    // visible malgré le libellé erroné.
-    float facingOrAnimTimer = 0.0f; // +0x1C (this+7 en réalité) : voir note ci-dessus — utilisé comme heading (degrés), pas comme minuteur
-    float scaleY = 0.0f;      // +0x38 (this+14 en réalité) : voir note ci-dessus — PAS l'échelle verticale ; jamais peuplé (repli 1.0)
+    Vec3  pos{};              // +0x20..+0x28 (this+8..+10): current world position
+    // Rotation fix (2026-07-14): this+7 = animFrame (move-state+8, not an angle); this+14 =
+    // heading (move-state+36, degrees, injected as Y rotation; scale hardcoded {1,1,1} in
+    // SObject_DrawEx 0x4D9330) — proven via Char_Draw 0x5805C0 + Model_Render 0x40EBB0
+    // ("compose S*Rz*Ry*Rx*T") and Game/GameState.h::MonsterEntity::heading. Field names below
+    // are INVERTED vs. reality but kept unchanged; WorldRenderer.cpp already populates them
+    // correctly (facingOrAnimTimer <- heading, not a timer). scaleY stays 0.0f (unused),
+    // falling back to scale 1.0 in WorldRenderer::renderOne with no visible effect.
+    float facingOrAnimTimer = 0.0f; // +0x1C (this+7 actually): see note above — used as heading (degrees), not a timer
+    float scaleY = 0.0f;      // +0x38 (this+14 actually): see note above — NOT the vertical scale; never populated (falls back to 1.0)
 
-    int   hp = 0;             // +0x5C (this+23) : PV courants — pilote la variante arme vivante/morte
-                               //   et le palier d'usure (voir ComputeWeaponOverlayVariant)
-    int   stateCategory = 0;  // +0x18 (this+6) : code de catégorie d'état -> overlay associé (voir
-                               //   ClassifyStateOverlay) ; PAS le même champ que weaponRenderType
+    int   hp = 0;             // +0x5C (this+23): current HP — drives the alive/dead weapon variant
+                               //   and the wear stage (see ComputeWeaponOverlayVariant)
+    int   stateCategory = 0;  // +0x18 (this+6): state category code -> associated overlay (see
+                               //   ClassifyStateOverlay); NOT the same field as weaponRenderType
 
-    bool  attached = false;   // +0xD4 (this+53) : monté/attaché à un parent (mount, effet porté...)
-    Vec3  attachPos{};        // +0xF0..+0xF8 (this+60..+62) : position relative si attaché
-    float attachScale = 0.0f; // +0xFC (this+63) : échelle/valeur si attaché
+    bool  attached = false;   // +0xD4 (this+53): mounted/attached to a parent (mount, carried effect...)
+    Vec3  attachPos{};        // +0xF0..+0xF8 (this+60..+62): relative position if attached
+    float attachScale = 0.0f; // +0xFC (this+63): scale/value if attached
 
-    // 3 emplacements d'effets attachés fixes (aura/aile/monture...), chacun avec un
-    // drapeau actif + une échelle. Ordre de dessin = ordre déclaré ci-dessous.
-    bool  effectSlot1Active = false; float effectSlot1Scale = 0.0f; // +0x100/+0x104 (this+64/65) -> modèle fixe #1
-    bool  effectSlot2Active = false; float effectSlot2Scale = 0.0f; // +0x108/+0x10C (this+66/67) -> modèle fixe #2
-    bool  effectSlot3Active = false; float effectSlot3Scale = 0.0f; // +0x110/+0x114 (this+68/69) -> modèle fixe #3
+    // 3 fixed attached-effect slots (aura/wing/mount...), each with an active
+    // flag + a scale. Draw order = declaration order below.
+    bool  effectSlot1Active = false; float effectSlot1Scale = 0.0f; // +0x100/+0x104 (this+64/65) -> fixed model #1
+    bool  effectSlot2Active = false; float effectSlot2Scale = 0.0f; // +0x108/+0x10C (this+66/67) -> fixed model #2
+    bool  effectSlot3Active = false; float effectSlot3Scale = 0.0f; // +0x110/+0x114 (this+68/69) -> fixed model #3
 
-    const EntityRenderInfo* info = nullptr; // +0x60 (this+24, dword*) : bloc info partagé (peut être nul)
+    const EntityRenderInfo* info = nullptr; // +0x60 (this+24, dword*): shared info block (may be null)
 };
 
-// -----------------------------------------------------------------------------
-// Objet "étiquette de nom" (this de Char_DrawNameTag 0x583470) — structure
-// DISTINCTE de EntityRenderState (offsets différents : pos à +128 et non +32,
-// pointeur "owner" à +100 et non +96, aucun test IsBeyondCameraNearCull ici).
-// -----------------------------------------------------------------------------
+// "Name tag" object (`this` of Char_DrawNameTag 0x583470) — structure DISTINCT
+// from EntityRenderState (different offsets: pos at +128 not +32, "owner"
+// pointer at +100 not +96, no IsBeyondCameraNearCull test here).
 struct NameTagRenderState {
     bool active = false;  // +0x00
-    Vec3 pos{};            // +0x80..+0x88 (this+128/132/136) : position du nom (avant décalage Y)
-    int  level = 0;        // +0x14 (this+20) : niveau affiché entre parenthèses
+    Vec3 pos{};            // +0x80..+0x88 (this+128/132/136): name position (before Y offset)
+    int  level = 0;        // +0x14 (this+20): level shown in parentheses
 
     struct OwnerInfo {
-        int nameDisplayMode = 0; // +0xBC (+188) : 1 ou 2 => affiche "nom(niveau)", sinon "nom" seul
-        // +0x04 : pointeur chaîne C du nom (résolu par l'appelant, pas modélisé ici)
+        int nameDisplayMode = 0; // +0xBC (+188): 1 or 2 => shows "name(level)", else "name" only
+        // +0x04: C-string pointer to the name (resolved by the caller, not modeled here)
     };
     const OwnerInfo* owner = nullptr; // +0x64 (this+100)
-    std::string ownerName; // nom déjà résolu par l'appelant (owner+4 dans l'original)
+    std::string ownerName; // name already resolved by the caller (owner+4 in the original)
 };
 
-// -----------------------------------------------------------------------------
-// Contexte de culling partagé par la frame courante.
-// -----------------------------------------------------------------------------
+// Culling context shared by the current frame.
 struct DrawCullContext {
-    Vec3 cameraPos{};      // g_CameraPos (0x800130, vecteur x/y/z) : utilisé par IsBeyondCameraNearCull
-    Vec3 localPlayerPos{}; // flt_1687330 : position du joueur local — utilisée par le cull "300 unités"
+    Vec3 cameraPos{};      // g_CameraPos (0x800130, x/y/z vector): used by IsBeyondCameraNearCull
+    Vec3 localPlayerPos{}; // flt_1687330: local player position — used by the "300 units" cull
                             //   (Char_DrawShadow / Char_DrawReflection / Char_DrawNameTag)
 };
 
-inline constexpr float kSelfProximityDrawDistance = 300.0f; // seuil dur relevé dans les 3 fonctions concernées
+inline constexpr float kSelfProximityDrawDistance = 300.0f; // hard threshold identified in the 3 functions concerned
 
-// -----------------------------------------------------------------------------
-// Décisions de visibilité (une par passe de rendu). `drawPass` = paramètre a2
-// d'origine de Char_Draw, forwardé tel quel au futur renderer (1 ou 2 = passes
-// valides ; en dehors -> aucun rendu). Les 4 autres fonctions d'origine ignorent
-// ce paramètre (a2/a3 présents dans leur signature mais jamais lus).
-// -----------------------------------------------------------------------------
+// Visibility decisions (one per render pass). `drawPass` = original a2
+// parameter of Char_Draw, forwarded as-is to the future renderer (1 or 2 =
+// valid passes; anything else -> no render). The other 4 original functions
+// ignore this parameter (a2/a3 present in their signature but never read).
 struct EntityDrawFlags {
-    bool showBody       = false; // Char_Draw : corps + arme + overlays d'état
+    bool showBody       = false; // Char_Draw: body + weapon + state overlays
     bool showShadow     = false; // Char_DrawShadow
     bool showReflection = false; // Char_DrawReflection
-    bool showOverheadName = false; // Char_DrawOverheadName (nombre/texte flottant "cliquable")
-    bool showNameTag    = false; // Char_DrawNameTag — calculé séparément (objet différent),
-                                  // exposé ici seulement pour un agrégat pratique côté appelant.
+    bool showOverheadName = false; // Char_DrawOverheadName (floating "clickable" number/text)
+    bool showNameTag    = false; // Char_DrawNameTag — computed separately (different object),
+                                  // exposed here only as a convenient aggregate for the caller.
 };
 
-// Calcule showBody / showShadow / showReflection / showOverheadName à partir du
-// MÊME objet EntityRenderState (les 4 fonctions d'origine partagent ce layout).
-// showNameTag reste à false ici : voir ComputeNameTagContent (objet différent).
+// Computes showBody / showShadow / showReflection / showOverheadName from the
+// SAME EntityRenderState object (the 4 original functions share this layout).
+// showNameTag stays false here: see ComputeNameTagContent (different object).
 //   showBody       = active && drawPass∈[1,2] && IsBeyondCameraNearCull(pos, info.drawSize, cam)
 //   showShadow     = active && Distance3D(pos, self) <= 300 && IsBeyondCameraNearCull(...)
-//   showReflection = idem showShadow (mêmes gardes, dessin différent)
-//   showOverheadName = active && IsBeyondCameraNearCull(pos, info.drawSize, cam)  [PAS de cull 300]
+//   showReflection = same as showShadow (same guards, different draw)
+//   showOverheadName = active && IsBeyondCameraNearCull(pos, info.drawSize, cam)  [no 300 cull]
 EntityDrawFlags ComputeEntityDrawFlags(const EntityRenderState& state,
                                         const DrawCullContext& cull,
                                         int drawPass);
 
-// -----------------------------------------------------------------------------
-// Char_DrawOverheadName 0x581440 — position du texte/nombre flottant.
+// Char_DrawOverheadName 0x581440 — position of the floating text/number.
 // v7 = { pos.x, (info.drawSize + info.nameplateExtraOffset + 1) + pos.y, pos.z }
-// NOTE fidélité : drawSize et nameplateExtraOffset sont additionnés en ENTIER
-// (pas convertis en float individuellement) avant d'être ajoutés à pos.y — cf.
-// pseudocode d'origine ligne 0x5814ae.
-// -----------------------------------------------------------------------------
+// FIDELITY NOTE: drawSize and nameplateExtraOffset are summed as INTEGERS (not
+// individually converted to float) before being added to pos.y — see original
+// pseudocode line 0x5814ae.
 struct OverheadNameContent {
     bool visible = false;
     Vec3 worldPos{};
 };
 OverheadNameContent ComputeOverheadNameContent(const EntityRenderState& state, const DrawCullContext& cull);
 
-// -----------------------------------------------------------------------------
-// Char_DrawNameTag 0x583470 — gate + formatage "%s(%d)" vs "%s" + position.
+// Char_DrawNameTag 0x583470 — gate + "%s(%d)"/"%s" formatting + position.
 //
-// ///// CODE MORT DU BINAIRE — NE PAS CÂBLER (Passe 4 / vague W9, front nameplate-entity) /////
-// `xrefs_to(0x583470)` = EXACTEMENT 1 site : @0x52FCD9, situé À L'INTÉRIEUR du bloc
-// `if (dword_1668F64 == 1)` de Scene_InGameRender 0x52D0B0 (garde @0x52FC09
-// `cmp ds:dword_1668F64, 2 / jnz loc_52FD3A`, qui saute tout 0x52FC16..0x52FD3A).
-// Or dword_1668F64 N'EST JAMAIS ÉCRIT : re-prouvé au niveau octet cette vague par DEUX
-// voies indépendantes — `find_bytes('64 8F 66 01')` sur l'image entière = 4 occurrences
-// (0x52FB90 / 0x52FB99 / 0x52FC0B / 0x570088), toutes opérandes de `cmp` ; et
-// `xrefs_to(0x1668F64)` = 4 xrefs, toutes des LECTURES (0x52FB8E / 0x52FB97 / 0x52FC09 /
-// 0x570086), définition `dword_1668F64 dd 0`. Zéro `mov`, zéro écriture.
-// => Char_DrawNameTag n'est JAMAIS appelée par le client d'origine.
+// ///// DEAD CODE — DO NOT WIRE (Passe 4 / wave W9, nameplate-entity front) /////
+// xrefs_to(0x583470) = 1 site, @0x52FCD9, inside `dword_1668F64 == 1` in Scene_InGameRender
+// 0x52D0B0 (guard @0x52FC09 skips 0x52FC16..0x52FD3A). dword_1668F64 is NEVER written:
+// find_bytes('64 8F 66 01') = 4 hits (0x52FB90/0x52FB99/0x52FC0B/0x570088, all `cmp` operands);
+// xrefs_to(0x1668F64) = 4 xrefs, all READS (0x52FB8E/0x52FB97/0x52FC09/0x570086); def
+// `dword_1668F64 dd 0`. Zero writes => Char_DrawNameTag is NEVER called by the original client.
 //
-// L'implémentation ci-dessous est CONSERVÉE (elle est fidèle, cf. .cpp) mais reste
-// VOLONTAIREMENT SANS APPELANT : la câbler ajouterait à l'écran un libellé que le client
-// d'origine n'affiche jamais — l'inverse exact de la fidélité recherchée.
-// NB : le dossier de gaps W9 (HUD-NP-04) proposait de la câbler sur « une boucle
-// inconditionnelle sur les objets au sol ». CORRECTIF REFUSÉ, doublement erroné :
-//   (1) le chemin est mort (ci-dessus) ;
-//   (2) « objets au sol » est une erreur d'identification — @0x52FCAE itère
-//       `dword_17AB534` (stride 0x98 = 152, compteur dword_1687228), et
-//       World_PickEntityAtCursor 0x538AB0 range CE tableau en catégorie 6 dont AUCUN
-//       dessin de libellé n'est associé (cf. le switch @0x530FC7).
-// -----------------------------------------------------------------------------
+// Kept below (faithful, see .cpp) but INTENTIONALLY UNCALLED — wiring it would show a label
+// the original never displays. W9 gap sheet (HUD-NP-04) proposed wiring it to "an
+// unconditional loop over ground objects": REJECTED — (1) path is dead (above); (2) "ground
+// objects" misidentifies @0x52FCAE, which iterates `dword_17AB534` (stride 0x98=152, counter
+// dword_1687228); World_PickEntityAtCursor 0x538AB0 puts this array in category 6, which has
+// NO label draw (switch @0x530FC7).
 struct NameTagContent {
     bool visible = false;
-    bool showLevelSuffix = false; // true => format "%s(%d)" (nom, niveau) ; false => "%s" (nom seul)
+    bool showLevelSuffix = false; // true => "%s(%d)" format (name, level); false => "%s" (name only)
     Vec3 worldPos{};               // pos + (0, 2.5, 0)
 };
 NameTagContent ComputeNameTagContent(const NameTagRenderState& tag, const Vec3& localPlayerPos);
 
-// -----------------------------------------------------------------------------
-// Quest_GetMarkerSpriteBase 0x540770 — STUB dans le binaire.
-// Décompilation intégrale (re-vérifiée Passe 4 / W9) :
+// Quest_GetMarkerSpriteBase 0x540770 — STUB in the binary.
+// Full decompilation (re-verified Passe 4 / W9):
 //     int __stdcall Quest_GetMarkerSpriteBase(int a1) { return 10; }  /*0x54077C*/
-// L'argument (`**(_DWORD**)this` au site d'appel @0x580372, soit `npcDef->id`) n'est
-// JAMAIS lu. Conservée sous forme de fonction plutôt qu'un `10` en dur au site d'appel
-// pour garder l'ancre visible et le jour où le stub cesserait d'en être un.
-// -----------------------------------------------------------------------------
+// The argument (`**(_DWORD**)this` at call site @0x580372, i.e. `npcDef->id`) is NEVER
+// read. Kept as a function rather than a hardcoded `10` at the call site to keep the
+// anchor visible in case the stub ever stops being one.
 constexpr int kQuestMarkerSpriteBase = 10;
-inline int Quest_GetMarkerSpriteBase(int /*npcDefId — jamais lu, cf. 0x54077C*/) {
+inline int Quest_GetMarkerSpriteBase(int /*npcDefId — never read, cf. 0x54077C*/) {
     return kQuestMarkerSpriteBase;
 }
 
-// -----------------------------------------------------------------------------
-// Fx_MeleeSwingDrawMarker 0x5802C0 — LIBELLÉ DE NOM DES PNJ (pool de rendu
-// g_NpcRenderArray 0x1764D14, stride 88 o / 22 dw).
+// Fx_MeleeSwingDrawMarker 0x5802C0 — NPC NAME LABEL (render pool g_NpcRenderArray
+// 0x1764D14, stride 88 bytes / 22 dw).
 //
-// ⚠️ MAL NOMMÉE DANS L'IDB : ce n'est ni une « traînée d'attaque » ni un billboard de
-// swing. Décompilation intégrale (Passe 4 / W9) — c'est le pendant PNJ de
-// Char_DrawOverheadName (monstres) et de Char_DrawNameplate (joueurs) :
-//     if (*((_DWORD*)this + 1)) {                                    /*0x5802CC : slot actif*/
+// ⚠️ MISNAMED IN THE IDB: this is neither an "attack trail" nor a swing billboard.
+// Full decompilation (Passe 4 / W9) — it is the NPC counterpart of
+// Char_DrawOverheadName (monsters) and Char_DrawNameplate (players):
+//     if (*((_DWORD*)this + 1)) {                                    /*0x5802CC : active slot*/
 //       v5 = (float)*(int*)(*(_DWORD*)this + 1332);                  /*0x5802E3 : def+1332*/
-//       if (Target_IsBeyondClickRange(this + 5, v5)) {               /*0x5802F2 : near-cull caméra*/
+//       if (Target_IsBeyondClickRange(this + 5, v5)) {               /*0x5802F2 : camera near-cull*/
 //         if (a2 != 1 || g_Opt_ShowHitMarkers && Math_Dist3D(this+5, flt_1687330) <= 300.0) { /*0x580332*/
 //           v7[0] = *(this + 5);                                     /*0x58033C : pos.x (byte +20)*/
 //           v7[1] = (double)(*(_DWORD*)(*(_DWORD*)this + 1332) + 1) + *(this + 6); /*0x580359*/
@@ -256,115 +225,105 @@ inline int Quest_GetMarkerSpriteBase(int /*npcDefId — jamais lu, cf. 0x54077C*
 //           MarkerSpriteBase = Quest_GetMarkerSpriteBase(**(_DWORD**)this);        /*0x580372*/
 //           UI_DrawNumberCentered((const char*)(*(_DWORD*)this + 4), v7, MarkerSpriteBase); /*0x58038A*/
 //         } } }
-// `*(_DWORD*)this` = le NpcDefRecord* du slot -> texte = def+4 (NpcDefRecord::name),
-// rayon/portée = def+1332 (NpcDefRecord::fieldF[1], déjà RÉSOLU dans
-// Game/ExtraDatabases.h:67-71 comme « portée d'interaction/clic »), couleur = 10.
-// Somme ENTIÈRE `def[1332] + 1` avant l'ajout à pos.y (même convention que
-// ComputeOverheadNameContent, cf. 0x5814AE) — PAS une addition flottante.
+// `*(_DWORD*)this` = the slot's NpcDefRecord* -> text = def+4 (NpcDefRecord::name),
+// radius/range = def+1332 (NpcDefRecord::fieldF[1], already RESOLVED in
+// Game/ExtraDatabases.h:67-71 as "interaction/click range"), color = 10.
+// FULL INTEGER sum `def[1332] + 1` before adding to pos.y (same convention as
+// ComputeOverheadNameContent, see 0x5814AE) — NOT a float addition.
 //
-// SITES D'APPEL (`xrefs_to(0x5802C0)` = 2) :
-//   @0x52FC72 — MORT (dans le bloc `dword_1668F64 == 1`, cf. bandeau NameTagContent),  a2=1
-//   @0x531148 — VIVANT : catégorie 4 du switch de survol @0x530FC7,                     a2=2
-// Avec a2=2 la garde @0x580332 court-circuite (`a2 != 1`) : ni g_Opt_ShowHitMarkers ni le
-// cull des 300 unités n'ont d'effet sur le chemin réellement emprunté. Les deux paramètres
-// restent exposés ci-dessous pour rester fidèle à la fonction (et non à son seul appelant).
-// -----------------------------------------------------------------------------
+// CALL SITES (`xrefs_to(0x5802C0)` = 2):
+//   @0x52FC72 — DEAD (inside the `dword_1668F64 == 1` block, see NameTagContent banner), a2=1
+//   @0x531148 — LIVE: hover-switch category 4 @0x530FC7,                                  a2=2
+// With a2=2 the guard @0x580332 short-circuits (`a2 != 1`): neither g_Opt_ShowHitMarkers nor the
+// 300-unit cull affects the actually-taken path. Both parameters remain exposed below to stay
+// faithful to the function (not just its sole caller).
 struct ZoneNpcLabelRenderState {
-    bool active       = false; // +4  (this[1]) : slot occupé — dword_1764D18[22j]
-    Vec3 pos{};                 // +20/+24/+28 (float* this+5/6/7) : position monde — unk_1764D28 + 22j
-    int  clickRange   = 0;      // def+1332 (NpcDefRecord::fieldF[1]) : rayon near-cull ET offset Y du libellé
-    int  markerDefId  = 0;      // def+0 (NpcDefRecord::id) : argument de Quest_GetMarkerSpriteBase (jamais lu)
+    bool active       = false; // +4  (this[1]): slot occupied — dword_1764D18[22j]
+    Vec3 pos{};                 // +20/+24/+28 (float* this+5/6/7): world position — unk_1764D28 + 22j
+    int  clickRange   = 0;      // def+1332 (NpcDefRecord::fieldF[1]): near-cull radius AND label Y offset
+    int  markerDefId  = 0;      // def+0 (NpcDefRecord::id): Quest_GetMarkerSpriteBase argument (never read)
 };
 struct ZoneNpcLabelContent {
     bool visible   = false;
     Vec3 worldPos{};                          // (pos.x, (clickRange + 1) + pos.y, pos.z)
-    int  colorCode = kQuestMarkerSpriteBase;  // Quest_GetMarkerSpriteBase -> 10 (littéral)
+    int  colorCode = kQuestMarkerSpriteBase;  // Quest_GetMarkerSpriteBase -> 10 (literal)
 };
-// `drawMode` = a2 d'origine (2 au seul site vivant) ; `optShowHitMarkers` = g_Opt_ShowHitMarkers
-// 0x84DED0. Le texte (def->name) n'est PAS renvoyé ici : l'appelant le lit sur le même
-// NpcDefRecord (cf. Scene/WorldRenderer.cpp::drawNameplatePass).
+// `drawMode` = original a2 (2 at the sole live site); `optShowHitMarkers` = g_Opt_ShowHitMarkers
+// 0x84DED0. The text (def->name) is NOT returned here: the caller reads it from the same
+// NpcDefRecord (see Scene/WorldRenderer.cpp::drawNameplatePass).
 ZoneNpcLabelContent ComputeZoneNpcLabelContent(const ZoneNpcLabelRenderState& npc,
                                                 int drawMode,
                                                 bool optShowHitMarkers,
                                                 const DrawCullContext& cull);
 
-// -----------------------------------------------------------------------------
-// Placement du maillage principal (Char_Draw/Shadow/Reflection, branchement sur
-// `attached`) : quand l'entité est attachée (monture/parent), le dessin utilise
-// une position/rotation relative fixe (angle=0, pos=attachPos, scale=attachScale)
-// au lieu de la position/rotation/échelle normales de l'entité.
-// -----------------------------------------------------------------------------
+// Main mesh placement (Char_Draw/Shadow/Reflection, branches on `attached`):
+// when the entity is attached (mount/parent), the draw uses a fixed relative
+// position/rotation (angle=0, pos=attachPos, scale=attachScale) instead of the
+// entity's normal position/rotation/scale.
 struct BodyMeshPlacement {
     bool  useAttachOffset = false;
-    float angle = 0.0f;   // 0.0 si attaché, sinon state.facingOrAnimTimer
-    Vec3  pos{};          // attachPos si attaché, sinon state.pos
-    float scale = 0.0f;   // attachScale si attaché, sinon state.scaleY
+    float angle = 0.0f;   // 0.0 if attached, else state.facingOrAnimTimer
+    Vec3  pos{};          // attachPos if attached, else state.pos
+    float scale = 0.0f;   // attachScale if attached, else state.scaleY
 };
 BodyMeshPlacement ComputeBodyMeshPlacement(const EntityRenderState& state);
 
-// -----------------------------------------------------------------------------
-// Sélection de la variante d'overlay "arme" dessinée juste après le corps
-// principal dans Char_Draw (et son équivalent dans Shadow/Reflection).
-//   - kAliveDeadSpecial : modelCategoryId ∈ {1141,1142,1143,1144} ET
-//     weaponRenderType != 2 -> variante "vivant" (hp>0) ou "mort" (hp<=0)
-//   - kWearStage : weaponRenderType == 2 ET détail ombres élevé -> palier d'usure
-//     0..3 calculé depuis le ratio PV/PVmax (100%->0 = pristine, 0%->3 = pire état)
-//   - kDefaultStage0 : tous les autres cas (palier 0 fixe)
-// `highDetailShadows` correspond au global g_Opt_GfxDetailShadows == 1, fourni en
-// paramètre pour garder cette fonction pure (option graphique, pas d'accès global).
-// -----------------------------------------------------------------------------
+// Selects the "weapon" overlay variant drawn right after the main body in
+// Char_Draw (and its equivalent in Shadow/Reflection).
+//   - kAliveDeadSpecial: modelCategoryId ∈ {1141,1142,1143,1144} AND
+//     weaponRenderType != 2 -> "alive" (hp>0) or "dead" (hp<=0) variant
+//   - kWearStage: weaponRenderType == 2 AND high shadow detail -> wear stage
+//     0..3 computed from the HP/maxHP ratio (100%->0 pristine, 0%->3 worst state)
+//   - kDefaultStage0: all other cases (fixed stage 0)
+// `highDetailShadows` corresponds to global g_Opt_GfxDetailShadows == 1, passed
+// as a parameter to keep this function pure (graphics option, no global access).
 struct WeaponOverlayDecision {
     enum class Kind { kAliveDeadSpecial, kWearStage, kDefaultStage0 } kind = Kind::kDefaultStage0;
-    bool aliveVariant   = false; // valide seulement si kind == kAliveDeadSpecial
-    int  wearStageIndex = 0;     // valide seulement si kind == kWearStage ; 0..3 en usage normal
-                                  // (non borné dans l'original : hp/maxHp aberrant -> hors [0,3])
+    bool aliveVariant   = false; // valid only if kind == kAliveDeadSpecial
+    int  wearStageIndex = 0;     // valid only if kind == kWearStage; 0..3 in normal usage
+                                  // (unbounded in the original: bogus hp/maxHp -> outside [0,3])
 };
 WeaponOverlayDecision ComputeWeaponOverlayVariant(const EntityRenderState& state, bool highDetailShadows);
 
-// -----------------------------------------------------------------------------
-// Branchement "morph spécial tribu" (Char_Draw, tout début — 0x580617..0x58074A).
-// Pris uniquement quand modelCategoryId ∈ [589,600] (costumes NPC réservés aux
-// morphs de compétence de tribu) ET que le joueur local est actuellement morphé
-// (index de compétence morph valide). Les résolutions de tables externes
-// (TribeSkill_SkillIdToIndex, dword_184C218, Item_MapUpgradeIconId) restent du
-// ressort du système Skill/Item — elles sont injectées ici en paramètres déjà
-// résolus pour garder cette fonction pure.
-// -----------------------------------------------------------------------------
+// "Tribe special morph" branch (Char_Draw, very start — 0x580617..0x58074A).
+// Taken only when modelCategoryId ∈ [589,600] (NPC costumes reserved for tribe
+// skill morphs) AND the local player is currently morphed (valid morph skill
+// index). External table resolutions (TribeSkill_SkillIdToIndex, dword_184C218,
+// Item_MapUpgradeIconId) remain the Skill/Item system's responsibility — they
+// are injected here as already-resolved parameters to keep this function pure.
 struct TribeMorphOverlayDecision {
     bool inMorphIdRange = false; // modelCategoryId ∈ [589,600]
-    bool active         = false; // + index de compétence morph valide -> branchement pris
+    bool active         = false; // + valid morph skill index -> branch taken
 
     int  itemVariant  = 0; // v10 = table[idx] % 100
     int  upgradeLevel = 0; // v11 = table[idx] / 100
 
     enum class Overlay { kNone, kUpgradeIcon, kClassOverlay } overlay = Overlay::kNone;
 
-    // true => Char_Draw retourne IMMÉDIATEMENT après cette passe : le corps normal
-    // et l'overlay arme ne sont PAS dessinés du tout pour cette frame.
+    // true => Char_Draw returns IMMEDIATELY after this pass: the normal body
+    // and the weapon overlay are NOT drawn at all for this frame.
     bool skipNormalBodyDraw = false;
 };
-// `selfMorphSkillIndex` = TribeSkill_SkillIdToIndex(g_SelfMorphNpcId), -1 si aucun.
-// `morphTableValue` = dword_184C218[selfMorphSkillIndex] si l'index est valide (0 sinon).
+// `selfMorphSkillIndex` = TribeSkill_SkillIdToIndex(g_SelfMorphNpcId), -1 if none.
+// `morphTableValue` = dword_184C218[selfMorphSkillIndex] if the index is valid (0 otherwise).
 TribeMorphOverlayDecision ComputeTribeMorphOverlay(const EntityRenderState& state,
                                                     int selfMorphSkillIndex,
                                                     int morphTableValue);
 
-// Après que la couche Gfx a tenté Item_MapUpgradeIconId(itemVariant, upgradeLevel)
-// et l'a effectivement dessiné (icône valide, != -1), appeler ceci pour savoir si
-// le minuteur d'anim doit être remis à 0 (comportement exact : reset seulement si
-// l'icône a été dessinée ET que facingOrAnimTimer avait atteint >= 41).
+// After the Gfx layer has attempted Item_MapUpgradeIconId(itemVariant, upgradeLevel)
+// and actually drawn it (valid icon, != -1), call this to know whether the anim
+// timer must be reset to 0 (exact behavior: reset only if the icon was drawn AND
+// facingOrAnimTimer had reached >= 41).
 bool ShouldResetAnimTimerAfterUpgradeIconDraw(float facingOrAnimTimer);
 
-// Vecteur de décalage utilisé pour toutes les auras/overlays "attachés en hauteur"
-// (morph, overlay d'état, 3 emplacements d'effets fixes) : (0, scaleY, 0).
+// Offset vector used for all "attached at height" auras/overlays (morph, state
+// overlay, 3 fixed effect slots): (0, scaleY, 0).
 Vec3 ComputeAuraOffset(const EntityRenderState& state);
 
-// -----------------------------------------------------------------------------
-// Overlay d'état générique (switch sur stateCategory, fin de Char_Draw,
-// 0x580a8f..0x580c0a). La résolution effective de l'id (compétence/classe/objet/
-// motion spéciale) appartient aux systèmes correspondants (Skill/Item/Anim) —
-// modélisée ici uniquement comme classification + décision "faut-il dessiner".
-// -----------------------------------------------------------------------------
+// Generic state overlay (switch on stateCategory, end of Char_Draw,
+// 0x580a8f..0x580c0a). Actual id resolution (skill/class/item/special motion)
+// belongs to the corresponding systems (Skill/Item/Anim) — modeled here only
+// as classification + "should draw" decision.
 enum class StateOverlayCategory {
     kNone         = -1,
     kSkillId      = 0,  // maybe_MapCharToSkillId(info.motionIndex)
@@ -372,43 +331,40 @@ enum class StateOverlayCategory {
     kItemVariant  = 7,  // Item_MapToVariantId(info.motionIndex)
     kSpecialMotion = 12, // Anim_MapSpecialMotion(info.motionIndex) (0xC)
 };
-// Classe stateCategory en catégorie d'overlay (ne résout PAS l'id final).
+// Classifies stateCategory into an overlay category (does NOT resolve the final id).
 StateOverlayCategory ClassifyStateOverlay(const EntityRenderState& state);
-// `resolvedOverlayId` = résultat du résolveur correspondant à la catégorie
-// ci-dessus (déjà appelé par la couche Skill/Item/Anim). Renvoie true si un
-// overlay doit être dessiné (id résolu != -1).
+// `resolvedOverlayId` = result of the resolver matching the category above
+// (already called by the Skill/Item/Anim layer). Returns true if an overlay
+// must be drawn (resolved id != -1).
 bool ShouldDrawStateOverlay(int resolvedOverlayId);
 
-// -----------------------------------------------------------------------------
-// 3 emplacements d'effets attachés fixes (fin de Char_Draw, 0x580c12..0x580ca6).
-// Simple passthrough des drapeaux, mais documente l'ordre de dessin garanti
-// (slot1 puis slot2 puis slot3) et les modèles fixes associés côté Gfx :
+// 3 fixed attached-effect slots (end of Char_Draw, 0x580c12..0x580ca6). Simple
+// flag passthrough, but documents the guaranteed draw order (slot1 then slot2
+// then slot3) and the associated fixed Gfx-side models:
 //   slot1 -> unk_B63174, slot2 -> unk_B63208, slot3 -> unk_B5A180
 //
-// ///// ÉTAT DE CÂBLAGE — Passe 4 / vague W9 (gap erp-01), HONNÊTE ET NON RÉSOLU /////
-// SANS AUCUN APPELANT à ce jour (grep exhaustif de src/ : cette fonction n'apparaît qu'à
-// sa définition Game/EntityDrawLogic.cpp et à cette déclaration). CONSTAT RE-PROUVÉ ; le
-// câblage est BLOQUÉ, pas oublié — et le blocage est hors des fichiers de ce front :
-//   Offsets re-vérifiés à l'instruction près dans Char_Draw 0x5805C0 (W9) :
-//     580C12  cmp dword ptr [edx+100h], 0     ; slot1 actif   (this+256)
-//     580C2C  fld dword ptr [edx+104h]        ; slot1 arg flottant (this+260)
-//     580C39  mov ecx, offset unk_B63174      ; template slot1
+// ///// WIRING STATUS — Passe 4 / wave W9 (gap erp-01), HONEST AND UNRESOLVED /////
+// NO CALLER to date (exhaustive grep of src/: this function only appears at its
+// definition in Game/EntityDrawLogic.cpp and this declaration). RE-PROVEN FINDING; the
+// wiring is BLOCKED, not forgotten — and the blocker is outside this front's files:
+//   Offsets re-verified instruction-by-instruction in Char_Draw 0x5805C0 (W9):
+//     580C12  cmp dword ptr [edx+100h], 0     ; slot1 active   (this+256)
+//     580C2C  fld dword ptr [edx+104h]        ; slot1 float arg (this+260)
+//     580C39  mov ecx, offset unk_B63174      ; slot1 template
 //     580C3E  call ModelObj_Draw
-//     580C46  cmp dword ptr [ecx+108h], 0     ; slot2 actif   (this+264)
-//     580C60  fld dword ptr [ecx+10Ch]        ; slot2 arg flottant (this+268)
-//   -> slot3 : +0x110 / +0x114. La forme d'appel est
-//      ModelObj_Draw(template, passe, <float>, this+0x20 /*pos*/, &var, 0), IDENTIQUE à
-//      celle de Char_DrawAura (ModelObj_Draw(unk_B60AB8 + 148*this[27], pass, 0.0,
-//      this+32, this+35)) : le float est donc le 2e ARGUMENT POSITIONNEL (curseur
-//      d'animation), PAS une échelle — le nom `slotNScale` ci-dessous est donc suspect,
-//      conservé tel quel faute de preuve directe du rôle exact (règle « ne jamais
-//      deviner »). Correction de nommage à faire quand ModelObj_Draw sera portée.
-//   BLOCAGE : ModelObj_Draw 0x4D71B0 et les tables de templates unk_B63174 / unk_B63208 /
-//   unk_B5A180 ne sont PAS modélisées dans ClientSource (aucun système model-object), et
-//   les champs effectSlotNActive/Scale ne sont peuplés par personne (leur producteur réel
-//   est Char_UpdateMotionState 0x5816A0 @0x581761/@0x581D57, logique de quête non portée).
-//   Émettre un draw ici exigerait d'INVENTER l'API model-object -> interdit (règle #8).
-// -----------------------------------------------------------------------------
+//     580C46  cmp dword ptr [ecx+108h], 0     ; slot2 active   (this+264)
+//     580C60  fld dword ptr [ecx+10Ch]        ; slot2 float arg (this+268)
+//   -> slot3: +0x110 / +0x114. The call form is ModelObj_Draw(template, pass, <float>,
+//      this+0x20 /*pos*/, &var, 0), IDENTICAL to Char_DrawAura's (ModelObj_Draw(unk_B60AB8
+//      + 148*this[27], pass, 0.0, this+32, this+35)): the float is thus the 2nd POSITIONAL
+//      ARGUMENT (animation cursor), NOT a scale — the `slotNScale` name below is therefore
+//      suspect, kept as-is for lack of direct proof of its exact role (rule "never guess").
+//      Rename to fix once ModelObj_Draw is ported.
+//   BLOCKER: ModelObj_Draw 0x4D71B0 and the template tables unk_B63174 / unk_B63208 /
+//   unk_B5A180 are NOT modeled in ClientSource (no model-object system), and the
+//   effectSlotNActive/Scale fields are populated by nobody (their real producer is
+//   Char_UpdateMotionState 0x5816A0 @0x581761/@0x581D57, unported quest logic). Emitting a
+//   draw here would require INVENTING the model-object API -> forbidden (rule #8).
 struct AttachedEffectSlots {
     bool slot1 = false; float slot1Scale = 0.0f;
     bool slot2 = false; float slot2Scale = 0.0f;

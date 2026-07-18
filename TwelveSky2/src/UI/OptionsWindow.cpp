@@ -1,9 +1,9 @@
-// UI/OptionsWindow.cpp — implémentation de la fenêtre Options. Voir OptionsWindow.h.
+// UI/OptionsWindow.cpp — implementation of the Options window. See OptionsWindow.h.
 #include "UI/OptionsWindow.h"
 #include "UI/PanelSkin.h"
-#include "Game/ClientRuntime.h" // game::Str(id) -> texte réel StrTable005 (005.DAT, mMESSAGE)
-#include "Scene/SceneManager.h" // ::ts2::Notice_DispatchOkAction(2) : Déconnexion (OPT-02, @0x5C04DF)
-#include "Core/Log.h"           // TS2_LOG : "[ABNORMAL_END] ( 5 )" (Quitter le jeu, @0x66D253)
+#include "Game/ClientRuntime.h" // game::Str(id) -> real StrTable005 text (005.DAT, mMESSAGE)
+#include "Scene/SceneManager.h" // ::ts2::Notice_DispatchOkAction(2) : Logout (OPT-02, @0x5C04DF)
+#include "Core/Log.h"           // TS2_LOG : "[ABNORMAL_END] ( 5 )" (Quit game, @0x66D253)
 
 #include <algorithm> // std::clamp
 #include <cstdio>    // snprintf
@@ -12,55 +12,53 @@ namespace ts2::ui {
 
 namespace {
 
-// Fond de panneau réel (best effort) : gabarit (400,440) du dossier atlas UI
-// G03_GDATA/D01_GIMAGE2D/001 — candidat NON CONFIRMÉ par IDA, choisi par
-// proximité de ratio/hauteur avec le panneau Options (380x440, correspondance
-// de hauteur exacte ; cf. méthodologie détaillée dans UI/PanelSkin.h). Repli
-// automatique sur kColBg si absent.
+// Real panel background (best effort): (400,440) template from the UI atlas folder
+// G03_GDATA/D01_GIMAGE2D/001 — candidate NOT CONFIRMED by IDA, chosen by ratio/height
+// proximity to the Options panel (380x440, exact height match; cf. detailed methodology
+// in UI/PanelSkin.h). Automatic fallback to kColBg if absent.
 const PanelSkin kPanelBg("G03_GDATA\\D01_GIMAGE2D\\001\\001_03637.IMG");
 
 
-// Table des 21 champs RÉELLEMENT exposés par UI_OptionsWnd (0x66C180/0x66D140/0x66EAC0),
-// dans l'ORDRE du panneau d'origine (donc aussi l'ordre mémoire idx0..idx22, en sautant
-// idx3/idx8 — cf. bandeau OptionsWindow.h). C'est la seule source de vérité de la
-// fenêtre : Render/OnClick itèrent cette table plutôt que de dupliquer 21 blocs de code
-// quasi identiques.
+// Table of the 21 fields ACTUALLY exposed by UI_OptionsWnd (0x66C180/0x66D140/0x66EAC0),
+// in the ORIGINAL panel's ORDER (hence also memory order idx0..idx22, skipping
+// idx3/idx8 — cf. banner in OptionsWindow.h). This is the window's single source of
+// truth: Render/OnClick iterate this table instead of duplicating 21 near-identical
+// blocks of code.
 //
-// NOTE OPT-09 (2 lignes fusionnées, documentées et non portées) : le panneau d'origine
-// compte en réalité 23 lignes de contrôle. Les 2 absentes de kFields sont, par
-// UI_OptionsWnd_OnClick 0x66D140 :
-//   - la ligne « blend » (this+22/23, y+210, @0x66DAEF/@0x66DB58) : n'écrit AUCUN g_Opt_* ;
-//     elle appelle seulement Gfx_ApplyOverlayBlendMode_SetState 0x53F630 (NON porté, Gfx)
-//     puis Options_SaveBin. Sans champ d'option, la modéliser ici serait un no-op inventé.
-//   - le DOUBLON Brightness (this+24/25, y+231, @0x66DBE5/@0x66DC64) : édite g_Opt_BrightnessLevel
-//     une 2e fois, avec exactement les mêmes clamps [1,9] que idx9 ci-dessous (aucune sémantique
-//     nouvelle). kFieldCount=21 absorbe donc les 23 lignes réelles.
+// NOTE OPT-09 (2 merged, documented, unported rows): the original panel actually has
+// 23 control rows. The 2 missing from kFields are, per UI_OptionsWnd_OnClick 0x66D140:
+//   - the "blend" row (this+22/23, y+210, @0x66DAEF/@0x66DB58): writes NO g_Opt_* field;
+//     it only calls Gfx_ApplyOverlayBlendMode_SetState 0x53F630 (NOT ported, Gfx) then
+//     Options_SaveBin. With no options field, modeling it here would be a made-up no-op.
+//   - the Brightness DUPLICATE (this+24/25, y+231, @0x66DBE5/@0x66DC64): edits
+//     g_Opt_BrightnessLevel a 2nd time, with the exact same [1,9] clamps as idx9 below (no
+//     new semantics). kFieldCount=21 thus absorbs the 23 real rows.
 //
-// valueStrBase = id StrTable005 (005.DAT) pour value==minV, lu et vérifié en désassemblant
-// UI_OptionsWnd_Render 0x66EAC0 (chaque branche `if(g_Opt_X==v) StrTable005_Get(g_LangId,ID)`).
-// -1 = pas de texte dans l'original (les 2 sliders de volume) -> repli numérique "%d" ET
-// marqueur de SLIDER (cf. IsSlider ci-dessous, OPT-04).
+// valueStrBase = StrTable005 id (005.DAT) for value==minV, read and verified by
+// disassembling UI_OptionsWnd_Render 0x66EAC0 (each branch `if(g_Opt_X==v)
+// StrTable005_Get(g_LangId,ID)`). -1 = no text in the original (the 2 volume sliders)
+// -> numeric "%d" fallback AND SLIDER marker (cf. IsSlider below, OPT-04).
 const OptionsFieldDef kFields[] = {
-    // label FR                       champ                                     chkbx  min max step  valueStrBase (005.DAT)
+    // FR label                        field                                     chkbx  min max step  valueStrBase (005.DAT)
     { "Effets de compétence/arme",  &config::GameOptions::ShowSkillEffects,   true,  0, 1,   1,  158 }, // idx0  158=OFF 159=ON
     { "Distance d'affichage",       &config::GameOptions::DisplayRangeTier,  false, 1, 3,   1,  160 }, // idx1  160=LOW 161=MEDIUM 162=HIGH
-    // idx2 : valeurs réelles "Basic"/"Advanced" (StrTable005 #168/#169) — PAS un simple
-    // marche/arrêt générique ; le libellé "divers"/"réservé" d'une passe précédente était
-    // un placeholder, aucun consommateur runtime identifié au-delà de ce toggle UI.
+    // idx2: real values are "Basic"/"Advanced" (StrTable005 #168/#169) — NOT a simple
+    // generic on/off; the "misc"/"reserved" label from an earlier pass was a placeholder,
+    // no runtime consumer identified beyond this UI toggle.
     { "Mode interface (Basic/Advanced)", &config::GameOptions::Toggle2Reserved, true, 0, 1, 1, 168 }, // idx2  168=Basic 169=Advanced
-    // idx3 (Reserved3) : ABSENT — aucune ligne dans UI_OptionsWnd d'origine, cf. OptionsWindow.h.
+    // idx3 (Reserved3): ABSENT — no row in the original UI_OptionsWnd, cf. OptionsWindow.h.
     { "Marqueurs de coups",         &config::GameOptions::ShowHitMarkers,     true,  0, 1,   1,  170 }, // idx4  170=OFF 171=ON
     { "Plaques de nom",             &config::GameOptions::ShowNameplates,     true,  0, 1,   1,  172 }, // idx5  172=OFF 173=ON
     { "Traînée d'arme",             &config::GameOptions::WeaponTrail,        true,  0, 1,   1,  174 }, // idx6  174=OFF 175=ON
-    // idx7 : ordre textuel RÉEL confirmé non-monotone (176..179 = OFF,HIGH,MEDIUM,LOW) —
-    // le niveau numérique 1..3 ne va PAS du plus faible au plus fort dans le texte d'origine.
-    // Quirk d'incrément « + » (OPT-05) : 0->1, 1->3 (2 inatteignable en montant), 3->3 —
-    // reproduit dans ActivateIfHit (RowPlus) et NON par un clamp générique.
+    // idx7: REAL text order confirmed non-monotone (176..179 = OFF,HIGH,MEDIUM,LOW) —
+    // the numeric level 1..3 does NOT go from weakest to strongest in the original text.
+    // "+" increment quirk (OPT-05): 0->1, 1->3 (2 unreachable going up), 3->3 —
+    // reproduced in ActivateIfHit (RowPlus) and NOT via a generic clamp.
     { "Lueur d'arme (niveau)",      &config::GameOptions::WeaponGlowLevel,   false, 0, 3,   1,  176 }, // idx7  176=OFF 177=HIGH 178=MEDIUM 179=LOW
-    // idx8 (Reserved8) : ABSENT — idem idx3.
+    // idx8 (Reserved8): ABSENT — same as idx3.
     { "Luminosité (Phase)",         &config::GameOptions::BrightnessLevel,   false, 1, 9,   1,  182 }, // idx9  182..190 = "Phase 1".."Phase 9"
-    { "Volume musique",             &config::GameOptions::MusicVolume,       false, 0, 100, 5,  -1  }, // idx10 SLIDER (pas de texte dans l'original)
-    { "Volume effets sonores",      &config::GameOptions::SoundVolume,       false, 0, 100, 5,  -1  }, // idx11 SLIDER (pas de texte dans l'original)
+    { "Volume musique",             &config::GameOptions::MusicVolume,       false, 0, 100, 5,  -1  }, // idx10 SLIDER (no text in the original)
+    { "Volume effets sonores",      &config::GameOptions::SoundVolume,       false, 0, 100, 5,  -1  }, // idx11 SLIDER (no text in the original)
     { "Musique de fond activée",    &config::GameOptions::BgmEnabled,         true,  0, 1,   1,  191 }, // idx12 191=OFF 192=ON
     { "Mode raccourcis (morph UI)", &config::GameOptions::MorphUiMode,       false, 1, 2,   1,  460 }, // idx13 460="[F1]-[F10]" 461="[1]-[0]"
     { "Ombres/reflets",             &config::GameOptions::GfxDetailShadows,   true,  0, 1,   1,  193 }, // idx14 193=Disable 194=Enable
@@ -75,17 +73,17 @@ const OptionsFieldDef kFields[] = {
 };
 constexpr int kFieldCount = static_cast<int>(sizeof(kFields) / sizeof(kFields[0]));
 
-// Un champ est un SLIDER de volume (idx10 MusicVolume / idx11 SoundVolume) ssi il n'a
-// aucun texte StrTable005 (valueStrBase==-1). Dans le binaire ces 2 lignes ne sont PAS
-// des -/+ mais des poignées glissables (UI_OptionsWnd_OnMouseDown 0x66C180 accroche le
-// knob ; UI_OptionsWnd_Render 0x66EAC0 écrit la valeur DANS le rendu tant que le knob est
-// armé : @0x66FF58 music, @0x66FFEE sound). Cf. OPT-04.
+// A field is a volume SLIDER (idx10 MusicVolume / idx11 SoundVolume) iff it has no
+// StrTable005 text (valueStrBase==-1). In the binary these 2 rows are NOT -/+ buttons
+// but draggable handles (UI_OptionsWnd_OnMouseDown 0x66C180 grabs the knob;
+// UI_OptionsWnd_Render 0x66EAC0 writes the value INTO the render while the knob is
+// armed: @0x66FF58 music, @0x66FFEE sound). Cf. OPT-04.
 bool IsSlider(const OptionsFieldDef& f) { return f.valueStrBase < 0; }
 
-// Texte de valeur réel pour la ligne `f` avec la valeur courante `v` : lit StrTable005
-// (005.DAT, mMESSAGE) via game::Str(valueStrBase + (v - minV)), fidèle à la lecture
-// contiguë confirmée dans UI_OptionsWnd_Render 0x66EAC0. Repli "%d" pour les 2 sliders
-// de volume (valueStrBase==-1, cf. commentaire de kFields).
+// Real value text for row `f` at current value `v`: reads StrTable005 (005.DAT,
+// mMESSAGE) via game::Str(valueStrBase + (v - minV)), matching the contiguous read
+// confirmed in UI_OptionsWnd_Render 0x66EAC0. "%d" fallback for the 2 volume sliders
+// (valueStrBase==-1, cf. kFields comment).
 std::string FieldValueText(const OptionsFieldDef& f, int32_t v) {
     if (f.valueStrBase < 0) {
         char buf[16];
@@ -103,11 +101,11 @@ OptionsWindow::OptionsWindow() {
 }
 
 void OptionsWindow::Open() {
-    // UI_OptionsWnd_Open 0x66C120 : pose seulement le flag « visible » (*(this+2)=1) puis
-    // zéro-remplit les 47 latches de boutons (this+3..this+49). Il NE relit PAS le disque —
-    // g_Options est déjà en mémoire (normalisé au boot via Options_LoadAndNormalize 0x4C2110)
-    // et chaque mutation le persiste immédiatement (OPT-01). On reproduit ce comportement :
-    // pas de Load() ici, on remet juste à zéro le défilement et l'état armé.
+    // UI_OptionsWnd_Open 0x66C120: only sets the "visible" flag (*(this+2)=1) then
+    // zero-fills the 47 button latches (this+3..this+49). It does NOT re-read the disk —
+    // g_Options is already in memory (normalized at boot via Options_LoadAndNormalize
+    // 0x4C2110) and every mutation persists it immediately (OPT-01). We reproduce this
+    // behavior: no Load() here, just reset scroll and armed state.
     Dialog::Open();
     scroll_ = 0;
     armedTarget_ = Target::None;
@@ -122,23 +120,23 @@ void OptionsWindow::Layout(int screenW, int screenH, Rect& panel, Rect& close,
     panel.w = kPanelW;
     panel.h = kPanelH;
 
-    // Bouton fermeture (croix) en haut à droite du panneau.
+    // Close button (cross) at the top-right of the panel.
     close = { panel.x + panel.w - kCloseBtn - 6, panel.y + 4, kCloseBtn, kCloseBtn };
 
-    // Zone de liste : sous le titre, au-dessus de la barre de boutons bas.
+    // List area: below the title, above the bottom button bar.
     list.x = panel.x + 10;
     list.y = panel.y + kTitleH + 6;
-    list.w = panel.w - 20 - (kCloseBtn + 4); // réserve la colonne des flèches de scroll
+    list.w = panel.w - 20 - (kCloseBtn + 4); // reserve the scroll-arrow column
     list.h = panel.h - kTitleH - kFooterH - 12;
 
-    // Flèches de défilement, colonne étroite à droite de la liste.
+    // Scroll arrows, narrow column to the right of the list.
     scrollUp   = { list.x + list.w + 4, list.y,                     kCloseBtn, kScrollBtnH };
     scrollDown = { list.x + list.w + 4, list.y + list.h - kScrollBtnH, kCloseBtn, kScrollBtnH };
 
-    // Pied de panneau (OPT-02/03) : « Déconnexion » à GAUCHE, « Quitter le jeu » à DROITE
-    // — ordre fidèle au binaire (this+5 x+148 @0x66D2AC ≺ this+4 x+202 @0x66D236). Ces 2
-    // boutons REMPLACENT l'ancien couple Sauvegarder/Annuler (inventé ; persistance
-    // désormais implicite à chaque mutation, OPT-01).
+    // Footer (OPT-02/03): "Logout" on the LEFT, "Quit game" on the RIGHT — order
+    // faithful to the binary (this+5 x+148 @0x66D2AC before this+4 x+202 @0x66D236).
+    // These 2 buttons REPLACE the old Save/Cancel pair (an invention; persistence is
+    // now implicit on every mutation, OPT-01).
     const int by = panel.y + panel.h - kFooterH + 6;
     const int bw = 120, bh = 24;
     logout   = { panel.x + panel.w / 2 - bw - 6, by, bw, bh };
@@ -182,9 +180,9 @@ OptionsWindow::Rect OptionsWindow::RowPlusRect(const Rect& row) const {
 }
 
 OptionsWindow::Rect OptionsWindow::RowSliderTrackRect(const Rect& row) const {
-    // Piste de 94 px (kTrackW), miroir de dbl_7BAF20=94.0. Alignée à droite en laissant
-    // ~46 px pour le texte numérique "%d" (0..100). Le panneau du portage étant réduit,
-    // la géométrie n'est pas transposable au pixel — seule la largeur 94 est conservée.
+    // 94 px track (kTrackW), mirrors dbl_7BAF20=94.0. Right-aligned, leaving ~46 px for
+    // the numeric "%d" text (0..100). Since the ported panel is smaller, the geometry
+    // isn't pixel-transposable — only the 94 width is kept.
     const int trackW = kTrackW;
     const int h = 6;
     return { row.x + row.w - trackW - 46, row.y + (kRowH - h) / 2, trackW, h };
@@ -198,7 +196,7 @@ bool OptionsWindow::OnMouseDown(int x, int y) {
     armedTarget_ = Target::None;
     armedRow_ = -1;
 
-    if (!In(panel, x, y)) return false; // clic hors fenêtre : ne consomme pas
+    if (!In(panel, x, y)) return false; // click outside the window: does not consume
 
     if (In(close, x, y))          { armedTarget_ = Target::Close; }
     else if (In(logout, x, y))    { armedTarget_ = Target::Logout; }
@@ -206,7 +204,7 @@ bool OptionsWindow::OnMouseDown(int x, int y) {
     else if (In(scrollUp, x, y))   { armedTarget_ = Target::ScrollUp; }
     else if (In(scrollDown, x, y)) { armedTarget_ = Target::ScrollDown; }
     else if (In(list, x, y)) {
-        // Cherche la ligne + sous-contrôle sous le curseur.
+        // Find the row + sub-control under the cursor.
         for (int row = scroll_; row < kFieldCount; ++row) {
             Rect r;
             if (!RowRect(list, row, r)) break;
@@ -215,9 +213,9 @@ bool OptionsWindow::OnMouseDown(int x, int y) {
             if (f.checkbox) {
                 if (In(RowCheckboxRect(r), x, y)) { armedTarget_ = Target::RowCheckbox; armedRow_ = row; }
             } else if (IsSlider(f)) {
-                // Accroche du knob (OPT-04) : le binaire teste le sprite du knob ; ici on
-                // arme sur toute la travée horizontale de la piste (In(r) garantit déjà le y)
-                // pour une zone cliquable exploitable dans le panneau réduit.
+                // Knob grab (OPT-04): the binary tests the knob sprite; here we arm on
+                // the whole horizontal span of the track (In(r) already guarantees y)
+                // for a workable click zone in the reduced panel.
                 Rect tr = RowSliderTrackRect(r);
                 if (x >= tr.x && x < tr.x + tr.w) { armedTarget_ = Target::Slider; armedRow_ = row; }
             } else {
@@ -227,7 +225,7 @@ bool OptionsWindow::OnMouseDown(int x, int y) {
             break;
         }
     }
-    return true; // panneau modal de fait : toute la surface consomme le clic
+    return true; // effectively a modal panel: the whole surface consumes the click
 }
 
 void OptionsWindow::ActivateIfHit(const Rect& panel, const Rect& close, const Rect& logout,
@@ -238,9 +236,9 @@ void OptionsWindow::ActivateIfHit(const Rect& panel, const Rect& close, const Re
             if (In(close, x, y)) Close();
             break;
         case Target::ExitGame:
-            // this+4 @0x66D236 : Log "[ABNORMAL_END] ( 5 )" @0x66D253 ; g_QuitFlag=1 @0x66D258 ;
-            // Close @0x66D265. g_QuitFlag (0x815590) modélisé par PostQuitMessage(0) (idiome
-            // projet, cf. UI/LoginScene.cpp:232-233, App/App.cpp WM_DESTROY). NE sauvegarde PAS.
+            // this+4 @0x66D236: Log "[ABNORMAL_END] ( 5 )" @0x66D253 ; g_QuitFlag=1 @0x66D258 ;
+            // Close @0x66D265. g_QuitFlag (0x815590) modeled via PostQuitMessage(0) (project
+            // idiom, cf. UI/LoginScene.cpp:232-233, App/App.cpp WM_DESTROY). Does NOT save.
             if (In(exitGame, x, y)) {
                 TS2_LOG("[ABNORMAL_END] ( 5 )"); // Log_WriteLine 0x53F2D0
                 ::PostQuitMessage(0);
@@ -248,12 +246,12 @@ void OptionsWindow::ActivateIfHit(const Rect& panel, const Rect& close, const Re
             }
             break;
         case Target::Logout:
-            // this+5 @0x66D2AC : Net_CloseSocket(&g_NetClient) @0x66D2C4 ; g_SceneMgr=2 @0x66D2C9 ;
-            // g_SceneSubState=0 @0x66D2D3 ; dword_1676188=0 @0x66D2DD ; Close @0x66D2EA. Le
-            // quadruplet est déjà porté par ::ts2::Notice_DispatchOkAction case 2 (même primitive
-            // @0x5C04DF : NetCloseSocket + retour ServerSelect DIFFÉRÉ). On respecte ainsi la
-            // contrainte « pas de changement de scène en direct » (SceneManager owned ailleurs).
-            // NE sauvegarde PAS.
+            // this+5 @0x66D2AC: Net_CloseSocket(&g_NetClient) @0x66D2C4 ; g_SceneMgr=2 @0x66D2C9 ;
+            // g_SceneSubState=0 @0x66D2D3 ; dword_1676188=0 @0x66D2DD ; Close @0x66D2EA. The
+            // quadruplet is already ported by ::ts2::Notice_DispatchOkAction case 2 (same
+            // primitive @0x5C04DF: NetCloseSocket + DEFERRED return to ServerSelect). This
+            // respects the "no live scene change" constraint (SceneManager owned elsewhere).
+            // Does NOT save.
             if (In(logout, x, y)) {
                 ::ts2::Notice_DispatchOkAction(2); // 0x5C04C9 case 2
                 Close();                            // UI_OptionsWnd_Close 0x66C160
@@ -272,9 +270,9 @@ void OptionsWindow::ActivateIfHit(const Rect& panel, const Rect& close, const Re
             if (!In(RowCheckboxRect(r), x, y)) break;
             const OptionsFieldDef& f = kFields[armedRow_];
             int32_t& v = config::g_Options.*(f.field);
-            v = (v != 0) ? 0 : 1; // toggle (UI_OptionsWnd_OnClick : bascule 0/1)
+            v = (v != 0) ? 0 : 1; // toggle (UI_OptionsWnd_OnClick: flips 0/1)
             v = std::clamp<int32_t>(v, f.minV, f.maxV);
-            // OPT-01 : chaque mutation réussie sauve (LABEL_270 @0x66E819 : Options_SaveBin).
+            // OPT-01: every successful mutation saves (LABEL_270 @0x66E819: Options_SaveBin).
             config::g_Options.Save();
             break;
         }
@@ -297,10 +295,10 @@ void OptionsWindow::ActivateIfHit(const Rect& panel, const Rect& close, const Re
             const OptionsFieldDef& f = kFields[armedRow_];
             int32_t& v = config::g_Options.*(f.field);
             if (f.field == &config::GameOptions::WeaponGlowLevel) {
-                // OPT-05 — quirk d'origine : `if (++v > 1) v = 3;` (@0x66D998/@0x66D99A).
-                // -> 0->1, 1->3 (la valeur 2 n'est atteignable qu'en DESCENDANT), 3->3.
-                // NE PAS remplacer par un clamp générique ni par GameOptions::Normalize()
-                // (leur clamp 0..3 masquerait le saut 1->3).
+                // OPT-05 — original quirk: `if (++v > 1) v = 3;` (@0x66D998/@0x66D99A).
+                // -> 0->1, 1->3 (value 2 is only reachable going DOWN), 3->3.
+                // DO NOT replace with a generic clamp or GameOptions::Normalize() (their
+                // 0..3 clamp would hide the 1->3 jump).
                 v = (v + 1 > 1) ? 3 : v + 1;
             } else {
                 v = std::clamp<int32_t>(v + f.step, f.minV, f.maxV);
@@ -309,9 +307,9 @@ void OptionsWindow::ActivateIfHit(const Rect& panel, const Rect& close, const Re
             break;
         }
         case Target::Slider: {
-            // OPT-04 — commit de fin de drag (this+26/27 @0x66DC9C/@0x66DCB9 : Options_SaveBin
-            // SANS hit-test). La valeur a déjà été écrite en direct par Render (@0x66FF58) ; on
-            // la recale une dernière fois depuis la position de relâchement puis on sauve.
+            // OPT-04 — end-of-drag commit (this+26/27 @0x66DC9C/@0x66DCB9: Options_SaveBin
+            // WITHOUT a hit-test). The value was already written live by Render (@0x66FF58);
+            // we recompute it one last time from the release position, then save.
             if (armedRow_ < 0 || armedRow_ >= kFieldCount) break;
             Rect r;
             if (!RowRect(list, armedRow_, r)) break;
@@ -343,7 +341,7 @@ bool OptionsWindow::OnClick(int x, int y) {
     if (inside) ActivateIfHit(panel, close, logout, exitGame, list, scrollUp, scrollDown, x, y);
     else { armedTarget_ = Target::None; armedRow_ = -1; }
 
-    return inside; // ne consomme que si le relâchement tombe dans la fenêtre
+    return inside; // only consumes if the release lands inside the window
 }
 
 bool OptionsWindow::OnKey(int vk) {
@@ -356,7 +354,7 @@ bool OptionsWindow::OnKey(int vk) {
     if (vk == VK_DOWN)   { scroll_ += 1; ClampScroll(list); return true; }
     if (vk == VK_PRIOR)  { scroll_ -= VisibleRowCount(list); ClampScroll(list); return true; } // Page Up
     if (vk == VK_NEXT)   { scroll_ += VisibleRowCount(list); ClampScroll(list); return true; } // Page Down
-    return true; // fenêtre modale de fait tant qu'ouverte : avale les autres touches
+    return true; // effectively modal while open: swallows other keys
 }
 
 void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
@@ -369,20 +367,20 @@ void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
     ClampScroll(list);
 
     if (ctx.phase == UiPhase::Panels) {
-        // Fond + cadre du panneau.
+        // Panel background + frame.
         kPanelBg.Draw(ctx, panel.x, panel.y, panel.w, panel.h, kColBg);
         ctx.DrawFrame(panel.x, panel.y, panel.w, panel.h, kColBorder, 2);
-        // Bandeau titre.
+        // Title band.
         ctx.FillRect(panel.x, panel.y, panel.w, kTitleH, kColTitleBg);
         ctx.DrawFrame(panel.x, panel.y, panel.w, kTitleH, kColBorder, 1);
 
-        // Bouton fermeture (croix).
+        // Close button (cross).
         const bool closeHover = In(close, cursorX, cursorY);
         ctx.FillRect(close.x, close.y, close.w, close.h,
                      (armedTarget_ == Target::Close) ? kColBtnDown : (closeHover ? kColBtnHover : kColClose));
         ctx.DrawFrame(close.x, close.y, close.w, close.h, kColBorder, 1);
 
-        // Flèches de défilement.
+        // Scroll arrows.
         const bool canUp = scroll_ > 0;
         const bool canDown = scroll_ < MaxScroll(list);
         ctx.FillRect(scrollUp.x, scrollUp.y, scrollUp.w, scrollUp.h,
@@ -394,7 +392,7 @@ void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
                      : (canDown && In(scrollDown, cursorX, cursorY) ? kColBtnHover : kColBtn));
         ctx.DrawFrame(scrollDown.x, scrollDown.y, scrollDown.w, scrollDown.h, kColBorder, 1);
 
-        // Lignes visibles : bande alternée + contrôle (case / slider / -/+).
+        // Visible rows: alternating band + control (checkbox / slider / -/+).
         for (int row = scroll_; row < kFieldCount; ++row) {
             Rect r;
             if (!RowRect(list, row, r)) break;
@@ -411,17 +409,17 @@ void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
             } else if (IsSlider(f)) {
                 Rect tr = RowSliderTrackRect(r);
                 const int span = f.maxV - f.minV; // 100
-                // OPT-04 — écriture LIVE pendant le drag : le binaire écrit g_Opt_MusicVolume
-                // (@0x66FF58) / g_Opt_SoundVolume (@0x66FFEE) DANS Render tant que le knob est
-                // armé. Formule fidèle : v = ftol((cursorX - trackX) * 100 / 94), curseur clampé
-                // à la piste (clamp [winX+0x80, winX+0xDE] @0x66FED0).
+                // OPT-04 — LIVE write during drag: the binary writes g_Opt_MusicVolume
+                // (@0x66FF58) / g_Opt_SoundVolume (@0x66FFEE) INSIDE Render while the knob
+                // is armed. Faithful formula: v = ftol((cursorX - trackX) * 100 / 94),
+                // cursor clamped to the track (clamp [winX+0x80, winX+0xDE] @0x66FED0).
                 if (armedTarget_ == Target::Slider && armedRow_ == row && span > 0 && tr.w > 0) {
                     const int cx = std::clamp(cursorX, tr.x, tr.x + tr.w);
                     int32_t nv = static_cast<int32_t>((cx - tr.x) * span / tr.w) + f.minV;
                     nv = std::clamp<int32_t>(nv, f.minV, f.maxV);
                     config::g_Options.*(f.field) = nv;
                 }
-                // Piste + poignée.
+                // Track + handle.
                 ctx.FillRect(tr.x, tr.y, tr.w, tr.h, kColBtn);
                 ctx.DrawFrame(tr.x, tr.y, tr.w, tr.h, kColBorder, 1);
                 const int32_t vc = std::clamp<int32_t>(config::g_Options.*(f.field), f.minV, f.maxV);
@@ -446,7 +444,7 @@ void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
             }
         }
 
-        // Boutons de pied : Déconnexion (gauche) / Quitter le jeu (droite, teinté « danger »).
+        // Footer buttons: Logout (left) / Quit game (right, "danger" tint).
         const bool logoutHover = In(logout, cursorX, cursorY);
         ctx.FillRect(logout.x, logout.y, logout.w, logout.h,
                      (armedTarget_ == Target::Logout) ? kColBtnDown : (logoutHover ? kColBtnHover : kColBtn));
@@ -458,7 +456,7 @@ void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         return;
     }
 
-    // --- Phase texte ---
+    // --- Text phase ---
     ctx.Text("Options", panel.x + 10, panel.y + 6, kColTitle);
     ctx.Text("X", close.x + 5, close.y + 2, kColText);
     ctx.Text("^", scrollUp.x + 5, scrollUp.y + 2, kColText);
@@ -471,23 +469,23 @@ void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         ctx.Text(f.label, r.x + 4, r.y + 4, kColText);
 
         int32_t v = config::g_Options.*(f.field);
-        // Texte de valeur RÉEL (StrTable005 005.DAT, cf. FieldValueText) — remplace
-        // l'affichage numérique brut : reproduit ce que UI_OptionsWnd_Render 0x66EAC0
-        // dessine réellement (ON/OFF, LOW/MEDUIM/HIGH, Basic/Advanced, Phase N, etc.).
+        // REAL value text (StrTable005 005.DAT, cf. FieldValueText) — replaces raw
+        // numeric display: reproduces what UI_OptionsWnd_Render 0x66EAC0 actually draws
+        // (ON/OFF, LOW/MEDUIM/HIGH, Basic/Advanced, Phase N, etc.).
         const std::string valueText = FieldValueText(f, v);
         if (f.checkbox) {
             Rect cb = RowCheckboxRect(r);
-            // Texte d'état à gauche de la case (place réservée dans la ligne), la case
-            // elle-même reste l'affordance de clic (v66EAC0 dessine le texte à une
-            // colonne fixe ; ici on le colle contre la case pour rester lisible aux
-            // largeurs de panneau réduites du portage).
+            // State text to the left of the checkbox (space reserved in the row), the
+            // checkbox itself remains the click affordance (v66EAC0 draws the text at a
+            // fixed column; here it's placed against the checkbox to stay readable at the
+            // port's reduced panel widths).
             const int vw = ctx.MeasureText(valueText.c_str());
             ctx.Text(valueText.c_str(), cb.x - vw - 6, r.y + 4, kColText);
             if (v != 0) {
-                ctx.Text("X", cb.x + 3, cb.y + 1, kColCheck); // « croix si vrai »
+                ctx.Text("X", cb.x + 3, cb.y + 1, kColCheck); // "cross if true"
             }
         } else if (IsSlider(f)) {
-            // Valeur numérique du volume, à droite de la piste (repli "%d", OPT-04).
+            // Numeric volume value, right of the track ("%d" fallback, OPT-04).
             Rect tr = RowSliderTrackRect(r);
             ctx.Text(valueText.c_str(), tr.x + tr.w + 6, r.y + 4, kColText);
         } else {
@@ -501,7 +499,7 @@ void OptionsWindow::Render(const UiContext& ctx, int cursorX, int cursorY) {
         }
     }
 
-    // Libellés des boutons de pied (OPT-02).
+    // Footer button labels (OPT-02).
     const char* logoutLbl = "Déconnexion";
     const int logoutLblW = ctx.MeasureText(logoutLbl);
     ctx.Text(logoutLbl, logout.x + (logout.w - logoutLblW) / 2, logout.y + 5, kColText);

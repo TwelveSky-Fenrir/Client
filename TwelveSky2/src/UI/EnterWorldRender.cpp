@@ -1,10 +1,10 @@
-// UI/EnterWorldRender.cpp — implémentation du rendu EnterWorld.
-// Vérité = Scene_EnterWorldRender 0x52C260 (voir UI/EnterWorldRender.h pour le détail
-// EA/formules).
+// UI/EnterWorldRender.cpp — EnterWorld render implementation.
+// Ground truth = Scene_EnterWorldRender 0x52C260 (see UI/EnterWorldRender.h for EA/formula
+// details).
 #include "UI/EnterWorldRender.h"
-#include "Asset/ImgFile.h" // asset::ImgFile (chargeur .IMG, fond de zone + barre réels)
-#include "Game/ClientRuntime.h" // game::Str (StrTable005_Get id 69, même table que
-                                 // SceneManager.cpp pour les notices EnterWorld 67/68)
+#include "Asset/ImgFile.h" // asset::ImgFile (.IMG loader, real zone background + bar)
+#include "Game/ClientRuntime.h" // game::Str (StrTable005_Get id 69, same table as
+                                 // SceneManager.cpp for EnterWorld notices 67/68)
 #include "Core/Log.h"
 #include <cstdio>
 #include <algorithm>
@@ -12,13 +12,13 @@
 namespace ts2::ui {
 
 namespace {
-// Écran nu (état WaitBeforeUnload) — même noir pur que IntroRender::kColBackdrop
-// (dword_18C5434, jamais réécrit ailleurs, cf. commentaire de IntroRender.cpp) :
-// Gfx_BeginFrame(nullptr) clear avec cette même couleur dans Scene_EnterWorldRender
-// (EA 0x52c2b8, MÊME appel que Scene_IntroRender).
+// Bare screen (WaitBeforeUnload state) — same pure black as IntroRender::kColBackdrop
+// (dword_18C5434, never rewritten elsewhere, cf. IntroRender.cpp comment):
+// Gfx_BeginFrame(nullptr) clears with this same color in Scene_EnterWorldRender
+// (EA 0x52c2b8, SAME call as Scene_IntroRender).
 constexpr D3DCOLOR kColBackdrop  = Argb(255, 0, 0, 0);
-// Replis aplat (texture 008_%05d.IMG absente) : distincts des couleurs Intro/ServerSelect
-// pour rester diagnosticables visuellement (pas une couleur réelle du binaire).
+// Flat-fill fallbacks (008_%05d.IMG texture missing): distinct from Intro/ServerSelect
+// colors to stay visually diagnosable (not a real binary color).
 constexpr D3DCOLOR kColBgFallback   = Argb(255, 20, 24, 34);
 constexpr D3DCOLOR kColBarFallback  = Argb(255, 60, 130, 90);
 constexpr D3DCOLOR kColBarEdge      = Argb(255, 120, 200, 150);
@@ -34,8 +34,8 @@ gfx::GpuTexture* EnterWorldRender::GetBackground(int zoneId) {
     gfx::GpuTexture tex;
     char path[80];
     // Sprite2D_BuildPath 0x4D68E0, case 7 -> "G03_GDATA\D01_GIMAGE2D\008\008_%05d.IMG",
-    // index = slot+1 ; slot d'origine = previousZoneId (zoneId-1) -> index = zoneId
-    // (cf. audit en tête de UI/EnterWorldRender.h).
+    // index = slot+1; original slot = previousZoneId (zoneId-1) -> index = zoneId
+    // (cf. audit at the top of UI/EnterWorldRender.h).
     std::snprintf(path, sizeof(path), "G03_GDATA/D01_GIMAGE2D/008/008_%05d.IMG", zoneId);
     asset::ImgFile img;
     if (img.Load(path) && tex.CreateFromImgFile(device_, img)) {
@@ -59,7 +59,7 @@ gfx::GpuTexture* EnterWorldRender::GetBarFrame(int slotIndex) {
     gfx::GpuTexture tex;
     char path[80];
     // Sprite2D_BuildPath case 1 -> "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG", index=slot+1
-    // (MÊME atlas/décalage que IntroRender::GetLogoSprite / ServerSelectRender::GetSprite).
+    // (SAME atlas/offset as IntroRender::GetLogoSprite / ServerSelectRender::GetSprite).
     std::snprintf(path, sizeof(path), "G03_GDATA/D01_GIMAGE2D/001/001_%05d.IMG", slotIndex + 1);
     asset::ImgFile img;
     if (img.Load(path) && tex.CreateFromImgFile(device_, img)) {
@@ -75,16 +75,16 @@ gfx::GpuTexture* EnterWorldRender::GetBarFrame(int slotIndex) {
 }
 
 void EnterWorldRender::Render(const UiContext& ctx, const game::EnterWorldFlowState& state, int zoneId) {
-    // EA 0x52c3d4 : `if (*(this + 1))` — état WaitBeforeUnload (0) : RIEN de plus que le
-    // clear noir déjà fait par Gfx_BeginFrame en amont (Scene_EnterWorldRender d'origine).
-    // Ce FillRect matérialise ce même "écran nu" (cf. IntroRender::Render, subState==0).
+    // EA 0x52c3d4 : `if (*(this + 1))` — WaitBeforeUnload state (0): NOTHING more than the
+    // black clear already done by Gfx_BeginFrame upstream (original Scene_EnterWorldRender).
+    // This FillRect materializes that same "bare screen" (cf. IntroRender::Render, subState==0).
     if (state.state == game::EnterWorldState::WaitBeforeUnload) {
         ctx.FillRect(0, 0, ctx.screenW, ctx.screenH, kColBackdrop);
         return;
     }
 
-    // Fond de zone, centré sur SA taille réelle (repli sur les dimensions nominales si
-    // le fichier 008_%05d.IMG est indisponible), EA 0x52c3fd/0x52c426/0x52c433/0x52c45c.
+    // Zone background, centered on ITS real size (falls back to nominal dimensions if
+    // the 008_%05d.IMG file is unavailable), EA 0x52c3fd/0x52c426/0x52c433/0x52c45c.
     gfx::GpuTexture* bg = GetBackground(zoneId);
     const bool hasRealBg = bg && bg->Handle() && bg->Width() > 0 && bg->Height() > 0;
     const int bgW = hasRealBg ? static_cast<int>(bg->Width())  : enterworld_layout::kBgW;
@@ -101,8 +101,8 @@ void EnterWorldRender::Render(const UiContext& ctx, const game::EnterWorldFlowSt
             ctx.DrawFrame(baseX, baseY, bgW, bgH, kColBarEdge, 2);
         }
 
-        // Barre de progression : 21 frames réelles (atlas 001, slots 1140..1160), animée
-        // par zoneResourceIndex (0..20, cf. EnterWorldFlowState). EA 0x52c593/0x52c5c8.
+        // Progress bar: 21 real frames (atlas 001, slots 1140..1160), animated
+        // by zoneResourceIndex (0..20, cf. EnterWorldFlowState). EA 0x52c593/0x52c5c8.
         const int barSlot = enterworld_layout::BarFrameSlot(
             std::clamp(state.zoneResourceIndex, 0, 20));
         gfx::GpuTexture* bar = GetBarFrame(barSlot);
@@ -113,9 +113,9 @@ void EnterWorldRender::Render(const UiContext& ctx, const game::EnterWorldFlowSt
             ctx.sprites->DrawSpriteScaled(bar->Handle(), nullptr, barX, barY, 1.0f, 1.0f,
                                           gfx::kSpriteWhite, /*compensatePos=*/true);
         } else {
-            // Repli : rectangle plein simple, largeur proportionnelle à la progression
-            // (0..20 sur 21 frames) — approximation visuelle, PAS une reproduction de la
-            // sprite d'animation réelle.
+            // Fallback: simple filled rectangle, width proportional to progress
+            // (0..20 out of 21 frames) — visual approximation, NOT a reproduction of the
+            // real animation sprite.
             const int fillW = 20 + (std::clamp(state.zoneResourceIndex, 0, 20) * 4);
             ctx.FillRect(barX, barY, fillW, 16, kColBarFallback);
             ctx.DrawFrame(barX, barY, 84, 16, kColBarEdge, 1);
@@ -123,11 +123,11 @@ void EnterWorldRender::Render(const UiContext& ctx, const game::EnterWorldFlowSt
     }
 
     if (ctx.phase == UiPhase::Text) {
-        // EA 0x52c496-0x52c57c : StrTable003_Get(zoneId) + StrTable005_Get(id=69), dessinés
-        // via UI_DrawNumberValue (police numérique bitmap dédiée) centrés sur
-        // (baseX+363, baseY+475). Reproduit ici par UNE ligne via ctx.Text (police UI
-        // normale, PAS le rendu bitmap numérique pixel-exact) — fidélité PARTIELLE
-        // assumée et documentée (cf. UI/EnterWorldRender.h, TODO UI_DrawNumberValue).
+        // EA 0x52c496-0x52c57c : StrTable003_Get(zoneId) + StrTable005_Get(id=69), drawn
+        // via UI_DrawNumberValue (dedicated bitmap numeric font) centered on
+        // (baseX+363, baseY+475). Reproduced here by ONE line via ctx.Text (normal UI
+        // font, NOT the pixel-exact bitmap numeric rendering) — PARTIAL fidelity
+        // assumed and documented (cf. UI/EnterWorldRender.h, TODO UI_DrawNumberValue).
         char label[64];
         std::snprintf(label, sizeof(label), "Zone %d - %s", zoneId, game::Str(69).c_str());
         const int labelW = ctx.MeasureText(label);
@@ -136,10 +136,10 @@ void EnterWorldRender::Render(const UiContext& ctx, const game::EnterWorldFlowSt
         ctx.Text(label, tx, ty, kColLabel);
     }
 
-    // UI_RenderAllDialogs() (EA 0x52c5d2) : les notices d'erreur (Failed, StrTable005 id
-    // 67/68, cf. Game/EnterWorldFlow.h::EnterWorldFlowHost::ShowErrorNotice) sont rendues
-    // par le pipeline de prompt existant côté ClientSource (ClientRuntime::PromptState),
-    // PAS dupliquées ici — même découplage que GameHud/GameWindows.
+    // UI_RenderAllDialogs() (EA 0x52c5d2): error notices (Failed, StrTable005 id
+    // 67/68, cf. Game/EnterWorldFlow.h::EnterWorldFlowHost::ShowErrorNotice) are rendered
+    // by the existing prompt pipeline on the ClientSource side (ClientRuntime::PromptState),
+    // NOT duplicated here — same decoupling as GameHud/GameWindows.
 }
 
 } // namespace ts2::ui

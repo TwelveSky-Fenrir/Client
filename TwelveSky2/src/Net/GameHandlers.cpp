@@ -1,4 +1,4 @@
-// Net/GameHandlers.cpp — agrégateur : installe tous les modules de handlers.
+// Net/GameHandlers.cpp — aggregator: installs all handler modules.
 #include "Net/GameHandlers.h"
 #include "Core/Log.h"
 
@@ -13,7 +13,7 @@ void InstallGameHandlers(NetSystem& sys) {
     RegisterVendorTradeHandlers(sys);
     RegisterBossWorldHandlers(sys);
     RegisterMiscHandlers(sys);
-    RegisterCoreOverrideHandlers(sys); // override fidèle 0x11/0x15/0x16/0x1a/0x5e (décompilation IDA directe)
+    RegisterCoreOverrideHandlers(sys); // faithful override for 0x11/0x15/0x16/0x1a/0x5e (direct IDA decompilation)
     TS2_LOG("Net : 8 modules de handlers + overrides core installes (165/165 opcodes reseau, "
             "0x1a + 0x5e inclus ; 0x5e Net_OnWorldEntityDispatch couvert TRES MAJORITAIREMENT "
             "en interne (familles combo 1-4/Special/Buff/branche/duel/arene/guerre-siege/rang, "

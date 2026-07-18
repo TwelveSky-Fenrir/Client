@@ -1,6 +1,6 @@
-// Asset/AssetSelfTest.h — auto-test de la couche Asset contre les vrais fichiers.
-// Invoqué par « TwelveSky2.exe -assettest <cheminGameData> ». Ouvre une console,
-// exerce NpkArchive + ImgFile + Zlib + Xtea, et affiche PASS/FAIL.
+// Asset/AssetSelfTest.h — self-test of the Asset layer against real files.
+// Invoked via "TwelveSky2.exe -assettest <GameDataPath>". Opens a console,
+// exercises NpkArchive + ImgFile + Zlib + Xtea, and prints PASS/FAIL.
 #pragma once
 #include <string>
 

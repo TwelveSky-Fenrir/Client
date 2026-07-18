@@ -1,71 +1,71 @@
-// Gfx/MeshPartMaterial.h — machine à états matériau fixed-function des « parts » d'objets
-// statiques GXD (.MOBJECT / .WO), port LIGNE À LIGNE de MeshPart_RenderFull 0x6B0850.
+// Gfx/MeshPartMaterial.h — fixed-function material state machine for GXD static-object
+// "parts" (.MOBJECT / .WO), LINE-BY-LINE port of MeshPart_RenderFull 0x6B0850.
 //
-// FRONT B1:meshpart-material (2026-07-17). Vérité UNIQUE = IDA (idaTs2, TwelveSky2.exe,
-// imagebase 0x400000). Chaque bloc du .cpp porte son ancre 0xADDR. Aucun accès IDB en écriture.
-// Recon byte-exacte : Docs/TS2_DEEP_MESHPART_MATERIAL.md (§4 ordre d'exécution, §5 helpers,
-// §6 tables de décodage) + Docs/TS2_DEEP_MOBJECT.md (§1 layout MeshPart 408 o, §4 sous-chemins).
+// FRONT B1:meshpart-material (2026-07-17). SOLE ground truth = IDA (idaTs2, TwelveSky2.exe,
+// imagebase 0x400000). Each block of the .cpp carries its 0xADDR anchor. No IDB write access.
+// Byte-exact recon: Docs/TS2_DEEP_MESHPART_MATERIAL.md (§4 execution order, §5 helpers,
+// §6 decode tables) + Docs/TS2_DEEP_MOBJECT.md (§1 MeshPart 408 B layout, §4 sub-paths).
 //
 // ===========================================================================================
-//  RÔLE — ce que reproduit ce module
+//  ROLE — what this module reproduces
 // ===========================================================================================
-// MeshPart_RenderFull 0x6B0850 dessine UN part (sous-maillage) d'un objet statique du décor
-// avec son matériau COMPLET : jusqu'à 9 couches fixed-function empilées par UNE machine à états.
-// Le « base-draw » (SetStreamSource(0,VB,32*frame*B,32) + SetIndices + DrawIndexedPrimitive,
-// ancre @0x6B1327) est DÉJÀ porté (ModelObjectRenderer.cpp / WorldGeometryRenderer.cpp) ; ce
-// module reproduit les couches AU-DELÀ du base-draw et ré-inclut le base-draw pour être un
-// remplaçant complet (drop-in : cf. Docs/TS2_DEEP_MOBJECT.md §7 T4/T5 —
-// « remplacer le draw de base par MeshPartMaterial::Render(...) »).
+// MeshPart_RenderFull 0x6B0850 draws ONE part (sub-mesh) of a static decor object
+// with its FULL material: up to 9 fixed-function layers stacked by ONE state machine.
+// The "base-draw" (SetStreamSource(0,VB,32*frame*B,32) + SetIndices + DrawIndexedPrimitive,
+// anchor @0x6B1327) is ALREADY ported (ModelObjectRenderer.cpp / WorldGeometryRenderer.cpp); this
+// module reproduces the layers BEYOND the base-draw and re-includes the base-draw to be a
+// complete drop-in replacement (cf. Docs/TS2_DEEP_MOBJECT.md §7 T4/T5 —
+// "replace the base draw with MeshPartMaterial::Render(...)").
 //
-//   (1) lumière émissive animée (ping-pong triangulaire)   @0x6B08AF  gate mat.lightAnim.Enable
-//   (1b) neutralisation de la lumière 0                    @0x6B099B  gate mat.noLight
-//   (2) glow spéculaire vue-dépendant (D3DMATERIAL9.Specular + lumière dir. vers caméra + RS29)
+//   (1) animated emissive light (triangular ping-pong)     @0x6B08AF  gate mat.lightAnim.Enable
+//   (1b) light 0 neutralization                             @0x6B099B  gate mat.noLight
+//   (2) view-dependent specular glow (D3DMATERIAL9.Specular + light dir. toward camera + RS29)
 //                                                          @0x6B0A11 / re-glow @0x6B168D  gate mat.glow
-//   (3) texture animée flipbook (atlas, sélection par temps) @0x6B0D33  gate mat.flipbook.Enable
-//   (4) UV-scroll matrice de texture tex1 @0x6B0F59 / tex2 @0x6B19BB   gate mat.uvScroll.texN.Enable
-//   (5) 2e texture (2e passe blendée, même géométrie)       @0x6B19AD  gate (tex.second != nullptr)
-//   + décalque projeté (a4)                                 @0x6B0B9B  argument decal
-//   + fondu distance alpha (a6)                             (blocs if(a6))  argument alphaFade
-//   + BILLBOARD (face-caméra)                               @0x6B107C  gate mat.billboard.Enable
-//        -> TODO ANCRE : les bases d'axes flt_8001D4 (0x8001D4) / unk_80022C (0x80022C) sont un
-//           ÉTAT RUNTIME NON PROUVÉ (cf. TS2_DEEP_MESHPART_MATERIAL.md §10). On NE fabrique PAS
-//           d'axe caméra. Repli honnête = draw indexé de la géométrie stockée (mesh VISIBLE mais
-//           NON billboardé). Le reste de la machine à états (lumière, retour) reste fidèle.
+//   (3) animated flipbook texture (atlas, time-based selection) @0x6B0D33  gate mat.flipbook.Enable
+//   (4) UV-scroll texture matrix tex1 @0x6B0F59 / tex2 @0x6B19BB   gate mat.uvScroll.texN.Enable
+//   (5) 2nd texture (2nd blended pass, same geometry)       @0x6B19AD  gate (tex.second != nullptr)
+//   + projected decal (a4)                                  @0x6B0B9B  argument decal
+//   + alpha distance fade (a6)                               (if(a6) blocks)  argument alphaFade
+//   + BILLBOARD (face-camera)                                @0x6B107C  gate mat.billboard.Enable
+//        -> TODO ANCHOR: the axis bases flt_8001D4 (0x8001D4) / unk_80022C (0x80022C) are an
+//           UNPROVEN RUNTIME STATE (cf. TS2_DEEP_MESHPART_MATERIAL.md §10). We do NOT fabricate
+//           a camera axis. Honest fallback = indexed draw of the stored geometry (mesh VISIBLE but
+//           NOT billboarded). The rest of the state machine (light, return) stays faithful.
 //
 // ===========================================================================================
-//  HELPERS Gfx_* RÉIMPLÉMENTÉS EN D3D9 DIRECT (le singleton FF g_GfxRenderer 0x7FFE18 est absent)
+//  Gfx_* HELPERS REIMPLEMENTED IN DIRECT D3D9 (the FF singleton g_GfxRenderer 0x7FFE18 is absent)
 // ===========================================================================================
 //  Gfx_SetMaterialEmissive 0x69D1F0 -> D3DMATERIAL9 { Diffuse(1,1,1,1), Ambient(1,1,1,1),
 //     Specular=glow.SpecRGBA, Emissive(0,0,0,1), Power=glow.SpecPower } + SetMaterial.
-//  Gfx_SetShadowProjLight 0x69D7A0 -> D3DLIGHT9 DIRECTIONAL slot 1 : Specular =
-//     (sceneCenter + lightOffset) * intensity ; Direction = cameraAt - cameraEye ; + LightEnable(1,TRUE)
+//  Gfx_SetShadowProjLight 0x69D7A0 -> D3DLIGHT9 DIRECTIONAL slot 1: Specular =
+//     (sceneCenter + lightOffset) * intensity; Direction = cameraAt - cameraEye; + LightEnable(1,TRUE)
 //     + SetRenderState(SPECULARENABLE, TRUE).
-//  Gfx_SetLight 0x69D5C0 (slot 0) -> D3DLIGHT9 DIRECTIONAL, Direction=(-1,-1,1) : mode 1 =>
-//     Ambient = sceneCenter ; mode 2 => Ambient = (r,g,b,a) fournis.
-//  Gfx_ApplyMeshMaterial 0x69D0E0 -> restaure le D3DMATERIAL9 (snapshot d'entrée du device).
+//  Gfx_SetLight 0x69D5C0 (slot 0) -> D3DLIGHT9 DIRECTIONAL, Direction=(-1,-1,1): mode 1 =>
+//     Ambient = sceneCenter; mode 2 => Ambient = (r,g,b,a) given.
+//  Gfx_ApplyMeshMaterial 0x69D0E0 -> restores the D3DMATERIAL9 (device entry snapshot).
 //  Gfx_DisableMeshLighting 0x69D9C0 -> LightEnable(1,FALSE) + SetRenderState(SPECULARENABLE,FALSE).
-//  Gfx_SkyboxEndState 0x69D780 -> restaure la lumière 0 (snapshot d'entrée du device).
+//  Gfx_SkyboxEndState 0x69D780 -> restores light 0 (device entry snapshot).
 //
-//  L'état runtime que le singleton FF tenait en globals (matrice monde dword_800244, œil caméra
-//  g_CameraPos 0x800130, cible caméra +804..812, direction soleil flt_800308.., centre AABB
-//  scène +1204*0.5+1236) est fourni par l'APPELANT via MeshPartRuntime — AUCUNE valeur inventée.
+//  The runtime state the FF singleton kept in globals (world matrix dword_800244, camera eye
+//  g_CameraPos 0x800130, camera target +804..812, sun direction flt_800308.., scene AABB
+//  center +1204*0.5+1236) is provided by the CALLER via MeshPartRuntime — NO invented value.
 //
 // ===========================================================================================
-//  AUTONOMIE
+//  AUTONOMY
 // ===========================================================================================
-// Module STATELESS : ne possède AUCUNE ressource D3D (ni VB/IB/texture ni pool DEFAULT) — il ne
-// fait que poser des états et dessiner avec des ressources FOURNIES par l'appelant. Donc RIEN à
-// recréer sur device-lost (pas de OnDeviceLost/Reset). Aucun câblage dans la boucle de rendu :
-// FLOTTE C/MAIN appellera Render() depuis ModelObjectRenderer/WorldGeometryRenderer.
+// STATELESS module: owns NO D3D resource (no VB/IB/texture, no DEFAULT pool) — it only
+// sets states and draws with resources SUPPLIED by the caller. So NOTHING to
+// recreate on device-lost (no OnDeviceLost/Reset). Not wired into the render loop yet:
+// FLEET C/MAIN will call Render() from ModelObjectRenderer/WorldGeometryRenderer.
 //
-// PRÉ-CONDITION D'APPEL (fidèle à Model_RenderWithShadow_0 0x6A4110), à poser AVANT Render() :
-//   (a) SetFVF(D3DFVF_XYZ|D3DFVF_NORMAL|D3DFVF_TEX1 = 0x112 = 274) @0x6a4186 — le base-draw et le
-//       billboard supposent le stride 32 o ; MeshPart_RenderFull ne repose PAS la FVF elle-même.
-//   (b) SetTransform(D3DTS_WORLD, matriceMonde) @0x6a4299 — MeshPart_RenderFull ne pose la matrice
-//       monde QUE dans la branche billboard (identité puis restauration). rt.world sert au transform
-//       des centres de nœuds (D3DXVec3TransformCoord) et à la restauration billboard.
+// CALL PRE-CONDITION (faithful to Model_RenderWithShadow_0 0x6A4110), to set BEFORE Render():
+//   (a) SetFVF(D3DFVF_XYZ|D3DFVF_NORMAL|D3DFVF_TEX1 = 0x112 = 274) @0x6a4186 — the base-draw and
+//       billboard assume 32 B stride; MeshPart_RenderFull does NOT set the FVF itself.
+//   (b) SetTransform(D3DTS_WORLD, worldMatrix) @0x6a4299 — MeshPart_RenderFull only sets the
+//       world matrix in the billboard branch (identity then restore). rt.world is used to transform
+//       node centers (D3DXVec3TransformCoord) and for the billboard restore.
 #pragma once
-#include "Asset/Model.h"   // asset::MeshPartMaterial (FLOTTE A — décodé, champs nommés)
+#include "Asset/Model.h"   // asset::MeshPartMaterial (FLEET A — decoded, named fields)
 #include <d3d9.h>
 #include <d3dx9.h>
 #include <cstdint>
@@ -73,80 +73,80 @@
 namespace ts2::gfx {
 
 // -------------------------------------------------------------------------------------------
-// Ressources GPU d'un part (miroir MeshPart 408 o, champs consommés par 0x6B0850).
+// GPU resources of a part (mirrors MeshPart 408 B, fields consumed by 0x6B0850).
 // -------------------------------------------------------------------------------------------
 struct MeshPartGpu {
-    IDirect3DVertexBuffer9* vb = nullptr;   // this[72] (+288) — 32*A*B o (A frames contiguës)
-    IDirect3DIndexBuffer9*  ib = nullptr;   // this[73] (+292) — 6*D o (INDEX16, partagé)
-    uint32_t vertsPerFrame = 0;             // B = this[64] (+256) — numVerts du DrawIndexedPrimitive
+    IDirect3DVertexBuffer9* vb = nullptr;   // this[72] (+288) — 32*A*B B (A contiguous frames)
+    IDirect3DIndexBuffer9*  ib = nullptr;   // this[73] (+292) — 6*D B (INDEX16, shared)
+    uint32_t vertsPerFrame = 0;             // B = this[64] (+256) — numVerts of DrawIndexedPrimitive
     uint32_t triCount      = 0;             // D = this[66] (+264) — primCount
-    uint32_t frameCount    = 1;             // A = this[63] (+252) — borne défensive de frame
-    // Bloc nœuds/bbox (A*64 o, this[71]/+284) : par frame 64 o — centre vec3 @+48 (glow fresnel,
-    // billboard), axes billboard @+36 (NON reproduits, cf. TODO billboard). nullptr => sauts sûrs.
+    uint32_t frameCount    = 1;             // A = this[63] (+252) — defensive frame bound
+    // Node/bbox block (A*64 B, this[71]/+284): per frame 64 B — center vec3 @+48 (fresnel glow,
+    // billboard), billboard axes @+36 (NOT reproduced, cf. TODO billboard). nullptr => safe skips.
     const uint8_t* frameNodes = nullptr;
 };
 
 // -------------------------------------------------------------------------------------------
-// Textures résolues (pointeurs COM extraits des holders 52 o à l'offset +48).
+// Resolved textures (COM pointers extracted from 52 B holders at offset +48).
 // -------------------------------------------------------------------------------------------
 struct MeshPartTextures {
-    IDirect3DTexture9* base       = nullptr; // tex0 diffuse : this[86] (+344) ; mode this[85]
-    int                baseMode   = 0;       // this[85] (+340) : 1=alpha-test / 2=blend / autre
-    IDirect3DTexture9* second     = nullptr; // tex1 2e texture : this[99] (+396) ; mode this[98]
-    int                secondMode = 0;       // this[98] (+392) : 1=alpha-test / 2=blend / autre
-    // Flipbook : tableau de pointeurs texture DÉJÀ extraits (this[101]+52*i+48), taille = this[100].
-    const IDirect3DTexture9* const* flipbook = nullptr; // this[101] (+404) réduit à [tex...]
-    uint32_t flipbookCount = 0;                          // this[100] (+400) — modulo d'index
+    IDirect3DTexture9* base       = nullptr; // tex0 diffuse: this[86] (+344); mode this[85]
+    int                baseMode   = 0;       // this[85] (+340): 1=alpha-test / 2=blend / other
+    IDirect3DTexture9* second     = nullptr; // tex1 2nd texture: this[99] (+396); mode this[98]
+    int                secondMode = 0;       // this[98] (+392): 1=alpha-test / 2=blend / other
+    // Flipbook: array of texture pointers ALREADY extracted (this[101]+52*i+48), size = this[100].
+    const IDirect3DTexture9* const* flipbook = nullptr; // this[101] (+404) reduced to [tex...]
+    uint32_t flipbookCount = 0;                          // this[100] (+400) — index modulo
 };
 
 // -------------------------------------------------------------------------------------------
-// État runtime que le singleton FF g_GfxRenderer 0x7FFE18 tenait en globals — FOURNI par
-// l'appelant (aucune valeur inventée ; chaque champ porte son ancre de global d'origine).
+// Runtime state the FF singleton g_GfxRenderer 0x7FFE18 kept in globals — SUPPLIED by
+// the caller (no invented value; each field carries its original global's anchor).
 // -------------------------------------------------------------------------------------------
 struct MeshPartRuntime {
-    // Matrice monde courante = dword_800244 (posée par l'appelant via SetTransform(256)). Sert au
-    // transform des centres de nœuds (Vec3_TransformCoord @0x6b0a81/@0x6b11a4) et à la restauration
-    // WORLD de la branche billboard. NE sert PAS à (re)poser D3DTS_WORLD du base-draw.
+    // Current world matrix = dword_800244 (set by the caller via SetTransform(256)). Used to
+    // transform node centers (Vec3_TransformCoord @0x6b0a81/@0x6b11a4) and for the billboard
+    // branch's WORLD restore. NOT used to (re)set the base-draw's D3DTS_WORLD.
     D3DXMATRIX  world;
     D3DXVECTOR3 cameraEye   = {0.0f, 0.0f, 0.0f}; // g_CameraPos 0x800130 / flt_800134 / flt_800138
-    D3DXVECTOR3 cameraAt    = {0.0f, 0.0f, 0.0f}; // cible caméra +804..812 ; dir proj-light = at - eye
-    D3DXVECTOR3 sunDir      = {0.0f, 0.0f, 0.0f}; // flt_800308/30C/310 (le glow fresnel dote -sunDir)
-    D3DXVECTOR3 sceneCenter = {0.0f, 0.0f, 0.0f}; // centre AABB scène = +1204*0.5 + 1236 (couleur proj-light)
-    bool worldValid = false;                      // rt.world exploitable (sinon fresnel/billboard sautés)
+    D3DXVECTOR3 cameraAt    = {0.0f, 0.0f, 0.0f}; // camera target +804..812; proj-light dir = at - eye
+    D3DXVECTOR3 sunDir      = {0.0f, 0.0f, 0.0f}; // flt_800308/30C/310 (fresnel glow dots -sunDir)
+    D3DXVECTOR3 sceneCenter = {0.0f, 0.0f, 0.0f}; // scene AABB center = +1204*0.5 + 1236 (proj-light color)
+    bool worldValid = false;                      // rt.world usable (otherwise fresnel/billboard skipped)
     MeshPartRuntime() { D3DXMatrixIdentity(&world); }
 };
 
 // -------------------------------------------------------------------------------------------
-// Décalque projeté (argument a4 de 0x6B0850) : struct texture 52 o — +44 mode, +48 pointeur tex.
-// nullptr (ou tex==nullptr) = pas de décalque (chemin FX standard : a4=0).
+// Projected decal (argument a4 of 0x6B0850): 52 B texture struct — +44 mode, +48 tex pointer.
+// nullptr (or tex==nullptr) = no decal (standard FX path: a4=0).
 // -------------------------------------------------------------------------------------------
 struct MeshPartDecal {
-    int                mode = 0;       // a4+44 : 1=alpha-test / 2=blend / autre
+    int                mode = 0;       // a4+44: 1=alpha-test / 2=blend / other
     IDirect3DTexture9* tex  = nullptr; // a4+48
 };
 
 // ===========================================================================================
-//  MeshPartMaterialRenderer — machine à états STATELESS (méthodes statiques). Le nom de classe
-//  diffère d'asset::MeshPartMaterial (le descripteur consommé) pour éviter toute collision.
+//  MeshPartMaterialRenderer — STATELESS state machine (static methods). The class name
+//  differs from asset::MeshPartMaterial (the descriptor it consumes) to avoid any collision.
 // ===========================================================================================
 class MeshPartMaterialRenderer {
 public:
-    // Port complet de MeshPart_RenderFull 0x6B0850. Pose les 9 couches d'états/matrices puis
-    // dessine (base-draw @0x6B1327 + éventuelle 2e passe @0x6B1C17), et restaure symétriquement
-    // TOUS les états modifiés (flags v73/v74/v91/v92/v38/v64 du binaire).
+    // Full port of MeshPart_RenderFull 0x6B0850. Sets the 9 state/matrix layers then
+    // draws (base-draw @0x6B1327 + optional 2nd pass @0x6B1C17), and symmetrically restores
+    // ALL modified states (flags v73/v74/v91/v92/v38/v64 of the binary).
     //
-    //  dev        : device D3D9 (g_GfxRenderer_pDevice 0x800074 dans le binaire).
-    //  mat        : en-tête matériau 120 o DÉCODÉ (asset::MeshPartMaterial, FLOTTE A). Si
-    //               mat.decoded == false => AUCUNE couche : retombe au base-draw pur (tex.base).
-    //  geo        : VB/IB/B/D + bloc nœuds (base-draw + centres de frustum/billboard).
-    //  tex        : tex0/tex1/flipbook résolus.
-    //  frame      : index de frame de morph (a2) — présumé déjà borné [0,A-1] par l'appelant ;
-    //               re-borné défensivement sur geo.frameCount pour l'offset de stream/nœud.
-    //  animTime   : v66 = Terrain_PushRenderState() + a3 (secondes QPC + phase) — horloge maîtresse
-    //               de TOUTES les couches animées (ping-pong, flipbook, UV-scroll). @0x6b0871/@0x6b0883.
-    //  glowEnable : a5 (autorise le glow spéculaire). Chemin FX = 1.
-    //  alphaFade  : a6 (fondu distance, 0..255) — 0 = tout le fondu MORT (chemin FX). @0x6b0bdf etc.
-    //  decal      : a4 (décalque projeté) ou nullptr.
+    //  dev        : D3D9 device (g_GfxRenderer_pDevice 0x800074 in the binary).
+    //  mat        : DECODED 120 B material header (asset::MeshPartMaterial, FLEET A). If
+    //               mat.decoded == false => NO layer: falls back to the pure base-draw (tex.base).
+    //  geo        : VB/IB/B/D + node block (base-draw + frustum/billboard centers).
+    //  tex        : resolved tex0/tex1/flipbook.
+    //  frame      : morph frame index (a2) — assumed already bounded [0,A-1] by the caller;
+    //               defensively re-bounded on geo.frameCount for the stream/node offset.
+    //  animTime   : v66 = Terrain_PushRenderState() + a3 (QPC seconds + phase) — master clock
+    //               of ALL animated layers (ping-pong, flipbook, UV-scroll). @0x6b0871/@0x6b0883.
+    //  glowEnable : a5 (enables specular glow). FX path = 1.
+    //  alphaFade  : a6 (distance fade, 0..255) — 0 = fade entirely DEAD (FX path). @0x6b0bdf etc.
+    //  decal      : a4 (projected decal) or nullptr.
     static void Render(IDirect3DDevice9* dev,
                        const asset::MeshPartMaterial& mat,
                        const MeshPartGpu& geo,

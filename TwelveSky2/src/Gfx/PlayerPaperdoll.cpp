@@ -1,19 +1,19 @@
-// Gfx/PlayerPaperdoll.cpp — implementation. Voir PlayerPaperdoll.h pour la preuve IDA
-// (Char_RenderModel 0x527020 : v37 palette partagee, corps 2 pieces + arme skinnee au bone de main).
+// Gfx/PlayerPaperdoll.cpp — implementation. See PlayerPaperdoll.h for the IDA proof
+// (Char_RenderModel 0x527020: v37 shared palette, 2-piece body + hand-bone-skinned weapon).
 //
-// ///// FLOTTE C / FRONT C3 — CABLAGE B2 + B3 (integration, 2026-07-17) /////
-// Ce fichier RELIE deux modules FLOTTE B jusqu'ici non branches au site de rendu :
-//   B2  Gfx/EquipModelResolver.h  — BuildArmorBodyStem (stem SObject "C..." des pieces de corps,
-//        port fidele de SObject_BuildPath 0x4D89C0 case 1) passe a ModelCache::Get (public, EXISTANT).
-//   B3  Gfx/PlayerMotionSlotResolver.h — ResolvePlayerMotionSlot (meta-switch + garde
-//        Motion_IsValidWeaponPose 0x4E3A30 de PcModel_ResolveEquipSlot 0x4E46A0) route la palette
-//        d'os vers MotionCache::GetForPlayer (public, EXISTANT).
-// Aucune API des caches n'est modifiee (contrainte de disjonction FLOTTE C).
+// ///// FLEET C / FRONT C3 — WIRING B2 + B3 (integration, 2026-07-17) /////
+// This file CONNECTS two FLEET B modules that were previously unwired at the render site:
+//   B2  Gfx/EquipModelResolver.h  — BuildArmorBodyStem (SObject "C..." stem for body pieces,
+//        faithful port of SObject_BuildPath 0x4D89C0 case 1) fed to ModelCache::Get (public, EXISTING).
+//   B3  Gfx/PlayerMotionSlotResolver.h — ResolvePlayerMotionSlot (meta-switch + guard
+//        Motion_IsValidWeaponPose 0x4E3A30 of PcModel_ResolveEquipSlot 0x4E46A0) routes the bone
+//        palette through MotionCache::GetForPlayer (public, EXISTING).
+// No cache API is modified (FLEET C disjointness constraint).
 #include "Gfx/PlayerPaperdoll.h"
-#include "Gfx/EquipModelResolver.h"        // B2 : BuildArmorBodyStem (stem SObject des pieces de corps)
-#include "Gfx/PlayerMotionSlotResolver.h"  // B3 : ResolvePlayerMotionSlot (garde + slot MOTION joueur)
-#include "Game/GameDatabase.h"             // game::GetItemInfo (resolution modele arme via ITEM_INFO)
-#include <cstdio>                          // snprintf (stems corps de base torse/jambes)
+#include "Gfx/EquipModelResolver.h"        // B2: BuildArmorBodyStem (SObject stem for body pieces)
+#include "Gfx/PlayerMotionSlotResolver.h"  // B3: ResolvePlayerMotionSlot (guard + player MOTION slot)
+#include "Game/GameDatabase.h"             // game::GetItemInfo (weapon model resolution via ITEM_INFO)
+#include <cstdio>                          // snprintf (base body torso/legs stems)
 
 namespace ts2::gfx {
 
@@ -26,78 +26,78 @@ PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motion
     PaperdollResult r;
 
     // ===========================================================================
-    // 1) Palette d'os PARTAGEE — B3 : ResolvePlayerMotionSlot 0x4E46A0.
+    // 1) SHARED bone palette — B3: ResolvePlayerMotionSlot 0x4E46A0.
     // ===========================================================================
-    // Char_RenderModel 0x527020 resout v37 par :
+    // Char_RenderModel 0x527020 resolves v37 via:
     //     v37 = PcModel_ResolveEquipSlot(g_ModelMotionArray, a4[9], a4[11], a5, a6, 1, 0, 0);  /*0x52705f/0x527544*/
-    // -> ANCRES DES ARGUMENTS (relu en IDA cette session) : a2=race, a3=gender, a4(pose)=Char_RenderModel::a5,
-    //    a5(etat)=Char_RenderModel::a6, a6=1, a7=0, a8(itemOrSkillId)=0. Le a8 EST LITTERALEMENT 0 aux
-    //    DEUX sites d'appel de Char_RenderModel -> le meta-switch d'id d'arme (0x4e46ef..0x4e5708) tombe
-    //    TOUJOURS sur LABEL_152 (categorie 1, corps "C"), jamais sur une famille cat.6 "X". De plus
-    //    a6=1 (<=112) force ResolveDefaultL152 sur sa 1re branche (MakeParam, base 2624960) : le slot
-    //    resolu est donc TOUJOURS categorie BodyC (dossier 001), variante=pose(=0), etat=animState.
+    // -> ARGUMENT ANCHORS (re-checked in IDA this session): a2=race, a3=gender, a4(pose)=Char_RenderModel::a5,
+    //    a5(state)=Char_RenderModel::a6, a6=1, a7=0, a8(itemOrSkillId)=0. a8 IS LITERALLY 0 at BOTH
+    //    Char_RenderModel call sites -> the weapon-id meta-switch (0x4e46ef..0x4e5708) ALWAYS falls
+    //    through to LABEL_152 (category 1, "C" body), never a cat.6 "X" family. Also
+    //    a6=1 (<=112) forces ResolveDefaultL152 onto its 1st branch (MakeParam, base 2624960): the
+    //    resolved slot is therefore ALWAYS category BodyC (folder 001), variant=pose(=0), state=animState.
     //
-    // CONSEQUENCE DE CABLAGE (fidelite + contrainte "ne pas changer l'API MotionCache") : puisque le
-    // slot est TOUJOURS categorie 1 "C", le stem "C%03d%03d%03d" produit par ResolvePlayerMotionSlot
-    // (PlayerMotionSlot::BuildStem, dossier motionFolder()="001") est BIT-POUR-BIT celui que fabrique
-    // MotionCache::GetForPlayer 0x4E46A0 (BuildPlayerMotionStem : "C%03d%03d%03d" % (race+3*gender+1,
-    // weaponType+1, animState+1)). On route donc via le GetForPlayer PUBLIC en lui passant les indices
-    // decomposes du slot (weaponIndex/stateIndex) -- MotionCache::Get(stem, folder) est PRIVE, on ne
-    // peut pas l'appeler directement, et on n'a pas le droit d'ouvrir son API.
+    // WIRING CONSEQUENCE (fidelity + "do not change the MotionCache API" constraint): since the
+    // slot is ALWAYS category 1 "C", the stem "C%03d%03d%03d" produced by ResolvePlayerMotionSlot
+    // (PlayerMotionSlot::BuildStem, folder motionFolder()="001") is BIT-FOR-BIT the one built by
+    // MotionCache::GetForPlayer 0x4E46A0 (BuildPlayerMotionStem: "C%03d%03d%03d" % (race+3*gender+1,
+    // weaponType+1, animState+1)). We therefore route through the PUBLIC GetForPlayer, passing it the
+    // decomposed slot indices (weaponIndex/stateIndex) -- MotionCache::Get(stem, folder) is PRIVATE, we
+    // cannot call it directly and are not allowed to open up its API.
     //
-    // CE QUE B3 AJOUTE par rapport a l'ancien `GetForPlayer(race, gender, 0, animState)` : la GARDE
-    // Motion_IsValidWeaponPose 0x4E3A30 (0x4e46cc). Pour un couple (pose=0, animState) INVALIDE (ex.
-    // les etats d'attaque 4..9/42..46/... qui exigent une pose d'arme non nulle), 0x4E46A0 renvoie le
-    // slot idle de repli ABSOLU `this + 2644772` = "C001001128" (race0/gen0/wp0/state127, 0x4e46dd) au
-    // lieu de fabriquer un stem "C{kind}001{state+1}" hors table. Pour les etats de LOCOMOTION communs
-    // (0,1,2,3,10,11,12..) la garde passe et le resultat est STRICTEMENT IDENTIQUE a l'ancien code
-    // (MakeParam, wp=0). B3 est donc un sur-ensemble fidele : identique quand valide, idle prouve quand
-    // invalide (jamais un stem hors table). weaponPose=0 assume (le vrai a4=pose in-game vient du
-    // switch a8, non porte) -- MEME repli que l'ancien weaponType=0, pas une invention.
+    // WHAT B3 ADDS relative to the old `GetForPlayer(race, gender, 0, animState)`: the
+    // Motion_IsValidWeaponPose 0x4E3A30 GUARD (0x4e46cc). For an INVALID (pose=0, animState) pair (e.g.
+    // the attack states 4..9/42..46/... that require a non-zero weapon pose), 0x4E46A0 returns the
+    // ABSOLUTE fallback idle slot `this + 2644772` = "C001001128" (race0/gen0/wp0/state127, 0x4e46dd) instead
+    // of building an out-of-table "C{kind}001{state+1}" stem. For common LOCOMOTION states
+    // (0,1,2,3,10,11,12..) the guard passes and the result is STRICTLY IDENTICAL to the old code
+    // (MakeParam, wp=0). B3 is therefore a faithful superset: identical when valid, proven idle when
+    // invalid (never an out-of-table stem). weaponPose=0 assumed (the actual in-game a4=pose comes from
+    // the a8 switch, not ported) -- SAME fallback as the old weaponType=0, not an invention.
     const gfx::PlayerMotionSlot ms = gfx::ResolvePlayerMotionSlot(
         race, gender, weaponPose, animState, /*ctxA6=*/1, /*ctxA7=*/0, /*itemOrSkillId=*/0);
 
     if (ms.category == gfx::PlayerMotionCategory::BodyC) {
-        // Categorie 1 "C" (le seul cas atteignable ici, a8=0) -> GetForPlayer public, stem identique.
+        // Category 1 "C" (the only reachable case here, a8=0) -> public GetForPlayer, identical stem.
         if (const gfx::MotionPalette* mp =
                 motions.GetForPlayer(ms.race, ms.gender, ms.weaponIndex, ms.stateIndex)) {
-            // Curseur REEL par entite (entity+248) UNIQUEMENT s'il est reellement avance
-            // (game::Player_AnimCursorTickIsWired via hasAnimCursor) : SampleByCursor reproduit le
-            // chemin de dessin fidele (frame = ftol(animTime), wrap par soustraction — Char_TickMoveState
-            // 0x574830 @0x574922). Sinon repli horloge globale ASSUME (SampleByGameTime) : sans l'avance
-            // du curseur, brancher SampleByCursor(0) figerait TOUS les joueurs a la frame 0 (garde
-            // anti-regression OBLIGATOIRE, cf. header).
+            // REAL per-entity cursor (entity+248) ONLY if it is actually advancing
+            // (game::Player_AnimCursorTickIsWired via hasAnimCursor): SampleByCursor reproduces the
+            // faithful draw path (frame = ftol(animTime), wraps by subtraction — Char_TickMoveState
+            // 0x574830 @0x574922). Otherwise ASSUMED fallback to the global clock (SampleByGameTime): without
+            // the cursor advancing, wiring SampleByCursor(0) would freeze ALL players at frame 0 (MANDATORY
+            // anti-regression guard, see header).
             r.palette = hasAnimCursor
-                ? MotionCache::SampleByCursor(*mp, animCursor)      // curseur entity+248 (0x574922)
-                : MotionCache::SampleByGameTime(*mp, gameTimeSec);  // repli horloge globale (non wired)
+                ? MotionCache::SampleByCursor(*mp, animCursor)      // entity+248 cursor (0x574922)
+                : MotionCache::SampleByGameTime(*mp, gameTimeSec);  // global-clock fallback (not wired)
         }
-        // sinon r.palette reste invalide (identite cote MeshRenderer) — degrade honnete, pas d'invention.
+        // else r.palette stays invalid (identity on the MeshRenderer side) — honest degradation, no invention.
     }
-    // else : categorie WeaponSkillX (dossier 006, stem "X...") -> INATTEIGNABLE a ce site (a8=0). Aucun
-    // accesseur MotionCache PUBLIC ne produit un stem "X"/dossier 006 (seul GetForPlayer existe, dossier
-    // 001 "C"), et MotionCache::Get(stem, folder) est PRIVE. TODO-ancre [0x4E46A0 cat.6] : cabler les
-    // clips d'arme "X" exigerait une nouvelle entree publique dans MotionCache (hors perimetre C3 :
-    // interdiction de modifier l'API des caches) -> palette identite en repli, jamais un stem invente.
+    // else: category WeaponSkillX (folder 006, "X..." stem) -> UNREACHABLE at this site (a8=0). No PUBLIC
+    // MotionCache accessor produces an "X" stem/folder 006 (only GetForPlayer exists, folder
+    // 001 "C"), and MotionCache::Get(stem, folder) is PRIVATE. TODO-anchor [0x4E46A0 cat.6]: wiring the
+    // "X" weapon clips would require a new public MotionCache entry point (out of C3 scope:
+    // forbidden to modify the cache APIs) -> identity palette fallback, never an invented stem.
 
     // ===========================================================================
-    // 2) Corps de base 2 pieces — B2 : BuildArmorBodyStem -> ModelCache::Get (public).
+    // 2) 2-piece base body — B2: BuildArmorBodyStem -> ModelCache::Get (public).
     // ===========================================================================
-    // Char_RenderModel 0x527020 (branche a3==0) dessine le corps de base par :
+    // Char_RenderModel 0x527020 (branch a3==0) draws the base body via:
     //     SObject_DrawEx(&flt_F59A7C[504*race + 252*gender + 36*a4[12]], .., v37, 1);  /*0x5277b0*/  (SLOT0)
     //     SObject_DrawEx(&flt_F5B21C[216*race + 108*gender + 36*a4[13]], .., v37, 1);  /*0x52780b*/  (SLOT1)
-    // flt_F59A7C / flt_F5B21C sont pre-generes par AssetMgr_InitAllSlots 0x4DEB50 en appelant
-    // SObject_BuildPath 0x4D89C0 case 1 : SLOT0 = "C%03d001%03d", SLOT1 = "C%03d002%03d" (kind+1,
-    // variant+1). C'est EXACTEMENT BuildArmorBodyStem(race, gender, Base0/Base1, costumeN) (B2). Le stem
-    // ainsi produit est BIT-POUR-BIT celui de ModelCache::BuildPlayerBodyStem (l'ancien chemin
-    // GetForPlayerBody) -> on route desormais par B2 sans changer le rendu.
+    // flt_F59A7C / flt_F5B21C are pre-generated by AssetMgr_InitAllSlots 0x4DEB50 by calling
+    // SObject_BuildPath 0x4D89C0 case 1: SLOT0 = "C%03d001%03d", SLOT1 = "C%03d002%03d" (kind+1,
+    // variant+1). This is EXACTLY BuildArmorBodyStem(race, gender, Base0/Base1, costumeN) (B2). The
+    // resulting stem is BIT-FOR-BIT the one from ModelCache::BuildPlayerBodyStem (the old
+    // GetForPlayerBody path) -> now routed through B2 without changing the render output.
     //
-    // Bornes de variante PRESERVEES de l'ancien GetForPlayerBody (costume0 in [0,7) catalogue flt_F59A7C,
-    // costume1 in [0,3) catalogue flt_F5B21C, cf. Gfx/ModelCache.h::BuildPlayerBodyStem) : ce sont des
-    // gardes DEFENSIVES ClientSource (le binaire ne borne pas la variante) — on ne change pas ce
-    // comportement existant. Hors borne -> piece non resolue (comme avant), jamais un stem hasardeux.
+    // Variant bounds PRESERVED from the old GetForPlayerBody (costume0 in [0,7) flt_F59A7C catalog,
+    // costume1 in [0,3) flt_F5B21C catalog, see Gfx/ModelCache.h::BuildPlayerBodyStem): these are
+    // DEFENSIVE ClientSource guards (the binary does not bound the variant) — this existing behavior
+    // is preserved. Out of bounds -> piece not resolved (as before), never a garbage stem.
     if (costume0 >= 0 && costume0 < 7) {
         const std::string s0 = gfx::BuildArmorBodyStem(race, gender, gfx::EquipBodySlot::Base0, costume0);
-        if (const gfx::SkinnedModel* m = models.Get(s0))       // ModelCache::Get (public, EXISTANT)
+        if (const gfx::SkinnedModel* m = models.Get(s0))       // ModelCache::Get (public, EXISTING)
             if (!m->Empty()) r.pieces.push_back(m);            // SLOT0 (flt_F59A7C)
     }
     if (costume1 >= 0 && costume1 < 3) {
@@ -107,28 +107,28 @@ PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motion
     }
 
     // ===========================================================================
-    // 2-bis) CORPS de base : TORSE (token 003) + JAMBES (token 004) — CORRECTIF « perso IN-WORLD
-    //        tête-seule ». Sans ce bloc, PlayerPaperdoll ne produisait que SLOT0(001=visage) +
-    //        SLOT1(002=cheveux) = une TÊTE flottante (prouvé au runtime -worldtest : seuls
-    //        C001001001/C001002001 chargés). Char_RenderModel 0x527020 (branche a3==0) ET
-    //        CharPreview3D::BuildFromRecord dessinent EN PLUS le corps via EquipA(003)/EquipB(004) à
-    //        l'entrée 0 quand rien n'est équipé -> stems "C%03d003000" / "C%03d004000" (kind =
-    //        race+3*gender+1, SObject_BuildPath 0x4D89C0 case 1). MÊME palette v37 partagée + MÊME
-    //        transformée que le reste. (TODO G3 : entrée = ITEM_INFO+196 de l'item équipé au lieu de 0,
+    // 2-bis) BASE body: TORSO (token 003) + LEGS (token 004) — FIX for the "IN-WORLD
+    //        head-only character" bug. Without this block, PlayerPaperdoll only produced
+    //        SLOT0(001=face) + SLOT1(002=hair) = a FLOATING HEAD (proven at runtime via -worldtest:
+    //        only C001001001/C001002001 loaded). Char_RenderModel 0x527020 (branch a3==0) AND
+    //        CharPreview3D::BuildFromRecord ALSO draw the body via EquipA(003)/EquipB(004) at
+    //        entry 0 when nothing is equipped -> stems "C%03d003000" / "C%03d004000" (kind =
+    //        race+3*gender+1, SObject_BuildPath 0x4D89C0 case 1). SAME shared v37 palette + SAME
+    //        transform as the rest. (TODO G3: entry = ITEM_INFO+196 of the equipped item instead of 0,
     //        via equip[k]=body+92+8*k — DEEP IDA render/agent 6.)
     // ===========================================================================
     if (race >= 0 && race < 3 && gender >= 0 && gender < 2) {
-        // G3 (DEEP IDA #5) : le TORSE (equip[2], token 003) et les JAMBES (equip[5], token 004) sont
-        // dessinees par catalogue[variantEff] où variantEff = ITEM_INFO(item)+196 (SANS -1 pour l'armure
-        // de corps, @0x561bd1/@0x561e47), ou 0 si rien equipe. SObject_BuildPath 0x4d8ba7 nomme le fichier
-        // "C%03d{token}%03d" % (kind, variantEff+1) -> suffixe = variantEff+1 (base=001, PAS 000 ; l'entree
-        // AssetMgr catalogue[0] est le fichier ...001). kind = race+3*gender+1 (selecteur d'art body+64 !=3,
-        // cas commun ; ==3 -> kind+7 = TODO). Item non equipe -> corps de base (variantEff 0 -> suffixe 001).
+        // G3 (DEEP IDA #5): the TORSO (equip[2], token 003) and LEGS (equip[5], token 004) are
+        // drawn from catalog[variantEff] where variantEff = ITEM_INFO(item)+196 (WITHOUT -1 for body
+        // armor, @0x561bd1/@0x561e47), or 0 if nothing equipped. SObject_BuildPath 0x4d8ba7 names the file
+        // "C%03d{token}%03d" % (kind, variantEff+1) -> suffix = variantEff+1 (base=001, NOT 000; the
+        // AssetMgr catalog[0] entry is file ...001). kind = race+3*gender+1 (art selector body+64 !=3,
+        // common case; ==3 -> kind+7 = TODO). Item not equipped -> base body (variantEff 0 -> suffix 001).
         const int kind = race + 3 * gender + 1;
         auto bodyArmorVariant = [](uint32_t itemId) -> int {
-            if (itemId == 0) return 0;                                   // catalogue[0] = corps de base
+            if (itemId == 0) return 0;                                   // catalog[0] = base body
             if (const game::ItemInfo* it = game::GetItemInfo(itemId))
-                return static_cast<int>(it->field196);                   // variantEff = field196 (sans -1)
+                return static_cast<int>(it->field196);                   // variantEff = field196 (no -1)
             return 0;
         };
         char sTorso[16] = {}, sLegs[16] = {};
@@ -139,18 +139,18 @@ PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motion
     }
 
     // ===========================================================================
-    // 3) Arme — repli sur le comportement actuel (GetForItem), catalogue non trace.
+    // 3) Weapon — fallback to current behavior (GetForItem), catalog not traced.
     // ===========================================================================
-    // Char_RenderModel 0x527bfe dessine l'arme via le catalogue flt_100EA3C indexe par
-    // *(itemRec+196) (= ITEM_INFO.field196, le liant id-item->modelIndex) :
+    // Char_RenderModel 0x527bfe draws the weapon via catalog flt_100EA3C indexed by
+    // *(itemRec+196) (= ITEM_INFO.field196, the item-id->modelIndex link):
     //     SObject_DrawEx(&flt_100EA3C[1440*race - 36 + 720*gender + 36*(*(v33+196))], .., v37, 1);
-    // flt_100EA3C est un catalogue SObject cat.6 "W..." pre-genere dont la loi de population
-    // (AssetMgr_InitAllSlots, boucle cat.6) N'EST PAS TRACEE -> on ne peut pas inverser field196 vers le
-    // triplet (type, subType, level) qu'exige BuildWeaponStem (B2). REPLI DOCUMENTE : on garde la
-    // resolution actuelle par ITEM_INFO.model[0] (+29) via ModelCache::GetForItem(item, 0), MEME
-    // transformee + MEME palette v37 que le corps (arme skinnee au bone de main). Pas d'invention de stem.
-    // TODO-ancre [0x527bfe / flt_100EA3C / 0x4DEB50 cat.6] : tracer la loi de population du catalogue
-    // d'armes pour resoudre exactement comme le binaire (field196 -> entree flt_100EA3C).
+    // flt_100EA3C is a pre-generated cat.6 "W..." SObject catalog whose population law
+    // (AssetMgr_InitAllSlots, cat.6 loop) IS NOT TRACED -> field196 cannot be inverted back to the
+    // (type, subType, level) triplet that BuildWeaponStem (B2) expects. DOCUMENTED FALLBACK: keep the
+    // current resolution via ITEM_INFO.model[0] (+29) through ModelCache::GetForItem(item, 0), SAME
+    // transform + SAME v37 palette as the body (weapon skinned to the hand bone). No stem invention.
+    // TODO-anchor [0x527bfe / flt_100EA3C / 0x4DEB50 cat.6]: trace the weapon catalog's population
+    // law to resolve exactly like the binary (field196 -> flt_100EA3C entry).
     if (weaponItemId != 0) {
         if (const game::ItemInfo* it = game::GetItemInfo(weaponItemId))
             if (const gfx::SkinnedModel* w = models.GetForItem(*it, /*slot=*/0))
@@ -158,21 +158,22 @@ PaperdollResult PlayerPaperdoll::Resolve(ModelCache& models, MotionCache& motion
     }
 
     // ===========================================================================
-    // TODO-ancre [Char_RenderModel 0x527020, slots corps 2 / 14..21 + accessoires] :
-    // Les pieces d'equipement (casque a4[34]->flt_F6685C=Slot14, torse a4[46]->flt_F7C09C=Slot15, ...
-    // slots 14..21 via BuildArmorBodyStem(race, gender, Slot14..21, *(itemRec+196))) SONT desormais
-    // resolvables cote STEM (B2 fournit BuildArmorBodyStem pour 14..21) -- mais la DONNEE manque :
-    //   * Char_RenderModel opere sur la structure CHARSELECT (a4[30..74]) ; l'IDB prouve qu'il n'est
-    //     appele QUE depuis Scene_CharSelectRender, JAMAIS en jeu (le dessin du corps joueur EN JEU
-    //     n'est pas localise statiquement). Le LAYOUT in-game des id d'items equipes n'est donc PAS
-    //     prouve : cote ClientSource, seul l'ARME est reversee (self=SelfState::equip[7], distant=
-    //     PlayerEntity::body+148, cf. GameState.h) ; les slots casque/torse/etc. des joueurs DISTANTS
-    //     n'ont aucun offset prouve dans le body reseau (600 o), et le mapping SelfState::equip[k] ->
-    //     slot de paperdoll (14..21) n'est pas trace non plus.
-    // -> Resoudre 14..21 exigerait d'INVENTER soit ces offsets, soit ce mapping : hors perimetre
-    //    (regle "IDA = unique verite"). On laisse donc le paperdoll = corps 2 pieces + arme, comme le
-    //    comportement actuel. Le pipeline B2 est pret (BuildArmorBodyStem gere 14..21) : brancher ces
-    //    slots ne demandera QUE la source de donnees (id d'item par slot) une fois reversee.
+    // TODO-anchor [Char_RenderModel 0x527020, body slots 2 / 14..21 + accessories]:
+    // The equipment pieces (helmet a4[34]->flt_F6685C=Slot14, torso a4[46]->flt_F7C09C=Slot15, ...
+    // slots 14..21 via BuildArmorBodyStem(race, gender, Slot14..21, *(itemRec+196))) are NOW
+    // resolvable on the STEM side (B2 provides BuildArmorBodyStem for 14..21) -- but the DATA is
+    // missing:
+    //   * Char_RenderModel operates on the CHARSELECT structure (a4[30..74]); the IDB proves it is
+    //     called ONLY from Scene_CharSelectRender, NEVER in-game (in-game player body drawing is
+    //     not statically located). The IN-GAME layout of equipped item ids is therefore NOT
+    //     proven: on the ClientSource side, only the WEAPON is reversed (self=SelfState::equip[7],
+    //     remote= PlayerEntity::body+148, see GameState.h); the helmet/torso/etc. slots of REMOTE
+    //     players have no proven offset in the network body (600 B), and the SelfState::equip[k] ->
+    //     paperdoll slot (14..21) mapping is not traced either.
+    // -> Resolving 14..21 would require INVENTING either those offsets or that mapping: out of
+    //    scope (the "IDA is the sole source of truth" rule). The paperdoll is therefore left as
+    //    2-piece body + weapon, matching current behavior. The B2 pipeline is ready (BuildArmorBodyStem
+    //    handles 14..21): wiring these slots will only need the data source (per-slot item id) once reversed.
     // ===========================================================================
 
     r.valid = !r.pieces.empty();

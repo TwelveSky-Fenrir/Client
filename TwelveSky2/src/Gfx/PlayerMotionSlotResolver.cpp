@@ -1,9 +1,9 @@
-// Gfx/PlayerMotionSlotResolver.cpp — implementation du meta-switch joueur.
+// Gfx/PlayerMotionSlotResolver.cpp — implementation of the player meta-switch.
 //
-// Verite unique : PcModel_ResolveEquipSlot 0x4E46A0 (structure de controle reproduite a
-// l'identique) + Motion_IsValidWeaponPose 0x4E3A30 (garde) + AssetMgr_InitAllSlots 0x4DEB50
-// (arithmetique de population = preuve du mapping offset->stem). Voir le header pour la carte
-// complete des ancres et la table offsets-fixes -> etat.
+// Single source of truth: PcModel_ResolveEquipSlot 0x4E46A0 (control structure reproduced
+// identically) + Motion_IsValidWeaponPose 0x4E3A30 (guard) + AssetMgr_InitAllSlots 0x4DEB50
+// (population arithmetic = proof of the offset->stem mapping). See the header for the full
+// map of anchors and the fixed-offset -> state table.
 #include "Gfx/PlayerMotionSlotResolver.h"
 
 #include <cstdio>
@@ -12,21 +12,21 @@ namespace ts2::gfx {
 
 namespace {
 
-// --- Constantes d'arithmetique du pool (identiques dans 0x4E46A0 ET 0x4DEB50) ---
+// --- Pool arithmetic constants (identical in both 0x4E46A0 AND 0x4DEB50) ---
 constexpr std::uint32_t kStrideRace   = 479232; // 3 * 159744
 constexpr std::uint32_t kStrideGender = 159744; // 8 * 19968
 constexpr std::uint32_t kStrideWeapon = 19968;  // 128 * 156
-constexpr std::uint32_t kStrideState  = 156;    // taille d'un MotionSlot
+constexpr std::uint32_t kStrideState  = 156;    // size of a MotionSlot
 
-// Bases de region (0x4E46A0) == bases des boucles de population (0x4DEB50).
-constexpr std::uint32_t kRegionBodyC   = 2624960; // cat 1 loop @0x4df00c ("C", dossier 001)
-constexpr std::uint32_t kRegionWeaponX = 4062656; // cat 6 loop @0x4df32e ("X", dossier 006)
+// Region bases (0x4E46A0) == population loop bases (0x4DEB50).
+constexpr std::uint32_t kRegionBodyC   = 2624960; // cat 1 loop @0x4df00c ("C", folder 001)
+constexpr std::uint32_t kRegionWeaponX = 4062656; // cat 6 loop @0x4df32e ("X", folder 006)
 
-// Offset ABSOLU du slot idle de repli (garde 0x4e46dd : `return this + 2644772`).
+// ABSOLUTE offset of the fallback idle slot (guard 0x4e46dd: `return this + 2644772`).
 constexpr std::uint32_t kFallbackOffset = 2644772; // = kRegionBodyC + 127*156 (C, race0/gen0/wp0/state127)
 
-// Slot PARAMETRE : this + 479232*race + 159744*gender + 19968*wp + 156*state + regionBase.
-// (chemins "default" des sous-switch a5, et LABEL_152 par defaut.)
+// PARAMETERIZED slot: this + 479232*race + 159744*gender + 19968*wp + 156*state + regionBase.
+// (the "default" paths of the a5 sub-switch, and LABEL_152's default.)
 PlayerMotionSlot MakeParam(int race, int gender, int wp, int state, std::uint32_t regionBase) {
     PlayerMotionSlot s;
     s.category      = (regionBase == kRegionBodyC) ? PlayerMotionCategory::BodyC
@@ -44,9 +44,9 @@ PlayerMotionSlot MakeParam(int race, int gender, int wp, int state, std::uint32_
     return s;
 }
 
-// Slot FIXE (dedie) : this + 479232*race + 159744*gender + fixedOffset (wp implicite = 0).
-// Decompose fixedOffset via l'arithmetique du populateur (region -> wp=0, state = rel/156).
-// Prouve exact pour tous les fixedOffset emis par 0x4E46A0 (cf. header : rel < 19968, rel%156==0).
+// FIXED (dedicated) slot: this + 479232*race + 159744*gender + fixedOffset (implicit wp = 0).
+// Decomposes fixedOffset via the populator's arithmetic (region -> wp=0, state = rel/156).
+// Proven exact for every fixedOffset emitted by 0x4E46A0 (see header: rel < 19968, rel%156==0).
 PlayerMotionSlot MakeFixed(int race, int gender, std::uint32_t fixedOffset) {
     const bool inX = (fixedOffset >= kRegionWeaponX);
     const std::uint32_t regionBase = inX ? kRegionWeaponX : kRegionBodyC;
@@ -65,7 +65,7 @@ PlayerMotionSlot MakeFixed(int race, int gender, std::uint32_t fixedOffset) {
     return s;
 }
 
-// Slot idle de repli (garde echouee) : ABSOLU `this + 2644772`, sans terme race/gender.
+// Fallback idle slot (guard failed): ABSOLUTE `this + 2644772`, no race/gender term.
 PlayerMotionSlot MakeFallback() {
     PlayerMotionSlot s;
     s.category      = PlayerMotionCategory::BodyC;
@@ -78,11 +78,11 @@ PlayerMotionSlot MakeFallback() {
     return s;
 }
 
-// Sous-switch commun sur a5 (LABEL_26/33/40/47/54/61/68/75/124 et les switch inline 0x4E46A0) :
-//   a5 == 1        -> slot X fixe `fixedForState1`
-//   a5 == 2 | 32   -> slot X fixe `fixedForState2or32`
-//   defaut         -> slot X PARAMETRE (base 4062656, wp=a4, state=a5)
-// (Toutes les familles a8-matchees defaultent sur la region X ; seul LABEL_152 defaulte sur C.)
+// Common sub-switch on a5 (LABEL_26/33/40/47/54/61/68/75/124 and the inline switches of 0x4E46A0):
+//   a5 == 1        -> fixed X slot `fixedForState1`
+//   a5 == 2 | 32   -> fixed X slot `fixedForState2or32`
+//   default        -> PARAMETERIZED X slot (base 4062656, wp=a4, state=a5)
+// (All a8-matched families default to region X; only LABEL_152 defaults to C.)
 PlayerMotionSlot ResolveDedicatedX(int race, int gender, int wp, int state,
                                    std::uint32_t fixedForState1, std::uint32_t fixedForState2or32) {
     switch (state) {
@@ -93,10 +93,10 @@ PlayerMotionSlot ResolveDedicatedX(int race, int gender, int wp, int state,
     }
 }
 
-// LABEL_152 0x4e5708 : chemin par defaut (a8 non matche / familles non dediees).
-//   (a4 impair || a5 != 1 || a6 <= 112) -> clip C PARAMETRE (base 2624960)          0x4e578e
-//   sinon a7 >= 1                       -> clip C fixe state 84 (offset 2638064)     0x4e5753
-//   sinon                               -> clip C fixe state 77 (offset 2636972)     0x4e5733
+// LABEL_152 0x4e5708: default path (a8 unmatched / non-dedicated families).
+//   (a4 odd || a5 != 1 || a6 <= 112) -> PARAMETERIZED C clip (base 2624960)          0x4e578e
+//   else a7 >= 1                     -> fixed C clip state 84 (offset 2638064)        0x4e5753
+//   else                              -> fixed C clip state 77 (offset 2636972)        0x4e5733
 PlayerMotionSlot ResolveDefaultL152(int race, int gender, int wp, int state, int a6, int a7) {
     if ((wp % 2) != 0 || state != 1 || a6 <= 112)
         return MakeParam(race, gender, wp, state, kRegionBodyC);
@@ -107,9 +107,9 @@ PlayerMotionSlot ResolveDefaultL152(int race, int gender, int wp, int state, int
 
 } // namespace
 
-// Motion_IsValidWeaponPose 0x4E3A30 — switch(animState), borne weaponPose (unsigned).
+// Motion_IsValidWeaponPose 0x4E3A30 — switch(animState), bounds weaponPose (unsigned).
 bool IsValidPlayerWeaponPose(int weaponPose, int animState) {
-    const unsigned wp = static_cast<unsigned>(weaponPose); // a1 est unsigned int (0x4E3A30)
+    const unsigned wp = static_cast<unsigned>(weaponPose); // a1 is unsigned int (0x4E3A30)
     switch (animState) { // switch(a2 = animState)
         case 0:  return wp == 0;                                     // 0x4e3a60
         case 1:  return wp < 8;                                      // 0x4e3a7d
@@ -150,17 +150,17 @@ bool IsValidPlayerWeaponPose(int weaponPose, int animState) {
         case 91: case 92: case 93: case 94: case 95:
                  return wp == 0;                                     // 0x4e44a3
         default: return false;                                       // LABEL_226 0x4e44ae
-        // NB : states NON listes (8, 24..29, 47, 53, 59, 77..80, 84, >95) -> invalides.
+        // NB: states NOT listed (8, 24..29, 47, 53, 59, 77..80, 84, >95) -> invalid.
     }
 }
 
-// PcModel_ResolveEquipSlot 0x4E46A0 — structure de controle reproduite a l'identique.
+// PcModel_ResolveEquipSlot 0x4E46A0 — control structure reproduced identically.
 PlayerMotionSlot ResolvePlayerMotionSlot(int race, int gender, int weaponPose, int animState,
                                          int ctxA6, int ctxA7, int itemOrSkillId) {
     const int a2 = race, a3 = gender, a4 = weaponPose, a5 = animState;
     const int a6 = ctxA6, a7 = ctxA7, a8 = itemOrSkillId;
 
-    // Garde 0x4e46cc (a2/a3 unsigned) : race>2 || gender>1 || pose invalide -> fallback 0x4e46dd.
+    // Guard 0x4e46cc (a2/a3 unsigned): race>2 || gender>1 || invalid pose -> fallback 0x4e46dd.
     if (static_cast<unsigned>(a2) > 2u || static_cast<unsigned>(a3) > 1u
         || !IsValidPlayerWeaponPose(a4, a5)) {
         return MakeFallback();
@@ -267,7 +267,7 @@ PlayerMotionSlot ResolvePlayerMotionSlot(int race, int gender, int weaponPose, i
         }
     }
 
-    // Non atteignable : dans 0x4E46A0 chaque branche ci-dessus retourne. Repli defensif = C par defaut.
+    // Unreachable: in 0x4E46A0 every branch above returns. Defensive fallback = default C.
     return ResolveDefaultL152(a2, a3, a4, a5, a6, a7);
 }
 

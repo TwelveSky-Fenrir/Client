@@ -1,274 +1,265 @@
-// Gfx/WorldGeometryRenderer.h — dessin RÉEL des objets statiques du chunk .WO (jalon 4->5,
-// pendant "géométrie de monde" de Scene/WorldRenderer.h qui, lui, dessine les ENTITÉS).
+// Gfx/WorldGeometryRenderer.h — real drawing of the .WO chunk's static objects (milestone 4->5,
+// the "world geometry" companion of Scene/WorldRenderer.h, which draws the ENTITIES).
 //
-// Ce fichier CÂBLE trois modules déjà écrits, jusqu'ici non reliés :
-//   World/WorldIntegration.h — charge RÉELLEMENT Z%03d.WO (world::WorldAssets::Objects()).
-//   Asset/WorldChunk.h       — parseur .WO (asset::ObjectChunk -> asset::Model -> WorldMeshPart,
-//                              validé EOF-exact sur 455/455 fichiers D07_GWORLD).
-//   Gfx/MeshRenderer.h       — pipeline GPU skinné (VB/IB 76o + palette d'os) du jalon 4,
-//                              ici réutilisé TEL QUEL (aucune modification de MeshRenderer.*)
-//                              via son API PUBLIQUE DrawSkinnedSubset().
+// This file WIRES three already-written, until-now unconnected modules:
+//   World/WorldIntegration.h — REALLY loads Z%03d.WO (world::WorldAssets::Objects()).
+//   Asset/WorldChunk.h       — .WO parser (asset::ObjectChunk -> asset::Model -> WorldMeshPart),
+//                              validated EOF-exact on 455/455 D07_GWORLD files.
+//   Gfx/MeshRenderer.h       — milestone 4's skinned GPU pipeline (VB/IB 76o + bone palette),
+//                              reused AS-IS here (no modification to MeshRenderer.*) via its
+//                              PUBLIC API DrawSkinnedSubset().
 //
-// ===========================================================================================
-//  FORMAT DE PLACEMENT — RÉSOLU par désassemblage IDA, cf. Docs/TS2_WO_PLACEMENT_FORMAT.md
-// ===========================================================================================
-// (Corrige le bandeau précédent, écrit sans accès IDA/x32dbg — l'hypothèse "matrice identité,
-// placement non récupérable" était FAUSSE : le placement existe, il est simplement porté par
-// `ObjectChunk::auxRecords`/`models[]`, pas par `placements[]`.)
+// PLACEMENT FORMAT — RESOLVED by IDA disassembly, cf. Docs/TS2_WO_PLACEMENT_FORMAT.md
+// (Corrects the previous banner, written without IDA/x32dbg access — the "identity matrix,
+// placement unrecoverable" hypothesis was WRONG: placement exists, it is simply carried by
+// `ObjectChunk::auxRecords`/`models[]`, not by `placements[]`.)
 //
-// 1) `ObjectChunk::models[]` (Asset/WorldChunk.h) = des maillages GABARITS (templates), en
-//    repère LOCAL/OBJET — PAS en coordonnées monde finales. Uploadés UNE SEULE FOIS chacun en
-//    VB/IB GPU (cf. uploadPart()/Build() : géométrie inchangée par rapport à la version
-//    précédente, seule l'interprétation du placement change).
+// 1) `ObjectChunk::models[]` (Asset/WorldChunk.h) = mesh TEMPLATES, in LOCAL/OBJECT space —
+//    NOT final world coordinates. Each uploaded ONCE to GPU VB/IB (cf. uploadPart()/Build():
+//    geometry unchanged from the previous version, only the placement interpretation changes).
 //
-// 2) `ObjectChunk::auxRecords[]` (28 o/instance sur disque, désormais typé `asset::AuxRecord`
-//    dans WorldChunk.h) = LES INSTANCES PLACÉES : chaque entrée référence un gabarit par
-//    `modelIndex` et porte SA propre position/rotation. Confirmé par désassemblage de
-//    `Model_RenderParts` (0x6A3720) et `Model_RenderWithShadow_0` (0x6A4110), consommateurs de
-//    ce tableau dans le rendu de scène principal (`Terrain_Render` 0x698670). 50 413 instances
-//    vérifiées sur 97 fichiers réels, jusqu'à 643 réutilisations d'un même gabarit — la preuve
-//    directe que `models[]` est en repère local (sinon les instances se superposeraient).
+// 2) `ObjectChunk::auxRecords[]` (28 bytes/instance on disk, now typed `asset::AuxRecord` in
+//    WorldChunk.h) = THE PLACED INSTANCES: each entry references a template via `modelIndex`
+//    and carries its OWN position/rotation. Confirmed by disassembling `Model_RenderParts`
+//    (0x6A3720) and `Model_RenderWithShadow_0` (0x6A4110), the array's consumers in the main
+//    scene render (`Terrain_Render` 0x698670). 50,413 instances verified across 97 real files,
+//    up to 643 reuses of the same template — direct proof that `models[]` is in local space
+//    (otherwise instances would overlap).
 //
-// 3) `ObjectChunk::placements[]` (100 o/GABARIT, pas par instance) = métadonnée : nom de
-//    fichier source NUL-terminé (+ bourrage mémoire non lu par le moteur, hors le tag
-//    "NO_SHADOW_" utilisé par `MapColl_RenderShadowMap`). Exposé en debug via
-//    `ObjectChunk::placementNames`, IGNORÉ pour le placement (ce n'est pas un transform).
+// 3) `ObjectChunk::placements[]` (100 bytes/TEMPLATE, not per instance) = metadata: NUL-
+//    terminated source filename (+ memory padding not read by the engine, except the
+//    "NO_SHADOW_" tag used by `MapColl_RenderShadowMap`). Exposed for debug via
+//    `ObjectChunk::placementNames`, IGNORED for placement (it is not a transform).
 //
-// 4) Matrice monde par instance (désassemblage `0x6a379c`-`0x6a3892` / `0x6a41a3`-`0x6a4299`,
-//    IDENTIQUE dans les deux fonctions consommatrices) :
+// 4) Per-instance world matrix (disassembly `0x6a379c`-`0x6a3892` / `0x6a41a3`-`0x6a4299`,
+//    IDENTICAL in both consumer functions):
 //      World = Rz(rot.z°) * Ry(rot.y°) * Rx(rot.x°) * T(pos)
-//    Pas de matrice d'échelle nulle part (scale = 1.0 toujours pour les .WO).
+//    No scale matrix anywhere (scale = 1.0 always for .WO).
 //
-// 5) [RÉSOLU 2026-07-14, mission « parts multi-ancre A>1 »] Le bloc "os" en tête de géométrie
-//    (64 o * `A`, cf. WorldMeshPart::A) n'est PAS une palette de matrices de skinning : `A` est
-//    le nombre de FRAMES d'un flipbook de positions précalculées (balancement au vent probable
-//    des arbres/objets), confirmé par désassemblage :
-//      - `MeshPart_Load` (0x6AD169) copie `32*A*B` octets — A blocs consécutifs de B sommets
-//        32 o (MOBJ, position+normale+uv) — TELS QUELS dans un seul IDirect3DVertexBuffer9,
-//        sans jamais lire le bloc "os" (64*A o, this+284) pour construire une palette d'os :
-//        ce bloc est chargé/libéré (MeshPart_Free 0x6AB1F0) mais AUCUN consommateur du chemin
-//        de rendu ne le lit — métadonnée d'animation probable (paramètres de sway), pas un
-//        skinning au sens de MeshRenderer.h.
-//      - `MeshPart_Render` (0x6AED60) sélectionne la frame via `SetStreamSource(0, vb,
-//        32*frame*B, 32)` où `frame = Crt_Dbl2Uint(temps)` (tronqué, borné à `[0, A-1]` par
-//        `Model_RenderParts` 0x6A3720/0x6A3756) : un SWAP BRUT de toute la frame, PAS
-//        d'interpolation/blend GPU. L'index buffer (6*D o) est PARTAGÉ par toutes les frames
-//        (topologie fixe, seules positions/normales varient).
-//    CE RENDU DÉCODE DÉSORMAIS TOUT `A` (plus de saut) mais reste STATIQUE : seule la FRAME 0
-//    du flipbook est uploadée (pose figée, cf. uploadPart()/Gfx/WorldGeometryRenderer.cpp) —
-//    PAS le vrai balancement au vent (nécessiterait de rejouer les frames au temps réel via un
-//    VS dédié ou un swap de stream source par frame, hors périmètre de cette mission). Compteur
-//    exposé : `MultiAnchorStaticCount()` (parts A>1 effectivement dessinées en pose statique).
+// 5) [RESOLVED 2026-07-14, "multi-anchor A>1 parts" mission] The "bone" block at the head of
+//    the geometry (64 bytes * `A`, cf. WorldMeshPart::A) is NOT a skinning matrix palette: `A`
+//    is the FRAME count of a flipbook of precomputed positions (likely wind sway of trees/
+//    objects), confirmed by disassembly:
+//      - `MeshPart_Load` (0x6AD169) copies `32*A*B` bytes — A consecutive blocks of B 32-byte
+//        vertices (MOBJ, position+normal+uv) — VERBATIM into a single IDirect3DVertexBuffer9,
+//        never reading the "bone" block (64*A bytes, this+284) to build a bone palette: that
+//        block is loaded/freed (MeshPart_Free 0x6AB1F0) but read by NO render-path consumer —
+//        likely animation metadata (sway parameters), not skinning in the MeshRenderer.h sense.
+//      - `MeshPart_Render` (0x6AED60) selects the frame via `SetStreamSource(0, vb,
+//        32*frame*B, 32)` where `frame = Crt_Dbl2Uint(time)` (truncated, clamped to `[0, A-1]`
+//        by `Model_RenderParts` 0x6A3720/0x6A3756): a RAW SWAP of the whole frame, NOT GPU
+//        interpolation/blending. The index buffer (6*D bytes) is SHARED by all frames (fixed
+//        topology, only positions/normals vary).
+//    THIS RENDERER NOW DECODES ALL of `A` (no more skipping) but stays STATIC: only FRAME 0 of
+//    the flipbook is uploaded (pinned pose, cf. uploadPart()/Gfx/WorldGeometryRenderer.cpp) —
+//    NOT real wind sway (would require replaying frames in real time via a dedicated VS or a
+//    per-frame stream-source swap, out of scope for this mission). Exposed counter:
+//    `MultiAnchorStaticCount()` (A>1 parts actually drawn in a static pose).
 //
-// 6) Format vertex EXPLOITÉ (inchangé, cf. Docs/TS2_ASSET_FORMATS.md "MobjVertex 32 o, FVF
-//    0x112" = D3DFVF_XYZ|NORMAL|TEX1) :
-//      +0  float3 position   (coordonnées LOCALES au gabarit, cf. point 1 — PAS finales)
-//      +12 float3 normal     (unitaire, vérifié)
+// 6) Vertex format USED (unchanged, cf. Docs/TS2_ASSET_FORMATS.md "MobjVertex 32 bytes, FVF
+//    0x112" = D3DFVF_XYZ|NORMAL|TEX1):
+//      +0  float3 position   (template-LOCAL coordinates, cf. point 1 — NOT final)
+//      +12 float3 normal     (unit, verified)
 //      +24 float2 uv
-//    PAS de BLENDWEIGHT/BLENDINDICES dans ce format disque (contrairement au vertex SObject
-//    76 o de MeshRenderer.h) : converti à la volée vers gfx::GpuSkinVertex avec poids
-//    (1,0,0,0) / index os 0 -> réutilise le pipeline skinné de MeshRenderer SANS le modifier
-//    (le VS ignore tangent/binormal, jamais lus par kSkinnedVS — donc mis à zéro sans perte).
+//    No BLENDWEIGHT/BLENDINDICES in this on-disk format (unlike MeshRenderer.h's 76-byte
+//    SObject vertex): converted on the fly to gfx::GpuSkinVertex with weight (1,0,0,0) / bone
+//    index 0 -> reuses MeshRenderer's skinned pipeline WITHOUT modifying it (the VS ignores
+//    tangent/binormal, never read by kSkinnedVS — so zeroing them loses nothing).
 //
-// CE QUI EST DONC RÉELLEMENT DESSINÉ : la géométrie (VB/IB/texture diffuse tex1) de CHAQUE
-// WorldMeshPart (TOUT `A`, cf. point 5 MIS À JOUR 2026-07-14 — plus limité à A==1) d'un chunk
-// .WO chargé, une fois par INSTANCE de `auxRecords[]`, à la matrice monde `Rz*Ry*Rx*T`
-// construite depuis la position/rotation propre de cette instance (cf. point 2/4 ci-dessus).
-// Pour les parts `A>1`, seule la FRAME 0 du flipbook de sway est dessinée (pose statique figée).
-// CE QUI NE L'EST PAS (TODO documenté, pas simulé) :
-//   - Vrai balancement au vent des parts multi-ancre (A>1, arbres/objets) : format décodé (cf.
-//     point 5) mais rejeu temporel non câblé — pose figée à la frame 0 (compteur exposé
-//     MultiAnchorStaticCount()), pas d'interpolation/shader de sway.
-//   - Matériaux secondaires (tex2/materials[]) : seul tex1 est utilisé comme diffuse.
-//   - Collision WM/WJ (invisible) et FX WP (nœuds particules) : hors périmètre de ce fichier.
-//   - Frustum culling / LOD / batching par texture : aucun (boucle plate par instance).
-//   - Tag "NO_SHADOW_" (placements[]) : pas de shadow map ici, donc sans effet visible.
+// WHAT IS THEREFORE ACTUALLY DRAWN: the geometry (VB/IB/tex1 diffuse texture) of EVERY
+// WorldMeshPart (ALL of `A`, cf. point 5 UPDATED 2026-07-14 — no longer limited to A==1) of a
+// loaded .WO chunk, once per `auxRecords[]` INSTANCE, at the world matrix `Rz*Ry*Rx*T` built
+// from that instance's own position/rotation (cf. point 2/4 above). For `A>1` parts, only
+// FRAME 0 of the sway flipbook is drawn (pinned static pose).
+// WHAT IS NOT (documented TODO, not simulated):
+//   - Real wind sway of multi-anchor parts (A>1, trees/objects): format decoded (cf. point 5)
+//     but temporal replay not wired — pinned at frame 0 (exposed counter
+//     MultiAnchorStaticCount()), no interpolation/sway shader.
+//   - Secondary materials (tex2/materials[]): only tex1 is used as diffuse.
+//   - WM/WJ collision (invisible) and WP FX (particle nodes): out of scope for this file.
+//   - Frustum culling / LOD / per-texture batching: none (flat per-instance loop).
+//   - "NO_SHADOW_" tag (placements[]): no shadow map here, so no visible effect.
 //
-// ===========================================================================================
-//  AUDIT 2026-07-14 — CIEL / ATMOSPHÈRE / EAU / EFFETS DE ZONE : INVENTAIRE DE CE QUI MANQUE
-//  (mission "audit du manque de rendu ciel/atmosphere/effets de zone" — désassemblage IDA
-//  via idaTs2, adresses = imagebase 0x400000). CONSTAT : la géométrie .WO ci-dessus est
-//  actuellement le SEUL contenu de décor dessiné par ClientSource en InGame — tout ce qui
-//  suit est ABSENT à 100%, confirmé par recherche exhaustive (grep) dans src/ ET par xrefs
-//  IDA sur les points d'entrée réels. Rien de ce qui suit n'est une supposition.
+// AUDIT 2026-07-14 — SKY / ATMOSPHERE / WATER / ZONE FX: INVENTORY OF WHAT IS MISSING
+//  (mission "audit of missing sky/atmosphere/zone-fx rendering" — IDA disassembly via
+//  idaTs2, addresses = imagebase 0x400000). FINDING: the .WO geometry above is currently the
+//  ONLY scenery content drawn by ClientSource in InGame — everything below is 100% ABSENT,
+//  confirmed by exhaustive grep in src/ AND by IDA xrefs on the real entry points. Nothing
+//  below is a guess.
 //
-//  1) SKYBOX SIMPLE — Env_RenderSkyCube (0x6a8f60), appelée par Gfx_BeginFrame (0x6a2280) au
-//     tout début de CHAQUE frame de CHAQUE scène (Intro/ServerSelect/Login/CharSelect/
-//     EnterWorld/InGame — 8 xrefs), sous garde `a2 && *a2` (flag "ciel actif" non identifié
-//     ici). Décompilée : un cube texturé à 6 faces (quad 4 sommets/face, 20 o/sommet =
-//     XYZ+TEX1, PAS de vertex color), centré sur la caméra (translation = g_CameraPos, donc
-//     suit le joueur — technique skybox classique), lighting désactivé, culling inversé
-//     pendant le dessin (dword_7FFEA4 gate D3DRS_CULLMODE). ABSENT de ClientSource : aucun
-//     cube/texture de ciel, aucun appel équivalent.
-//  2) ATMOSPHÈRE COMPLÈTE (SilverLining SDK, ~150 fonctions `cAtmosphere_*`/`SL_*`/`Sky_*`/
-//     `Cloud_*`/`AtmoFromSpace_*` toutes présentes et analysées dans l'IDB, ex. 0x793390-
-//     0x797920) — pipeline réel confirmé par recherche dans Scene_InGameRender (0x52D0B0,
-//     20 Ko de pseudocode) :
-//       a) Env_UpdateFrame (0x412550, appelée à l'offset 0x25d de la fonction, donc TRÈS TÔT
-//          dans la frame) = Env_UpdateSkyMatrix(0x412190) [pousse view/proj dans
+//  1) SIMPLE SKYBOX — Env_RenderSkyCube (0x6a8f60), called by Gfx_BeginFrame (0x6a2280) at the
+//     very start of every scene's frame (Intro/ServerSelect/Login/CharSelect/EnterWorld/InGame,
+//     8 xrefs), guarded by `a2 && *a2` (an unidentified "sky active" flag). Decompiled: a
+//     6-face textured cube (4 verts/face, 20B/vertex = XYZ+TEX1, no vertex color), centered on
+//     the camera (translation = g_CameraPos, classic skybox technique), lighting off, culling
+//     inverted during draw (dword_7FFEA4 gates D3DRS_CULLMODE). ABSENT from ClientSource: no
+//     sky cube/texture, no equivalent call.
+//  2) FULL ATMOSPHERE (SilverLining SDK, ~150 `cAtmosphere_*`/`SL_*`/`Sky_*`/`Cloud_*`/
+//     `AtmoFromSpace_*` functions, all present/analyzed in the IDB, e.g. 0x793390-0x797920) —
+//     real pipeline confirmed in Scene_InGameRender (0x52D0B0, 20KB of pseudocode):
+//       a) Env_UpdateFrame (0x412550, called at offset 0x25d, very early in the frame) =
+//          Env_UpdateSkyMatrix(0x412190) [pushes view/proj into
 //          cAtmosphere_SetModelviewMatrix/SetProjectionMatrix] + cAtmosphere_RenderFrame
-//          (0x793b80, appelle en interne cAtmosphere_DrawObjects 0x792a60) + mise à jour
-//          lumière directionnelle/brouillard (Env_UpdateSunLight/Env_UpdateFogState).
-//       b) Env_StepTimeOfDay (0x412590, appelée à l'offset 0x2a99, APRÈS les 2 passes
-//          Terrain_Render/3 passes Fx_EmitterDraw ci-dessous) = Atmosphere_DrawFrame
-//          (0x794fe0, 0x813 o) : le VRAI dessin du dôme de ciel/soleil/lune/étoiles/nuages
-//          volumétriques (Sky_RenderStars 0x74b030, Cloud_UpdateAndRender 0x702ff0, etc.).
-//     ABSENT de ClientSource : World/WorldIntegration.h le documente déjà honnêtement dans
-//     son bandeau de tête ("Atmosphère/météo SilverLining : SDK externe
-//     SilverLiningDirectX9-MT.dll non lié au projet -> LoadMap() échoue proprement") — ce
-//     fichier-ci CONFIRME par désassemblage que le SDK est bien massivement utilisé par le
-//     client d'origine (ce n'est pas un vestige mort), donc l'écart est RÉEL et MAJEUR, pas
-//     juste une prudence excessive de WorldIntegration.h.
-//  3) TERRAIN / SOL VISIBLE + EAU — Terrain_Render (0x698670, commentaire IDA d'origine :
-//     "render quadtree terrain tile/water/land layers with reflections"), appelée 2×/frame
-//     depuis Scene_InGameRender (offsets 0x90e et 0x1a28 — donc AVANT même les objets .WO
-//     dans le pipeline d'origine). Consomme le fichier .WG (Z%03d.WG, format quadtree G3W/
-//     WM², chargé par MapColl_LoadMapFile 0x697b30 ; TWS-01 : le bump-map d'eau est la texture de
-//     FALLOFF de MapColl_CreateFalloffTexture 0x694ca0 — cWorldMesh_MakeWaterWaveTexture 0x451220
-//     est du code MORT, jamais appelé par le binaire livré). CONSTAT CRITIQUE :
-//     Asset/WorldChunk.cpp PARSE ce fichier .WG (asset::WorldChunk::AsFace(), exposé par
-//     World/WorldIntegration.h::WorldAssets::Faces()) mais AUCUN fichier de ClientSource/
-//     ne consomme jamais Faces()/AsFace() (grep exhaustif, 0 résultat hors Asset/ et
-//     WorldIntegration.h) : le SOL/TERRAIN LUI-MÊME (pas seulement le ciel) n'est dessiné
-//     NULLE PART. Conséquence visible : les objets .WO de ce fichier flottent actuellement
-//     sans aucune surface dessinée sous leurs pieds — seul le fond d'écran (Renderer::
-//     clearColor_, désormais noir pur 0x00000000) tient lieu de "sol". La passe reflet dédiée
-//     (cWorldMesh_RenderReflection 0x450f50) a, elle, 0 xref dans le binaire d'origine
-//     (confirmé via xrefs_to) — code mort côté TS2 lui-même, donc PAS un écart introduit ici.
-//  4) EFFETS DE ZONE / PERSONNAGE — Fx_EmitterDraw (0x585e30, cf. Docs/TS2_FX_CATALOG.md),
-//     appelée 3×/frame depuis Scene_InGameRender (offsets 0xc64/0x1c3b/0x2a28 — probablement
-//     passes ombre/couleur/son) : dispatch de rendu des 26 slots `Fx_Attach*` (lueur d'arme,
-//     étincelle d'impact, aura de compétence, parade, dash…) + du pool de projectiles
-//     (Fx_HomingProjectileUpdate 0x5862d0). ABSENT de ClientSource : Game/
-//     GroundAuraWorldObjectTick.h/.cpp REPRODUIT fidèlement le TICK de données (positions,
-//     timers, pool SoA de projectiles) mais il n'existe AUCUN contrepartie GPU (aucun
-//     Gfx/Fx*.h, aucun appel dessinant réellement un de ces effets à l'écran) — les données
-//     avancent, rien n'est dessiné.
-//  5) FX AMBIANTS PLACÉS EN ZONE (fichier .WP — torches/feux/cascades probables, distincts
-//     des Fx_Attach* liés aux personnages) — Z%03d.WP chargé via MapColl_LoadObjectsB
-//     (0x6983b0) qui appelle Fx_NodeLoadFromHandle (0x6a69f0, format "Node" documenté au
-//     §4.3 de Docs/TS2_FX_CATALOG.md). Asset/WorldChunk.cpp PARSE ce fichier
-//     (asset::WorldChunk, exposé par WorldAssets::FxNodes()) mais, exactement comme le
-//     terrain (point 3), AUCUN fichier ne consomme jamais FxNodes() (grep exhaustif). Le
-//     point d'entrée de RENDU réel de ces nœuds dans le binaire d'origine n'a PAS été
-//     retrouvé dans cette passe d'audit (pas de fonction `MapColl_RenderObjects*` ; probable
-//     partage du pipeline Model_RenderParts/Fx_EmitterDraw via une table non identifiée ici)
-//     — laissé comme mystère RE ouvert, PAS inventé.
+//          (0x793b80, internally calls cAtmosphere_DrawObjects 0x792a60) + directional
+//          light/fog update (Env_UpdateSunLight/Env_UpdateFogState).
+//       b) Env_StepTimeOfDay (0x412590, called at offset 0x2a99, AFTER the 2 Terrain_Render
+//          passes / 3 Fx_EmitterDraw passes below) = Atmosphere_DrawFrame (0x794fe0, 0x813
+//          bytes): the REAL draw of the sky dome/sun/moon/stars/volumetric clouds
+//          (Sky_RenderStars 0x74b030, Cloud_UpdateAndRender 0x702ff0, etc.).
+//     ABSENT from ClientSource: World/WorldIntegration.h already honestly documents this in
+//     its header banner ("SilverLining atmosphere/weather: external SDK
+//     SilverLiningDirectX9-MT.dll not linked -> LoadMap() fails cleanly") — this file CONFIRMS
+//     by disassembly that the original client does massively use the SDK (not dead vestige),
+//     so the gap is REAL and MAJOR, not just WorldIntegration.h's excess caution.
+//  3) VISIBLE TERRAIN/GROUND + WATER — Terrain_Render (0x698670, original IDA comment: "render
+//     quadtree terrain tile/water/land layers with reflections"), called 2x/frame from
+//     Scene_InGameRender (offsets 0x90e and 0x1a28 — i.e. BEFORE the .WO objects in the
+//     original pipeline). Consumes the .WG file (Z%03d.WG, G3W/WM² quadtree format, loaded by
+//     MapColl_LoadMapFile 0x697b30; TWS-01: the water bump-map is the FALLOFF texture from
+//     MapColl_CreateFalloffTexture 0x694ca0 — cWorldMesh_MakeWaterWaveTexture 0x451220 is DEAD
+//     code, never called by the shipped binary). CRITICAL FINDING: Asset/WorldChunk.cpp PARSES
+//     this .WG file (asset::WorldChunk::AsFace(), exposed by
+//     World/WorldIntegration.h::WorldAssets::Faces()) but NO ClientSource/ file ever consumes
+//     Faces()/AsFace() (exhaustive grep, 0 hits outside Asset/ and WorldIntegration.h): the
+//     GROUND/TERRAIN ITSELF (not just the sky) is drawn NOWHERE. Visible consequence: this
+//     file's .WO objects currently float with no ground surface beneath them — only the
+//     background (Renderer::clearColor_, now pure black 0x00000000) stands in as "ground". The
+//     dedicated reflection pass (cWorldMesh_RenderReflection 0x450f50) has 0 xrefs in the
+//     original binary itself (confirmed via xrefs_to) — dead code on TS2's own side, so NOT a
+//     gap introduced here.
+//  4) CHARACTER/ZONE FX — Fx_EmitterDraw (0x585e30, cf. Docs/TS2_FX_CATALOG.md), called
+//     3x/frame from Scene_InGameRender (offsets 0xc64/0x1c3b/0x2a28 — probably
+//     shadow/color/sound passes): render dispatch of the 26 `Fx_Attach*` slots (weapon glow,
+//     hit spark, skill aura, parry, dash...) + the projectile pool
+//     (Fx_HomingProjectileUpdate 0x5862d0). ABSENT from ClientSource: Game/
+//     GroundAuraWorldObjectTick.h/.cpp faithfully reproduces the data TICK (positions, timers,
+//     SoA projectile pool) but there is NO GPU counterpart (no Gfx/Fx*.h, no call actually
+//     drawing any of these effects on screen) — the data advances, nothing is drawn.
+//  5) AMBIENT ZONE-PLACED FX (.WP file — likely torches/fires/waterfalls, distinct from the
+//     character Fx_Attach*) — Z%03d.WP loaded via MapColl_LoadObjectsB (0x6983b0), which calls
+//     Fx_NodeLoadFromHandle (0x6a69f0, "Node" format documented in Docs/TS2_FX_CATALOG.md
+//     §4.3). Asset/WorldChunk.cpp PARSES this file (asset::WorldChunk, exposed by
+//     WorldAssets::FxNodes()) but, just like terrain (point 3), NO file ever consumes
+//     FxNodes() (exhaustive grep). The real RENDER entry point for these nodes in the
+//     original binary was NOT found in this audit pass (no `MapColl_RenderObjects*` function;
+//     probably shares the Model_RenderParts/Fx_EmitterDraw pipeline via a table not identified
+//     here) — left as an open RE mystery, NOT invented.
 //
-//  RÉSUMÉ : sur 5 systèmes (skybox simple, atmosphère SilverLining, terrain+eau, FX
-//  personnage, FX de zone), AUCUN n'a de contrepartie de rendu dans ClientSource — seule la
-//  géométrie .WO (props statiques) et les entités (Scene/WorldRenderer.h) sont dessinées.
-//  CORRECTIF D'ORIGINE (2026-07-14, ce bandeau) : un DÉGRADÉ DE CIEL EN REPLI SIMPLIFIÉ — PAS
-//  SilverLining réel, PAS de skybox texturée, juste un quad plein écran 2 couleurs FIXES
-//  dessiné avant le décor. Le sol/terrain/eau/FX restent des TODO non traités ici (hors
-//  périmètre : nécessitent respectivement le parseur .WG déjà écrit mais jamais câblé à un
-//  renderer, et un nouveau module Gfx/Fx*.h qui n'existe pas encore).
+//  SUMMARY: of 5 systems (simple skybox, SilverLining atmosphere, terrain+water, character
+//  FX, zone FX), NONE has a render counterpart in ClientSource — only the .WO geometry
+//  (static props) and the entities (Scene/WorldRenderer.h) are drawn.
+//  ORIGINAL FIX (2026-07-14, this banner): a SIMPLIFIED SKY GRADIENT FALLBACK — NOT real
+//  SilverLining, no textured skybox, just a 2-fixed-color fullscreen quad drawn before the
+//  scenery. Ground/terrain/water/FX remain untreated TODOs here (out of scope: they'd need,
+//  respectively, the already-written but never-wired .WG parser, and a new Gfx/Fx*.h module
+//  that does not exist yet).
 //
-//  MISE À JOUR 2026-07-15 (WAVE_06_silverlining) : le quad 2 couleurs FIXES ci-dessus est
-//  REMPLACÉ par Gfx/SkyRenderer.h, dont les couleurs sont désormais DÉRIVÉES du fichier .ATM
-//  RÉEL de la zone active (Asset/AtmosphereFile.h, parsé byte-exact par
-//  World/WorldIntegration.h::WorldAssets::Atmosphere() — case 7 de World_LoadZoneResource,
-//  déjà géré par World/WorldMap.h, désormais réellement câblé côté données) et de
-//  SilverLining.config global chargé au démarrage. Reste un premier pas honnête, PAS le SDK
-//  SilverLining complet (aucun nuage/précipitation/étoile/soleil/lune dessiné — cf. bandeau
-//  complet dans SkyRenderer.h). Build() transmet désormais assets.SilverLining() et
-//  assets.Atmosphere() au ciel ; SceneManager place RenderSky() avant/après le monde.
+//  UPDATE 2026-07-15 (WAVE_06_silverlining): the 2-fixed-color quad above is REPLACED by
+//  Gfx/SkyRenderer.h, whose colors are now DERIVED from the active zone's REAL .ATM file
+//  (Asset/AtmosphereFile.h, parsed byte-exact by
+//  World/WorldIntegration.h::WorldAssets::Atmosphere() — World_LoadZoneResource case 7,
+//  already handled by World/WorldMap.h, now really wired on the data side) and from the
+//  global SilverLining.config loaded at startup. Still an honest first step, NOT the full
+//  SilverLining SDK (no cloud/precipitation/star/sun/moon drawn — cf. the full banner in
+//  SkyRenderer.h). Build() now passes assets.SilverLining() and assets.Atmosphere() to the
+//  sky; SceneManager places RenderSky() before/after the world.
 //
-//  AUDIT 2026-07-15 (relecture SkyRenderer.cpp + WorldGeometryRenderer.cpp) — BUG CORRIGÉ :
-//  SkyRenderer::Render() pose SetVertexShader(nullptr)/SetPixelShader(nullptr) directement
-//  sur le device D3D9 PARTAGÉ avec meshRenderer_. Or MeshRenderer::DrawSkinnedSubset()
-//  court-circuite le re-bind VS/PS via un cache purement local à l'instance (`currentPass_`),
-//  qui ignore ces pokes externes au device : sans correctif, le cache pourrait conserver un
-//  shader skinné en mémoire après la passe ciel. Corrigé en ajoutant
-//  MeshRenderer::InvalidateShaderBindingCache() (Gfx/MeshRenderer.h), appelé dans Render()
-//  après tout passage ciel avant tout dessin de mesh. Le reste des deux fichiers
-//  (SkyRenderer.cpp/.h et WorldGeometryRenderer.cpp/.h) a été relu intégralement : aucun autre placeholder non
-//  documenté trouvé (formules d'offset géométrie A/B/C/D, conversion vertex MOBJ->GPU,
-//  matrice Rz*Ry*Rx*T, tailles VB/IB, tout concorde avec Asset/WorldChunk.h et les bandeaux
-//  IDA existants) ; les manques restants (sway réel, tex2/materials, terrain/eau, FX,
-//  éphéméride/keyframes .ATM réelles) étaient déjà honnêtement documentés avant cet audit.
+//  AUDIT 2026-07-15 (re-read of SkyRenderer.cpp + WorldGeometryRenderer.cpp) — BUG FIXED:
+//  SkyRenderer::Render() sets SetVertexShader(nullptr)/SetPixelShader(nullptr) directly on
+//  the D3D9 device SHARED with meshRenderer_. But MeshRenderer::DrawSkinnedSubset() bypasses
+//  the VS/PS re-bind via a purely instance-local cache (`currentPass_`), which ignores these
+//  external device pokes: without a fix, the cache could keep a skinned shader bound after the
+//  sky pass. Fixed by adding MeshRenderer::InvalidateShaderBindingCache() (Gfx/MeshRenderer.h),
+//  called in Render() after every sky pass and before any mesh draw. The rest of both files
+//  (SkyRenderer.cpp/.h and WorldGeometryRenderer.cpp/.h) was fully re-read: no other
+//  undocumented placeholder found (A/B/C/D geometry offset formulas, MOBJ->GPU vertex
+//  conversion, Rz*Ry*Rx*T matrix, VB/IB sizes all match Asset/WorldChunk.h and the existing
+//  IDA banners); remaining gaps (real sway, tex2/materials, terrain/water, FX, real .ATM
+//  ephemeris/keyframes) were already honestly documented before this audit.
 //
-//  MISE À JOUR 2026-07-16 (FRONT W3-F3 — chemin terrain FIXED-FUNCTION dédié) : le rendu du terrain
-//  passe désormais par un chemin FF NATIF (plus meshRenderer_/shaders), fidèle à Terrain_Render
-//  0x698670. buildTerrain()/renderTerrain() (cf. .cpp) :
-//    - VB FVF 530 (0x212 = XYZ|NORMAL|TEX2, stride 40) uploadé par memcpy depuis asset::TerrainVertex
-//      (aucune conversion) — SetFVF(530) @0x698e6d ;
-//    - couches groupées par matériau et TRIÉES par un RANG dérivé de (catégorie=trailer[0],
-//      subOrder=trailer[1]) = textures[m].trailer[*] (prouvé Tex_LoadCompressedFromHandle 0x6a9cf0
-//      ; ex-VeryOldClient TEXTURE_FOR_GXD : trailer = processMode/alphaMode) ;
-//    - LIGHTMAP .SHADOW au stage 1 sur uv1 : MODULATE (=4, PAS MODULATE2X — commentaire corrigé)
-//      @0x698f54 + SetTexture(1) @0x698f68 (le vertex FF possède bien uv1 -> le TODO « 1 seul
-//      TEXCOORD » a DISPARU ; texture créée depuis WorldAssets::ShadowBytes()) ;
-//    - EAU (catégorie 3) : passe bump-env D3DTOP_BUMPENVMAPLUMINANCE @0x699206 avec matrice bump
-//      animée (wavePhase_) + falloffTex_ (MapColl_CreateFalloffTexture 0x694ca0), V8U8 256x256
-//      procédurale générée au Build. TWS-01 : c'est bien la FALLOFF (*(a1+20) @0x69928f), pas une
-//      texture de vagues — 0x451220 est mort et non porté.
-//  FX de zone .WP : RenderFxBillboards() (passe a5=2 @0x698c6d : Gfx_BeginUnlitPass 0x69e470 ->
-//  Particle_RenderBillboards 0x6a70b0) dessine 1 billboard placé par instance (sous-ensemble
-//  build-safe). Sway .WO : TickWorldAnim() avance la phase de flipbook par instance (état possédé,
+//  UPDATE 2026-07-16 (FRONT W3-F3 — dedicated FIXED-FUNCTION terrain path): terrain rendering now
+//  goes through a NATIVE FF path (no more meshRenderer_/shaders), faithful to Terrain_Render
+//  0x698670. buildTerrain()/renderTerrain() (cf. .cpp):
+//    - FVF 530 VB (0x212 = XYZ|NORMAL|TEX2, stride 40) uploaded via memcpy from asset::TerrainVertex
+//      (no conversion) — SetFVF(530) @0x698e6d;
+//    - layers grouped by material and SORTED by a RANK derived from (category=trailer[0],
+//      subOrder=trailer[1]) = textures[m].trailer[*] (proven via Tex_LoadCompressedFromHandle
+//      0x6a9cf0; ex-VeryOldClient TEXTURE_FOR_GXD: trailer = processMode/alphaMode);
+//    - .SHADOW LIGHTMAP on stage 1 over uv1: MODULATE (=4, NOT MODULATE2X — comment corrected)
+//      @0x698f54 + SetTexture(1) @0x698f68 (the FF vertex does have uv1 -> the "single TEXCOORD"
+//      TODO is GONE; texture created from WorldAssets::ShadowBytes());
+//    - WATER (category 3): bump-env pass D3DTOP_BUMPENVMAPLUMINANCE @0x699206 with an animated
+//      bump matrix (wavePhase_) + falloffTex_ (MapColl_CreateFalloffTexture 0x694ca0), procedural
+//      V8U8 256x256 generated at Build. TWS-01: it really is the FALLOFF (*(a1+20) @0x69928f), not
+//      a wave texture — 0x451220 is dead and not ported.
+//  .WP zone FX: RenderFxBillboards() (pass a5=2 @0x698c6d: Gfx_BeginUnlitPass 0x69e470 ->
+//  Particle_RenderBillboards 0x6a70b0) draws 1 placed billboard per instance (build-safe
+//  subset). .WO sway: TickWorldAnim() advances the per-instance flipbook phase (owned state,
 //  MapColl_UpdateObjectAnim 0x694A00).
 //
-//  MISE À JOUR Passe 4 / W5 (front terrain-motion) — LISTE EXACTE DES CATÉGORIES DESSINÉES.
-//  Terrain_Render n'a que 2 passes (garde @0x698676-0x6986a2 : a5 ∈ [1,2] ; sites d'appel
-//  Scene_InGameRender @0x52d9be a5=1 et @0x52ead8 a5=2). Table complète des rangs + ancres de
-//  chaque boucle : cf. TerrainLayerRank() en tête de WorldGeometryRenderer.cpp. En résumé :
-//      a5=1 : cat2 (tout sub) -> cat4 (tout sub) -> cat1/sub0 -> eau cat3 (gate sub0)
-//             -> cat1/sub1 (alpha-test) -> eau cat3 (gate sub1)
-//      a5=2 : cat1/sub2 -> eau cat3 (gate sub2)          [z-write OFF + alpha-blend ON]
-//      TOUT LE RESTE (cat ∉ {1,2,3,4} ; cat1/sub>=3) n'est dessiné par AUCUNE boucle -> écarté
-//      dès buildTerrain (rang -1), avant tout upload GPU : c'était la « géométrie fantôme ».
-//  ⚠ Les boucles EAU testent `cat==3` SEUL (aucun test de sub ; seule la gate teste un sub) :
-//    une couche cat3 n'est JAMAIS filtrée, quel que soit son subOrder.
-//  Corrections de fidélité apportées par ce front : (1,2) et (3,2) passent d'« opaque z-write ON »
-//  à la vraie passe a5=2 blendée ; l'alpha-test cesse de frapper (2,1)/(4,1) (il est piloté par le
-//  rang, pas par subOrder) ; l'adressage sampler CLAMP/WRAP par couche est posé. Le filtre lui-même
-//  n'écarte 0 face sur les 97 .WG réels (domaine mesuré : cat ∈ {1,2,3,4}, sub ∈ {0,1,2}) — c'est
-//  un garde-fou de fidélité, pas un correctif visuel.
-//  ⚠ « Terrain_PushRenderState 0x69cb80 » est un nom IDA TROMPEUR : ce n'est PAS un push d'états
-//    de rendu mais un TIMER QueryPerformanceCounter (renvoie des secondes écoulées ; appelé aussi
-//    par App_Init @0x46242e / App_FrameTick @0x4625d9). Il ne valide RIEN de `wavePhase_ * 10.0f`
-//    (Passe 4/W5b) : son retour tombe dans un slot MORT (@0x6986b2 `fstp [esp+58h+var_48]`, +0x3a0,
-//    1 écriture / 0 lecture), tandis que le `fmul flt_7A8D74` @0x6991ca lit var_3C (+0x3ac, slot
-//    distinct) — lequel a 3 lectures / 0 écriture sur toute Terrain_Render 0x698670, donc lu NON
-//    INITIALISÉ. Seul le facteur 10.0f (flt_7A8D74 = 0x41200000) est prouvé ; `wavePhase_` ≡
-//    « secondes écoulées » est un choix build-safe NON PROUVÉ. Détail complet dans le .cpp.
+//  UPDATE Pass 4 / W5 (terrain-motion front) — EXACT LIST OF DRAWN CATEGORIES. Terrain_Render has
+//  only 2 passes (guard @0x698676-0x6986a2: a5 in [1,2]; call sites Scene_InGameRender @0x52d9be
+//  a5=1 and @0x52ead8 a5=2). Full rank table + per-loop anchors: cf. TerrainLayerRank() at the top
+//  of WorldGeometryRenderer.cpp. Summary:
+//      a5=1: cat2 (any sub) -> cat4 (any sub) -> cat1/sub0 -> water cat3 (sub0 gate)
+//            -> cat1/sub1 (alpha-test) -> water cat3 (sub1 gate)
+//      a5=2: cat1/sub2 -> water cat3 (sub2 gate)          [z-write OFF + alpha-blend ON]
+//      EVERYTHING ELSE (cat not in {1,2,3,4}; cat1/sub>=3) is drawn by NO loop -> discarded in
+//      buildTerrain (rank -1) before any GPU upload: this was the "ghost geometry".
+//  Water loops test `cat==3` ALONE (no sub test; only the gate checks a sub): a cat3 layer is
+//  NEVER filtered, whatever its subOrder.
+//  Fidelity fixes from this front: (1,2) and (3,2) move from "opaque z-write ON" to the real
+//  blended a5=2 pass; alpha-test stops hitting (2,1)/(4,1) (driven by rank, not subOrder); per-
+//  layer CLAMP/WRAP sampler addressing is set. The filter itself discards 0 faces on the 97 real
+//  .WG files (measured domain: cat in {1,2,3,4}, sub in {0,1,2}) — a fidelity safeguard, not a
+//  visual fix.
+//  "Terrain_PushRenderState 0x69cb80" is a MISLEADING IDA name: it is NOT a render-state push but
+//  a QueryPerformanceCounter TIMER (returns elapsed seconds; also called by App_Init @0x46242e /
+//  App_FrameTick @0x4625d9). It validates NOTHING about `wavePhase_ * 10.0f` (Pass 4/W5b): its
+//  return lands in a DEAD slot (@0x6986b2 `fstp [esp+58h+var_48]`, +0x3a0, 1 write / 0 reads),
+//  while `fmul flt_7A8D74` @0x6991ca reads var_3C (+0x3ac, a distinct slot) — which has 3 reads /
+//  0 writes across all of Terrain_Render 0x698670, hence read UNINITIALIZED. Only the 10.0f factor
+//  (flt_7A8D74 = 0x41200000) is proven; `wavePhase_` as "elapsed seconds" is an UNPROVEN build-safe
+//  choice. Full detail in the .cpp.
 //
-//  MISE À JOUR FRONT F_TERRAIN (B5 + B6, 2026-07-17) — deux TODO ancres RÉSOLUS :
-//   - B5 : cull quadtree/frustum du terrain PAR FRAME (cullTerrain() dans le .cpp) — descente
-//     MapColl_CollectLeafFaces 0x694b50 (test AABB Cam_FrustumTestAABB 0x69f230 par nœud), puis par
-//     face : anti-doublon, backface dot(planeN,eye)>=planeD @0x698dd4, sphère marge x2
-//     Cam_FrustumTestSphere2x 0x69f0e0, batch 120o par matériau @0x698e21 -> DrawPrimitiveUP @0x698ff3.
-//     Le quadtree .WG était DÉJÀ décodé (Asset/WorldChunk.h CollisionMesh::nodes/triIndices) : réutilisé
-//     tel quel, aucune modification de WorldChunk. Mêmes faces visibles, moins de triangles.
-//   - B6 : rejeu du SWAY des .WO — uploadPart uploade DÉSORMAIS les A frames (32*A*B o natif, FVF
-//     0x112) et renderObjects() sélectionne la frame par SetStreamSource(0, vb, 32*frame*B, 32)
-//     (MeshPart_Render 0x6aeea5), frame = Crt_Dbl2Uint(phase) gate [0, A-1] (Model_RenderParts 0x6a3756).
-//     Le chemin .WO passe de skinné (76o) à FIXED-FUNCTION natif (fidèle au binaire, qui est FF).
+//  UPDATE FRONT F_TERRAIN (B5 + B6, 2026-07-17) — two TODO anchors RESOLVED:
+//   - B5: per-frame terrain quadtree/frustum cull (cullTerrain() in the .cpp) — descent via
+//     MapColl_CollectLeafFaces 0x694b50 (per-node AABB test Cam_FrustumTestAABB 0x69f230), then
+//     per face: dedup, backface dot(planeN,eye)>=planeD @0x698dd4, doubled-margin sphere
+//     Cam_FrustumTestSphere2x 0x69f0e0, 120-byte batch per material @0x698e21 -> DrawPrimitiveUP
+//     @0x698ff3. The .WG quadtree was ALREADY decoded (Asset/WorldChunk.h
+//     CollisionMesh::nodes/triIndices): reused as-is, no WorldChunk changes. Same visible faces,
+//     fewer triangles.
+//   - B6: .WO SWAY replay — uploadPart NOW uploads the A frames (native 32*A*B bytes, FVF 0x112)
+//     and renderObjects() selects the frame via SetStreamSource(0, vb, 32*frame*B, 32)
+//     (MeshPart_Render 0x6aeea5), frame = Crt_Dbl2Uint(phase) gated [0, A-1] (Model_RenderParts
+//     0x6a3756). The .WO path moves from skinned (76 bytes) to native FIXED-FUNCTION (faithful to
+//     the binary, which is FF).
 //
-//  MISE À JOUR FRONT F_ZONEFX (2026-07-17) — SIM DE PARTICULES .WP VIVANTE : le billboard statique
-//  dégénéré est remplacé par le vrai moteur « Object A » (Gfx/ZoneFxEmitter.h) — un template 232o par
-//  nœud (Fx_NodeLoadFromHandle 0x6a69f0), un pool POBJECT 48o par instance placée, Init/UpdateEmit
-//  (switch 6 formes) dans TickWorldAnim (boucle 2 de MapColl_UpdateObjectAnim 0x694a00), rendu
-//  Particle_RenderBillboards 0x6a70b0 dans RenderFxBillboards avec cull distance carrée par nœud
-//  (Terrain_Render a5=2 @0x698c81 ; portée Game_GetTierRange 0x5402f0 = 3000 par défaut documenté).
-//  Non porté : chemin keyframe du transform d'émetteur (template+56, piste quaternion) -> matrice de
-//  frame = identité ; cull Cam_FrustumTestPoint6 de l'origine (nullptr, visuel à l'écran identique).
+//  UPDATE FRONT F_ZONEFX (2026-07-17) — LIVE .WP PARTICLE SIM: the degenerate static billboard is
+//  replaced by the real "Object A" engine (Gfx/ZoneFxEmitter.h) — a 232-byte template per node
+//  (Fx_NodeLoadFromHandle 0x6a69f0), a 48-byte POBJECT pool per placed instance, Init/UpdateEmit
+//  (6-shape switch) in TickWorldAnim (loop 2 of MapColl_UpdateObjectAnim 0x694a00), rendered via
+//  Particle_RenderBillboards 0x6a70b0 in RenderFxBillboards with a squared-distance cull per node
+//  (Terrain_Render a5=2 @0x698c81; range Game_GetTierRange 0x5402f0 = 3000 documented default).
+//  Not ported: the emitter transform keyframe path (template+56, quaternion track) -> frame matrix
+//  = identity; the original's Cam_FrustumTestPoint6 cull (nullptr, identical on-screen visual).
 //
-//  RESTES (TODO ancres) : keyframe d'émetteur .WP (0x6a787d) ; eau des 5 zones
-//  « mixtes » dessinée une fois au lieu de deux (cf. bandeau de renderTerrain dans le .cpp) ; échelle
-//  du bump eau : ancre 0x699206 RÉSOLUE (= a10 = distance de tirage Game_GetTierRange 0x5402f0, très
-//  probablement un bug d'origine) mais volontairement NON reproduite — cf. bindWaterStates() ; cull
-//  DISTANCE + fondu alpha des .WO lointains (Terrain_Render 0x69977c/0x69979f -> Model_RenderWithShadow_0
-//  0x6a4110) NON reproduit (valeurs a9/a10/a11 du site d'appel indisponibles en statique, cf.
-//  renderObjects()). Skybox/atmosphère = FRONT W3-F4 (SkyRenderer), hors périmètre ici.
+//  REMAINING (TODO anchors): .WP emitter keyframe (0x6a787d); the 5 "mixed" zones' water drawn
+//  once instead of twice (cf. renderTerrain's banner in the .cpp); water bump scale: anchor
+//  0x699206 RESOLVED (= a10 = draw-distance tier Game_GetTierRange 0x5402f0, very likely an
+//  original bug) but deliberately NOT reproduced — cf. bindWaterStates(); DISTANCE cull + alpha
+//  fade for far .WO props (Terrain_Render 0x69977c/0x69979f -> Model_RenderWithShadow_0 0x6a4110)
+//  NOT reproduced (a9/a10/a11 call-site values unavailable statically, cf. renderObjects()).
+//  Skybox/atmosphere = FRONT W3-F4 (SkyRenderer), out of scope here.
 #pragma once
 #include "Gfx/Renderer.h"
 #include "Gfx/MeshRenderer.h"
 #include "Gfx/Camera.h"
-#include "Gfx/SkyRenderer.h" // ciel dérivé du .ATM réel (cf. MISE À JOUR 2026-07-14 ci-dessus)
-#include "Gfx/ZoneFxEmitter.h" // FRONT F_ZONEFX : moteur de particules « Object A » des .WP (sim VIVANTE)
-#include "Gfx/MeshPartMaterial.h" // FRONT C2 : couche matériau MeshPart_RenderFull 0x6b0850 (B1) des props .WO
-#include "Asset/WorldChunk.h" // asset::AuxRecord : type complet requis (membre std::vector direct)
+#include "Gfx/SkyRenderer.h" // sky derived from the real .ATM file (cf. 2026-07-14 update above)
+#include "Gfx/ZoneFxEmitter.h" // FRONT F_ZONEFX: the .WP "Object A" particle engine (live sim)
+#include "Gfx/MeshPartMaterial.h" // FRONT C2: material layer for MeshPart_RenderFull 0x6b0850 (B1) of .WO props
+#include "Asset/WorldChunk.h" // asset::AuxRecord: full type required (direct std::vector member)
 #include <cstddef>
 #include <vector>
 
@@ -284,257 +275,260 @@ public:
     WorldGeometryRenderer(const WorldGeometryRenderer&) = delete;
     WorldGeometryRenderer& operator=(const WorldGeometryRenderer&) = delete;
 
-    // Construit son propre MeshRenderer (décl. vertex 76o + shaders skinnés) — instance
-    // dédiée, indépendante de celle de Scene/WorldRenderer.h (pas de couplage inter-fichiers
-    // pour éviter tout conflit d'édition concurrente).
+    // Builds its own MeshRenderer (76-byte vertex decl. + skinned shaders) — a dedicated
+    // instance, independent from Scene/WorldRenderer.h's (no cross-file coupling, avoids
+    // concurrent-edit conflicts).
     bool Init(Renderer& renderer);
     void Shutdown();
 
-    // Convertit + uploade les WorldMeshPart (TOUT A, cf. bandeau ci-dessus point 5 — parts
-    // A>1 en pose statique frame 0) du chunk .WO courant vers des
-    // IDirect3DVertexBuffer9/IndexBuffer9. Remplace le contenu
-    // GPU précédent (changement de zone). Renvoie false seulement si aucun chunk WO n'est
-    // chargé dans `assets` (un WO présent mais vide/0-modèle renvoie true, 0 objet dessiné).
-    // Transmet aussi assets.Atmosphere() (Z%03d.ATM réel de la zone) à skyRenderer_ — cf.
-    // MISE À JOUR 2026-07-14 : c'est ICI que le ciel dérivé des vraies données est rafraîchi
-    // à chaque changement de zone, indépendamment du succès/échec du chargement .WO lui-même
-    // (appelé avant tout `return` de cette fonction, cf. .cpp).
+    // Converts + uploads the current .WO chunk's WorldMeshPart geometry (ALL of A, cf. banner
+    // point 5 above — A>1 parts pinned to frame-0 static pose) into
+    // IDirect3DVertexBuffer9/IndexBuffer9. Replaces the previous GPU content (zone change).
+    // Returns false only if no WO chunk is loaded in `assets` (a present-but-empty/0-model WO
+    // returns true, 0 objects drawn). Also passes assets.Atmosphere() (the zone's real
+    // Z%03d.ATM) to skyRenderer_ — cf. 2026-07-14 update: this is WHERE the real-data-derived
+    // sky is refreshed on every zone change, independent of whether the .WO load itself
+    // succeeds (called before any `return` in this function, cf. .cpp).
     bool Build(const world::WorldAssets& assets);
 
     void OnDeviceLost();
     void OnDeviceReset();
 
-    // Passe atmosphérique SilverLining minimale (couche ciel/atmosphère). Peut être appelée
-    // avant les objets statiques ou après les entités, avec depth test actif, pour respecter
-    // le placement réel des deux points d'entrée frame du moteur d'origine.
+    // Minimal SilverLining atmosphere pass (sky/atmosphere layer). Can be called before the
+    // static objects or after the entities, with depth test active, to respect the original
+    // engine's two real frame entry points.
     void RenderSky(int screenW, int screenH);
 
-    // Dessine, pour chaque instance de auxRecords[], toutes les parts uploadées du gabarit
-    // qu'elle référence (models[instance.modelIndex]), à la matrice monde
-    // Rz*Ry*Rx*T construite depuis SA position/rotation propre (cf. bandeau .h point 2/4 —
-    // CORRIGÉ, remplace l'ancienne matrice identité globale). La couche ciel est pilotée par
-    // RenderSky() pour pouvoir se placer à la fois avant le décor et après les entités.
+    // Draws, for each auxRecords[] instance, every uploaded part of the template it references
+    // (models[instance.modelIndex]), at the world matrix Rz*Ry*Rx*T built from ITS OWN
+    // position/rotation (cf. .h banner point 2/4 — FIXED, replaces the old global identity
+    // matrix). The sky layer is driven by RenderSky() so it can be placed both before the
+    // scenery and after the entities.
     void Render(const Camera& camera, int screenW, int screenH);
 
-    // FRONT W3-F3 / F_ZONEFX — passe FX de zone (.WP) : billboards unlit (Gfx_BeginUnlitPass 0x69e470
-    // -> Particle_RenderBillboards 0x6a70b0), correspond à Terrain_Render a5=2 @0x698c6d (le point
-    // d'entrée de rendu .WP EST là — corrige WorldIntegration « point non identifié »). Appelée par
-    // Render() APRÈS le terrain et les props .WO (blend actif, depth-write off). Camera-facing via
-    // la matrice vue. FRONT F_ZONEFX : dessine désormais le VRAI pool de particules de chaque
-    // émetteur (ZoneFx_RenderBillboards) avec cull distance carrée par nœud (Terrain_Render 0x698c81),
-    // et non plus 1 billboard statique dégénéré.
+    // FRONT W3-F3 / F_ZONEFX — .WP zone FX pass: unlit billboards (Gfx_BeginUnlitPass 0x69e470
+    // -> Particle_RenderBillboards 0x6a70b0), corresponds to Terrain_Render a5=2 @0x698c6d (the
+    // .WP render entry point IS there — fixes WorldIntegration's "point not identified").
+    // Called by Render() AFTER the terrain and the .WO props (blend active, depth-write off).
+    // Camera-facing via the view matrix. FRONT F_ZONEFX: now draws each emitter's REAL particle
+    // pool (ZoneFx_RenderBillboards) with a squared-distance cull per node (Terrain_Render
+    // 0x698c81), no longer a single degenerate static billboard.
     void RenderFxBillboards(const Camera& camera);
 
-    // FRONT W3-F3 / F_ZONEFX — tick d'animation du monde (à appeler par SceneManager chaque frame,
-    // cf. MapColl_UpdateObjectAnim 0x694A00, site Scene_InGameUpdate 0x52c94b) :
-    //   - wavePhase_ += dt (matrice bump-env eau) ;
-    //   - phase de flipbook sway par instance .WO (aux+28 += dt*15, wrap par nb de frames A) ;
-    //   - FRONT F_ZONEFX : sim des particules .WP (boucle 2 de MapColl_UpdateObjectAnim @0x694af0 :
-    //     ZoneFx_Init au 1er passage sinon ZoneFx_UpdateEmit, dt = a3 = vrai delta de frame).
-    // SceneManager (non possédé) doit l'appeler ; commentaire d'intégration seulement, pas d'édition.
+    // FRONT W3-F3 / F_ZONEFX — world animation tick (to be called by SceneManager every frame,
+    // cf. MapColl_UpdateObjectAnim 0x694A00, site Scene_InGameUpdate 0x52c94b):
+    //   - wavePhase_ += dt (water bump-env matrix);
+    //   - per-instance .WO sway flipbook phase (aux+28 += dt*15, wraps by the A frame count);
+    //   - FRONT F_ZONEFX: .WP particle sim (loop 2 of MapColl_UpdateObjectAnim @0x694af0:
+    //     ZoneFx_Init on the 1st pass, else ZoneFx_UpdateEmit, dt = a3 = true frame delta).
+    // SceneManager (not owned here) must call it; integration note only, no edit.
     void TickWorldAnim(float dt);
 
     size_t UploadedPartCount() const { return objects_.size(); }
-    // Parts A>1 réellement ignorées (échec de taille/corruption uniquement, cf. uploadPart()) —
-    // depuis la résolution du format multi-ancre (bandeau .h point 5, MISE À JOUR 2026-07-14),
-    // A>1 n'est plus une cause de saut : voir MultiAnchorStaticCount() pour ces parts-là.
+    // Parts A>1 actually skipped (size failure/corruption only, cf. uploadPart()) — since the
+    // multi-anchor format was resolved (.h banner point 5, 2026-07-14 update), A>1 is no longer
+    // a skip cause: see MultiAnchorStaticCount() for those parts.
     size_t SkippedMultiAnchorCount() const { return skippedMultiAnchor_; }
-    // Parts A>1 (flipbook de sway) dessinées avec succès. Depuis B6 (2026-07-17) le flipbook est
-    // REJOUÉ au GPU (SetStreamSource(0, vb, 32*frame*B, 32), MeshPart_Render 0x6aeea5) : ces parts
-    // ne sont PLUS figées à la frame 0 — le nom historique « static » est conservé pour l'API mais
-    // désigne désormais « parts A>1 animées ». Ancre IDA : Model_RenderParts 0x6a3720.
+    // Parts A>1 (sway flipbook) drawn successfully. Since B6 (2026-07-17) the flipbook is
+    // REPLAYED on the GPU (SetStreamSource(0, vb, 32*frame*B, 32), MeshPart_Render 0x6aeea5):
+    // these parts are NO LONGER pinned to frame 0 — the historical "static" name is kept for the
+    // API but now means "animated A>1 parts". IDA anchor: Model_RenderParts 0x6a3720.
     size_t MultiAnchorStaticCount() const { return multiAnchorStaticCount_; }
     size_t InstanceCount() const { return instances_.size(); }
-    // Nombre d'appels DrawSkinnedSubset qu'effectuera Render() (instances * parts uploadées
-    // du gabarit référencé) — sert de log de sanité pour prouver que le rendu utilise bien
-    // N positions distinctes (une par instance) et pas une seule matrice globale.
+    // Number of DrawSkinnedSubset calls Render() will make (instances * uploaded parts of the
+    // referenced template) — a sanity log proving the render does use N distinct positions
+    // (one per instance) and not a single global matrix.
     size_t PlannedDrawCallCount() const;
 
-    // --- Terrain .WG (FRONT W3-F3, ancre IDA : Terrain_Render 0x698670) : logs de sanité. ---
-    // Nombre de couches GPU terrain (groupées par matériau, triées par catégorie/subOrder) et total
-    // de faces terrain (3 sommets/face, 120o/face copiés @0x698e21).
+    // Terrain .WG (FRONT W3-F3, IDA anchor: Terrain_Render 0x698670): sanity logs.
+    // Number of GPU terrain layers (grouped by material, sorted by category/subOrder) and total
+    // terrain face count (3 vertices/face, 120 bytes/face copied @0x698e21).
     size_t TerrainBatchCount() const { return terrainLayers_.size(); }
     size_t TerrainFaceCount()  const { return terrainFaceCount_; }
-    // Émetteurs FX de zone (.WP) instanciés (1 pool de particules « Object A » par instance placée).
+    // Instantiated zone FX (.WP) emitters (1 "Object A" particle pool per placed instance).
     size_t FxBillboardCount()  const { return fxPools_.size(); }
-    // Nœuds FX (templates 232o) chargés pour la zone (sanité).
+    // FX nodes (232-byte templates) loaded for the zone (sanity).
     size_t FxNodeCount()       const { return fxTemplates_.size(); }
 
 private:
-    // FRONT F_TERRAIN (B6, 2026-07-17) — part .WO en FIXED-FUNCTION NATIVE (remplace le chemin
-    // skinné 76o). Le VB contient les A frames CONTIGUËS du flipbook de sway (32*A*B o, MobjVertex
-    // 32o brut, FVF 0x112) : la frame est choisie AU DESSIN par SetStreamSource(0, vb, 32*frame*B,
-    // 32) — plus de ré-upload, juste l'offset (cf. bandeau .h point 5, désormais REJOUÉ, pas figé
-    // à la frame 0). Ancre IDA : MeshPart_Load 0x6ad169 (copie 32*A*B) ; MeshPart_Render 0x6aed60
-    // (SetStreamSource 0x6aeea5 / SetIndices 0x6aeedc / DrawIndexedPrimitive 0x6aef00) ;
+    // FRONT F_TERRAIN (B6, 2026-07-17) — .WO part in native FIXED-FUNCTION (replaces the 76-byte
+    // skinned path). The VB holds the CONTIGUOUS A frames of the sway flipbook (32*A*B bytes, raw
+    // 32-byte MobjVertex, FVF 0x112): the frame is chosen AT DRAW TIME via SetStreamSource(0, vb,
+    // 32*frame*B, 32) — no re-upload, just the offset (cf. .h banner point 5, now REPLAYED, not
+    // pinned to frame 0). IDA anchor: MeshPart_Load 0x6ad169 (copies 32*A*B); MeshPart_Render
+    // 0x6aed60 (SetStreamSource 0x6aeea5 / SetIndices 0x6aeedc / DrawIndexedPrimitive 0x6aef00);
     // Model_RenderParts 0x6a3720 (frame = Crt_Dbl2Uint(phase), gate [0, A-1], A = MeshPart+252).
     struct StaticObject {
-        IDirect3DVertexBuffer9* vb      = nullptr; // 32*A*B o (A frames), a1[72]/+288
-        IDirect3DIndexBuffer9*  ib      = nullptr; // 6*D o (partagé par toutes les frames), a1[73]/+292
-        IDirect3DTexture9*      diffuse = nullptr; // tex1 = base tex0 (POSSÉDÉE), a1[86]/+344
-        // FRONT C2 (2026-07-17) — CÂBLAGE B1 MeshPart_RenderFull 0x6B0850 : au-delà de la diffuse, le
-        // part porte sa 2e texture (2e passe blendée, a1[99]/+396), son atlas flipbook (a1[101]/+404) et
-        // son en-tête matériau 120o DÉCODÉ (part.mat, MeshPart_Load qmemcpy 0x78 @0x6ad2d1). `second` et
-        // `flipbook` sont POSSÉDÉS (créés à l'upload, libérés dans releaseObjects). `mat` est une COPIE
-        // PAR VALEUR (le WorldChunk source peut être libéré au changement de zone -> pas de pointeur vif).
-        IDirect3DTexture9*      second  = nullptr; // tex2 = 2e texture (POSSÉDÉE), a1[99]/+396
-        std::vector<IDirect3DTexture9*> flipbook;  // atlas materials[] (POSSÉDÉES), a1[101]/+404 -> [tex]
-        asset::MeshPartMaterial mat;               // en-tête matériau 120o décodé (part.mat) — COPIE
+        IDirect3DVertexBuffer9* vb      = nullptr; // 32*A*B bytes (A frames), a1[72]/+288
+        IDirect3DIndexBuffer9*  ib      = nullptr; // 6*D bytes (shared by all frames), a1[73]/+292
+        IDirect3DTexture9*      diffuse = nullptr; // tex1 = base tex0 (OWNED), a1[86]/+344
+        // FRONT C2 (2026-07-17) — B1 MeshPart_RenderFull 0x6B0850 WIRING: beyond diffuse, the part
+        // carries its 2nd texture (2nd blended pass, a1[99]/+396), its flipbook atlas (a1[101]/+404),
+        // and its DECODED 120-byte material header (part.mat, MeshPart_Load qmemcpy 0x78 @0x6ad2d1).
+        // `second` and `flipbook` are OWNED (created at upload, freed in releaseObjects). `mat` is a
+        // COPY BY VALUE (the source WorldChunk may be freed on zone change -> no dangling pointer).
+        IDirect3DTexture9*      second  = nullptr; // tex2 = 2nd texture (OWNED), a1[99]/+396
+        std::vector<IDirect3DTexture9*> flipbook;  // materials[] atlas (OWNED), a1[101]/+404 -> [tex]
+        asset::MeshPartMaterial mat;               // decoded 120-byte material header (part.mat) — COPY
         int                     baseMode   = 0;    // part.tex1.mode() = a1[85]/+340 (1=alpha-test/2=blend)
-        int                     secondMode = 0;    // part.tex2.mode() = a1[98]/+392 (idem)
-        uint32_t                A = 1;             // nb de frames du flipbook (borne du swap), MeshPart+252
-        uint32_t                B = 0;             // sommets par frame, a1[64]/+256 (offset = 32*frame*B)
-        uint32_t                D = 0;             // nb de triangles (primCount), a1[66]/+264
+        int                     secondMode = 0;    // part.tex2.mode() = a1[98]/+392 (same)
+        uint32_t                A = 1;             // flipbook frame count (swap bound), MeshPart+252
+        uint32_t                B = 0;             // vertices per frame, a1[64]/+256 (offset = 32*frame*B)
+        uint32_t                D = 0;             // triangle count (primCount), a1[66]/+264
     };
 
-    // Plage [start, start+count) dans objects_ des parts uploadées d'un gabarit models[i].
+    // [start, start+count) range in objects_ for a models[i] template's uploaded parts.
     struct ModelRange {
         size_t start = 0;
         size_t count = 0;
     };
 
-    // FRONT W3-F3 — chemin terrain FIXED-FUNCTION natif (remplace le chemin skinné G1).
-    // FVF 0x212 = 530 = D3DFVF_XYZ|NORMAL|TEX2 (2 jeux d'UV), stride 40. Ancre IDA :
-    // Terrain_Render 0x698670 SetFVF(530) @0x698e6d. Le vertex est BIT-À-BIT asset::TerrainVertex
-    // (pos12+normal12+uv0 8+uv1 8) -> uploadé par memcpy, aucune conversion (uv1 = lightmap stage 1).
+    // FRONT W3-F3 — native FIXED-FUNCTION terrain path (replaces the G1 skinned path).
+    // FVF 0x212 = 530 = D3DFVF_XYZ|NORMAL|TEX2 (2 UV sets), stride 40. IDA anchor:
+    // Terrain_Render 0x698670 SetFVF(530) @0x698e6d. The vertex is BIT-FOR-BIT asset::TerrainVertex
+    // (pos12+normal12+uv0 8+uv1 8) -> uploaded via memcpy, no conversion (uv1 = lightmap stage 1).
     struct FfTerrainVertex { float pos[3]; float normal[3]; float uv0[2]; float uv1[2]; };
-    static_assert(sizeof(FfTerrainVertex) == 40, "FfTerrainVertex doit faire 40 octets (FVF 530)");
+    static_assert(sizeof(FfTerrainVertex) == 40, "FfTerrainVertex must be 40 bytes (FVF 530)");
 
-    // FRONT F_TERRAIN (B5, 2026-07-17) — Couche terrain = faces d'UN matériau, étiquetée par
-    // (catégorie, subOrder) = textures[m].trailer[0]/trailer[1] (prouvé Tex_LoadCompressedFromHandle
-    // 0x6a9cf0 : mat+40=cat, mat+44=subOrder). L'ordre de dessin de Terrain_Render (passes a5=1 PUIS
-    // a5=2) est reproduit en triant les couches par `rank` (cf. TerrainLayerRank dans le .cpp).
-    // Catégorie 3 = EAU (passe bump-env). Seules les couches de rang >= 0 existent ici.
-    // Depuis B5, la couche ne possède PLUS de VB/IB statique : le dessin passe par un CULL
-    // quadtree/frustum PAR FRAME qui remplit un batch CPU (terrainBatch_) puis DrawPrimitiveUP par
-    // matériau, EXACTEMENT comme le binaire (Terrain_Render 0x698e21 batch / 0x698ff3 DrawPrimitiveUP).
-    // `materialIndex` = clé de regroupement (face.materialIndex@0) : slot batch = matBase_[m], curseur
-    // par frame = matCounter_[m].
+    // FRONT F_TERRAIN (B5, 2026-07-17) — Terrain layer = faces of ONE material, tagged by
+    // (category, subOrder) = textures[m].trailer[0]/trailer[1] (proven via
+    // Tex_LoadCompressedFromHandle 0x6a9cf0: mat+40=cat, mat+44=subOrder). Terrain_Render's draw
+    // order (pass a5=1 THEN a5=2) is reproduced by sorting layers by `rank` (cf. TerrainLayerRank
+    // in the .cpp). Category 3 = WATER (bump-env pass). Only rank >= 0 layers exist here.
+    // Since B5, the layer no longer owns a static VB/IB: drawing goes through a PER-FRAME
+    // quadtree/frustum CULL that fills a CPU batch (terrainBatch_) then DrawPrimitiveUP per
+    // material, EXACTLY like the binary (Terrain_Render 0x698e21 batch / 0x698ff3 DrawPrimitiveUP).
+    // `materialIndex` = grouping key (face.materialIndex@0): batch slot = matBase_[m], per-frame
+    // cursor = matCounter_[m].
     struct TerrainLayer {
-        IDirect3DTexture9* diffuse       = nullptr; // réf dans terrainTextures_ (NON possédée)
+        IDirect3DTexture9* diffuse       = nullptr; // reference into terrainTextures_ (NOT owned)
         uint32_t           category      = 0;       // trailer[0]
         uint32_t           subOrder      = 0;       // trailer[1]
         int                rank          = 0;       // TerrainLayerRank(category, subOrder), >= 0
-        uint32_t           materialIndex = 0;       // face.materialIndex@0 -> region matBase_/matCounter_
+        uint32_t           materialIndex = 0;       // face.materialIndex@0 -> matBase_/matCounter_ region
     };
 
-    // FRONT F_ZONEFX (2026-07-17) — le billboard statique dégénéré est REMPLACÉ par le vrai moteur de
-    // particules « Object A » (Gfx/ZoneFxEmitter.h) : un ts2::gfx::FxEmitterTemplate 232o par nœud FX,
-    // un ts2::gfx::FxParticlePool (POBJECT 48o) par instance placée AuxFxRecord, tickés/rendus par
-    // Particle_Init/UpdateEmit/RenderBillboards 0x6a70xx/0x6a75xx. Voir fxTemplates_/fxPools_ ci-dessous.
+    // FRONT F_ZONEFX (2026-07-17) — the degenerate static billboard is REPLACED by the real
+    // "Object A" particle engine (Gfx/ZoneFxEmitter.h): one ts2::gfx::FxEmitterTemplate (232 bytes)
+    // per FX node, one ts2::gfx::FxParticlePool (POBJECT 48 bytes) per placed AuxFxRecord instance,
+    // ticked/rendered by Particle_Init/UpdateEmit/RenderBillboards 0x6a70xx/0x6a75xx. See
+    // fxTemplates_/fxPools_ below.
 
     void releaseObjects();
     bool uploadPart(const asset::WorldMeshPart& part, StaticObject& out);
-    // FRONT W3-F3 : construit les couches FF du terrain .WG (WorldAssets::Faces()) — faces groupées
-    // par matériau, triées par (catégorie=trailer[0], subOrder=trailer[1]), sommets FfTerrainVertex
-    // 40o (repère MONDE). Crée aussi wave/falloff (eau) et récupère la lightmap. Build-safe : no-op
-    // si device/.WG absent. Ancre IDA : Terrain_Render 0x698670.
+    // FRONT W3-F3: builds the .WG terrain FF layers (WorldAssets::Faces()) — faces grouped by
+    // material, sorted by (category=trailer[0], subOrder=trailer[1]), 40-byte FfTerrainVertex
+    // vertices (WORLD space). Also creates the wave/falloff (water) texture and fetches the
+    // lightmap. Build-safe: no-op if device/.WG is absent. IDA anchor: Terrain_Render 0x698670.
     bool buildTerrain(const world::WorldAssets& assets);
     void releaseTerrain();
-    // Dessine les couches terrain en FIXED-FUNCTION (FVF 530), ordre fidèle à Terrain_Render(a5=1) :
-    // couches opaques par (cat,sub), passe eau bump-env (cat 3), alpha-test (sub 1), lightmap stage 1
-    // (uv1). CULLMODE=NONE encadré. Appelée par Render() AVANT les .WO. Ancre IDA : 0x698670.
-    // FRONT F_TERRAIN (B5) : lance d'abord le cull quadtree/frustum PAR FRAME (cullTerrain) qui
-    // remplit terrainBatch_/matCounter_, puis dessine chaque couche via DrawPrimitiveUP(count[m]).
+    // Draws the terrain layers in FIXED-FUNCTION (FVF 530), order faithful to Terrain_Render(a5=1):
+    // opaque layers by (cat,sub), water bump-env pass (cat 3), alpha-test (sub 1), stage-1 lightmap
+    // (uv1). CULLMODE=NONE bracketed. Called by Render() BEFORE the .WO. IDA anchor: 0x698670.
+    // FRONT F_TERRAIN (B5): first runs the PER-FRAME quadtree/frustum cull (cullTerrain), which
+    // fills terrainBatch_/matCounter_, then draws each layer via DrawPrimitiveUP(count[m]).
     void renderTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXVECTOR3& eye);
-    // FRONT F_TERRAIN (B5) — cull quadtree/frustum du terrain PAR FRAME (Terrain_Render passe a5=1,
-    // 0x698ce7-0x698e3c) : reset des flags/compteurs, descente MapColl_CollectLeafFaces 0x694b50
-    // (test AABB frustum Cam_FrustumTestAABB 0x69f230 par nœud, feuille = child[0]==-1), puis par
-    // face collectée : anti-doublon (faceSeen_), backface dot(planeN,eye)>=planeD, sphère marge x2
-    // (Cam_FrustumTestSphere2x 0x69f0e0), batch 120o groupé par matériau (terrainBatch_).
+    // FRONT F_TERRAIN (B5) — PER-FRAME terrain quadtree/frustum cull (Terrain_Render pass a5=1,
+    // 0x698ce7-0x698e3c): resets flags/counters, descends via MapColl_CollectLeafFaces 0x694b50
+    // (per-node AABB frustum test Cam_FrustumTestAABB 0x69f230, leaf = child[0]==-1), then per
+    // collected face: dedup (faceSeen_), backface dot(planeN,eye)>=planeD, doubled-margin sphere
+    // (Cam_FrustumTestSphere2x 0x69f0e0), 120-byte batch grouped by material (terrainBatch_).
     void cullTerrain(const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXVECTOR3& eye);
-    // FRONT F_TERRAIN (B6) — dessine les props .WO en FIXED-FUNCTION natif avec REJEU DU SWAY :
-    // par instance, frame = Crt_Dbl2Uint(instancePhase_[i]) gate [0, A-1] ; par part,
-    // SetStreamSource(0, vb, 32*frame*B, 32) sélectionne la frame du flipbook. Ancre IDA :
-    // Model_RenderParts 0x6a3720 / MeshPart_Render 0x6aed60. Appelée par Render() APRÈS le terrain.
-    // FRONT C2 (2026-07-17) : pour chaque part `mat.decoded`, le base-draw est REMPLACÉ par la couche
-    // matériau complète MeshPartMaterialRenderer::Render (B1, MeshPart_RenderFull 0x6B0850) — chemin
-    // réel Model_RenderWithShadow_0 0x6a4110 -> 0x6b0850 ; `mat.decoded==false` conserve le base-draw.
-    // `eye` (g_CameraPos 0x800130) alimente le MeshPartRuntime de B1. Méthode PRIVÉE : signature libre.
+    // FRONT F_TERRAIN (B6) — draws .WO props in native FIXED-FUNCTION with SWAY REPLAY: per
+    // instance, frame = Crt_Dbl2Uint(instancePhase_[i]) gated [0, A-1]; per part,
+    // SetStreamSource(0, vb, 32*frame*B, 32) selects the flipbook frame. IDA anchor:
+    // Model_RenderParts 0x6a3720 / MeshPart_Render 0x6aed60. Called by Render() AFTER the terrain.
+    // FRONT C2 (2026-07-17): for each `mat.decoded` part, the base-draw is REPLACED by the full
+    // material layer MeshPartMaterialRenderer::Render (B1, MeshPart_RenderFull 0x6B0850) — real
+    // path Model_RenderWithShadow_0 0x6a4110 -> 0x6b0850; `mat.decoded==false` keeps the base-draw.
+    // `eye` (g_CameraPos 0x800130) feeds B1's MeshPartRuntime. PRIVATE method: free signature.
     void renderObjects(const D3DXMATRIX& view, const D3DXMATRIX& proj, const D3DXVECTOR3& eye);
-    // Passe eau d'UNE couche cat==3 : matrice bump-env animée (cos/sin de wavePhase_) + falloffTex_ en
-    // BUMPENVMAPLUMINANCE stage 0 (TWS-01), diffuse eau stage 1. Ancre IDA : Terrain_Render @0x699206-0x6992b7.
+    // Water pass for ONE cat==3 layer: animated bump-env matrix (cos/sin of wavePhase_) +
+    // falloffTex_ in BUMPENVMAPLUMINANCE stage 0 (TWS-01), water diffuse in stage 1. IDA anchor:
+    // Terrain_Render @0x699206-0x6992b7.
     void bindWaterStates(IDirect3DTexture9* waterDiffuse);
     void unbindWaterStates();
 
-    // FRONT W3-F3 : construit les billboards FX de zone (.WP) + leurs textures GPU depuis
-    // WorldAssets::FxNodes(). Build-safe : no-op si device/.WP absent. Ancre IDA : MapColl_LoadObjectsB
-    // 0x6983b0 (fxbRecords) + Fx_NodeLoadFromHandle 0x6a69f0 (texture du nœud).
+    // FRONT W3-F3: builds the .WP zone FX billboards + their GPU textures from
+    // WorldAssets::FxNodes(). Build-safe: no-op if device/.WP is absent. IDA anchor:
+    // MapColl_LoadObjectsB 0x6983b0 (fxbRecords) + Fx_NodeLoadFromHandle 0x6a69f0 (node texture).
     bool buildFx(const world::WorldAssets& assets);
     void releaseFx();
 
     static IDirect3DTexture9* createTextureFromBlock(IDirect3DDevice9* dev,
                                                       const asset::TextureBlock& tex);
-    // Crée une IDirect3DTexture9 depuis un fichier DDS complet en mémoire (lightmap .SHADOW brute
-    // exposée par WorldAssets::ShadowBytes()). nullptr si vide/échec.
+    // Creates an IDirect3DTexture9 from a complete in-memory DDS file (raw .SHADOW lightmap
+    // exposed by WorldAssets::ShadowBytes()). nullptr if empty/failed.
     static IDirect3DTexture9* createTextureFromDds(IDirect3DDevice9* dev,
                                                    const std::vector<uint8_t>& dds);
-    // Construit World = Rz(rot.z)*Ry(rot.y)*Rx(rot.x)*T(pos), cf. bandeau .h point 4.
+    // Builds World = Rz(rot.z)*Ry(rot.y)*Rx(rot.x)*T(pos), cf. .h banner point 4.
     static D3DXMATRIX BuildInstanceWorldMatrix(const asset::AuxRecord& inst);
 
     IDirect3DDevice9*           dev_ = nullptr;
     MeshRenderer                 meshRenderer_;
-    SkyRenderer                  skyRenderer_;  // ciel dérivé du .ATM réel (cf. bandeau MISE À JOUR)
-    // FRONT W3-F3 : ces 3 états (objects_/modelRanges_/instances_) sont LA SOURCE (auxRecords/models)
-    // consommée par l'avance de phase de sway (instancePhase_ ci-dessous, tickée par TickWorldAnim).
-    // Ancre IDA : MapColl_UpdateObjectAnim 0x694a00 (site Scene_InGameUpdate 0x52c94b, kAnimFps=15.0).
-    std::vector<StaticObject>    objects_;      // parts GPU uploadées, groupées par gabarit
-    std::vector<ModelRange>      modelRanges_;  // modelRanges_[modelIndex] -> plage dans objects_
-    std::vector<asset::AuxRecord> instances_;   // copie de ObjectChunk::auxRecords ; CONFIRMED ex-VeryOldClient: MOBJECTINFO
-    // Phase de flipbook de sway PAR INSTANCE .WO (aux+28 runtime), état possédé ici (RÈGLE #6) :
-    // avancée à dt*kAnimFps par TickWorldAnim, wrap par le nb de frames A du gabarit. Ancre IDA :
-    // MapColl_UpdateObjectAnim 0x694a00 (@0x694a30 aux+28 += dt*fps ; wrap par model.part.frameCount).
+    SkyRenderer                  skyRenderer_;  // sky derived from the real .ATM file (cf. update banner)
+    // FRONT W3-F3: these 3 states (objects_/modelRanges_/instances_) are THE SOURCE (auxRecords/models)
+    // consumed by the sway phase advance (instancePhase_ below, ticked by TickWorldAnim).
+    // IDA anchor: MapColl_UpdateObjectAnim 0x694a00 (site Scene_InGameUpdate 0x52c94b, kAnimFps=15.0).
+    std::vector<StaticObject>    objects_;      // uploaded GPU parts, grouped by template
+    std::vector<ModelRange>      modelRanges_;  // modelRanges_[modelIndex] -> range within objects_
+    std::vector<asset::AuxRecord> instances_;   // copy of ObjectChunk::auxRecords; CONFIRMED ex-VeryOldClient: MOBJECTINFO
+    // PER-INSTANCE .WO sway flipbook phase (aux+28 at runtime), state owned here (RULE #6):
+    // advanced by dt*kAnimFps in TickWorldAnim, wrapped by the template's A frame count. IDA
+    // anchor: MapColl_UpdateObjectAnim 0x694a00 (@0x694a30 aux+28 += dt*fps; wraps by
+    // model.part.frameCount).
     std::vector<float>           instancePhase_;
-    // Nombre de frames de flipbook (A) du gabarit de chaque instance (borne de wrap du sway).
-    // Ancre IDA : MapColl_UpdateObjectAnim @0x694a4a (frameCount = *(model.part+252) = part.A).
+    // Flipbook frame count (A) of each instance's template (sway wrap bound).
+    // IDA anchor: MapColl_UpdateObjectAnim @0x694a4a (frameCount = *(model.part+252) = part.A).
     std::vector<uint32_t>        instanceFrameCount_;
-    size_t                       skippedMultiAnchor_ = 0;     // parts ignorées (échec réel, cf. pt.5)
-    size_t                       multiAnchorStaticCount_ = 0; // parts A>1 (flipbook de sway REJOUÉ, cf. B6)
+    size_t                       skippedMultiAnchor_ = 0;     // skipped parts (real failure, cf. pt.5)
+    size_t                       multiAnchorStaticCount_ = 0; // A>1 parts (sway flipbook REPLAYED, cf. B6)
 
-    // --- Terrain .WG (FRONT W3-F3) : le SOL. Source = WorldAssets::Faces() (asset::MapFaceChunk).
-    // terrainTextures_ = une texture diffuse par matériau (POSSÉDÉE) ; terrainLayers_ = couches FF
-    // triées par (catégorie, subOrder), chacune référençant une diffuse. Ancre IDA : Terrain_Render
-    // 0x698670 (a1+16 matériaux stride 52 : +40 cat, +44 subOrder, +48 texture ; vertex 40o FVF 530). ---
-    std::vector<IDirect3DTexture9*> terrainTextures_; // POSSÉDÉES (une par matériau, ordre .WG)
-    std::vector<TerrainLayer>       terrainLayers_;    // couches triées prêtes à dessiner (FF)
-    size_t                          terrainFaceCount_ = 0; // total faces terrain dessinables (sanité)
+    // Terrain .WG (FRONT W3-F3): the GROUND. Source = WorldAssets::Faces() (asset::MapFaceChunk).
+    // terrainTextures_ = one diffuse texture per material (OWNED); terrainLayers_ = FF layers
+    // sorted by (category, subOrder), each referencing a diffuse. IDA anchor: Terrain_Render
+    // 0x698670 (a1+16 materials stride 52: +40 cat, +44 subOrder, +48 texture; 40-byte FVF 530 vertex).
+    std::vector<IDirect3DTexture9*> terrainTextures_; // OWNED (one per material, .WG order)
+    std::vector<TerrainLayer>       terrainLayers_;    // sorted layers ready to draw (FF)
+    size_t                          terrainFaceCount_ = 0; // total drawable terrain faces (sanity)
 
-    // --- FRONT F_TERRAIN (B5) : état du CULL quadtree/frustum PAR FRAME (Terrain_Render 0x698670).
-    // Copie CPU des données de cull du .WG (l'original les garde à demeure : a1+88/a1+140/heap) car
-    // Render() n'a plus accès à WorldAssets. Le quadtree du .WG est décodé par Asset/WorldChunk.cpp
-    // (CollisionMesh::nodes/triIndices, ancre MapColl_LoadFaces 0x694510) -> réutilisé tel quel. ---
-    std::vector<asset::CollisionFace>     terrainFaces_;      // a1+88  : faces 156o (source du batch)
-    std::vector<asset::CollisionQuadNode> terrainNodes_;      // a1+140 : nœuds quadtree 48o (racine=0)
-    std::vector<uint32_t>                 terrainTriIndices_; // heap faceRefIndex (node.trisIndex=offset)
-    // Batch CPU rempli chaque frame par les faces visibles (a1+164, 3 sommets/face). Alloué UNE FOIS
-    // au Build (capacité = 3 * total faces dessinables), réutilisé sans ré-allocation. Consommé par
+    // FRONT F_TERRAIN (B5): PER-FRAME quadtree/frustum CULL state (Terrain_Render 0x698670).
+    // CPU copy of the .WG cull data (the original keeps it resident: a1+88/a1+140/heap) since
+    // Render() no longer has access to WorldAssets. The .WG quadtree is decoded by
+    // Asset/WorldChunk.cpp (CollisionMesh::nodes/triIndices, anchor MapColl_LoadFaces 0x694510)
+    // -> reused as-is.
+    std::vector<asset::CollisionFace>     terrainFaces_;      // a1+88  : 156-byte faces (batch source)
+    std::vector<asset::CollisionQuadNode> terrainNodes_;      // a1+140 : 48-byte quadtree nodes (root=0)
+    std::vector<uint32_t>                 terrainTriIndices_; // faceRefIndex heap (node.trisIndex=offset)
+    // CPU batch filled each frame with visible faces (a1+164, 3 vertices/face). Allocated ONCE at
+    // Build (capacity = 3 * total drawable faces), reused without reallocation. Consumed by
     // DrawPrimitiveUP(TRIANGLELIST, matCounter_[m], &terrainBatch_[3*matBase_[m]], 40) @0x698ff3.
-    std::vector<FfTerrainVertex>          terrainBatch_;      // a1+164 : slots de 3 FfTerrainVertex
-    std::vector<uint32_t>                 matBase_;           // a1+144 : slot de départ (faces) par matériau
-    std::vector<uint32_t>                 matCounter_;        // a1+160 : curseur PAR FRAME par matériau
-    std::vector<uint8_t>                  faceSeen_;          // a1+156 : flag « face vue cette frame »
-    std::vector<int32_t>                  terrainLeafScratch_;// a1+152 : indices de nœuds feuilles visibles
-    uint32_t                              terrainNumMaterials_ = 0; // a1+12 : nb de matériaux
+    std::vector<FfTerrainVertex>          terrainBatch_;      // a1+164 : slots of 3 FfTerrainVertex
+    std::vector<uint32_t>                 matBase_;           // a1+144 : per-material starting (face) slot
+    std::vector<uint32_t>                 matCounter_;        // a1+160 : PER-FRAME per-material cursor
+    std::vector<uint8_t>                  faceSeen_;          // a1+156 : "face seen this frame" flag
+    std::vector<int32_t>                  terrainLeafScratch_;// a1+152 : visible leaf node indices
+    uint32_t                              terrainNumMaterials_ = 0; // a1+12 : material count
 
-    // Eau (cat 3) : texture procédurale générée UNE FOIS au Build si une couche cat==3 existe.
-    // TWS-01/TWS-02 : falloffTex_ = V8U8 256x256 radial, port de MapColl_CreateFalloffTexture 0x694ca0
-    // (seul écrivain vivant de *(a1+20), le bump-map stage 0 lié @0x69928f). Il n'y a PAS de waveTex_ :
-    // son générateur cWorldMesh_MakeWaterWaveTexture 0x451220 a 2 appelants à 0 xref (code mort) et le
-    // binaire ne crée jamais de texture de vagues. wavePhase_ = accumulateur temps (t = wavePhase_*10).
+    // Water (cat 3): procedural texture generated ONCE at Build if a cat==3 layer exists.
+    // TWS-01/TWS-02: falloffTex_ = radial V8U8 256x256, port of MapColl_CreateFalloffTexture 0x694ca0
+    // (the only live writer of *(a1+20), the stage-0 bump-map bound @0x69928f). There is NO waveTex_:
+    // its generator cWorldMesh_MakeWaterWaveTexture 0x451220 has 2 callers with 0 xrefs (dead code)
+    // and the binary never creates a wave texture. wavePhase_ = time accumulator (t = wavePhase_*10).
     IDirect3DTexture9*           falloffTex_ = nullptr;
     float                        wavePhase_  = 0.0f;
 
-    // Lightmap .SHADOW (stage 1, uv1) — texture GPU créée au Build depuis WorldAssets::ShadowBytes().
-    // Ancre IDA : Terrain_Render @0x698f54 (SetTextureStageState(1,COLOROP,MODULATE=4)) / @0x698f68.
+    // .SHADOW lightmap (stage 1, uv1) — GPU texture created at Build from WorldAssets::ShadowBytes().
+    // IDA anchor: Terrain_Render @0x698f54 (SetTextureStageState(1,COLOROP,MODULATE=4)) / @0x698f68.
     IDirect3DTexture9*           shadowTex_ = nullptr;
 
-    // FX de zone (.WP) — moteur de particules « Object A » VIVANT (FRONT F_ZONEFX). Ancre IDA :
-    // MapColl_LoadObjectsB 0x6983b0 (this+29 templates stride 232, this+32 records B stride 76).
-    std::vector<IDirect3DTexture9*>       fxTextures_;   // POSSÉDÉES (une par nœud FX, nullptr si absente)
-    std::vector<ts2::gfx::FxEmitterTemplate> fxTemplates_; // par nœud FX (this+29) — 232o ; stable (pointé par les pools)
-    std::vector<ts2::gfx::FxParticlePool>    fxPools_;      // par instance placée (FxNode+28) — POBJECT 48o
-    std::vector<asset::AuxFxRecord>          fxRecords_;    // par instance : nodeIndex/pos/rot (FxNode+0/+4/+16)
-    std::vector<ts2::gfx::Billboard_Vertex>  fxScratch_;    // buffer CPU du rendu (dword_800080), réutilisé/frame
+    // Zone FX (.WP) — LIVE "Object A" particle engine (FRONT F_ZONEFX). IDA anchor:
+    // MapColl_LoadObjectsB 0x6983b0 (this+29 templates stride 232, this+32 record B stride 76).
+    std::vector<IDirect3DTexture9*>       fxTextures_;   // OWNED (one per FX node, nullptr if absent)
+    std::vector<ts2::gfx::FxEmitterTemplate> fxTemplates_; // per FX node (this+29) — 232 bytes; stable (pointed to by pools)
+    std::vector<ts2::gfx::FxParticlePool>    fxPools_;      // per placed instance (FxNode+28) — POBJECT 48 bytes
+    std::vector<asset::AuxFxRecord>          fxRecords_;    // per instance: nodeIndex/pos/rot (FxNode+0/+4/+16)
+    std::vector<ts2::gfx::Billboard_Vertex>  fxScratch_;    // CPU render buffer (dword_800080), reused/frame
 
     bool                         ready_ = false;
 };

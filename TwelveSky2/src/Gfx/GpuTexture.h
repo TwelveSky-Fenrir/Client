@@ -1,18 +1,18 @@
-// Gfx/GpuTexture.h — pont "assets décodés" -> IDirect3DTexture9 du moteur GXD.
+// Gfx/GpuTexture.h — bridge "decoded assets" -> IDirect3DTexture9 of the GXD engine.
 //
-// Réécriture fidèle des chargeurs de textures du client TwelveSky2 :
-//   - Tex_LoadFromFile          0x6A9910  (DDS/.SHADOW : D3DXGetImageInfo + CreateTextureFromFileInMemoryEx)
-//   - cTexture_LoadFromImgFile  0x457A20  (.IMG texture GXD : en-tête propriétaire + FourCC + fichier image)
-//   - Tex_ReadFromMemory        0x417D20  (payload packé + mips DDS ; référence de sémantique LOD)
-// Import binaire d'origine : D3DXCreateTextureFromFileInMemoryEx @0x1960338.
-// ex-VeryOldClient: TEXTURE_FOR_GXD (CTEXTURE_FOR_GXD.cpp) — Load(HANDLE) = conteneur zlib .IMG ;
+// Faithful rewrite of the TwelveSky2 client's texture loaders:
+//   - Tex_LoadFromFile          0x6A9910  (DDS/.SHADOW: D3DXGetImageInfo + CreateTextureFromFileInMemoryEx)
+//   - cTexture_LoadFromImgFile  0x457A20  (.IMG GXD texture: proprietary header + FourCC + image file)
+//   - Tex_ReadFromMemory        0x417D20  (packed payload + DDS mips; LOD semantics reference)
+// Original binary import: D3DXCreateTextureFromFileInMemoryEx @0x1960338.
+// ex-VeryOldClient: TEXTURE_FOR_GXD (CTEXTURE_FOR_GXD.cpp) — Load(HANDLE) = zlib .IMG container;
 //   Load2(BYTE*) = [fileDataSize][origSize][compSize][comp] -> Decompress -> DXT1/3/5 ->
-//   D3DXCreateTextureFromFileInMemoryEx (D3DPOOL_MANAGED). Pipeline confirmé (texture_pipeline).
-//   NB : classe homonyme v1 (Core/GXD) et v2 (TW2AddIn) — même sémantique de chargement.
+//   D3DXCreateTextureFromFileInMemoryEx (D3DPOOL_MANAGED). Confirmed pipeline (texture_pipeline).
+//   NB: homonymous class v1 (Core/GXD) and v2 (TW2AddIn) — same load semantics.
 //
-// Contrairement au Renderer (qui n'utilise que le D3D9 du Windows SDK), CE module a le
-// droit d'utiliser la couche D3DX legacy (DirectX SDK June 2010) : c'est le pont exact
-// vers les mêmes API que le binaire d'origine.
+// Unlike Renderer (which only uses the Windows SDK's D3D9), THIS module is allowed to
+// use the legacy D3DX layer (DirectX SDK June 2010): it is the exact bridge to the same
+// API the original binary used.
 #pragma once
 #include <d3dx9.h>   // ID3DXSprite/ID3DXFont, D3DXCreateTextureFromFileInMemoryEx (SDK June 2010)
 #include <cstdint>
@@ -22,10 +22,10 @@
 
 namespace ts2::gfx {
 
-class Renderer; // décl. avant : surcharges pratiques via Renderer::Device()
+class Renderer; // fwd decl: convenience overloads via Renderer::Device()
 
-// Enveloppe RAII d'une IDirect3DTexture9 créée à partir d'un asset déjà décodé.
-// Non-copiable (possède la texture), déplaçable.
+// RAII wrapper of an IDirect3DTexture9 created from an already-decoded asset.
+// Non-copyable (owns the texture), movable.
 class GpuTexture {
 public:
     GpuTexture() = default;
@@ -36,37 +36,37 @@ public:
     GpuTexture(GpuTexture&& o) noexcept;
     GpuTexture& operator=(GpuTexture&& o) noexcept;
 
-    // ---- Pont principal : ts2::asset::Texture (déjà décodée) -> texture GPU -------------
-    // Chemin manuel CreateTexture + LockRect, car asset::Texture a déjà retiré l'en-tête
-    // DDS 128 o et ne conserve que les blocs/pixels :
-    //   - PixelFormat::DxtBlocks : CreateTexture(D3DFMT_DXTn) + upload des blocs S3TC par niveau.
+    // ---- Main bridge: ts2::asset::Texture (already decoded) -> GPU texture --------------
+    // Manual CreateTexture + LockRect path, because asset::Texture has already stripped the
+    // 128 B DDS header and only keeps the blocks/pixels:
+    //   - PixelFormat::DxtBlocks : CreateTexture(D3DFMT_DXTn) + S3TC block upload per level.
     //   - PixelFormat::RGBA8     : CreateTexture(A8R8G8B8)    + swizzle R,G,B,A -> B,G,R,A.
-    //   - PixelFormat::DdsRaw    : non supporté (pixelformat RGB/A non préservé) -> false.
+    //   - PixelFormat::DdsRaw    : unsupported (RGB/A pixelformat not preserved) -> false.
     bool CreateFromTexture(IDirect3DDevice9* dev, const asset::Texture& src);
     bool CreateFromTexture(const Renderer& r,      const asset::Texture& src);
 
-    // ---- Pont .IMG : réplique exacte de cTexture_LoadFromImgFile 0x457A20 ---------------
-    // Attend un ImgFile de kind == TextureDxt ; lit l'en-tête texture GXD dans Payload()
-    // (width@+0, height@+4, FourCC@+28, tailleImage@+32, fichier image@+36) puis appelle
-    // D3DXCreateTextureFromFileInMemoryEx avec dimensions arrondies à la puissance de 2
-    // (Util_NextPow2_GXD, pour l'allocation de la surface D3D9 SEULEMENT). Width()/Height()
-    // après cet appel restent les dimensions LOGIQUES (width@+0/height@+4), PAS la surface
-    // arrondie -- cf. commentaire détaillé dans le .cpp (preuve Tex_LoadCompressedDDS
+    // ---- .IMG bridge: exact replica of cTexture_LoadFromImgFile 0x457A20 ---------------
+    // Expects an ImgFile of kind == TextureDxt; reads the GXD texture header from Payload()
+    // (width@+0, height@+4, FourCC@+28, imageSize@+32, image file@+36) then calls
+    // D3DXCreateTextureFromFileInMemoryEx with dimensions rounded up to the next power of 2
+    // (Util_NextPow2_GXD, for the D3D9 surface allocation ONLY). Width()/Height() after this
+    // call stay the LOGICAL dimensions (width@+0/height@+4), NOT the rounded surface --
+    // see the detailed comment in the .cpp (proof via Tex_LoadCompressedDDS
     // 0x6A2E80 / Sprite2D_GetWidth 0x4D6CD0 / Sprite2D_GetHeight 0x4D6D20).
     bool CreateFromImgFile(IDirect3DDevice9* dev, const asset::ImgFile& img);
     bool CreateFromImgFile(const Renderer& r,      const asset::ImgFile& img);
 
-    // ---- Chargeur générique D3DX, calqué sur Tex_LoadFromFile 0x6A9910 -----------------
-    // `data`/`size` = fichier image COMPLET en mémoire (DDS/.SHADOW/TGA/PNG...). D3DX
-    // reconnaît le conteneur seul. (L'original restreint aux FourCC DXT1/3/5 ; ici permissif.)
+    // ---- Generic D3DX loader, modeled on Tex_LoadFromFile 0x6A9910 ---------------------
+    // `data`/`size` = COMPLETE image file in memory (DDS/.SHADOW/TGA/PNG...). D3DX
+    // recognizes the container alone. (The original restricts to FourCC DXT1/3/5; permissive here.)
     bool CreateFromImageFileInMemory(IDirect3DDevice9* dev, const void* data, uint32_t size);
 
-    // ---- Accès -------------------------------------------------------------------------
+    // ---- Access --------------------------------------------------------------------------
     IDirect3DTexture9* Handle()    const { return tex_; }
     bool               Valid()     const { return tex_ != nullptr; }
-    // Dimensions LOGIQUES (contenu réel du sprite), PAS la surface D3D9 physique arrondie à
-    // la puissance de 2 pour CreateFromImgFile (cf. commentaire ci-dessus) -- fidèle à
-    // Sprite2D_GetWidth/GetHeight 0x4D6CD0/0x4D6D20 de l'original.
+    // LOGICAL dimensions (real sprite content), NOT the physical D3D9 surface rounded up to
+    // the next power of 2 for CreateFromImgFile (see comment above) -- faithful to
+    // Sprite2D_GetWidth/GetHeight 0x4D6CD0/0x4D6D20 of the original.
     uint32_t           Width()     const { return width_; }
     uint32_t           Height()    const { return height_; }
     uint32_t           MipLevels() const { return mips_; }

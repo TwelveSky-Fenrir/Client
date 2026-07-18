@@ -1,8 +1,8 @@
-// Game/MotionPoolsCoordResolver.h — implémentation concrète de
-// game::IFactionTownCoordResolver (Game/MapWarp.h, module leaf) au-dessus de la
-// table de coordonnées chargée par Game/MotionPools.h (LoadGInfo003Bin, mZONEMOVEINFO).
-// Fichier d'intégration séparé (pas dans MapWarp.h) pour que ce dernier reste un
-// module feuille sans dépendance vers MotionPools.
+// Game/MotionPoolsCoordResolver.h — concrete implementation of
+// game::IFactionTownCoordResolver (Game/MapWarp.h, leaf module) on top of the
+// coordinate table loaded by Game/MotionPools.h (LoadGInfo003Bin, mZONEMOVEINFO).
+// Separate integration file (not in MapWarp.h) so the latter stays a
+// leaf module with no dependency on MotionPools.
 #pragma once
 #include "Game/MapWarp.h"
 #include "Game/MotionPools.h"
@@ -11,18 +11,18 @@ namespace ts2::game {
 
 class MotionPoolsCoordResolver : public IFactionTownCoordResolver {
 public:
-    // Fidèle à l'appel d'origine (Motion_GetComboOffsetTable puis fallback
-    // GInfo2_GetVec3) : ici on n'a que le fallback câblé (GetVec3 sur la table
-    // 003.BIN) — `element` n'est pas consommé par GetVec3 (déjà documenté dans
-    // MotionPools.h : la table est indexée par motion/NPC id, pas par élément).
+    // Faithful to the original call (Motion_GetComboOffsetTable then fallback
+    // GInfo2_GetVec3): only the fallback is wired up here (GetVec3 on the
+    // 003.BIN table) — `element` is not consumed by GetVec3 (already documented in
+    // MotionPools.h: the table is indexed by motion/NPC id, not by element).
     bool ResolveTownCoords(int32_t /*element*/, int32_t townNpcId,
                            float& x, float& y, float& z) const override {
         return GetVec3(townNpcId, x, y, z);
     }
 };
 
-// Instance globale unique, prête à l'emploi partout où BeginWarpToFactionTown
-// est appelée sans résolveur explicite.
+// Single global instance, ready to use anywhere BeginWarpToFactionTown
+// is called without an explicit resolver.
 inline MotionPoolsCoordResolver g_CoordResolver;
 
 } // namespace ts2::game

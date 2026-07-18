@@ -116,6 +116,8 @@
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\App\App.cpp" />
+    <ClCompile Include="src\App\App_Init.cpp" />
+    <ClCompile Include="src\App\App_WndProc.cpp" />
     <ClCompile Include="src\App\PlayerInputController.cpp" />
     <ClCompile Include="src\Asset\AssetSelfTest.cpp" />
     <ClCompile Include="src\Asset\AtmosphereFile.cpp" />
@@ -137,6 +139,8 @@
     <ClCompile Include="src\Config\GameOptions.cpp" />
     <ClCompile Include="src\Game\ActionStateMachine.cpp" />
     <ClCompile Include="src\Game\AnimationTick.cpp" />
+    <ClCompile Include="src\Game\AnimationTick_World.cpp" />
+    <ClCompile Include="src\Game\AnimationTick_Entities.cpp" />
     <ClCompile Include="src\Game\PlayerAnimCursorTick.cpp" />
     <ClCompile Include="src\Game\WeaponTrailResolver.cpp" />
     <ClCompile Include="src\Game\AutoPlaySystem.cpp" />
@@ -144,6 +148,9 @@
     <ClCompile Include="src\Game\BitPacking.cpp" />
     <ClCompile Include="src\Game\CameraWarpTick.cpp" />
     <ClCompile Include="src\Game\CharSelectFlow.cpp" />
+    <ClCompile Include="src\Game\CharSelectFlow_Create.cpp" />
+    <ClCompile Include="src\Game\CharSelectFlow_Delete.cpp" />
+    <ClCompile Include="src\Game\CharSelectFlow_Nav.cpp" />
     <ClCompile Include="src\Game\ChatCommands.cpp" />
     <ClCompile Include="src\Game\ClientRuntime.cpp" />
     <ClCompile Include="src\Game\CombatSystem.cpp" />
@@ -175,6 +182,8 @@
     <ClCompile Include="src\Game\StatBonusContributors.cpp" />
     <ClCompile Include="src\Game\StatEngine.cpp" />
     <ClCompile Include="src\Game\StatFormulas.cpp" />
+    <ClCompile Include="src\Game\StatFormulas_Attack.cpp" />
+    <ClCompile Include="src\Game\StatFormulas_Defense.cpp" />
     <ClCompile Include="src\Game\StaticNpcLoader.cpp" />
     <ClCompile Include="src\Game\StringTables.cpp" />
     <ClCompile Include="src\Game\WarehouseSystem.cpp" />
@@ -186,6 +195,8 @@
     <ClCompile Include="src\Gfx\GxdRenderer.cpp" />
     <ClCompile Include="src\Gfx\IconTextureCache.cpp" />
     <ClCompile Include="src\Gfx\MeshRenderer.cpp" />
+    <ClCompile Include="src\Gfx\MeshRenderer_Skinning.cpp" />
+    <ClCompile Include="src\Gfx\MeshRenderer_Shadow.cpp" />
     <ClCompile Include="src\Gfx\MotionCache.cpp" />
     <ClCompile Include="src\Gfx\FxRenderer.cpp" />
     <ClCompile Include="src\Gfx\ParticleSystem.cpp" />
@@ -208,6 +219,9 @@
     <ClCompile Include="src\Gfx\SkyRenderer.cpp" />
     <ClCompile Include="src\Gfx\SpriteBatch.cpp" />
     <ClCompile Include="src\Gfx\WorldGeometryRenderer.cpp" />
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer_Terrain.cpp" />
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer_Objects.cpp" />
+    <ClCompile Include="src\Gfx\WorldGeometryRenderer_FxSky.cpp" />
     <ClCompile Include="src\Input\InputSystem.cpp" />
     <ClCompile Include="src\Net\CharSelectPackets.cpp" />
     <ClCompile Include="src\Net\CharStatDeltaDispatch.cpp" />
@@ -233,11 +247,24 @@
     <ClCompile Include="src\Net\PacketDispatch.cpp" />
     <ClCompile Include="src\Net\Rng.cpp" />
     <ClCompile Include="src\Net\SendPackets.cpp" />
+    <ClCompile Include="src\Net\SendPackets_Op.cpp" />
+    <ClCompile Include="src\Net\SendPackets_Vault.cpp" />
+    <ClCompile Include="src\Net\SendPackets_Cmd.cpp" />
     <ClCompile Include="src\Net\ServerStatusQuery.cpp" />
     <ClCompile Include="src\Net\WorldEntityDispatch.cpp" />
+    <ClCompile Include="src\Net\WorldEntityDispatch_ComboFamilies.cpp" />
+    <ClCompile Include="src\Net\WorldEntityDispatch_BranchSkill.cpp" />
+    <ClCompile Include="src\Net\WorldEntityDispatch_Element.cpp" />
+    <ClCompile Include="src\Net\WorldEntityDispatch_Special.cpp" />
+    <ClCompile Include="src\Net\WorldEntityDispatch_War.cpp" />
     <ClCompile Include="src\Scene\SceneAudit.cpp" />
     <ClCompile Include="src\Scene\SceneManager.cpp" />
+    <ClCompile Include="src\Scene\SceneManager_Update.cpp" />
+    <ClCompile Include="src\Scene\SceneManager_Render.cpp" />
     <ClCompile Include="src\Scene\WorldRenderer.cpp" />
+    <ClCompile Include="src\Scene\WorldRenderer_Shadows.cpp" />
+    <ClCompile Include="src\Scene\WorldRenderer_Entities.cpp" />
+    <ClCompile Include="src\Scene\WorldRenderer_Nameplates.cpp" />
     <ClCompile Include="src\Tools\CharSelectSelfTest.cpp" />
     <ClCompile Include="src\Tools\UiWindowSelfTest.cpp" />
     <ClCompile Include="src\Tools\WorldReflectionSelfTest.cpp" />
@@ -251,12 +278,20 @@
     <ClCompile Include="src\UI\EnchantWindow.cpp" />
     <ClCompile Include="src\UI\EnterWorldRender.cpp" />
     <ClCompile Include="src\UI\GameHud.cpp" />
+    <ClCompile Include="src\UI\GameHud_Vitals.cpp" />
+    <ClCompile Include="src\UI\GameHud_Alliance.cpp" />
+    <ClCompile Include="src\UI\GameHud_Text.cpp" />
+    <ClCompile Include="src\UI\GameHud_Render.cpp" />
     <ClCompile Include="src\UI\GameWindows.cpp" />
     <ClCompile Include="src\UI\GuildWindow.cpp" />
     <ClCompile Include="src\UI\IntroRender.cpp" />
     <ClCompile Include="src\UI\InventoryWindow.cpp" />
     <ClCompile Include="src\UI\ItemTooltip.cpp" />
     <ClCompile Include="src\UI\LoginScene.cpp" />
+    <ClCompile Include="src\UI\LoginScene_ServerSelect.cpp" />
+    <ClCompile Include="src\UI\LoginScene_Login.cpp" />
+    <ClCompile Include="src\UI\LoginScene_CharSelect.cpp" />
+    <ClCompile Include="src\UI\LoginScene_Notice.cpp" />
     <ClCompile Include="src\UI\MinimapWidget.cpp" />
     <ClCompile Include="src\UI\NpcDialogWindow.cpp" />
     <ClCompile Include="src\UI\OptionsWindow.cpp" />
@@ -275,6 +310,7 @@
     <ClCompile Include="src\World\CollisionMesh.cpp" />
     <ClCompile Include="src\World\WorldIntegration.cpp" />
     <ClCompile Include="src\World\WorldMap.cpp" />
+    <ClCompile Include="src\World\WorldMap_ZoneModel.cpp" />
     <ClCompile Include="src\Game\PlayerCmdController.cpp" />
     <ClCompile Include="src\World\TerrainPicker.cpp" />
     <ClCompile Include="src\UI\ClanContextMenu.cpp" />
@@ -286,6 +322,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\App\App.h" />
+    <ClInclude Include="src\App\App_Internal.h" />
     <ClInclude Include="src\App\PlayerInputController.h" />
     <ClInclude Include="src\App\GameConfig.h" />
     <ClInclude Include="src\Asset\AssetSelfTest.h" />
@@ -312,6 +349,7 @@
     <ClInclude Include="src\Core\Types.h" />
     <ClInclude Include="src\Game\ActionStateMachine.h" />
     <ClInclude Include="src\Game\AnimationTick.h" />
+    <ClInclude Include="src\Game\AnimationTick_Internal.h" />
     <ClInclude Include="src\Game\PlayerAnimCursorTick.h" />
     <ClInclude Include="src\Game\WeaponTrailResolver.h" />
     <ClInclude Include="src\Game\AutoPlaySystem.h" />
@@ -319,6 +357,7 @@
     <ClInclude Include="src\Game\BitPacking.h" />
     <ClInclude Include="src\Game\CameraWarpTick.h" />
     <ClInclude Include="src\Game\CharSelectFlow.h" />
+    <ClInclude Include="src\Game\CharSelectFlow_Internal.h" />
     <ClInclude Include="src\Game\ChatCommands.h" />
     <ClInclude Include="src\Game\ClientRuntime.h" />
     <ClInclude Include="src\Game\CombatSystem.h" />
@@ -351,6 +390,7 @@
     <ClInclude Include="src\Game\StatBonusContributors.h" />
     <ClInclude Include="src\Game\StatEngine.h" />
     <ClInclude Include="src\Game\StatFormulas.h" />
+    <ClInclude Include="src\Game\StatFormulas_Internal.h" />
     <ClInclude Include="src\Game\StaticNpcLoader.h" />
     <ClInclude Include="src\Game\StringTables.h" />
     <ClInclude Include="src\Game\WarehouseSystem.h" />
@@ -362,6 +402,7 @@
     <ClInclude Include="src\Gfx\GxdRenderer.h" />
     <ClInclude Include="src\Gfx\IconTextureCache.h" />
     <ClInclude Include="src\Gfx\MeshRenderer.h" />
+    <ClInclude Include="src\Gfx\MeshRenderer_Internal.h" />
     <ClInclude Include="src\Gfx\MotionCache.h" />
     <ClInclude Include="src\Gfx\PlayerPaperdoll.h" />
     <ClInclude Include="src\Gfx\ModelCache.h" />
@@ -384,6 +425,7 @@
     <ClInclude Include="src\Gfx\SkyRenderer.h" />
     <ClInclude Include="src\Gfx\SpriteBatch.h" />
     <ClInclude Include="src\Gfx\WorldGeometryRenderer.h" />
+    <ClInclude Include="src\Gfx\WorldGeometryRenderer_Internal.h" />
     <ClInclude Include="src\Input\InputSystem.h" />
     <ClInclude Include="src\Net\CharSelectPackets.h" />
     <ClInclude Include="src\Net\CharStatDeltaDispatch.h" />
@@ -402,13 +444,25 @@
     <ClInclude Include="src\Net\Opcodes.h" />
     <ClInclude Include="src\Net\PacketDispatch.h" />
     <ClInclude Include="src\Net\RecvPackets.h" />
+    <ClInclude Include="src\Net\RecvPackets_BossWorld.h" />
+    <ClInclude Include="src\Net\RecvPackets_ChatSocial.h" />
+    <ClInclude Include="src\Net\RecvPackets_Core.h" />
+    <ClInclude Include="src\Net\RecvPackets_Entity.h" />
+    <ClInclude Include="src\Net\RecvPackets_InvCells.h" />
+    <ClInclude Include="src\Net\RecvPackets_InvDispatch.h" />
+    <ClInclude Include="src\Net\RecvPackets_Misc.h" />
+    <ClInclude Include="src\Net\RecvPackets_PartyGuild.h" />
+    <ClInclude Include="src\Net\RecvPackets_VendorTrade.h" />
     <ClInclude Include="src\Net\Rng.h" />
     <ClInclude Include="src\Net\SendPackets.h" />
     <ClInclude Include="src\Net\ServerStatusQuery.h" />
     <ClInclude Include="src\Net\WorldEntityDispatch.h" />
+    <ClInclude Include="src\Net\WorldEntityDispatch_Internal.h" />
     <ClInclude Include="src\Scene\SceneAudit.h" />
     <ClInclude Include="src\Scene\SceneManager.h" />
+    <ClInclude Include="src\Scene\SceneManager_Internal.h" />
     <ClInclude Include="src\Scene\WorldRenderer.h" />
+    <ClInclude Include="src\Scene\WorldRenderer_Internal.h" />
     <ClInclude Include="src\Tools\CharSelectSelfTest.h" />
     <ClInclude Include="src\Tools\UiWindowSelfTest.h" />
     <ClInclude Include="src\Tools\WorldReflectionSelfTest.h" />
@@ -421,12 +475,14 @@
     <ClInclude Include="src\UI\EnchantWindow.h" />
     <ClInclude Include="src\UI\EnterWorldRender.h" />
     <ClInclude Include="src\UI\GameHud.h" />
+    <ClInclude Include="src\UI\GameHud_Internal.h" />
     <ClInclude Include="src\UI\GameWindows.h" />
     <ClInclude Include="src\UI\GuildWindow.h" />
     <ClInclude Include="src\UI\IntroRender.h" />
     <ClInclude Include="src\UI\InventoryWindow.h" />
     <ClInclude Include="src\UI\ItemTooltip.h" />
     <ClInclude Include="src\UI\LoginScene.h" />
+    <ClInclude Include="src\UI\LoginScene_Internal.h" />
     <ClInclude Include="src\UI\MinimapWidget.h" />
     <ClInclude Include="src\UI\NpcDialogWindow.h" />
     <ClInclude Include="src\UI\OptionsWindow.h" />

@@ -1,5 +1,5 @@
-// Gfx/ShaderSet.cpp — chargement/compilation des 12 shaders HLSL GXD.
-// Fidèle aux loaders 0x409730..0x40ACB0 (voir Docs/TS2_GXD_ENGINE.md §2.2).
+// Gfx/ShaderSet.cpp — loading/compilation of the 12 GXD HLSL shaders.
+// Faithful to loaders 0x409730..0x40ACB0 (see Docs/TS2_GXD_ENGINE.md §2.2).
 #include "Gfx/ShaderSet.h"
 #include "Asset/NpkArchive.h"
 #include "Asset/Xtea.h"
@@ -12,24 +12,24 @@ namespace ts2::gfx {
 
 namespace {
 
-// Description statique d'un shader : fichier .npk, profil, textures (samplers)
-// et constantes (matrices/vecteurs) à résoudre. Listes terminées par nullptr.
-// L'ordre de résolution reproduit celui du désassemblage (textures d'abord pour
-// les PS multi-textures), mais chaque uniforme étant indépendant, l'ordre est
-// sans incidence fonctionnelle.
+// Static description of a shader: .npk file, profile, textures (samplers)
+// and constants (matrices/vectors) to resolve. Lists terminated by nullptr.
+// The resolution order mirrors the disassembly (textures first for
+// multi-texture PS), but since each uniform is independent, the order has
+// no functional effect.
 struct ShaderDef {
     GxdShaderId id;
     const char* file;      // "ShaderNN.fx"
     const char* profile;   // "vs_2_0" | "ps_2_0"
     bool        isPixel;
     const char* textures[4];   // mTexture0..2 (GetConstantByName + GetConstantDesc)
-    const char* constants[8];  // matrices/vecteurs (GetConstantByName)
+    const char* constants[8];  // matrices/vectors (GetConstantByName)
 };
 
-// Les 12 shaders GXD, dans l'ordre de GXD_DeviceCreate 0x401610.
-// ex-VeryOldClient (semantic v2, CONFIRMED §1.4) : 01=mAmbient1, 02=mAmbient1_PS, 03=mAmbient2,
+// The 12 GXD shaders, in GXD_DeviceCreate 0x401610's loading order.
+// ex-VeryOldClient (semantic v2, CONFIRMED §1.4): 01=mAmbient1, 02=mAmbient1_PS, 03=mAmbient2,
 //   04=mAmbient2_PS, 05=mNormal1, 06=mNormal1_PS, 07=mNormal2, 08=mNormal2_PS, 09=mAmbient3,
-//   12=mFilter1_PS, 14=mFilter2_PS, 15=mShadow1. Détail par slot : cf. enum GxdShaderId (ShaderSet.h).
+//   12=mFilter1_PS, 14=mFilter2_PS, 15=mShadow1. Per-slot detail: see enum GxdShaderId (ShaderSet.h).
 const ShaderDef kDefs[] = {
     { GxdShaderId::VS01_WorldVP,    "Shader01.fx", "vs_2_0", false,
       { nullptr },
@@ -82,17 +82,17 @@ const ShaderDef kDefs[] = {
       { "mWorldViewProjMatrix", nullptr } },
 };
 static_assert(sizeof(kDefs) / sizeof(kDefs[0]) == ShaderSet::kNumShaders,
-              "table de shaders incomplete");
+              "incomplete shader table");
 
-// Compile un shader et résout ses constantes. En cas d'échec, laisse `out`
-// dans l'état atteint (ct/vs/ps éventuellement créés) pour que ShaderSet::Release
-// les libère ; renvoie false.
+// Compiles a shader and resolves its constants. On failure, leaves `out`
+// in whatever state was reached (ct/vs/ps possibly created) so ShaderSet::Release
+// can free them; returns false.
 bool LoadOneShader(IDirect3DDevice9* dev, ts2::asset::NpkArchive& npk,
                    const ShaderDef& def, GxdShader& out) {
-    // Lecture de l'entrée (déchiffrée XTEA + décompressée zlib -> HLSL en clair).
+    // Read the entry (XTEA-decrypted + zlib-decompressed -> plaintext HLSL).
     std::vector<uint8_t> src = npk.Read(def.file);
     if (src.empty()) {
-        TS2_ERR("ShaderSet: '%s' introuvable/vide dans GXDEffect.npk", def.file);
+        TS2_ERR("ShaderSet: '%s' not found/empty in GXDEffect.npk", def.file);
         return false;
     }
 
@@ -105,23 +105,23 @@ bool LoadOneShader(IDirect3DDevice9* dev, ts2::asset::NpkArchive& npk,
         nullptr, nullptr, "Main", def.profile, 0,
         &shaderBlob, &errorBlob, &ct);
     if (FAILED(hr)) {
-        // Original : MessageBoxA(erreur, "GXD(ERROR)") puis abandon du device.
-        // [INVALID_SHADER_PROGRAM-#02]. Ici on journalise le message du compilateur.
+        // Original: MessageBoxA(error, "GXD(ERROR)") then abandons the device.
+        // [INVALID_SHADER_PROGRAM-#02]. Here we log the compiler message instead.
         const char* msg = errorBlob
             ? static_cast<const char*>(errorBlob->GetBufferPointer())
-            : "(pas de message)";
-        TS2_ERR("[INVALID_SHADER_PROGRAM] %s (0x%08lX) : %s", def.file, hr, msg);
+            : "(no message)";
+        TS2_ERR("[INVALID_SHADER_PROGRAM] %s (0x%08lX): %s", def.file, hr, msg);
         if (errorBlob)  errorBlob->Release();
         if (shaderBlob) shaderBlob->Release();
         if (ct)         ct->Release();
         return false;
     }
-    if (errorBlob) errorBlob->Release();   // avertissements éventuels
+    if (errorBlob) errorBlob->Release();   // any warnings
 
     out.isPixel = def.isPixel;
-    out.ct      = ct;                       // conservée jusqu'au teardown (slot+0)
+    out.ct      = ct;                       // kept until teardown (slot+0)
 
-    // Création de l'objet shader depuis le bytecode compilé (slot+4).
+    // Create the shader object from the compiled bytecode (slot+4).
     const DWORD* fn = static_cast<const DWORD*>(shaderBlob->GetBufferPointer());
     if (def.isPixel)
         hr = dev->CreatePixelShader(fn, &out.ps);
@@ -129,54 +129,54 @@ bool LoadOneShader(IDirect3DDevice9* dev, ts2::asset::NpkArchive& npk,
         hr = dev->CreateVertexShader(fn, &out.vs);
     shaderBlob->Release();
     if (FAILED(hr)) {
-        TS2_ERR("ShaderSet: Create%sShader('%s') echoue (0x%08lX)",
+        TS2_ERR("ShaderSet: Create%sShader('%s') failed (0x%08lX)",
                 def.isPixel ? "Pixel" : "Vertex", def.file, hr);
         return false;
     }
 
-    // Textures : handle + RegisterIndex (index de sampler) via GetConstantDesc.
+    // Textures: handle + RegisterIndex (sampler index) via GetConstantDesc.
     for (int i = 0; i < 4 && def.textures[i]; ++i) {
         const char* name = def.textures[i];
         D3DXHANDLE h = ct->GetConstantByName(nullptr, name);
         if (!h) {
-            TS2_ERR("ShaderSet: texture '%s' absente de %s", name, def.file);
+            TS2_ERR("ShaderSet: texture '%s' missing from %s", name, def.file);
             return false;
         }
         out.handles[name] = h;
         D3DXCONSTANT_DESC desc = {};
         UINT descCount = 1;
         if (FAILED(ct->GetConstantDesc(h, &desc, &descCount)) || descCount == 0) {
-            TS2_ERR("ShaderSet: GetConstantDesc('%s') echoue dans %s", name, def.file);
+            TS2_ERR("ShaderSet: GetConstantDesc('%s') failed in %s", name, def.file);
             return false;
         }
-        out.samplers[name] = desc.RegisterIndex;   // desc+8 = sampler au rendu
+        out.samplers[name] = desc.RegisterIndex;   // desc+8 = sampler at render time
     }
 
-    // Constantes (matrices/vecteurs) : simple handle nommé.
+    // Constants (matrices/vectors): a simple named handle.
     for (int i = 0; i < 8 && def.constants[i]; ++i) {
         const char* name = def.constants[i];
         D3DXHANDLE h = ct->GetConstantByName(nullptr, name);
         if (!h) {
-            TS2_ERR("ShaderSet: constante '%s' absente de %s", name, def.file);
+            TS2_ERR("ShaderSet: constant '%s' missing from %s", name, def.file);
             return false;
         }
         out.handles[name] = h;
     }
 
-    // Valeurs par défaut des constantes (vtbl+44, dernière étape des loaders).
+    // Default constant values (vtbl+44, last step of the loaders).
     return SUCCEEDED(ct->SetDefaults(dev));
 }
 
-} // namespace (anonyme)
+} // namespace (anonymous)
 
 ShaderSet::~ShaderSet() { Release(); }
 
 bool ShaderSet::CreateVertexDecl() {
-    // Déclaration de vertex skinné 76 octets — copie exacte de unk_814A58 (0x814A58).
+    // 76-byte skinned vertex declaration — exact copy of unk_814A58 (0x814A58).
     // ex-VeryOldClient: mVertexElementForSKIN2 -> mDECLForSKIN2 (stride 76) — BIT-EXACT, CONFIRMED §1.5.
-    // Octets relevés : 7 éléments + D3DDECL_END(). NB : BLENDINDICES est déclaré en
-    // D3DDECLTYPE_D3DCOLOR (type 4) tel quel dans le binaire (les 4 indices d'os
-    // arrivent au VS via le canal BGRA du D3DCOLOR).
+    // Bytes observed: 7 elements + D3DDECL_END(). NB: BLENDINDICES is declared as
+    // D3DDECLTYPE_D3DCOLOR (type 4) as-is in the binary (the 4 bone indices
+    // reach the VS via the D3DCOLOR's BGRA channel).
     static const D3DVERTEXELEMENT9 kDecl[] = {
         {  0,  0, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION,     0 },
         {  0, 12, D3DDECLTYPE_FLOAT4,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT,  0 },
@@ -187,17 +187,17 @@ bool ShaderSet::CreateVertexDecl() {
         {  0, 68, D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD,     0 },
         D3DDECL_END()   // { 0xFF, 0, D3DDECLTYPE_UNUSED(17), 0, 0, 0 }
     };
-    // Stride total = 68 (dernier offset) + 8 (FLOAT2) = 76 == kSkinnedVertexStride.
+    // Total stride = 68 (last offset) + 8 (FLOAT2) = 76 == kSkinnedVertexStride.
     HRESULT hr = device_->CreateVertexDeclaration(kDecl, &vertexDecl_);
     if (FAILED(hr)) {
-        TS2_ERR("ShaderSet: CreateVertexDeclaration echoue (0x%08lX)", hr);
+        TS2_ERR("ShaderSet: CreateVertexDeclaration failed (0x%08lX)", hr);
         return false;
     }
     return true;
 }
 
 bool ShaderSet::Load(IDirect3DDevice9* device, asset::NpkArchive& npk) {
-    if (!device) { TS2_ERR("ShaderSet::Load : device nul"); return false; }
+    if (!device) { TS2_ERR("ShaderSet::Load: null device"); return false; }
     device_ = device;
 
     if (!CreateVertexDecl()) { Release(); return false; }
@@ -205,21 +205,21 @@ bool ShaderSet::Load(IDirect3DDevice9* device, asset::NpkArchive& npk) {
     for (const ShaderDef& def : kDefs) {
         GxdShader& slot = shaders_[static_cast<int>(def.id)];
         if (!LoadOneShader(device_, npk, def, slot)) {
-            TS2_ERR("ShaderSet: echec de chargement de %s -> device non cree", def.file);
+            TS2_ERR("ShaderSet: failed to load %s -> device not created", def.file);
             Release();
             return false;
         }
     }
 
     ready_ = true;
-    TS2_LOG("ShaderSet: 12 shaders GXD compiles + declaration vertex skinne 76o");
+    TS2_LOG("ShaderSet: 12 GXD shaders compiled + 76B skinned vertex declaration");
     return true;
 }
 
 bool ShaderSet::LoadFromFile(IDirect3DDevice9* device, const std::string& npkPath) {
     asset::NpkArchive npk;
     if (!npk.Open(npkPath, asset::kNpkKey)) {
-        TS2_ERR("ShaderSet: ouverture de '%s' impossible", npkPath.c_str());
+        TS2_ERR("ShaderSet: unable to open '%s'", npkPath.c_str());
         return false;
     }
     return Load(device, npk);

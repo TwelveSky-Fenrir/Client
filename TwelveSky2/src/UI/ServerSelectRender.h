@@ -1,180 +1,177 @@
-// UI/ServerSelectRender.h — RENDU VISUEL de l'écran ServerSelect (ts2::ui).
+// UI/ServerSelectRender.h — VISUAL RENDERING of the ServerSelect screen (ts2::ui).
 //
-// Réécriture fidèle de la GÉOMÉTRIE réelle (positions/dimensions) de :
-//   Scene_ServerSelectRender      0x519250 (~1,3 Ko)  — corps principal
-//   ServerSelect_GetButtonX       0x519F40             — colonne X d'un bouton serveur
-//   ServerSelect_GetButtonY       0x51A0A0             — rangée Y d'un bouton serveur
-//   ServerSelect_GetButtonImageId 0x51A220             — id sprite (atlas unk_8E8B50) d'un bouton
-//   ServerSelect_DrawLoadBar      0x51A440             — barre de charge + pastille « plein »
-//   UI_ProjectSpriteToScreen      0x50F5D0             — ancrage résolution-indépendant du bouton retour
-// décompilées via idaTs2 (serveur HTTP JSON-RPC http://127.0.0.1:13337/mcp, méthode
-// "decompile", le MCP `idaTs2` n'étant pas exposé en outil différé dans cette session —
-// MÊME IDB que le MCP, aucune donnée inventée).
+// Faithful rewrite of the real GEOMETRY (positions/dimensions) of:
+//   Scene_ServerSelectRender      0x519250 (~1.3 KB)  — main body
+//   ServerSelect_GetButtonX       0x519F40             — X column of a server button
+//   ServerSelect_GetButtonY       0x51A0A0             — Y row of a server button
+//   ServerSelect_GetButtonImageId 0x51A220             — sprite id (atlas unk_8E8B50) of a button
+//   ServerSelect_DrawLoadBar      0x51A440             — load bar + "full" badge
+//   UI_ProjectSpriteToScreen      0x50F5D0             — resolution-independent anchor of the back button
+// decompiled via idaTs2 (HTTP JSON-RPC server http://127.0.0.1:13337/mcp, method
+// "decompile", the `idaTs2` MCP not being exposed as a deferred tool in this session —
+// SAME IDB as the MCP, no invented data).
 //
-// CÂBLAGE ASSETS RÉELS (2026-07-14, cf. Docs/TS2_SERVERSELECT_REAL_ASSET_IP.md, preuve
-// EA par EA) — ce module charge désormais RÉELLEMENT les sprites `.IMG` de l'atlas
-// partagé `g_AssetMgr_UiAtlasSlots` (mêmes fichiers `G03_GDATA\D01_GIMAGE2D\001\
-// 001_%05d.IMG` que Sprite2D_BuildPath 0x4D68E0, DÉCALAGE +1 slot->fichier confirmé) via
-// GetSprite() (cache paresseux asset::ImgFile::Load + gfx::GpuTexture::CreateFromImgFile,
-// MÊME pattern que UI/InventoryWindow.cpp::GetIconTex / UI/PanelSkin.h) :
-//   - fond plein écran (aléatoire 2380/2381, this[168])            : §1.2 du doc
-//   - panneau central (slot 1785 -> 001_01786.IMG, unk_929344)     : §1.3
-//   - barre de charge, 8 paliers + pastille "inconnu" (slots 1899..1907 -> 001_01900..
+// REAL ASSET WIRING (2026-07-14, cf. Docs/TS2_SERVERSELECT_REAL_ASSET_IP.md, EA-by-EA
+// proof) — this module now ACTUALLY loads the `.IMG` sprites from the shared atlas
+// `g_AssetMgr_UiAtlasSlots` (same files `G03_GDATA\D01_GIMAGE2D\001\
+// 001_%05d.IMG` as Sprite2D_BuildPath 0x4D68E0, confirmed +1 slot->file OFFSET) via
+// GetSprite() (lazy cache asset::ImgFile::Load + gfx::GpuTexture::CreateFromImgFile,
+// SAME pattern as UI/InventoryWindow.cpp::GetIconTex / UI/PanelSkin.h):
+//   - full-screen background (random 2380/2381, this[168])         : doc §1.2
+//   - central panel (slot 1785 -> 001_01786.IMG, unk_929344)       : §1.3
+//   - load bar, 8 tiers + "unknown" badge (slots 1899..1907 -> 001_01900..
 //     001_01908.IMG, unk_92D52C..unk_92D9CC)                       : §1.4/1.5
-//   - pastille "serveur plein" (slot 2599 -> 001_02600.IMG, unk_9469DC) : §1.4/1.5
-//   - bouton d'action bas-droite, 3 états (slots 4/5/6 -> 001_00005/6/7.IMG,
+//   - "server full" badge (slot 2599 -> 001_02600.IMG, unk_9469DC) : §1.4/1.5
+//   - bottom-right action button, 3 states (slots 4/5/6 -> 001_00005/6/7.IMG,
 //     unk_8E8DA0/unk_8E8E34/unk_8E8EC8)                            : §1.5
-// AUCUN repli visuel : si un fichier `.IMG` ne peut être chargé au runtime (device D3D9
-// pas prêt ou fichier réellement absent), le sprite correspondant n'est tout simplement
-// PAS dessiné — comportement FIDÈLE de Sprite2D_Draw/Sprite2D_DrawScaled (qui n'affichent
-// rien si EnsureLoaded échoue). Le binaire ne dessine QUE des sprites `.IMG` réels : aucun
-// FillRect coloré, aucun cadre, aucun texte de titre/label inventé. Tous les fichiers
-// ci-dessus sont confirmés présents sur disque
-// (ClientSource/TwelveSky2/GameData/G03_GDATA/D01_GIMAGE2D/001/). GetSprite() a besoin d'un
-// device D3D9 valide : l'appelant DOIT appeler SetDevice() une fois le device créé
-// (LoginScene::Init, même pattern que InventoryWindow::Init(gfx::Renderer&)).
+// NO visual fallback: if a `.IMG` file can't be loaded at runtime (D3D9 device not
+// ready or the file is genuinely missing), the corresponding sprite is simply
+// NOT drawn — FAITHFUL behavior of Sprite2D_Draw/Sprite2D_DrawScaled (which display
+// nothing if EnsureLoaded fails). The binary draws ONLY real `.IMG` sprites: no
+// colored FillRect, no frame, no invented title/label text. All the files above
+// are confirmed present on disk
+// (ClientSource/TwelveSky2/GameData/G03_GDATA/D01_GIMAGE2D/001/). GetSprite() needs a
+// valid D3D9 device: the caller MUST call SetDevice() once the device is created
+// (LoginScene::Init, same pattern as InventoryWindow::Init(gfx::Renderer&)).
 //
-// MODE RÉELLEMENT ACTIF (2026-07-14, réaudit complet du doc ci-dessus, §2) : avec la
-// commande de lancement documentée (`/0/0/2/1024/768`), g_ServerModeFlag vaut 0 —
-// Scene_ServerSelectUpdate ne construit alors QU'UN SEUL serveur, hôte
-// "12sky2-login.geniusorc.com", port 8088 (0x1F98) — ET Scene_ServerSelectRender prend
-// la branche `else` (EA 0x5194DD, singleServerMode=false ci-dessous, PAS la branche
-// "gros nombre" UI_DrawNumberValue qui, elle, appartient à g_ServerModeFlag!=0). Cette
-// branche `else` est une boucle sur les boutons serveur, mais avec UNE SEULE entrée
-// construite par Update, elle ne dessine jamais qu'UN SEUL bouton — ce n'est donc PLUS
-// une grille multi-canaux : l'appelant (UI/LoginScene.cpp::BuildServerList) construit
-// désormais exactement CETTE entrée unique (plus les 6 canaux `MultiChannel` d'antan),
-// ce qui fait de la boucle ci-dessous une reproduction FIDÈLE (et non plus un
-// "compromis assumé") du chemin réellement emprunté par le binaire pour cette commande
-// de lancement. Le mode `MultiChannel` (6 canaux, `g_ServerModeFlag` != 0/1/2) reste
-// documenté et modélisé dans Game/ServerSelectFlow.h::ServerListMode/BuildServerList()
-// comme référence/option future — ce n'est plus le chemin par défaut de LoginScene.
+// ACTUALLY ACTIVE MODE (2026-07-14, full re-audit of the doc above, §2): with the
+// documented launch command (`/0/0/2/1024/768`), g_ServerModeFlag is 0 —
+// Scene_ServerSelectUpdate then builds ONLY ONE server, host
+// "12sky2-login.geniusorc.com", port 8088 (0x1F98) — AND Scene_ServerSelectRender takes
+// the `else` branch (EA 0x5194DD, singleServerMode=false below, NOT the "big number"
+// UI_DrawNumberValue branch, which belongs to g_ServerModeFlag!=0). This `else` branch
+// is a loop over server buttons, but with ONLY ONE entry built by Update, it only ever
+// draws ONE button — this is therefore NO LONGER a multi-channel grid: the caller
+// (UI/LoginScene.cpp::BuildServerList) now builds exactly THIS single entry (instead of
+// the former 6 `MultiChannel` channels), which makes the loop below a FAITHFUL
+// reproduction (no longer an "accepted compromise") of the path actually taken by the
+// binary for this launch command. The `MultiChannel` mode (6 channels,
+// `g_ServerModeFlag` != 0/1/2) remains documented and modeled in
+// Game/ServerSelectFlow.h::ServerListMode/BuildServerList() as a future reference/
+// option — it's no longer LoginScene's default path.
 //
-// === GÉOMÉTRIE RÉELLE EXTRAITE (0x519250) ===
+// === REAL GEOMETRY EXTRACTED (0x519250) ===
 //
-// Résolution de référence = ts2::kRefWidth/kRefHeight (flt_1669178/flt_166917C =
-// 1024x768). Le fond plein écran (this[168] = ServerSelectState::backgroundImageId,
-// indexe l'atlas partagé unk_8E8B50, pas de stride 148 o/entrée — MÊME atlas que les
-// logos Intro et les boutons serveur) est dessiné À L'ÉCHELLE (0,0) avec :
+// Reference resolution = ts2::kRefWidth/kRefHeight (flt_1669178/flt_166917C =
+// 1024x768). The full-screen background (this[168] = ServerSelectState::backgroundImageId,
+// indexes the shared atlas unk_8E8B50, no 148-byte stride/entry — SAME atlas as the
+// Intro logos and server buttons) is drawn AT SCALE (0,0) with:
 //   scaleX = nWidth  / kRefWidth   (v13, EA 0x519435)
 //   scaleY = nHeight / kRefHeight  (v14, EA 0x519419)
 //
-// Le panneau central (sprite unk_929344, slot 1785 -> 001_01786.IMG, chargé RÉELLEMENT
-// via GetSprite() ; dimensions RÉELLES de la texture utilisées pour le centrage quand
-// elle est disponible — EXACTEMENT Sprite2D_GetWidth/Height(unk_929344) de l'original —,
-// repli sur les dimensions réelles connues kPanelW/kPanelH (737x755, en-tête IMG) pour
-// le seul CENTRAGE si le chargement échoue — le panneau n'est alors pas dessiné,
-// jamais remplacé par un aplat)
-// est CENTRÉ à l'écran :
+// The central panel (sprite unk_929344, slot 1785 -> 001_01786.IMG, ACTUALLY loaded
+// via GetSprite(); texture's REAL dimensions used for centering when available —
+// EXACTLY Sprite2D_GetWidth/Height(unk_929344) of the original —, falls back to the
+// known real dimensions kPanelW/kPanelH (737x755, IMG header) for CENTERING only if
+// loading fails — the panel is then not drawn, never replaced by a fallback fill)
+// is CENTERED on screen:
 //   baseX = nWidth/2  - panelW/2   (v24, EA 0x519486)
 //   baseY = nHeight/2 - panelH/2   (v17, EA 0x5194A9)
-// C'est l'origine (baseX, baseY) à laquelle s'ajoutent TOUS les offsets ci-dessous
-// (boutons serveur ET barres de charge partagent cette même origine).
+// This is the origin (baseX, baseY) to which ALL offsets below are added
+// (server buttons AND load bars share this same origin).
 //
-// Boutons serveur (ServerSelect_GetButtonX/Y 0x519F40/0x51A0A0) : offsets EXACTS
-// relevés dans les switch(id) du désassemblage, id = index dans la boucle
-// [selectedGroupBtnLo..selectedGroupBtnHi] (this[15372]/this[15373], EXACTEMENT les
-// bornes de ServerSelectState::selectedGroupBtnLo/Hi). Les ids observés dans les 3
-// fonctions de layout sont épars : 0..9 (rangées d'un groupe, jusqu'à 10 serveurs,
-// colonne UNIQUE X=+291) et 60 (bouton spécial, colonne X=+539) ; 40 et 50 n'ont PAS de
-// case dans GetButtonX (défaut -> offset 0, fidèle à l'original — comportement bord
-// reproduit tel quel). Les ids 6..9 réutilisent LES MÊMES rangées Y que 0..3 (196/278ish/
-// 378/469 vs 196/287/378/469 — légère divergence 278 vs 287 au cas 7, EXACTE au
-// désassemblage, pas une coquille) : ce sont vraisemblablement les boutons d'un AUTRE
-// groupe occupant le MÊME espace écran (un seul groupe visible à la fois, cf.
-// ServerSelectFlow.h::selectedGroup) ; 40/50/60 sont des slots spéciaux (TODO sémantique
-// exacte non confirmée — cf. kSpecialSlotXxx ci-dessous) non modélisés dans
-// ServerSelectState (pas de champ dédié), exposés ici pour complétude/documentation mais
-// NON dessinés par la boucle principale (qui n'itère que sur des indices de
-// ServerSelectState::servers, 0-based, résolument dans la plage 0..9 en pratique — 6
-// entrées en mode MultiChannel, 1 en SingleServer, cf. Game::BuildServerList).
+// Server buttons (ServerSelect_GetButtonX/Y 0x519F40/0x51A0A0): EXACT offsets
+// captured in the disassembly's switch(id), id = index in the loop
+// [selectedGroupBtnLo..selectedGroupBtnHi] (this[15372]/this[15373], EXACTLY the
+// bounds of ServerSelectState::selectedGroupBtnLo/Hi). The ids observed in the 3
+// layout functions are sparse: 0..9 (rows of a group, up to 10 servers, SINGLE
+// column X=+291) and 60 (special button, column X=+539); 40 and 50 have NO case in
+// GetButtonX (default -> offset 0, faithful to the original — edge-case behavior
+// reproduced as-is). Ids 6..9 reuse the SAME Y rows as 0..3 (196/278ish/
+// 378/469 vs 196/287/378/469 — slight 278 vs 287 divergence at case 7, EXACT per the
+// disassembly, not a typo): these are likely buttons of ANOTHER group occupying the
+// SAME screen space (only one group visible at a time, cf.
+// ServerSelectFlow.h::selectedGroup); 40/50/60 are special slots (exact semantics
+// UNCONFIRMED TODO — cf. kSpecialSlotXxx below) not modeled in
+// ServerSelectState (no dedicated field), exposed here for completeness/documentation
+// but NOT drawn by the main loop (which only iterates over
+// ServerSelectState::servers indices, 0-based, firmly within the 0..9 range in
+// practice — 6 entries in MultiChannel mode, 1 in SingleServer, cf. Game::BuildServerList).
 //
-// Barres de charge (ServerSelect_DrawLoadBar 0x51A440) : 2 sprites par serveur, à la
-// MÊME origine (baseX,baseY) —
-//   barre de charge (pastille de niveau, 8 sprites empilés unk_92D52C..unk_92D938, pas
-//     148 o) à (baseX+barOffX, baseY+barOffY) ;
-//   pastille "complet" (unk_9469DC, dessinée SEULEMENT si population >= maxPopulation)
-//     à (baseX+fullOffX, baseY+fullOffY).
-// Niveau de la barre : 8 paliers, seuil = loadStep * k (k=1..7), la valeur loadStep
-// provenant de this[id+13371] dans le binaire — modélisée FIDÈLEMENT par le champ
-// ServerEntry::loadStep (ajouté 2026-07-15), alimenté comme maxPopulation par le record de
-// statut du serveur (Net_QueryServerStatus 0x519CC0, octets 9-12). LoadLevel() reproduit
-// EXACTEMENT la chaîne de comparaisons pop >= k*loadStep (population "pending", <0, affiche
-// la pastille dédiée unk_92D9CC).
+// Load bars (ServerSelect_DrawLoadBar 0x51A440): 2 sprites per server, at the
+// SAME origin (baseX,baseY) —
+//   load bar (level badge, 8 stacked sprites unk_92D52C..unk_92D938, no
+//     148-byte stride) at (baseX+barOffX, baseY+barOffY);
+//   "full" badge (unk_9469DC, drawn ONLY if population >= maxPopulation)
+//     at (baseX+fullOffX, baseY+fullOffY).
+// Bar level: 8 tiers, threshold = loadStep * k (k=1..7), the loadStep value
+// coming from this[id+13371] in the binary — FAITHFULLY modeled by the
+// ServerEntry::loadStep field (added 2026-07-15), fed like maxPopulation by the
+// server's status record (Net_QueryServerStatus 0x519CC0, bytes 9-12). LoadLevel()
+// reproduces EXACTLY the pop >= k*loadStep comparison chain (pending population, <0,
+// shows the dedicated unk_92D9CC badge).
 //
-// Bouton retour (bas de l'écran, UI_ProjectSpriteToScreen 0x50F5D0, appelé avec
-// (imgId=4, refX=891, refY=701)) : ancrage RÉSOLUTION-INDÉPENDANT distinct du centrage
-// panneau, réutilisant le même facteur d'échelle que le fond (nWidth/kRefWidth,
-// nHeight/kRefHeight) mais SANS centrage écran — c'est un ancrage de coin/HUD :
+// Back button (bottom of the screen, UI_ProjectSpriteToScreen 0x50F5D0, called with
+// (imgId=4, refX=891, refY=701)): RESOLUTION-INDEPENDENT anchor distinct from the panel
+// centering, reusing the same scale factor as the background (nWidth/kRefWidth,
+// nHeight/kRefHeight) but WITHOUT screen centering — it's a corner/HUD anchor:
 //   outX = Crt_ftol(scaleX * (891 + w/2)) - w/2
 //   outY = Crt_ftol(scaleY * (701 + h/2)) - h/2
-// où w/h = dimensions du sprite atlas[4] (PAS le sprite réellement dessiné ensuite —
-// unk_8E8DA0/unk_8E8E34/unk_8E8EC8, normal/survolé/enfoncé — fidèle au binaire qui
-// calcule la position sur un sprite et blitte un AUTRE sprite à la position obtenue,
-// en supposant implicitement qu'ils ont la même taille). CONFIRMÉ (Docs/TS2_LOGIN_BUTTON_
-// ASSETS.md §"Exception notée") : slot 4/5/6 -> 001_00005/6/7.IMG, chargés RÉELLEMENT ici
-// (normal/survolé/enfoncé), rien dessiné si absent. État : this[3] du
-// SceneMgr, PAS modélisé dans ServerSelectState (scène ServerSelect réutilise this[3] pour
-// le latch du bouton retour, alors qu'Intro utilise this[3..152] pour logoFade — même
-// mémoire brute, interprétation différente par scène) : latch géré ICI localement
-// (cf. ServerSelectRender::OnActionButtonMouseDown/Up) : le latch this[3] est armé au down
-// et VALIDÉ au up (OnActionButtonMouseUp renvoie true si le curseur est toujours sur le
-// sprite), ce qui déclenche la confirmation de sortie modale dans LoginScene
+// where w/h = dimensions of atlas sprite[4] (NOT the sprite actually drawn afterward —
+// unk_8E8DA0/unk_8E8E34/unk_8E8EC8, normal/hovered/pressed — faithful to the binary,
+// which computes the position on one sprite and blits ANOTHER sprite at the resulting
+// position, implicitly assuming they're the same size). CONFIRMED (Docs/TS2_LOGIN_BUTTON_
+// ASSETS.md §"Noted exception"): slot 4/5/6 -> 001_00005/6/7.IMG, ACTUALLY loaded here
+// (normal/hovered/pressed), nothing drawn if missing. State: this[3] of the
+// SceneMgr, NOT modeled in ServerSelectState (the ServerSelect scene reuses this[3] for
+// the back button latch, while Intro uses this[3..152] for logoFade — same raw
+// memory, different interpretation per scene): latch handled HERE locally
+// (cf. ServerSelectRender::OnActionButtonMouseDown/Up): the this[3] latch is armed on
+// down and VALIDATED on up (OnActionButtonMouseUp returns true if the cursor is still
+// on the sprite), which triggers the modal exit confirmation in LoginScene
 // (Scene_ServerSelectOnMouseUp 0x519AC0 -> UI_MsgBox_Open dword_1822438 action_id=1 ->
 // g_QuitFlag=1).
 //
-// Mode d'affichage (g_ServerModeFlag == dword_166918C, EXACTEMENT le même global que
-// ServerSelectFlow.h::ServerListMode, adresse 0x166918C) : si non nul -> panneau "un
-// seul gros nombre" (UI_DrawNumberValue, EA 0x53FCC0, sur le serveur 0 uniquement) ; si
-// nul -> boucle boutons (singleServerMode=false ci-dessous).
+// Display mode (g_ServerModeFlag == dword_166918C, EXACTLY the same global as
+// ServerSelectFlow.h::ServerListMode, address 0x166918C): if non-zero -> "single big
+// number" panel (UI_DrawNumberValue, EA 0x53FCC0, on server 0 only); if
+// zero -> button loop (singleServerMode=false below).
 //
-// RÉAUDIT (2026-07-14, re-décompilation intégrale de Scene_ServerSelectRender 0x519250,
-// EA 0x5194CB `if (g_ServerModeFlag)`, puis re-vérification complète via
-// Docs/TS2_SERVERSELECT_REAL_ASSET_IP.md) : le test réel est un simple `if
-// (g_ServerModeFlag)` en C. Pour LA COMMANDE DE LANCEMENT DOCUMENTÉE PAR CE PROJET
-// (`/0/0/2/1024/768` -> dword_166918C = 0, cf. WinMain EA 0x4609F1/0x460BAE) :
-//   - dword_166918C == 0 (SEUL CAS ACTIF ICI) -> Update construit 1 SEUL serveur (hôte
-//     "12sky2-login.geniusorc.com", port 8088) ; Render prend la branche `else`
-//     (EA 0x5194DD, singleServerMode=false) -> dessine exactement CE seul bouton, sa
-//     barre de charge (9 sprites réels) et le bouton d'action (3 états réels). AUCUNE
-//     grille multi-boutons n'est jamais produite par le binaire pour cette commande.
-//   - dword_166918C == 1 ou 2 -> 1 seul serveur (port 8088, variante GameGuard "EUTest") ;
-//     Render prend la branche gros nombre (EA 0x519664, singleServerMode=true) —
-//     conservée dans ce module pour fidélité de l'autre chemin, mais N'EST PAS le chemin
-//     emprunté par la commande de lancement documentée.
-//   - dword_166918C == autre (!=0,1,2) -> Update construit 6 canaux (EA 0x518F6E) mais
-//     Render prend AUSSI la branche gros nombre (même test) -> un seul nombre, serveur 0 ;
-//     les 5 autres canaux ne sont JAMAIS dessinés comme boutons. Ce mode `MultiChannel`
-//     reste modélisé dans Game/ServerSelectFlow.h::ServerListMode comme référence/option
-//     future ; ce n'est PLUS ce que UI/LoginScene.cpp construit par défaut.
-// CÂBLAGE ACTUEL (UI/LoginScene.cpp::BuildServerList) : construit désormais EXACTEMENT
-// l'entrée SingleServer unique ci-dessus (hôte/port confirmés, cf. Net/Login.h::
-// kLoginHostCom) et appelle Render(..., singleServerMode=false) avec cette unique entrée
-// bornée en 0..0 — la boucle `else` ci-dessous n'est donc plus un "compromis" mais une
-// reproduction FIDÈLE du chemin réellement actif du binaire pour la commande de
-// lancement documentée par ce projet.
+// RE-AUDIT (2026-07-14, full re-decompilation of Scene_ServerSelectRender 0x519250,
+// EA 0x5194CB `if (g_ServerModeFlag)`, then full re-verification via
+// Docs/TS2_SERVERSELECT_REAL_ASSET_IP.md): the real test is a simple `if
+// (g_ServerModeFlag)` in C. For THE LAUNCH COMMAND DOCUMENTED BY THIS PROJECT
+// (`/0/0/2/1024/768` -> dword_166918C = 0, cf. WinMain EA 0x4609F1/0x460BAE):
+//   - dword_166918C == 0 (ONLY ACTIVE CASE HERE) -> Update builds 1 SINGLE server (host
+//     "12sky2-login.geniusorc.com", port 8088); Render takes the `else` branch
+//     (EA 0x5194DD, singleServerMode=false) -> draws exactly THIS single button, its
+//     load bar (9 real sprites) and the action button (3 real states). The binary NEVER
+//     produces a multi-button grid for this command.
+//   - dword_166918C == 1 or 2 -> 1 single server (port 8088, "EUTest" GameGuard variant);
+//     Render takes the big-number branch (EA 0x519664, singleServerMode=true) —
+//     kept in this module for the fidelity of the other path, but is NOT the path
+//     taken by the documented launch command.
+//   - dword_166918C == other (!=0,1,2) -> Update builds 6 channels (EA 0x518F6E) but
+//     Render ALSO takes the big-number branch (same test) -> a single number, server 0;
+//     the other 5 channels are NEVER drawn as buttons. This `MultiChannel` mode
+//     remains modeled in Game/ServerSelectFlow.h::ServerListMode as a future
+//     reference/option; it's NO LONGER what UI/LoginScene.cpp builds by default.
+// CURRENT WIRING (UI/LoginScene.cpp::BuildServerList): now builds EXACTLY
+// the single SingleServer entry above (host/port confirmed, cf. Net/Login.h::
+// kLoginHostCom) and calls Render(..., singleServerMode=false) with this single entry
+// bounded to 0..0 — the `else` loop below is therefore no longer a "compromise" but a
+// FAITHFUL reproduction of the path actually active in the binary for the launch
+// command documented by this project.
 #pragma once
 #include "UI/UIManager.h"          // ts2::ui::UiContext
 #include "Game/ServerSelectFlow.h" // ts2::game::ServerSelectState
-#include "Gfx/GpuTexture.h"        // gfx::GpuTexture (fond/boutons réels, atlas unk_8E8B50)
+#include "Gfx/GpuTexture.h"        // gfx::GpuTexture (real background/buttons, atlas unk_8E8B50)
 #include <cstdint>
 #include <unordered_map>
 
 namespace ts2::ui {
 
-// ---------------------------------------------------------------------------
-// Constantes/tables de layout — valeurs EXACTES extraites des switch(id) du
-// désassemblage (voir commentaire d'en-tête). Regroupées en espace de noms pour
-// pouvoir être réutilisées/testées indépendamment de la classe de rendu.
-// ---------------------------------------------------------------------------
+// Layout constants/tables — EXACT values extracted from the disassembly's
+// switch(id) (see header comment). Grouped in a namespace so they can be
+// reused/tested independently of the render class.
 namespace serverselect_layout {
 
-// Dimensions EXACTES des sprites consultés par Sprite2D_GetWidth/Height dans l'IDB :
-// - panneau unk_929344 : GetWidth 0x519486 / GetHeight 0x5194A9 -> 001_01786.IMG = 737x755.
-// - boutons serveur : Sprite2D_HitTest 0x51958C/0x5199E6 sur ButtonImageId(i) -> 153x23.
-// - bouton retour atlas[4] : UI_ProjectSpriteToScreen 0x5196D1/0x519A79/0x519AED -> 96x31.
-// Elles servent au positionnement/hit-test de repli quand la texture n'a pas encore été
-// chargée ; Render() préfère les dimensions runtime réelles quand GetSprite() a réussi.
+// EXACT sprite dimensions consulted via Sprite2D_GetWidth/Height in the IDB:
+// - panel unk_929344: GetWidth 0x519486 / GetHeight 0x5194A9 -> 001_01786.IMG = 737x755.
+// - server buttons: Sprite2D_HitTest 0x51958C/0x5199E6 on ButtonImageId(i) -> 153x23.
+// - back button atlas[4]: UI_ProjectSpriteToScreen 0x5196D1/0x519A79/0x519AED -> 96x31.
+// Used for fallback positioning/hit-testing when the texture hasn't loaded yet;
+// Render() prefers the real runtime dimensions once GetSprite() succeeds.
 constexpr int kPanelW    = 737;
 constexpr int kPanelH    = 755;
 constexpr int kButtonW   = 153;
@@ -182,130 +179,127 @@ constexpr int kButtonH   = 23;
 constexpr int kBackBtnW  = 96;
 constexpr int kBackBtnH  = 31;
 
-// ---------------------------------------------------------------------------
-// Slots d'atlas CONFIRMÉS par désassemblage (Docs/TS2_SERVERSELECT_REAL_ASSET_IP.md +
-// Docs/TS2_LOGIN_BUTTON_ASSETS.md, session 2026-07-14). Index 0-based passés à
-// ServerSelectRender::GetSprite() (qui applique lui-même le décalage +1 vers le nom de
-// fichier réel `001_%05d.IMG`, cf. Sprite2D_BuildPath 0x4D68E0). Tous les fichiers
-// correspondants sont confirmés présents sur disque
+// Atlas slots CONFIRMED by disassembly (Docs/TS2_SERVERSELECT_REAL_ASSET_IP.md +
+// Docs/TS2_LOGIN_BUTTON_ASSETS.md, session 2026-07-14). 0-based index passed to
+// ServerSelectRender::GetSprite() (which applies the +1 offset to the real
+// file name `001_%05d.IMG` itself, cf. Sprite2D_BuildPath 0x4D68E0). All the
+// corresponding files are confirmed present on disk
 // (ClientSource/TwelveSky2/GameData/G03_GDATA/D01_GIMAGE2D/001/).
-// ---------------------------------------------------------------------------
 
-// Panneau central (unk_929344) : slot 1785 -> fichier 001_01786.IMG.
+// Central panel (unk_929344): slot 1785 -> file 001_01786.IMG.
 constexpr int kPanelImgSlot = 1785;
 
-// Barre de charge (ServerSelect_DrawLoadBar 0x51A440) : 8 paliers croissants
-// (unk_92D52C..unk_92D938) -> fichiers 001_01900.IMG..001_01907.IMG, PUIS la pastille
-// "population inconnue" (unk_92D9CC, pop < 0) -> fichier 001_01908.IMG.
+// Load bar (ServerSelect_DrawLoadBar 0x51A440): 8 increasing tiers
+// (unk_92D52C..unk_92D938) -> files 001_01900.IMG..001_01907.IMG, THEN the
+// "unknown population" badge (unk_92D9CC, pop < 0) -> file 001_01908.IMG.
 constexpr int kLoadBarStepSlot[8] = {1899, 1900, 1901, 1902, 1903, 1904, 1905, 1906};
-constexpr int kLoadBarPendingSlot = 1907; // pop < 0 (interrogation en cours)
+constexpr int kLoadBarPendingSlot = 1907; // pop < 0 (query in progress)
 
-// Pastille "serveur plein" (unk_9469DC, pop >= maxPop) -> fichier 001_02600.IMG.
+// "Server full" badge (unk_9469DC, pop >= maxPop) -> file 001_02600.IMG.
 constexpr int kLoadBarFullSlot = 2599;
 
-// Bouton d'action bas-droite (unk_8E8DA0/unk_8E8E34/unk_8E8EC8), 3 états ->
-// fichiers 001_00005.IMG / 001_00006.IMG / 001_00007.IMG (Docs/TS2_LOGIN_BUTTON_ASSETS.md
-// §"Exception notée : ServerSelect n'utilise PAS" la paire OK/Quitter du Login).
+// Bottom-right action button (unk_8E8DA0/unk_8E8E34/unk_8E8EC8), 3 states ->
+// files 001_00005.IMG / 001_00006.IMG / 001_00007.IMG (Docs/TS2_LOGIN_BUTTON_ASSETS.md
+// §"Noted exception: ServerSelect does NOT use" the Login's OK/Quit pair).
 constexpr int kActionBtnNormalSlot   = 4;
 constexpr int kActionBtnHoverSlot    = 5;
 constexpr int kActionBtnPressedSlot  = 6;
 
-// Ids "spéciaux" observés dans les 3 tables de layout mais absents de
-// ServerSelectState (pas de champ dédié, sémantique non confirmée) — exposés pour
-// documentation/complétude, NON dessinés par ServerSelectRender::Render.
-constexpr int kSpecialSlotA = 40; // GetButtonImageId -> 3452, GetButtonX -> défaut (0)
-constexpr int kSpecialSlotB = 50; // GetButtonImageId -> 3099, GetButtonX -> défaut (0)
-constexpr int kSpecialSlotC = 60; // GetButtonImageId -> 2630, colonne X propre (+539)
+// "Special" ids observed in the 3 layout tables but absent from
+// ServerSelectState (no dedicated field, semantics unconfirmed) — exposed for
+// documentation/completeness, NOT drawn by ServerSelectRender::Render.
+constexpr int kSpecialSlotA = 40; // GetButtonImageId -> 3452, GetButtonX -> default (0)
+constexpr int kSpecialSlotB = 50; // GetButtonImageId -> 3099, GetButtonX -> default (0)
+constexpr int kSpecialSlotC = 60; // GetButtonImageId -> 2630, own X column (+539)
 
-// ServerSelect_GetButtonX 0x519F40 : offset X (relatif à baseX) d'un bouton serveur par
-// id. Défaut = 0, fidèle au binaire (pas de case default explicite -> résultat non
-// initialisé réellement, mais la fonction déclare `result` non initialisé SEULEMENT
-// pour les ids hors table ; on documente 0 comme reproduction sûre du chemin "défaut"
-// qui existe, lui, explicitement dans GetButtonX/Y/ImageId — DrawLoadBar n'a PAS de tel
-// défaut, cf. GetLoadBarOffsets ci-dessous).
+// ServerSelect_GetButtonX 0x519F40: X offset (relative to baseX) of a server button by
+// id. Default = 0, faithful to the binary (no explicit default case -> genuinely
+// uninitialized result, but the function only declares `result` uninitialized for
+// ids outside the table; we document 0 as a safe reproduction of the "default" path,
+// which does exist explicitly in GetButtonX/Y/ImageId — DrawLoadBar has NO such
+// default, cf. GetLoadBarOffsets below).
 int ButtonOffsetX(int id);
 
-// ServerSelect_GetButtonY 0x51A0A0 : offset Y (relatif à baseY) d'un bouton serveur.
+// ServerSelect_GetButtonY 0x51A0A0: Y offset (relative to baseY) of a server button.
 int ButtonOffsetY(int id);
 
-// ServerSelect_GetButtonImageId 0x51A220 : id sprite (atlas unk_8E8B50, pas 148 o) du
-// bouton "relâché" ; le bouton "survolé/actif" est l'entrée SUIVANTE (+148 o = +1 index)
-// dans l'atlas, cf. l'appel Sprite2D_Draw(...+ v23 + 148, ...) à l'EA 0x5195F6.
+// ServerSelect_GetButtonImageId 0x51A220: sprite id (atlas unk_8E8B50, no 148-byte
+// stride) of the "released" button; the "hovered/active" button is the NEXT entry
+// (+148 bytes = +1 index) in the atlas, cf. the Sprite2D_Draw(...+ v23 + 148, ...)
+// call at EA 0x5195F6.
 int ButtonImageId(int id);
 
-// Offsets des 2 pastilles dessinées par ServerSelect_DrawLoadBar 0x51A440 (relatifs à
-// baseX/baseY). `valid=false` pour un id hors des cases 0..9/60 explicitement gérées
-// (le binaire lit alors des variables locales NON INITIALISÉES — comportement non
-// reproductible fidèlement ; on ne dessine rien, plus sûr que d'inventer une position).
+// Offsets of the 2 badges drawn by ServerSelect_DrawLoadBar 0x51A440 (relative to
+// baseX/baseY). `valid=false` for an id outside the explicitly handled 0..9/60 cases
+// (the binary then reads UNINITIALIZED local variables — behavior that can't be
+// faithfully reproduced; we draw nothing, safer than inventing a position).
 struct LoadBarOffsets {
-    int  barOffX = 0, barOffY = 0;   // pastille de niveau (unk_92D52C..unk_92D938 / pending unk_92D9CC)
-    int  fullOffX = 0, fullOffY = 0; // pastille "complet" (unk_9469DC)
+    int  barOffX = 0, barOffY = 0;   // level badge (unk_92D52C..unk_92D938 / pending unk_92D9CC)
+    int  fullOffX = 0, fullOffY = 0; // "full" badge (unk_9469DC)
     bool valid = false;
 };
 LoadBarOffsets GetLoadBarOffsets(int id);
 
 } // namespace serverselect_layout
 
-// ---------------------------------------------------------------------------
-// ServerSelectRender — dessine l'écran ServerSelect à partir d'un
-// game::ServerSelectState en lecture seule. Ne modifie JAMAIS l'état passé.
-// Conserve un unique bit d'état PUREMENT visuel (latch du bouton retour, this[3]
-// dans le binaire pour cette scène) — la logique de clic réelle reste dans
-// Game::ServerSelectFlow.h (OnServerClicked/OnGroupClicked/OnActionButtonReleased).
-// ---------------------------------------------------------------------------
+// ServerSelectRender — draws the ServerSelect screen from a read-only
+// game::ServerSelectState. NEVER modifies the state passed in. Holds a single
+// PURELY visual state bit (back button latch, this[3] in the binary for this
+// scene) — the real click logic stays in Game::ServerSelectFlow.h
+// (OnServerClicked/OnGroupClicked/OnActionButtonReleased).
 class ServerSelectRender {
 public:
-    // Doit être appelé UNE FOIS après création du device D3D9 (UI/LoginScene.cpp::Init,
-    // même pattern que InventoryWindow::Init(gfx::Renderer&)) : sans device, GetSprite()
-    // ne peut charger aucune texture réelle et Render() ne dessinera RIEN (aucun sprite —
-    // et jamais d'aplat de repli). `ctx.renderer` (UI/UIManager.h) n'est
-    // volontairement PAS utilisé ici : LoginScene ne possède qu'un IDirect3DDevice9* brut
-    // (pas de gfx::Renderer), exactement comme UI/InventoryWindow.cpp/UI/PanelSkin.cpp.
+    // Must be called ONCE after the D3D9 device is created (UI/LoginScene.cpp::Init,
+    // same pattern as InventoryWindow::Init(gfx::Renderer&)): without a device, GetSprite()
+    // can't load any real texture and Render() will draw NOTHING (no sprite —
+    // and never a fallback fill). `ctx.renderer` (UI/UIManager.h) is
+    // deliberately NOT used here: LoginScene only owns a raw IDirect3DDevice9*
+    // (no gfx::Renderer), exactly like UI/InventoryWindow.cpp/UI/PanelSkin.cpp.
     void SetDevice(IDirect3DDevice9* device) { device_ = device; }
 
-    // Rendu complet (fond + panneau + boutons/barres de charge + bouton retour), TOUS
-    // dessinés avec les sprites RÉELS de l'atlas quand SetDevice() a été appelé et que les
-    // fichiers sont présents (cf. constantes de slots ci-dessus) ; un sprite dont le
-    // fichier `.IMG` ne peut être chargé n'est simplement PAS dessiné (aucun aplat coloré,
-    // aucun cadre, aucun texte inventé — fidèle à Sprite2D_Draw).
-    // `cursorX/cursorY` : position curseur CLIENT (comme Dialog::Render — le binaire
-    // fait lui-même GetPhysicalCursorPos+ScreenToClient à l'EA 0x5193E7/0x5193F8 ; on
-    // suit ici le pattern UIManager::Render qui calcule le curseur UNE fois pour tous
-    // les éléments et le repasse en paramètre, cf. UI/UIManager.h::Dialog::Render).
-    // `singleServerMode` : reflète g_ServerModeFlag (voir note de tête de fichier) ; false
-    // par défaut = branche boucle (EA 0x5194DD), CAS RÉELLEMENT ACTIF pour la commande de
-    // lancement documentée par ce projet, désormais bornée par l'appelant à l'unique
-    // entrée SingleServer (plus de grille multi-canaux).
-    // Appelé deux fois par frame par le pilote de scène (une fois par UiPhase, comme
-    // Dialog::Render / MsgBoxDialog::Render) ; le dessin des sprites se filtre en interne
-    // sur la phase Panels.
+    // Full rendering (background + panel + buttons/load bars + back button), ALL
+    // drawn with the atlas's REAL sprites once SetDevice() has been called and the
+    // files are present (cf. slot constants above); a sprite whose `.IMG` file can't
+    // be loaded is simply NOT drawn (no colored fallback, no frame, no invented
+    // text — faithful to Sprite2D_Draw).
+    // `cursorX/cursorY`: CLIENT cursor position (like Dialog::Render — the binary
+    // itself does GetPhysicalCursorPos+ScreenToClient at EA 0x5193E7/0x5193F8; here we
+    // follow the UIManager::Render pattern which computes the cursor ONCE for all
+    // elements and passes it down as a parameter, cf. UI/UIManager.h::Dialog::Render).
+    // `singleServerMode`: reflects g_ServerModeFlag (see the file header note); false
+    // by default = loop branch (EA 0x5194DD), the case ACTUALLY ACTIVE for the launch
+    // command documented by this project, now bounded by the caller to the single
+    // SingleServer entry (no more multi-channel grid).
+    // Called twice per frame by the scene driver (once per UiPhase, like
+    // Dialog::Render / MsgBoxDialog::Render); sprite drawing is internally filtered
+    // to the Panels phase.
     void Render(const UiContext& ctx, const game::ServerSelectState& state,
                 int cursorX, int cursorY, bool singleServerMode = false);
 
-    // Latch du bouton d'action/sortie (mirroir this[3] pour CETTE scène uniquement,
-    // Scene_ServerSelectOnMouseDown/Up 0x519780/0x519AC0). À appeler depuis les routeurs
-    // souris de la scène ServerSelect. OnActionButtonMouseDown arme le latch si le curseur
-    // est sur le sprite (EA 0x519AAF : this[3]=1). OnActionButtonMouseUp désarme le latch
-    // (EA 0x519AFE : this[3]=0) et renvoie true si le clic est CONFIRMÉ (latch armé ET
-    // curseur toujours sur le sprite, Sprite2D_HitTest EA 0x519B1A) — l'appelant ouvre alors
-    // la confirmation de sortie (UI_MsgBox_Open, EA 0x519B3E).
+    // Action/exit button latch (mirrors this[3] for THIS scene only,
+    // Scene_ServerSelectOnMouseDown/Up 0x519780/0x519AC0). To be called from the
+    // ServerSelect scene's mouse routers. OnActionButtonMouseDown arms the latch if the
+    // cursor is on the sprite (EA 0x519AAF: this[3]=1). OnActionButtonMouseUp disarms the
+    // latch (EA 0x519AFE: this[3]=0) and returns true if the click is CONFIRMED (latch
+    // armed AND cursor still on the sprite, Sprite2D_HitTest EA 0x519B1A) — the caller
+    // then opens the exit confirmation (UI_MsgBox_Open, EA 0x519B3E).
     void OnActionButtonMouseDown(int cursorX, int cursorY, const UiContext& ctx);
     bool OnActionButtonMouseUp(int cursorX, int cursorY, const UiContext& ctx);
 
 private:
-    // Résout un slot de l'atlas unk_8E8B50 (AssetMgr_InitAllSlots 0x4deb50, catégorie 1 ->
-    // "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG") vers sa texture GPU, cache paresseux
-    // (MÊME pattern que UI/InventoryWindow.cpp::GetIconTex). DÉCALAGE +1 CONFIRMÉ par
-    // décompilation directe (Sprite2D_BuildPath 0x4d68e0 formate le fichier avec
-    // `slot+1`) : le fichier réel d'un slot `id` est 001_<id+1>.IMG, PAS 001_<id>.IMG —
-    // vérifié par le contenu réel (ButtonImageId(i)+1 = bouton 153x23 DXT3 cohérent, alors
-    // que ButtonImageId(i) lui-même pointe vers un asset sans rapport). Nécessite
-    // device_ (cf. SetDevice ci-dessus) ; renvoie nullptr (rien dessiné côté
-    // appelant, jamais d'aplat de repli) si le device n'est pas prêt ou si le fichier est
-    // absent/illisible.
+    // Resolves an atlas slot from unk_8E8B50 (AssetMgr_InitAllSlots 0x4deb50, category 1 ->
+    // "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG") to its GPU texture, lazy cache
+    // (SAME pattern as UI/InventoryWindow.cpp::GetIconTex). +1 OFFSET CONFIRMED by
+    // direct decompilation (Sprite2D_BuildPath 0x4d68e0 formats the file with
+    // `slot+1`): the real file for slot `id` is 001_<id+1>.IMG, NOT 001_<id>.IMG —
+    // verified by real content (ButtonImageId(i)+1 = a consistent 153x23 DXT3 button,
+    // while ButtonImageId(i) itself points to an unrelated asset). Requires
+    // device_ (cf. SetDevice above); returns nullptr (nothing drawn on the
+    // caller side, never a fallback fill) if the device isn't ready or the file is
+    // missing/unreadable.
     gfx::GpuTexture* GetSprite(int slotIndex);
 
-    IDirect3DDevice9* device_ = nullptr; // cf. SetDevice() — requis pour charger les .IMG réels
+    IDirect3DDevice9* device_ = nullptr; // cf. SetDevice() — required to load real .IMG files
     bool actionButtonPressed_ = false;
     std::unordered_map<int, gfx::GpuTexture> spriteCache_; // slot -> texture (lazy, category 1)
 };

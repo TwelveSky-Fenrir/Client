@@ -1,30 +1,30 @@
-// Tools/UiWindowSelfTest.h — outil TEMPORAIRE de verification empirique (audit device
-// reel VendorShopWindow/WarehouseWindow/InventoryWindow, mission 2026-07-14).
+// Tools/UiWindowSelfTest.h — TEMPORARY empirical verification tool (real-device audit
+// VendorShopWindow/WarehouseWindow/InventoryWindow, mission 2026-07-14).
 //
-// A SUPPRIMER apres verification : ne fait PAS partie du client livre. Objectif :
-// prouver, via une VRAIE fenetre visible + un VRAI device D3D9 + le VRAI chemin de
-// production (SceneManager::Init/Change -> GameWindows::Init -> UIManager::Init),
-// que ces 3 fenetres affichent de vraies textures et pas un repli permanent. N'invente
-// AUCUN objet UiContext/Dialog parallele : reutilise tel quel SceneManager (Scene/
-// SceneManager.h, NON MODIFIE) avec un device/fenetre reels, en forcant Scene::InGame
-// directement — EXACTEMENT le meme etat que le repli "EnterWorld: flux en echec ->
-// bascule InGame de secours" deja present dans SceneManager::Update (Scene::EnterWorld),
-// donc un etat atteignable en production, pas un artifice de test isole.
+// TO REMOVE after verification: NOT part of the shipped client. Goal: prove, via a
+// REAL visible window + a REAL D3D9 device + the REAL production path
+// (SceneManager::Init/Change -> GameWindows::Init -> UIManager::Init), that these 3
+// windows display real textures and not a permanent fallback. Does NOT invent ANY
+// parallel UiContext/Dialog object: reuses SceneManager as-is (Scene/SceneManager.h,
+// NOT MODIFIED) with a real device/window, forcing Scene::InGame directly — EXACTLY
+// the same state as the "EnterWorld: flow failed -> fall back to InGame" fallback
+// already present in SceneManager::Update (Scene::EnterWorld), hence a state reachable
+// in production, not an isolated test artifice.
 #pragma once
 
 namespace ts2::tools {
 
-// `which` = "vendor" | "warehouse" | "inventory" | "options" (fenetre a ouvrir via le
-// hotkey reel ; "options" ajoute au perimetre par l'audit chaine UIManager::Init ->
-// GameWindows -> SceneManager, 2026-07-14, pour prouver le fond PanelSkin des 13
-// fenetres enregistrees par GameWindows::Init, pas seulement Vendor/Warehouse/Inventory).
-// `seconds` = duree reelle (secondes) pendant laquelle la fenetre reste affichee apres
-// ouverture, pour laisser le temps a une capture d'ecran externe.
-// `width`/`height` = resolution reelle de la fenetre de test (AJOUTE audit systeme de
-// coordonnees 2026-07-14) : permet de rejouer EXACTEMENT le meme chemin de production
-// (SceneManager::Init -> GameWindows::Init -> UIManager::Init) a une resolution NON
-// 1024x768, pour verifier empiriquement le repositionnement (ou son absence) des
-// fenetres UI. Defaut 1024x768 (kRefWidth/kRefHeight) si <=0.
+// `which` = "vendor" | "warehouse" | "inventory" | "options" (window to open via the
+// real hotkey; "options" added to scope by the UIManager::Init -> GameWindows ->
+// SceneManager chain audit, 2026-07-14, to prove the PanelSkin background of the 13
+// windows registered by GameWindows::Init, not just Vendor/Warehouse/Inventory).
+// `seconds` = real duration (seconds) the window stays displayed after opening, to
+// leave time for an external screenshot.
+// `width`/`height` = real resolution of the test window (ADDED coordinate system audit
+// 2026-07-14): allows replaying EXACTLY the same production path
+// (SceneManager::Init -> GameWindows::Init -> UIManager::Init) at a NON-1024x768
+// resolution, to empirically verify UI window repositioning (or its absence). Default
+// 1024x768 (kRefWidth/kRefHeight) if <=0.
 int RunUiWindowSelfTest(const char* which, int seconds, int width = 0, int height = 0);
 
 } // namespace ts2::tools

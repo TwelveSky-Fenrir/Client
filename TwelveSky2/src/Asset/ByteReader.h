@@ -1,4 +1,4 @@
-// Asset/ByteReader.h — curseur de lecture little-endian borné.
+// Asset/ByteReader.h — bounded little-endian read cursor.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -37,7 +37,7 @@ public:
 
     void Read(void* dst, size_t n) { Require(n); std::memcpy(dst, data_ + pos_, n); pos_ += n; }
 
-    // Lit n octets comme chaîne (non terminée dans la source).
+    // Reads n bytes as a string (not null-terminated in the source).
     std::string Str(size_t n) {
         Require(n);
         std::string s(reinterpret_cast<const char*>(data_ + pos_), n);
@@ -45,7 +45,7 @@ public:
         return s;
     }
 
-    // Compare les 'n' octets courants à 'sig' sans avancer.
+    // Compares the current 'n' bytes to 'sig' without advancing.
     bool PeekMagic(const char* sig, size_t n) const {
         if (pos_ + n > size_) return false;
         return std::memcmp(data_ + pos_, sig, n) == 0;

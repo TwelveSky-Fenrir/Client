@@ -1,10 +1,10 @@
-// Scene/SceneAudit.cpp — implementation du harnais d'audit temporaire (cf.
-// Scene/SceneAudit.h pour le contexte complet et le rappel de suppression).
-// Note : la verification effective de la mission "chaine UIManager::Init ->
-// GameWindows -> SceneManager" (2026-07-14) a finalement reutilise
-// Tools/UiWindowSelfTest.h (deja present, etendu avec which="options"), donc ce
-// fichier n'est plus appele depuis main.cpp — conserve fonctionnel pour ne pas
-// laisser d'entree vcxproj pendante.
+// Scene/SceneAudit.cpp — implementation of the temporary audit harness (see
+// Scene/SceneAudit.h for full context and the removal reminder).
+// Note: actual verification of the "UIManager::Init -> GameWindows ->
+// SceneManager chain" mission (2026-07-14) ended up reusing
+// Tools/UiWindowSelfTest.h (already present, extended with which="options"), so
+// this file is no longer called from main.cpp — kept functional to avoid
+// leaving a dangling vcxproj entry.
 #include "Scene/SceneAudit.h"
 #include "Gfx/Renderer.h"
 #include "Gfx/Camera.h"
@@ -15,8 +15,8 @@
 
 namespace ts2 {
 
-// Resolution GameData minimale, independante de App::ResolveGameDataDir()
-// (prive, dans un fichier hors perimetre de cet audit) : memes candidats.
+// Minimal GameData resolution, independent of App::ResolveGameDataDir()
+// (private, in a file out of scope for this audit): same candidates.
 static std::string ResolveGameDataDirStandalone() {
     static const char* const kCandidates[] = {
         "GameData",
@@ -70,27 +70,27 @@ int RunSceneAudit(const std::string& gameDataDirIn, int holdSeconds) {
     TS2_LOG("[SceneAudit] Device D3D9 cree : dev=%p", (void*)renderer.Device());
 
     net::NetSystem net;
-    net.Init(); // WSAStartup ; aucune connexion reseau requise pour cet audit
+    net.Init(); // WSAStartup; no network connection required for this audit
 
     SceneManager mgr;
     mgr.Init(renderer, net, hwnd, w, h, gameDataDir);
 
-    // Chemin REEL exerce ici (meme code que main.cpp/App.cpp en jeu normal) :
+    // REAL path exercised here (same code as main.cpp/App.cpp in normal play):
     // SceneManager::Change(InGame) -> windows_->Init(*renderer_,...) ->
     // UIManager::Instance().Init(&renderer,...) -> ctx_.renderer = renderer.
     TS2_LOG("[SceneAudit] Appel SceneManager::Change(Scene::InGame) (force, sans login/reseau)...");
     mgr.Change(Scene::InGame);
     TS2_LOG("[SceneAudit] Scene courante = %d (6=InGame attendu)", (int)mgr.Current());
 
-    // Ouvre la fenetre Options via le MEME chemin que la vraie touche 'O'
+    // Opens the Options window via the SAME path as the real 'O' key
     // (SceneManager::OnKeyDown -> GameWindows::HandleHotkey -> OptionsWindow::Open).
     mgr.OnKeyDown('O');
     TS2_LOG("[SceneAudit] OnKeyDown('O') envoye (ouverture OptionsWindow attendue).");
 
     gfx::Camera camera;
 
-    // Boucle de rendu + pompe messages pendant `holdSeconds` (laisse la fenetre
-    // visible pour une capture d'ecran externe).
+    // Render loop + message pump for `holdSeconds` (keeps the window
+    // visible for an external screenshot).
     DWORD startTick = GetTickCount();
     DWORD endTick = startTick + static_cast<DWORD>(holdSeconds) * 1000u;
     int frames = 0;

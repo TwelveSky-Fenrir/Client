@@ -1,5 +1,5 @@
-// UI/PanelSkin.cpp — implémentation (cf. UI/PanelSkin.h pour la dérivation
-// slot -> fichier, prouvée par désassemblage).
+// UI/PanelSkin.cpp — implementation (cf. UI/PanelSkin.h for the slot -> file
+// derivation, proven by disassembly).
 #include "UI/PanelSkin.h"
 #include "Asset/ImgFile.h"
 #include "Core/Log.h"
@@ -9,17 +9,17 @@
 namespace ts2::ui {
 namespace {
 
-// Miroir de g_UseTRVariant 0x1669190 — initialisé à 0 par WinMain @0x4609FB.
+// Mirror of g_UseTRVariant 0x1669190 — initialized to 0 by WinMain @0x4609FB.
 bool s_useTRVariant = false;
 
 } // namespace
 
 void SetUseTRVariant(bool on) { s_useTRVariant = on; }
 
-// Sprite2D_BuildPath 0x4D6900 case 1 : réplique EXACTE des deux branches.
+// Sprite2D_BuildPath 0x4D6900 case 1: exact replica of the two branches.
 //   g_UseTRVariant == 1 -> "G03_GDATA\D01_GIMAGE2D\001\TR\001_%05d.IMG"  @0x4d6928
-//   sinon               -> "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG"     @0x4d6945
-// Le numéro de fichier vaut (index de slot) + 1 (argument `a3 + 1`).
+//   otherwise           -> "G03_GDATA\D01_GIMAGE2D\001\001_%05d.IMG"     @0x4d6945
+// The file number equals (slot index) + 1 (argument `a3 + 1`).
 std::string Cat1SlotPath(int slot) {
     if (slot < 0) return std::string();
     char buf[80];
@@ -34,11 +34,11 @@ std::string Cat1SlotPath(int slot) {
 
 void PanelSkin::EnsureLoaded(const UiContext& ctx) const {
     if (tried_) return;
-    tried_ = true; // une seule tentative, succès ou échec (pas de re-essai par frame)
+    tried_ = true; // a single attempt, success or failure (no retry per frame)
 
-    // Résolution paresseuse du chemin pour la forme `Cat1Slot` : elle DOIT se faire
-    // ici et pas dans le constructeur, car les PanelSkin sont des `static const`
-    // construits avant que App::Init n'ait fixé la variante TR (cf. SetUseTRVariant).
+    // Lazy path resolution for the `Cat1Slot` form: it MUST happen here and not in
+    // the constructor, because PanelSkin instances are `static const` built before
+    // App::Init has set the TR variant (cf. SetUseTRVariant).
     if (path_.empty() && slot_ >= 0)
         path_ = Cat1SlotPath(slot_);
 
@@ -69,16 +69,16 @@ void PanelSkin::EnsureLoaded(const UiContext& ctx) const {
     TS2_LOG("PanelSkin : fond charge (\"%s\", %ux%u)", path_.c_str(), tex_.Width(), tex_.Height());
 }
 
-// Blit à TAILLE NATURELLE — Sprite2D_Draw 0x4D6B20 : UI_DrawSprite(this+104, x, y,
-// 0,0,0,0,0) @0x4D6B72, sans aucun facteur d'échelle.
+// NATURAL-SIZE blit — Sprite2D_Draw 0x4D6B20: UI_DrawSprite(this+104, x, y,
+// 0,0,0,0,0) @0x4D6B72, with no scale factor at all.
 bool PanelSkin::Draw(const UiContext& ctx, int x, int y) const {
-    if (ctx.phase != UiPhase::Panels) return false; // blit sprite : phase Panels uniquement
+    if (ctx.phase != UiPhase::Panels) return false; // sprite blit: Panels phase only
 
     EnsureLoaded(ctx);
 
     if (!tex_.Valid() || tex_.Width() == 0 || tex_.Height() == 0 ||
         !ctx.sprites || !ctx.sprites->Ready())
-        return false; // indisponible : l'appelant gère son propre repli
+        return false; // unavailable: caller handles its own fallback
 
     ctx.sprites->DrawSpriteScaled(tex_.Handle(), nullptr, x, y, 1.0f, 1.0f,
                                   gfx::kSpriteWhite, /*compensatePos=*/true);
@@ -95,13 +95,13 @@ uint32_t PanelSkin::TexH(const UiContext& ctx) const {
     return tex_.Valid() ? tex_.Height() : 0u;
 }
 
-// Blit ÉTIRÉ — NON fidèle, conservé pour les 11 appelants existants.
-// TODO [ancre 0x4D6B20] : voir le pavé de la déclaration dans UI/PanelSkin.h
-// (gap TT-06). Correctif = migration de chaque fenêtre vers Draw(ctx,x,y) +
-// TexW/TexH, dans son propre .cpp — hors du périmètre de ce front.
+// STRETCHED blit — NOT faithful, kept for the 11 existing callers.
+// TODO [anchor 0x4D6B20]: see the block in the UI/PanelSkin.h declaration
+// (gap TT-06). Fix = migrate each window to Draw(ctx,x,y) + TexW/TexH, in its own
+// .cpp — outside the scope of this front.
 bool PanelSkin::Draw(const UiContext& ctx, int x, int y, int w, int h,
                      D3DCOLOR fallbackColor) const {
-    if (ctx.phase != UiPhase::Panels) return false; // FillRect/blit sprite : phase Panels uniquement
+    if (ctx.phase != UiPhase::Panels) return false; // FillRect/sprite blit: Panels phase only
     if (w <= 0 || h <= 0) return false;
 
     EnsureLoaded(ctx);
@@ -110,14 +110,14 @@ bool PanelSkin::Draw(const UiContext& ctx, int x, int y, int w, int h,
         ctx.sprites && ctx.sprites->Ready()) {
         const float sx = static_cast<float>(w) / static_cast<float>(tex_.Width());
         const float sy = static_cast<float>(h) / static_cast<float>(tex_.Height());
-        // compensatePos=true : la position affichée reste (x,y) malgré l'échelle,
-        // exactement comme UiContext::FillRect (UI/UIManager.cpp).
+        // compensatePos=true: the displayed position stays (x,y) despite the scale,
+        // exactly like UiContext::FillRect (UI/UIManager.cpp).
         ctx.sprites->DrawSpriteScaled(tex_.Handle(), nullptr, x, y, sx, sy,
                                       gfx::kSpriteWhite, /*compensatePos=*/true);
         return true;
     }
 
-    // Repli : rectangle plein coloré. Ne bloque jamais le rendu.
+    // Fallback: plain colored rectangle. Never blocks rendering.
     ctx.FillRect(x, y, w, h, fallbackColor);
     return false;
 }

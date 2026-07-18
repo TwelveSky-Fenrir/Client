@@ -1,10 +1,10 @@
-// Input/InputSystem.cpp — implémentation FIDÈLE du sous-système ENTRÉE.
+// Input/InputSystem.cpp — FAITHFUL implementation of the INPUT subsystem.
 //
-// Vérité = désassemblage TwelveSky2.exe. Voir InputSystem.h pour la carte
-// mémoire et la table des ancres EA. Points clés reproduits à l'identique :
-//   - Init clavier : Gfx_InitDevice queue 0x69C7F2..0x69C8C5.
-//   - Poll clavier : Input_AcquireKeyboard 0x6A2130.
-//   - Routage souris : App_WndProc 0x461930.
+// Source of truth = TwelveSky2.exe disassembly. See InputSystem.h for the
+// memory map and EA anchor table. Key points reproduced identically:
+//   - Keyboard init: Gfx_InitDevice queue 0x69C7F2..0x69C8C5.
+//   - Keyboard poll: Input_AcquireKeyboard 0x6A2130.
+//   - Mouse routing: App_WndProc 0x461930.
 #include "InputSystem.h"
 
 #include <cstring>  // std::memset
@@ -14,17 +14,17 @@
 
 namespace ts2::input {
 
-// DIDEVICEOBJECTDATA fait 20 octets en 32-bit (cbObjectData passé = 20 dans
-// GetDeviceData à 0x6A21A0). On le vérifie pour rester bit-fidèle au binaire.
+// DIDEVICEOBJECTDATA is 20 bytes in 32-bit (cbObjectData passed = 20 in
+// GetDeviceData at 0x6A21A0). Checked here to stay bit-faithful to the binary.
 static_assert(sizeof(DIDEVICEOBJECTDATA) == 20,
-              "DIDEVICEOBJECTDATA doit faire 20 octets (build Win32 fidele)");
+              "DIDEVICEOBJECTDATA must be 20 bytes (faithful Win32 build)");
 
 InputSystem::~InputSystem() {
     Shutdown();
 }
 
 // -----------------------------------------------------------------------------
-// Init — reproduit la queue de Gfx_InitDevice (0x69C7F2..0x69C8C5).
+// Init — reproduces the Gfx_InitDevice queue (0x69C7F2..0x69C8C5).
 // -----------------------------------------------------------------------------
 bool InputSystem::Init(HINSTANCE hinst, HWND hwnd) {
     Shutdown();
@@ -61,7 +61,7 @@ bool InputSystem::Init(HINSTANCE hinst, HWND hwnd) {
     }
 
     // keyboard_->SetProperty(DIPROP_BUFFERSIZE, {20,16,0,DIPH_DEVICE,32})
-    //   (vtable+24, 0x69C8AF ; v65 = {20,16,0,0,32})
+    //   (vtable+24, 0x69C8AF; v65 = {20,16,0,0,32})
     DIPROPDWORD dipdw;
     dipdw.diph.dwSize       = sizeof(DIPROPDWORD);   // 20
     dipdw.diph.dwHeaderSize = sizeof(DIPROPHEADER);  // 16
@@ -95,7 +95,7 @@ void InputSystem::Shutdown() {
 
 HRESULT InputSystem::Acquire() {
     if (!keyboard_) return E_FAIL;
-    HRESULT hr = keyboard_->Acquire();          // DI_OK ou S_FALSE (déjà acquis)
+    HRESULT hr = keyboard_->Acquire();          // DI_OK or S_FALSE (already acquired)
     if (SUCCEEDED(hr)) acquired_ = true;
     return hr;
 }
@@ -107,31 +107,31 @@ HRESULT InputSystem::Unacquire() {
 }
 
 // -----------------------------------------------------------------------------
-// Poll — équivalent exact de Input_AcquireKeyboard 0x6A2130.
-//   a2 (windowActive) != 0 : Acquire ; memset(state,0,256) ; GetDeviceState ;
-//                            bufCount=32 ; GetDeviceData.
-//   a2 == 0                : Unacquire ; bufCount=0.
+// Poll — exact equivalent of Input_AcquireKeyboard 0x6A2130.
+//   a2 (windowActive) != 0: Acquire; memset(state,0,256); GetDeviceState;
+//                           bufCount=32; GetDeviceData.
+//   a2 == 0                : Unacquire; bufCount=0.
 // -----------------------------------------------------------------------------
 void InputSystem::Poll(bool windowActive) {
     if (!keyboard_) return;
 
     if (windowActive) {
-        // vtable+28 : Acquire (appelé inconditionnellement chaque frame)
+        // vtable+28: Acquire (called unconditionally every frame)
         keyboard_->Acquire();
         acquired_ = true;
 
-        // memset(state, 0, 0x100) puis GetDeviceState(256, state)  (vtable+36)
+        // memset(state, 0, 0x100) then GetDeviceState(256, state)  (vtable+36)
         std::memset(keyState_, 0, sizeof(keyState_));
         keyboard_->GetDeviceState(kKeyStateBytes, keyState_);
 
-        // bufCount=32 ; GetDeviceData(20, buf, &bufCount, 0)  (vtable+40)
+        // bufCount=32; GetDeviceData(20, buf, &bufCount, 0)  (vtable+40)
         bufCount_ = kKbBufferSize;
         HRESULT hr = keyboard_->GetDeviceData(sizeof(DIDEVICEOBJECTDATA),
                                               buf_, &bufCount_, 0);
         if (FAILED(hr))
-            bufCount_ = 0;   // le binaire ignore la valeur ; on neutralise le tampon
+            bufCount_ = 0;   // the binary ignores the value; we neutralize the buffer
     } else {
-        // vtable+32 : Unacquire ; le binaire remet le compteur d'événements à 0.
+        // vtable+32: Unacquire; the binary resets the event counter to 0.
         keyboard_->Unacquire();
         acquired_ = false;
         bufCount_ = 0;
@@ -139,7 +139,7 @@ void InputSystem::Poll(bool windowActive) {
 }
 
 // -----------------------------------------------------------------------------
-// Clavier tamponné.
+// Buffered keyboard.
 // -----------------------------------------------------------------------------
 KeyEvent InputSystem::BufferedEvent(int i) const {
     KeyEvent ev{ 0, false };
@@ -150,7 +150,7 @@ KeyEvent InputSystem::BufferedEvent(int i) const {
     return ev;
 }
 
-// Boucle « for i: si (buf[i].dwData & 0x80) -> break » de Camera_UpdateFromInput.
+// "for i: if (buf[i].dwData & 0x80) -> break" loop from Camera_UpdateFromInput.
 int InputSystem::FirstKeyDownDik() const {
     for (int i = 0; i < static_cast<int>(bufCount_); ++i) {
         if ((buf_[i].dwData & 0x80) != 0)
@@ -160,7 +160,7 @@ int InputSystem::FirstKeyDownDik() const {
 }
 
 // -----------------------------------------------------------------------------
-// Souris — routage identique à App_WndProc 0x461930.
+// Mouse — routing identical to App_WndProc 0x461930.
 // -----------------------------------------------------------------------------
 bool InputSystem::ProcessMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     const int x = static_cast<int>(static_cast<short>(LOWORD(lParam)));
@@ -193,9 +193,9 @@ bool InputSystem::ProcessMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 void InputSystem::OnMouseMove(int x, int y, WPARAM /*keyFlags*/) {
-    // Delta = position courante - dernière (Camera_MouseDragRotate 0x50B0BA).
-    // On accumule ; le bouton droit (MK_RBUTTON=2) est la condition d'orbite,
-    // laissée à l'appelant via RightButtonDown()/GetMouseDelta().
+    // Delta = current position - last (Camera_MouseDragRotate 0x50B0BA).
+    // We accumulate; the right button (MK_RBUTTON=2) is the orbit condition,
+    // left to the caller via RightButtonDown()/GetMouseDelta().
     mouse_.dx += x - mouse_.x;
     mouse_.dy += y - mouse_.y;
     mouse_.x = x;
@@ -204,13 +204,13 @@ void InputSystem::OnMouseMove(int x, int y, WPARAM /*keyFlags*/) {
 
 void InputSystem::OnLButtonDown(int x, int y) {
     mouse_.left = true;
-    if (hwnd_) SetCapture(hwnd_);       // App_WndProc : SetCapture(hWndParent)
+    if (hwnd_) SetCapture(hwnd_);       // App_WndProc: SetCapture(hWndParent)
     if (onLDown_) onLDown_(x, y);       // -> Input_OnLButtonDown 0x50AC90
 }
 
 void InputSystem::OnLButtonUp(int x, int y) {
     mouse_.left = false;
-    ReleaseCapture();                   // App_WndProc : ReleaseCapture()
+    ReleaseCapture();                   // App_WndProc: ReleaseCapture()
     if (onLUp_) onLUp_(x, y);           // -> Input_OnLButtonUp 0x50AD20
 }
 

@@ -1,36 +1,36 @@
-// World/CollisionMesh.h — moteur de PICK segment + PLAN-SOL de collision (Vague B4 / F_COLLISION).
+// World/CollisionMesh.h — segment PICK + GROUND-PLANE collision engine (Wave B4 / F_COLLISION).
 //
-// Ce module NOUVEAU complète le moteur de requêtes déjà en place dans World/WorldMap.cpp
+// This NEW module completes the query engine already in place in World/WorldMap.cpp
 // (namespace ts2::world::collision — MapColl_GetGroundHeight 0x697130, RaycastNearest 0x6960c0,
-// SweepSphereNearest 0x696ad0, SlideMoveGround 0x697330, PointInTriangleXZ 0x695c70, etc., tous
-// portés byte-fidèlement). Il n'y a AUCUNE duplication : on n'ajoute ici que la chaîne de PICK
-// SEGMENT « variante A » et l'extraction du PLAN-SOL — absentes jusqu'ici — nécessaires à l'ombre
-// planaire projetée de la Vague B (F_ENTITY3D). Les décodeurs typés G01 (CollisionFace 156o,
-// CollisionQuadNode 48o, TerrainVertex 40o) vivent déjà dans Asset/WorldChunk.{h,cpp} et sont
-// consommés tels quels (asset::CollisionMesh).
+// SweepSphereNearest 0x696ad0, SlideMoveGround 0x697330, PointInTriangleXZ 0x695c70, etc., all
+// ported byte-faithfully). There is NO duplication: only the "variant A" SEGMENT PICK chain and
+// GROUND-PLANE extraction are added here — absent until now — needed for the projected planar
+// shadow of Wave B (F_ENTITY3D). The typed G01 decoders (CollisionFace 156B,
+// CollisionQuadNode 48B, TerrainVertex 40B) already live in Asset/WorldChunk.{h,cpp} and are
+// consumed as-is (asset::CollisionMesh).
 //
-// Chaîne réversée (ancres @EA, imagebase 0x400000) :
-//   Model_RenderPlanarShadow   0x40f720  — construit un segment model+hauteur -> +lightDir, pick,
-//                                          lit tris[hit].plane (+124/+128/+132/+136), biais -d-0.1,
-//                                          D3DXMatrixShadow. C'EST le consommateur du plan-sol.
-//   Collision_SegPickA         0x420d60  — gate AABB racine + descend les 4 enfants (impact le + proche).
-//   Collision_SegNodeNearestA  0x420f40  — récursif ; FEUILLE filtre materialIndex==1 (faces marchables
-//                                          taggées .WM), sinon récurse 4 enfants ; garde this[1]==2.
-//   Collision_RayTriangle      0x420240  — plane-solve une-face (n·dir<0) + t>=0 + containment.
-//   Collision_PointInTriangle  0x41fe30  — point-dans-triangle projeté en XZ (côté-du-centroïde/3 arêtes).
-//   Collide_AABBvsSegmentSAT   0x4070d0  — SAT segment/AABB ; ALGORITHME IDENTIQUE à Collide_SegmentAABB
-//                                          0x69fb20 (déjà porté = collision::SegmentAABB) à permutation
-//                                          d'arguments près -> réutilisé, pas re-porté.
-//   MapColl_GetGroundHeight    0x697130  — variante VERTICALE (GetGroundPlaneUnder) : descente quadtree
-//                                          XZ + plane-solve + MapColl_RayHitTriangle 0x695ae0.
+// Reversed chain (@EA anchors, imagebase 0x400000):
+//   Model_RenderPlanarShadow   0x40f720  — builds a model+height segment -> +lightDir, picks,
+//                                          reads tris[hit].plane (+124/+128/+132/+136), bias -d-0.1,
+//                                          D3DXMatrixShadow. This IS the ground-plane consumer.
+//   Collision_SegPickA         0x420d60  — root AABB gate + descends the 4 children (nearest impact).
+//   Collision_SegNodeNearestA  0x420f40  — recursive; LEAF filters materialIndex==1 (walkable faces
+//                                          tagged .WM), otherwise recurses into 4 children; guards this[1]==2.
+//   Collision_RayTriangle      0x420240  — single-face plane-solve (n.dir<0) + t>=0 + containment.
+//   Collision_PointInTriangle  0x41fe30  — point-in-triangle projected in XZ (centroid-side/3 edges).
+//   Collide_AABBvsSegmentSAT   0x4070d0  — SAT segment/AABB; SAME ALGORITHM as Collide_SegmentAABB
+//                                          0x69fb20 (already ported = collision::SegmentAABB) up to
+//                                          argument permutation -> reused, not re-ported.
+//   MapColl_GetGroundHeight    0x697130  — VERTICAL variant (GetGroundPlaneUnder): XZ quadtree
+//                                          descent + plane-solve + MapColl_RayHitTriangle 0x695ae0.
 //
-// RÈGLE #0 : chaque bloc du .cpp cite son ancre IDA. Fonctions pures, sans état, build-safe
-// (guards maille vide / index hors bornes). IDA = SEULE VÉRITÉ ; IDB en lecture seule.
+// RULE #0: each block of the .cpp cites its IDA anchor. Pure, stateless functions, build-safe
+// (empty-mesh / out-of-bounds-index guards). IDA = SOLE TRUTH; IDB is read-only.
 #pragma once
 #include <cstdint>
 
-// MODULE LEAF : on opère sur la maille DÉCODÉE (asset::CollisionMesh, Gap G01, Asset/WorldChunk.h).
-// Déclarations anticipées seulement — le .cpp inclut Asset/WorldChunk.h + World/WorldMap.h.
+// LEAF MODULE: operates on the DECODED mesh (asset::CollisionMesh, Gap G01, Asset/WorldChunk.h).
+// Forward declarations only — the .cpp includes Asset/WorldChunk.h + World/WorldMap.h.
 namespace ts2::asset {
 struct CollisionMesh;
 struct CollisionFace;
@@ -39,79 +39,73 @@ struct CollisionFace;
 namespace ts2::world {
 namespace collision {
 
-// ---------------------------------------------------------------------------
-// GroundPlane — plan-sol renvoyé pour l'ombre planaire (Vague B / F_ENTITY3D).
-// Réf IDA : Model_RenderPlanarShadow 0x40f720 (@0x40fa52..0x40fb28).
-//   plane[4]       = {a,b,c,d} = tris[faceIndex].plane BRUT (+124/+128/+132/+136) = normale + D.
-//   shadowPlane[4] = {a,b,c, -d - 0.1f} — plan PRÊT pour D3DXMatrixShadow : D négé + biais anti
-//                    z-fight (v45[3] = v41*-1.0 - 0.1 @0x40fafc). C'est ce vecteur que le binaire
-//                    passe à j_D3DXMatrixShadow(mat, light4, shadowPlane) @0x40fb28.
-//   hit[3]         = point d'impact du pick sur le sol (Collision_SegPickA sortie a3).
-//   faceIndex      = index de la face de sol touchée dans mesh.tris[].
-// Le vecteur lumière à passer À CÔTÉ = light4 = { -lightDir.x, -lightDir.y, -lightDir.z, 0.0 }
-// (v38..v41 @0x40fb08..0x40fb24 : flt_18C53C0/C4/C8 négés, w=0 = directionnel). lightDir provient
-// des globals flt_18C53C0/18C53C4/18C53C8 (direction de projection d'ombre) — fourni par F_ENTITY3D.
-// ---------------------------------------------------------------------------
+// GroundPlane — ground plane returned for the planar shadow (Wave B / F_ENTITY3D).
+// IDA ref: Model_RenderPlanarShadow 0x40f720 (@0x40fa52..0x40fb28).
+//   plane[4]       = {a,b,c,d} = tris[faceIndex].plane RAW (+124/+128/+132/+136) = normal + D.
+//   shadowPlane[4] = {a,b,c, -d - 0.1f} — plane READY for D3DXMatrixShadow: D negated + anti
+//                    z-fight bias (v45[3] = v41*-1.0 - 0.1 @0x40fafc). This is the vector the binary
+//                    passes to j_D3DXMatrixShadow(mat, light4, shadowPlane) @0x40fb28.
+//   hit[3]         = pick's impact point on the ground (Collision_SegPickA output a3).
+//   faceIndex      = index of the ground face hit, in mesh.tris[].
+// The light vector to pass ALONGSIDE = light4 = { -lightDir.x, -lightDir.y, -lightDir.z, 0.0 }
+// (v38..v41 @0x40fb08..0x40fb24 : flt_18C53C0/C4/C8 negated, w=0 = directional). lightDir comes
+// from globals flt_18C53C0/18C53C4/18C53C8 (shadow projection direction) — supplied by F_ENTITY3D.
 struct GroundPlane {
-    float    plane[4]       = {0.0f, 0.0f, 0.0f, 0.0f}; // a,b,c,d bruts (tris[faceIndex].plane)
-    float    shadowPlane[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // a,b,c,-d-0.1 (prêt D3DXMatrixShadow)
-    float    hit[3]         = {0.0f, 0.0f, 0.0f};       // point d'impact du pick sur le sol
-    uint32_t faceIndex      = 0;                         // face de sol touchée (index dans tris[])
-    bool     valid          = false;                     // false = aucun sol sous le pick
+    float    plane[4]       = {0.0f, 0.0f, 0.0f, 0.0f}; // raw a,b,c,d (tris[faceIndex].plane)
+    float    shadowPlane[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // a,b,c,-d-0.1 (ready for D3DXMatrixShadow)
+    float    hit[3]         = {0.0f, 0.0f, 0.0f};       // pick's impact point on the ground
+    uint32_t faceIndex      = 0;                         // ground face hit (index into tris[])
+    bool     valid          = false;                     // false = no ground under the pick
 };
 
-// ---------------------------------------------------------------------------
-// Chaîne de PICK SEGMENT « variante A » (impact de face marchable le plus proche).
-// ---------------------------------------------------------------------------
+// "Variant A" SEGMENT PICK chain (nearest walkable-face impact).
 
-// Collision_PointInTriangle 0x41fe30 — point dans le triangle PROJETÉ en XZ (côté-du-centroïde sur
-// les 3 arêtes ; p[1]=Y ignoré). Utilise les mêmes 156o de face que MapColl_RayHitTriangle 0x695ae0
-// mais un test EDGE-SIDEDNESS distinct (pas barycentrique). faceIndex hors bornes -> false.
+// Collision_PointInTriangle 0x41fe30 — point-in-triangle PROJECTED in XZ (centroid-side test on
+// the 3 edges ; p[1]=Y ignored). Uses the same 156B faces as MapColl_RayHitTriangle 0x695ae0
+// but a DISTINCT EDGE-SIDEDNESS test (not barycentric). faceIndex out of bounds -> false.
 bool PointInTriangleProjXZ(const asset::CollisionMesh& mesh, uint32_t faceIndex, const float p[3]);
 
-// Collision_RayTriangle 0x420240 — plane-solve UNE-FACE : n·dir doit être < 0 (0x420285),
-// t = (d - n·start)/(n·dir) >= 0 (0x4202d1), hit = start + t*dir, puis PointInTriangleProjXZ.
-// outHit rempli seulement si touché (renvoie true).
+// Collision_RayTriangle 0x420240 — SINGLE-FACE plane-solve : n.dir must be < 0 (0x420285),
+// t = (d - n.start)/(n.dir) >= 0 (0x4202d1), hit = start + t*dir, then PointInTriangleProjXZ.
+// outHit filled only if hit (returns true).
 bool RayTriangleHit(const asset::CollisionMesh& mesh, uint32_t faceIndex,
                     const float start[3], const float dir[3], float outHit[3]);
 
-// Collision_SegNodeNearestA 0x420f40 — descente récursive du quadtree (nodeIndex ; 0 = racine).
-// FEUILLE (child[0]==-1) : pour chaque face de la feuille, FILTRE materialIndex==1 (0x421128 :
-// faces marchables taggées .WM/WORLD2), test RayTriangleHit, retient l'impact le plus proche de
-// `start`. NŒUD INTERNE : récurse les 4 enfants. Gate AABB = collision::SegmentAABB (== 0x4070d0).
-// outFaceIndex/outHit = impact le plus proche. Renvoie true si un impact a été trouvé.
+// Collision_SegNodeNearestA 0x420f40 — recursive descent of the quadtree (nodeIndex ; 0 = root).
+// LEAF (child[0]==-1): for each face in the leaf, FILTER materialIndex==1 (0x421128 :
+// walkable faces tagged .WM/WORLD2), test RayTriangleHit, keep the impact nearest to
+// `start`. INTERNAL NODE: recurse into the 4 children. AABB gate = collision::SegmentAABB (== 0x4070d0).
+// outFaceIndex/outHit = nearest impact. Returns true if an impact was found.
 bool SegNodeNearest(const asset::CollisionMesh& mesh, uint32_t nodeIndex,
                     const float start[3], const float dir[3],
                     uint32_t& outFaceIndex, float outHit[3]);
 
-// Collision_SegPickA 0x420d60 — pick du SEGMENT [near -> far] contre la maille. Gate AABB de la
-// RACINE (near, dir=far-near) puis descend ses 4 enfants (SegNodeNearest), impact le plus proche de
-// `near`. Garde : maille active + near != far (0x420da7). outFaceIndex/outHit remplis si touché.
+// Collision_SegPickA 0x420d60 — pick of SEGMENT [near -> far] against the mesh. ROOT AABB gate
+// (near, dir=far-near) then descends its 4 children (SegNodeNearest), impact nearest to
+// `near`. Guard: mesh active + near != far (0x420da7). outFaceIndex/outHit filled if hit.
 bool SegPickNearest(const asset::CollisionMesh& mesh, const float nearPt[3], const float farPt[3],
                     uint32_t& outFaceIndex, float outHit[3]);
 
-// ---------------------------------------------------------------------------
-// PLAN-SOL pour l'ombre planaire (Vague B) — deux fournisseurs.
-// ---------------------------------------------------------------------------
+// GROUND PLANE for the planar shadow (Wave B) — two providers.
 
-// Model_RenderPlanarShadow 0x40f720 (@0x40f97d..0x40fb00) — reproduit l'extraction du plan-sol :
+// Model_RenderPlanarShadow 0x40f720 (@0x40f97d..0x40fb00) — reproduces the ground-plane extraction:
 //   near = { pos.x, pos.y + modelHeight, pos.z }              (@0x40f97d/0x40f995/0x40f9a0)
 //   far  = near + lightDir                                    (@0x40f9ae/0x40f9bc/0x40f9ca)
 //   pick = Collision_SegPickA(near, far)                      (@0x40f9ce)
-//   garde distance : |hit - near| <= maxDist                  (@0x40fa39)
-//   plane = tris[hit].plane ; garde b != 0 && (d - x*a - z*c)/b <= pos.y + 0.1  (@0x40fac2)
+//   distance guard: |hit - near| <= maxDist                   (@0x40fa39)
+//   plane = tris[hit].plane ; guard b != 0 && (d - x*a - z*c)/b <= pos.y + 0.1  (@0x40fac2)
 //   out.shadowPlane = { a, b, c, -d - 0.1 }                   (@0x40fafc)
-// Renvoie true + remplit `out` si un sol d'ombre valide existe ; false sinon (out.valid=false).
-// `lightDir` = flt_18C53C0/C4/C8 (direction de projection d'ombre, fournie par l'appelant).
+// Returns true + fills `out` if a valid shadow ground exists ; false otherwise (out.valid=false).
+// `lightDir` = flt_18C53C0/C4/C8 (shadow projection direction, supplied by the caller).
 bool GetGroundPlaneForShadow(const asset::CollisionMesh& mesh, const float modelPos[3],
                              float modelHeight, const float lightDir[3], float maxDist,
                              GroundPlane& out);
 
-// Variante VERTICALE (commodité) — plan-sol directement SOUS (x,z), via la descente quadtree +
-// plane-solve de MapColl_GetGroundHeight 0x697130 (filtre marchable planeB>0, 1er hit, containment
-// MapColl_RayHitTriangle 0x695ae0). Le shadowPlane est biaisé -d-0.1 comme la voie d'origine.
-// NB : filtre planeB>0 (orientation marchable) ≠ filtre materialIndex==1 de GetGroundPlaneForShadow
-// (tag .WM) — deux critères distincts, tous deux prouvés. À choisir selon le besoin de l'appelant.
+// VERTICAL variant (convenience) — ground plane directly UNDER (x,z), via the quadtree descent +
+// plane-solve of MapColl_GetGroundHeight 0x697130 (walkable filter planeB>0, first hit, containment
+// via MapColl_RayHitTriangle 0x695ae0). shadowPlane is biased -d-0.1 like the original path.
+// NB: filter planeB>0 (walkable orientation) != filter materialIndex==1 of GetGroundPlaneForShadow
+// (.WM tag) — two distinct criteria, both proven. Choose per the caller's need.
 bool GetGroundPlaneUnder(const asset::CollisionMesh& mesh, float x, float z, GroundPlane& out);
 
 } // namespace collision

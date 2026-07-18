@@ -1,62 +1,62 @@
-// Net/CharSelectPackets.h — requêtes réseau BLOQUANTES de l'écran de sélection de
-// personnage (scène 4), sur la socket LOGIN encore active (avant ConnectGameServer /
-// WSAAsyncSelect — cf. Net/Login.cpp : le même schéma bloquant send()+recv() y est
-// déjà utilisé pour LoginRequest). Point d'intégration réseau de
-// Game/CharSelectFlow.h::CharSelectHost, appelé depuis UI/LoginScene.cpp.
+// Net/CharSelectPackets.h — BLOCKING network requests for the character-select
+// screen (scene 4), on the LOGIN socket still active (before ConnectGameServer /
+// WSAAsyncSelect — cf. Net/Login.cpp: the same blocking send()+recv() scheme is
+// already used there for LoginRequest). Network integration point for
+// Game/CharSelectFlow.h::CharSelectHost, called from UI/LoginScene.cpp.
 //
-// Fonctions d'origine (renommées dans l'IDB `RE/TwelveSky2.exe.i64`, noms confirmés
-// via `lookup_funcs` — voir aussi Docs/TS2_CHARSELECT_AUDIT.md et
-// Game/CharSelectFlow.h qui documentait déjà ces mêmes EAs) :
+// Original functions (renamed in the IDB `RE/TwelveSky2.exe.i64`, names confirmed
+// via `lookup_funcs` — see also Docs/TS2_CHARSELECT_AUDIT.md and
+// Game/CharSelectFlow.h, which already documented these same EAs):
 //   Net_AccountKeepAlive 0x5298F0 (opcode 12)
 //   Net_CreateCharacter  0x52A4A0 (opcode 17 / 0x11)
 //   Net_CharSlotAction   0x52A740 (opcode 18 / 0x12), via CharSelect_ReqDeleteChar 0x528FD0
 //   Net_ReqEnterCharInfo 0x52B070 (opcode 22 / 0x16)
-//   Net_ReqCancelEnter   0x52B310 (opcode 23 / 0x17 — PAS 21, cf. RECONFIRMATION ci-dessous)
-//   Net_ReqVerifyCharName 0x52B4C0 (opcode 24 / 0x18) — porté mais JAMAIS ÉMIS (chaîne
-//     morte prouvée, voir l'ancre sur VerifyCharName)
-//   Net_AccountReq_op27  0x52BD80 (opcode 27 / 0x1b) — émis depuis
-//     Scene_CharSelectOnMouseUp @0x523E07 (xref unique). À ne PAS confondre avec
-//     Net_SendPacket_Op27 0x4B5B90 (Net/SendPackets.h), sans rapport.
+//   Net_ReqCancelEnter   0x52B310 (opcode 23 / 0x17 — NOT 21, cf. RECONFIRMATION below)
+//   Net_ReqVerifyCharName 0x52B4C0 (opcode 24 / 0x18) — ported but NEVER EMITTED (dead
+//     chain proven, see the anchor on VerifyCharName)
+//   Net_AccountReq_op27  0x52BD80 (opcode 27 / 0x1b) — emitted from
+//     Scene_CharSelectOnMouseUp @0x523E07 (single xref). Do NOT confuse with
+//     Net_SendPacket_Op27 0x4B5B90 (Net/SendPackets.h), unrelated.
 //
-// RECONFIRMATION RE (2026-07-14, accès idaTs2 direct — HTTP JSON-RPC 127.0.0.1:13337,
-// outil `decompile`, sur les 5 EAs ci-dessus + Scene_CharSelectOnMouseUp 0x522E50 pour
-// le remplissage de la fiche de création). La session précédente (sans accès IDA)
-// avait supposé que ces 5 fonctions étaient de simples enveloppes autour des builders
-// génériques bas niveau `Net_SendPacket_Op12/17/18/21/22` (`RE/net_builders_decomp.json`).
-// C'ÉTAIT FAUX : chacune des 5 fonctions construit sa PROPRE trame inline (même motif
-// dupliqué — nonces/en-tête/XOR/send — mais avec un opcode et/ou une charge utile
-// DIFFÉRENTS des builders génériques homonymes, qui servent en réalité à d'AUTRES
-// points d'appel du jeu). Écarts corrigés dans ce module :
-//   - Net_AccountKeepAlive : AUCUNE charge utile (9 o, pas 213), et surtout AUCUNE
-//     ATTENTE DE RÉPONSE (le binaire ne fait PAS de recv() — heartbeat fire-and-forget,
-//     *a1=0 immédiatement après envoi réussi). L'ancien code attendait à tort 5 o.
-//   - Net_CreateCharacter : charge utile RÉELLE de 10092 o (4 o slot + 10088 o fiche
-//     personnage), PAS 61 o. Réponse RÉELLE de 10093 o ([1][code:4][fiche-écho:10088],
-//     le serveur renvoie la fiche créée), PAS 5 o. Offsets connus DANS la fiche
-//     (relatifs au début, confirmés par décompilation de l'appelant
-//     Scene_CharSelectOnMouseUp EA 0x526634-0x5267E4, cohérents avec les commentaires
-//     déjà présents dans Game/CharSelectFlow.h::CharCreateForm) :
-//       [20..32] nom (13 o) · [36] job · [44] genre (dit « faction ») · [48] face ·
-//       [52] hairColor · [216] startingWeaponItemId (ex-« lookPresetId », RENOMMÉ —
-//       c'est un id d'OBJET résolu dans la DB items, cf. l'ancre sur la constante).
-//       Tout le reste est ZÉRO dans tous les chemins observés (jamais écrit avant
-//       l'envoi dans le binaire) — en particulier [40] (race), que SEUL le serveur
-//       remplit, et qui revient par l'écho de l'opcode 17.
-//   - Net_CharSlotAction : charge utile RÉELLE de 12 o (3 champs 4o à 0/4/8), PAS 76 o.
-//     Réponse [1][code:4] (5 o) inchangée/confirmée.
-//   - Net_ReqEnterCharInfo : charge utile RÉELLE de 4 o (SEUL le slot), PAS 2 champs/8o
-//     (l'ancien code envoyait un octet superflu qui aurait désaligné la trame de 4 o
-//     face à un vrai serveur). Réponse [1][code:4][domainId:4][gamePort:4][zoneId:4]
-//     (17 o) CONFIRMÉE inchangée — c'était déjà correct.
-//   - Net_ReqCancelEnter : opcode RÉEL 23 (0x17), PAS 21 (0x15) — l'opcode 21/
-//     Net_SendPacket_Op21 générique existe bien dans le binaire (utilisé ailleurs,
-//     p.ex. World_LoadMap après échec de Net_ConnectGameServer) mais N'EST PAS ce que
-//     cette fonction envoie. Toujours SANS payload (9 o). Et surtout AUCUNE ATTENTE DE
-//     RÉPONSE (comme AccountKeepAlive) — l'ancien code attendait à tort 5 o.
-// Le FRAMING générique (en-tête 9o : nonces/séquence/opcode, puis XOR intégral,
-// incrément de séquence après envoi réussi) reste CONFIRMÉ inchangé — seule la
-// construction interne (opcode exact + contenu/taille de charge utile + présence ou
-// non d'un recv()) a été corrigée.
+// RE RECONFIRMATION (2026-07-14, direct idaTs2 access — HTTP JSON-RPC 127.0.0.1:13337,
+// `decompile` tool, on the 5 EAs above + Scene_CharSelectOnMouseUp 0x522E50 for the
+// creation form field layout). The previous session (without IDA access) had assumed
+// these 5 functions were simple wrappers around the generic low-level builders
+// `Net_SendPacket_Op12/17/18/21/22` (`RE/net_builders_decomp.json`).
+// THAT WAS WRONG: each of the 5 functions builds its OWN inline frame (same
+// duplicated pattern — nonces/header/XOR/send — but with an opcode and/or payload
+// DIFFERENT from the generic same-named builders, which actually serve OTHER call
+// sites in the game). Discrepancies fixed in this module:
+//   - Net_AccountKeepAlive: NO payload (9 B, not 213), and above all NO RESPONSE
+//     WAIT (the binary does NOT recv() — fire-and-forget heartbeat, *a1=0
+//     immediately after a successful send). The old code wrongly waited for 5 B.
+//   - Net_CreateCharacter: REAL payload of 10092 B (4 B slot + 10088 B character
+//     record), NOT 61 B. REAL response of 10093 B ([1][code:4][record-echo:10088],
+//     the server sends back the created record), NOT 5 B. Known offsets WITHIN
+//     the record (relative to the start, confirmed by decompiling the caller
+//     Scene_CharSelectOnMouseUp EA 0x526634-0x5267E4, consistent with the comments
+//     already present in Game/CharSelectFlow.h::CharCreateForm):
+//       [20..32] name (13 B) - [36] job - [44] gender (called "faction") - [48] face -
+//       [52] hairColor - [216] startingWeaponItemId (ex-"lookPresetId", RENAMED —
+//       it's an ITEM id resolved against the items DB, cf. the anchor on the constant).
+//       Everything else is ZERO in every observed path (never written before send
+//       in the binary) — in particular [40] (race), which ONLY the server fills,
+//       and which comes back via opcode 17's echo.
+//   - Net_CharSlotAction: REAL payload of 12 B (3 fields of 4B at 0/4/8), NOT 76 B.
+//     Response [1][code:4] (5 B) unchanged/confirmed.
+//   - Net_ReqEnterCharInfo: REAL payload of 4 B (ONLY the slot), NOT 2 fields/8B
+//     (the old code sent a redundant byte that would misalign the frame by 4 B
+//     against a real server). Response [1][code:4][domainId:4][gamePort:4][zoneId:4]
+//     (17 B) CONFIRMED unchanged — this was already correct.
+//   - Net_ReqCancelEnter: REAL opcode 23 (0x17), NOT 21 (0x15) — the generic opcode
+//     21/Net_SendPacket_Op21 does exist in the binary (used elsewhere, e.g.
+//     World_LoadMap after a Net_ConnectGameServer failure) but is NOT what this
+//     function sends. Still NO payload (9 B). And above all NO RESPONSE WAIT (like
+//     AccountKeepAlive) — the old code wrongly waited for 5 B.
+// The generic FRAMING (9B header: nonces/sequence/opcode, then full XOR, sequence
+// increment after a successful send) remains CONFIRMED unchanged — only the internal
+// construction (exact opcode + payload content/size + presence or not of a recv())
+// was fixed.
 #pragma once
 #include "Net/NetClient.h"
 #include "Game/CharSelectFlow.h"
@@ -66,313 +66,316 @@
 
 namespace ts2::net {
 
-// --- Layout interne d'une fiche personnage de 10088 o (0x2768) ---
-// Une fiche par emplacement (net::g_CharRecords[i], persistée par
-// Net/Login.cpp::LoginRequest), MÊME structure que le payload envoyé par
-// Net_CreateCharacter (opcode 17, cf. mapping ci-dessus). Offsets RE-CONFIRMÉS par
-// décompilation directe de Scene_CharSelectUpdate 0x51BD90 (session 2026-07-14,
-// EA 0x51c2f7-0x51c7d4) : le binaire compare/lit `unk_1669394`/`dword_16693B8`/
-// `dword_166A8DC`/`dword_166A8E0`/`E4`/`E8`, tous des OFFSETS FIXES relatifs à la base
-// `unk_1669380` de la 1ère fiche (stride 2522 dwords = 10088 o = kCharRecordSize) —
-// soustraction d'adresses : nom=+20, power=+56, zoneId=+5468, position=+5472/5476/5480.
-inline constexpr int kCharRecFieldName    = 20;   // 13 o, C-string (nom du personnage)
-// +36 : champ « job/classe » ÉCRIT PAR LE FORMULAIRE DE CRÉATION (dword_16709DC,
-// 3 écritures : 0x52537C aléatoire / 0x5260B2 flèche − / 0x526158 flèche +) et lu par
-// l'aperçu de CRÉATION comme index de race. DISTINCT de kCharRecFieldRace (+40) — voir
-// l'ancre détaillée sur celui-ci. Dans la branche LISTE, +36 ne sert QUE de SENTINELLE
-// testée `== 3` (Char_RenderModel 0x527020, `cmp dword ptr [ecx+24h], 3` @0x52754A).
+// --- Internal layout of a 10088 B (0x2768) character record ---
+// One record per slot (net::g_CharRecords[i], persisted by
+// Net/Login.cpp::LoginRequest), the SAME structure as the payload sent by
+// Net_CreateCharacter (opcode 17, cf. mapping above). Offsets RE-CONFIRMED by
+// direct decompilation of Scene_CharSelectUpdate 0x51BD90 (session 2026-07-14,
+// EA 0x51c2f7-0x51c7d4): the binary compares/reads `unk_1669394`/`dword_16693B8`/
+// `dword_166A8DC`/`dword_166A8E0`/`E4`/`E8`, all FIXED OFFSETS relative to the base
+// `unk_1669380` of the 1st record (stride 2522 dwords = 10088 B = kCharRecordSize) —
+// address subtraction: name=+20, power=+56, zoneId=+5468, position=+5472/5476/5480.
+inline constexpr int kCharRecFieldName    = 20;   // 13 B, C-string (character name)
+// +36: "job/class" field WRITTEN BY THE CREATION FORM (dword_16709DC,
+// 3 writes: 0x52537C random / 0x5260B2 minus arrow / 0x526158 plus arrow) and read
+// by the CREATION preview as a race index. DISTINCT from kCharRecFieldRace (+40) —
+// see the detailed anchor on it. In the LIST branch, +36 is used ONLY as a SENTINEL
+// tested `== 3` (Char_RenderModel 0x527020, `cmp dword ptr [ecx+24h], 3` @0x52754A).
 inline constexpr int kCharRecFieldJob     = 36;   // int32
-// +40 : RACE EFFECTIVE de la LISTE — index passé à PcModel_ResolveEquipSlot 0x4E46A0
-// (a2) pour résoudre le modèle 3D, et à PcSnd_ResolveEquipSlot (@0x5251E4) pour le son.
-// ANCRE DÉCISIVE — Char_RenderModel 0x527020 a DEUX branches (`cmp [ebp+arg_4], 0 ;
-// jz loc_527452` @0x52702F) qui lisent des champs DIFFÉRENTS :
-//   branche CRÉATION (arg_4 != 0) : `mov edx, [ecx+24h]` @0x527051 -> a2 = record+36
-//   branche LISTE    (arg_4 == 0) : `mov eax, [edx+28h]` @0x527536 -> a2 = record+40
-// (les DEUX passent record+44 en a3 : `mov eax,[edx+2Ch]` @0x52704A / `mov ecx,[eax+2Ch]`
-// @0x52752F). Ce n'est PAS un copier-coller : la branche LISTE lit AUSSI +36, mais comme
-// sentinelle `== 3` @0x52754A -> les deux champs COEXISTENT avec des rôles distincts.
-// RE-VÉRIFIÉ (désassemblage direct, cette session) + corroboré par data_refs :
-//   data_refs(0x16709E0) = fiche de création +40 -> ZÉRO référence : le client n'écrit
-//     JAMAIS +40 ; c'est le SERVEUR qui le remplit (écho op17 @0x52A71E).
-//   data_refs(0x16693A8) = fiche de liste +40 -> 5 réfs, TOUTES en lecture (0x51C52E,
-//     0x51C598, 0x51C622, 0x51C691 dans Scene_CharSelectUpdate ; 0x5251D8 dans
+// +40: LIST's EFFECTIVE RACE — index passed to PcModel_ResolveEquipSlot 0x4E46A0
+// (a2) to resolve the 3D model, and to PcSnd_ResolveEquipSlot (@0x5251E4) for sound.
+// DECISIVE ANCHOR — Char_RenderModel 0x527020 has TWO branches (`cmp [ebp+arg_4], 0 ;
+// jz loc_527452` @0x52702F) that read DIFFERENT fields:
+//   CREATION branch (arg_4 != 0): `mov edx, [ecx+24h]` @0x527051 -> a2 = record+36
+//   LIST branch     (arg_4 == 0): `mov eax, [edx+28h]` @0x527536 -> a2 = record+40
+// (BOTH pass record+44 as a3: `mov eax,[edx+2Ch]` @0x52704A / `mov ecx,[eax+2Ch]`
+// @0x52752F). This is NOT a copy-paste mistake: the LIST branch ALSO reads +36, but
+// only as a `== 3` sentinel @0x52754A -> the two fields COEXIST with distinct roles.
+// RE-VERIFIED (direct disassembly, this session) + corroborated by data_refs:
+//   data_refs(0x16709E0) = creation record +40 -> ZERO references: the client NEVER
+//     writes +40; it's the SERVER that fills it (opcode 17 echo @0x52A71E).
+//   data_refs(0x16693A8) = list record +40 -> 5 refs, ALL reads (0x51C52E,
+//     0x51C598, 0x51C622, 0x51C691 in Scene_CharSelectUpdate; 0x5251D8 in
 //     Scene_CharSelectOnMouseUp).
-// => Rendre la LISTE avec +36 (= job) affiche le MAUVAIS modèle 3D. Le rendu de la liste
-// passe par gfx::CharPreview3D::BuildFromRecord (fiche BRUTE, branche LISTE @0x527452) ;
-// côté données, +40 est porté par game::CharSlotInfo::race (peuplé par ParseCharRecord).
-// ⚠️ PAS par ReadCharRecordListFields, qui n'a aucun appelant (cf. son bandeau ci-dessous).
+// => Rendering the LIST with +36 (= job) shows the WRONG 3D model. List rendering
+// goes through gfx::CharPreview3D::BuildFromRecord (RAW record, LIST branch @0x527452);
+// on the data side, +40 is carried by game::CharSlotInfo::race (populated by ParseCharRecord).
+// WARNING NOT via ReadCharRecordListFields, which has no caller (cf. its banner below).
 inline constexpr int kCharRecFieldRace    = 40;   // int32 — g_LocalElementSecondary 0x1673198
-// +44 : GENRE (0..1) — nom historique « faction » conservé pour ne pas casser
-// game::CharSlotInfo::faction (Game/CharSelectFlow.h, hors de ce front). PcModel_ResolveEquipSlot
-// 0x4E46A0 borne a2>2 et a3>1 (@0x4E46CC) => a2(race) ∈ [0..2], a3(genre) ∈ [0..1].
-// L'OFFSET d'émission est correct : divergence de NOMMAGE uniquement, ne pas y toucher.
-inline constexpr int kCharRecFieldFaction = 44;   // int32 — genre en réalité
+// +44: GENDER (0..1) — historical name "faction" kept so as not to break
+// game::CharSlotInfo::faction (Game/CharSelectFlow.h, outside this front). PcModel_ResolveEquipSlot
+// 0x4E46A0 clamps a2>2 and a3>1 (@0x4E46CC) => a2(race) in [0..2], a3(gender) in [0..1].
+// The emission OFFSET is correct: this is a NAMING divergence only, do not touch it.
+inline constexpr int kCharRecFieldFaction = 44;   // int32 — actually gender
 inline constexpr int kCharRecFieldFace    = 48;   // int32
 inline constexpr int kCharRecFieldHair    = 52;   // int32
-// +56 : le binaire l'utilise comme NIVEAU (g_SelfLevel 0x16731A8 : tier, affichage du
-// niveau, sélection par défaut). Nom « power » conservé — game::CharSlotInfo::power est
-// hors de ce front. Divergence de NOMMAGE uniquement, la valeur et l'usage sont corrects.
+// +56: the binary uses it as LEVEL (g_SelfLevel 0x16731A8: tier, level display,
+// default selection). Name "power" kept — game::CharSlotInfo::power is outside this
+// front. Naming divergence only, value and usage are correct.
 inline constexpr int kCharRecFieldPower   = 56;   // int32 — dword_16693B8[2522*i] (unk_1669380+0x38)
-// +216 : ID D'OBJET DE L'ARME DE DÉPART, résolu dans la DB items — PAS un « lookPresetId ».
-// ANCRE : Char_RenderModel branche LISTE, `mov edx, [ecx+0D8h]` @0x527497 puis
-// `mov ecx, offset mITEM ; call MobDb_GetEntry` @0x52749E/0x5274A3 — EXACTEMENT le même
-// motif que les 8 autres slots d'équipement (+0x78/+0x88/+0xB8/+0xE8/+0xF8/+0x108/+0x118/
-// +0x128 ; p.ex. +0xE8 -> MobDb_GetEntry @0x5274BA, 2 instructions plus loin).
-// La FORMULE de résolution côté client reste `6*race + variant + 5` (bornes 5..19,
-// cf. game::ResolveLookPresetId) — seul le NOM du champ était faux.
-// ⚠️ +216 n'est écrit QU'À LA CONFIRMATION de la création (0x52669A..0x52675B) : l'aperçu
-// 3D du FORMULAIRE lit son arme sur la SCÈNE (this[15716] = +0xF590, `mov edx,[ecx+0F590h]`
-// @0x5271B8), PAS ici. Ne pas câbler +216 sur l'aperçu de création.
+// +216: STARTING WEAPON ITEM ID, resolved against the items DB — NOT a "lookPresetId".
+// ANCHOR: Char_RenderModel LIST branch, `mov edx, [ecx+0D8h]` @0x527497 then
+// `mov ecx, offset mITEM ; call MobDb_GetEntry` @0x52749E/0x5274A3 — EXACTLY the same
+// pattern as the 8 other equipment slots (+0x78/+0x88/+0xB8/+0xE8/+0xF8/+0x108/+0x118/
+// +0x128; e.g. +0xE8 -> MobDb_GetEntry @0x5274BA, 2 instructions further).
+// The client-side resolution FORMULA remains `6*race + variant + 5` (bounds 5..19,
+// cf. game::ResolveLookPresetId) — only the field NAME was wrong.
+// WARNING +216 is written ONLY ON CONFIRMATION of the creation (0x52669A..0x52675B): the
+// creation FORM's 3D preview reads its weapon from the SCENE (this[15716] = +0xF590,
+// `mov edx,[ecx+0F590h]` @0x5271B8), NOT here. Do not wire +216 to the creation preview.
 inline constexpr int kCharRecFieldStartingWeaponItemId = 216;  // int32
 inline constexpr int kCharRecFieldZoneId  = 5468; // int32 — dword_166A8DC[2522*i] (+0x155C)
-inline constexpr int kCharRecFieldPosX    = 5472; // int32 — dword_166A8E0[2522*i], casté en float à l'usage
+inline constexpr int kCharRecFieldPosX    = 5472; // int32 — dword_166A8E0[2522*i], cast to float at use time
 inline constexpr int kCharRecFieldPosY    = 5476; // int32 — dword_166A8E4[2522*i]
 inline constexpr int kCharRecFieldPosZ    = 5480; // int32 — dword_166A8E8[2522*i]
 
-// Valeur de la SENTINELLE testée sur +36 par la branche LISTE de Char_RenderModel :
-// `cmp dword ptr [ecx+24h], 3 ; jnz loc_527669` @0x52754A/0x52754E. Si +36 != 3, le bloc
-// 0x527554..0x527669 est SAUTÉ. Sémantique du « 3 » NON PROUVÉE (on sait seulement
-// QUE le binaire teste cette valeur, pas POURQUOI).
-// TODO [0x52754A] : élucider ce que le bloc gardé dessine réellement (descendre
-// loc_527554..loc_527669) — nécessaire pour savoir ce qui disparaît quand +36 != 3.
+// SENTINEL value tested on +36 by Char_RenderModel's LIST branch:
+// `cmp dword ptr [ecx+24h], 3 ; jnz loc_527669` @0x52754A/0x52754E. If +36 != 3, the
+// 0x527554..0x527669 block is SKIPPED. Semantics of the "3" NOT PROVEN (we only know
+// THAT the binary tests this value, not WHY).
+// TODO [0x52754A]: figure out what the guarded block actually draws (descend into
+// loc_527554..loc_527669) — needed to know what disappears when +36 != 3.
 inline constexpr int32_t kCharRecJobSentinelValue = 3;
 
-// --- Champs de la fiche consommés par le RENDU DE LA LISTE (écran this[15714]==1) ---
-// Vue en LECTURE SEULE des champs que Char_RenderModel 0x527020 lit dans sa branche
-// LISTE (arg_4 == 0).
+// --- Record fields consumed by LIST RENDERING (screen this[15714]==1) ---
+// READ-ONLY view of the fields Char_RenderModel 0x527020 reads in its LIST
+// branch (arg_4 == 0).
 //
-// 🔴 API SANS AUCUN APPELANT — NE PAS LA CÂBLER SUR LE RENDU.
-// Le motif justifiant cette struct (« game::CharSlotInfo n'expose pas la race +40 ») est
-// PÉRIMÉ : CharSlotInfo::race EXISTE (Game/CharSelectFlow.h:168) et ParseCharRecord la
-// remplit désormais depuis +40 (cf. le bloc d'ancres de ParseCharRecord ci-dessous, qui
-// referme le « TODO K1 » cité par ce même champ). Et le rendu 3D de la liste ne passe pas
-// ici : il lit la fiche BRUTE via gfx::CharPreview3D::BuildFromRecord (branche LISTE
-// @0x527452), avec ses propres constantes d'offset.
-// => Les 2 surcharges ci-dessous ont ZÉRO appelant dans tout src/ (vérifié par grep).
-// TODO [ancre 0x527536] : décision d'orchestrateur — soit SUPPRIMER ces 2 surcharges +
-// cette struct (aucun consommateur), soit faire consommer à Gfx/CharPreview3D.cpp les
-// constantes kCharRecField* de CE header au lieu de ses kRecOff* locaux, pour n'avoir
-// qu'UNE source de vérité d'offsets. Deux jeux de constantes décrivant la MÊME fiche
-// finiront par diverger. Câbler cette API sur le rendu créerait un 3e chemin : ne pas le
-// faire.
+// WARNING API WITH NO CALLER AT ALL — DO NOT WIRE IT INTO RENDERING.
+// The rationale that motivated this struct ("game::CharSlotInfo doesn't expose
+// race +40") is STALE: CharSlotInfo::race EXISTS (Game/CharSelectFlow.h:168) and
+// ParseCharRecord now fills it from +40 (cf. the anchor block on ParseCharRecord
+// below, which closes the "TODO K1" cited by that same field). And list 3D
+// rendering doesn't go through here: it reads the RAW record via
+// gfx::CharPreview3D::BuildFromRecord (LIST branch @0x527452), with its own
+// offset constants.
+// => The 2 overloads below have ZERO callers anywhere in src/ (verified by grep).
+// TODO [anchor 0x527536]: orchestrator decision — either REMOVE these 2 overloads +
+// this struct (no consumer), or make Gfx/CharPreview3D.cpp consume the
+// kCharRecField* constants from THIS header instead of its local kRecOff*
+// constants, to have only ONE source of truth for offsets. Two sets of constants
+// describing the SAME record will eventually drift. Wiring this API into
+// rendering would create a 3rd path: do not do that.
 struct CharRecordListFields {
-    int32_t race                 = 0;     // +40 — a2 de PcModel_ResolveEquipSlot @0x527536
-    int32_t gender               = 0;     // +44 — a3 de PcModel_ResolveEquipSlot @0x52752F
+    int32_t race                 = 0;     // +40 — a2 of PcModel_ResolveEquipSlot @0x527536
+    int32_t gender               = 0;     // +44 — a3 of PcModel_ResolveEquipSlot @0x52752F
     int32_t startingWeaponItemId = 0;     // +216 — MobDb_GetEntry(mITEM) @0x5274A3
-    int32_t job                  = 0;     // +36 — sentinelle uniquement dans la liste
+    int32_t job                  = 0;     // +36 — sentinel only in the list
     bool    jobSentinelIs3        = false; // (+36 == 3) @0x52754A
 };
 
-// Lit les champs ci-dessus dans une fiche brute de kCharRecordSize octets.
+// Reads the above fields from a raw kCharRecordSize-byte record.
 CharRecordListFields ReadCharRecordListFields(const uint8_t* rec);
 
-// Idem depuis net::g_CharRecords[slot]. Renvoie false (et laisse `out` par défaut) si
-// `slot` est hors [0, kCharRecordCount) — garde de PORT (le binaire indexe sans borne).
+// Same, from net::g_CharRecords[slot]. Returns false (and leaves `out` at its
+// default) if `slot` is outside [0, kCharRecordCount) — PORT guard (the binary
+// indexes without bounds).
 bool ReadCharRecordListFields(int32_t slot, CharRecordListFields& out);
 
-// Parse une fiche brute de kCharRecordSize (10088) octets en un CharSlotInfo.
-// `occupied` reproduit EXACTEMENT le critère du binaire (Crt_Strcmp(name,"") != 0,
-// EA 0x51c2f7) : une fiche vide (nom vide) laisse tous les autres champs à leur valeur
-// par défaut (le binaire ne les exploite jamais dans ce cas — aucun octet à zéro n'est
-// interprété comme job/faction/etc pour un emplacement libre).
+// Parses a raw kCharRecordSize (10088) byte record into a CharSlotInfo.
+// `occupied` reproduces EXACTLY the binary's criterion (Crt_Strcmp(name,"") != 0,
+// EA 0x51c2f7): an empty record (empty name) leaves every other field at its
+// default value (the binary never uses them in that case — no zero byte is ever
+// interpreted as job/faction/etc for a free slot).
 //
-// ⚠️ `out.job` porte +36 (correct : +36 EST le champ job, cf. kCharRecFieldJob) et n'est
-// PAS la race : celle-ci est en +40 et est portée par `out.race` (peuplée depuis
-// kCharRecFieldRace — cf. l'ancre de kCharRecFieldRace, 0x527536 vs 0x527051, pour la
-// preuve que les deux champs coexistent avec des rôles distincts).
+// WARNING `out.job` carries +36 (correct: +36 IS the job field) and is NOT the
+// race: that one is at +40 and is carried by `out.race` (populated from
+// kCharRecFieldRace — cf. the kCharRecFieldRace anchor, 0x527536 vs 0x527051,
+// for proof that the two fields coexist with distinct roles).
 //
-// `out.race` (+40) est REMPLI PAR LE SERVEUR uniquement (écho op17 @0x52A71E ;
-// data_refs(0x16709E0) = 0 réf côté formulaire de création). Ses DEUX consommateurs C++ :
-//   · Game/CharSelectFlow.cpp::ListMotionFrameCount -> MotionFrameCount(rec.race, …),
-//     miroir de `mov ecx, ds:dword_16693A8[eax]` @0x51C52E ->
-//     PcModel_ResolveSlotAndApply 0x4E5A00 @0x51C53A ;
-//   · UI/LoginScene.cpp::PublishSelfFromSlot -> g_World.self.elementSecondary, miroir du
-//     bloc+0x28 posé par Crt_Memcpy(g_SelfCharInvBlock 0x1673170, fiche, 0x2768) @0x51C707
+// `out.race` (+40) is FILLED BY THE SERVER only (opcode 17 echo @0x52A71E;
+// data_refs(0x16709E0) = 0 refs on the creation-form side). Its TWO C++ consumers:
+//   - Game/CharSelectFlow.cpp::ListMotionFrameCount -> MotionFrameCount(rec.race, …),
+//     mirroring `mov ecx, ds:dword_16693A8[eax]` @0x51C52E ->
+//     PcModel_ResolveSlotAndApply 0x4E5A00 @0x51C53A;
+//   - UI/LoginScene.cpp::PublishSelfFromSlot -> g_World.self.elementSecondary, mirroring
+//     the block+0x28 set by Crt_Memcpy(g_SelfCharInvBlock 0x1673170, record, 0x2768) @0x51C707
 //     (= g_LocalElementSecondary 0x1673198).
 void ParseCharRecord(const uint8_t* rec, game::CharSlotInfo& out);
 
-// Peuple `slots` à partir des 3 fiches persistées par Net_LoginRequest
-// (net::g_CharRecords, cf. NetClient.h). Point d'intégration réel de
-// CharSelectHost::LoadCharacterSlots (Game/CharSelectFlow.h) — branché depuis
+// Populates `slots` from the 3 records persisted by Net_LoginRequest
+// (net::g_CharRecords, cf. NetClient.h). Real integration point for
+// CharSelectHost::LoadCharacterSlots (Game/CharSelectFlow.h) — wired from
 // UI/LoginScene.cpp::BuildCharSelectHost.
 void LoadCharacterSlotsFromRecords(std::array<game::CharSlotInfo, game::kMaxCharSlots>& slots);
 
-// Codes de transport génériques (miroir de kLoginErrSend/kLoginErrRecv, Net/Login.h) —
-// renvoyés quand le send()/recv() bloquant échoue avant même d'obtenir une réponse
-// serveur. Consommés par CharSelectFlow.cpp comme n'importe quel « code inconnu »
-// (branche `default:` — no-op fidèle, cf. Game/CharSelectFlow.cpp). Valeurs 101/102
-// CONFIRMÉES par décompilation (Net_CloseSocket puis *a=101 sur échec send, *a=102 sur
-// échec recv, dans les 5 fonctions d'origine).
+// Generic transport codes (mirroring kLoginErrSend/kLoginErrRecv, Net/Login.h) —
+// returned when the blocking send()/recv() fails before even getting a server
+// response. Consumed by CharSelectFlow.cpp like any "unknown code" (`default:`
+// branch — faithful no-op, cf. Game/CharSelectFlow.cpp). Values 101/102
+// CONFIRMED by decompilation (Net_CloseSocket then *a=101 on send failure, *a=102
+// on recv failure, in all 5 original functions).
 inline constexpr int32_t kCharSelectErrSend = 101;
 inline constexpr int32_t kCharSelectErrRecv = 102;
 
-// Net_AccountKeepAlive 0x5298F0 (opcode 12). Heartbeat de session (/30 frames en
-// sous-état Actif de CharSelect, cf. CharSelectFlow.h). SANS payload, SANS attente de
-// réponse (fire-and-forget confirmé) : renvoie 0 dès que l'envoi a réussi, 101 sinon.
+// Net_AccountKeepAlive 0x5298F0 (opcode 12). Session heartbeat (/30 frames in the
+// CharSelect Active sub-state, cf. CharSelectFlow.h). NO payload, NO response wait
+// (confirmed fire-and-forget): returns 0 as soon as the send succeeds, 101 otherwise.
 int32_t AccountKeepAlive(NetClient& nc);
 
 // Net_CreateCharacter 0x52A4A0 (opcode 17). `startingWeaponItemId` (ex-`lookPresetId`,
-// RENOMMÉ : c'est un ID D'OBJET résolu dans la DB items, cf. l'ancre de
-// kCharRecFieldStartingWeaponItemId / MobDb_GetEntry @0x5274A3) = id résolu côté client
-// par CharSelectFlow (formule `6*race + variant + 5`, bornes 5..19, cf.
-// ResolveLookPresetId — la FORMULE est inchangée, seul le nom du champ était faux).
-// Envoie la fiche de 10088 o (voir mapping d'offsets ci-dessus) ; consomme intégralement
-// la réponse de 10093 o = [1][code:4][fiche-écho:10088].
-// TRAME RE-VÉRIFIÉE À L'OCTET (décompilation directe 0x52A4A0, cette session) :
-// len=10101 @0x52A582 (= 9 en-tête + 4 slot @9 + 10088 fiche @13) ; recv de 10093
-// @0x52A661 ; `Crt_Memcpy(v16 /*offset 9*/, &a1, 4u)` @0x52A562 ; `Crt_Memcpy(v17
-// /*offset 13*/, a2, 0x2768u)` @0x52A57A. Aucun octet résiduel (contrairement à op27).
-// MIROIR (EA 0x52a71e, garde `if (!v18)` EA 0x52a700) : sur code 0, la fiche écho
-// (recvBuf+5, 10088 o) est recopiée dans g_CharRecords[slot] — port fidèle du miroir
-// `unk_1669380 + 10088*slot` du binaire, le MÊME tableau que Net_LoginRequest 0x51B8E0
-// remplit au login. Sans cette recopie, LoadCharacterSlotsFromRecords relit une fiche
-// à zéro au prochain sous-état Init et le personnage créé disparaît.
+// RENAMED: it's an ITEM ID resolved against the items DB, cf. the anchor on
+// kCharRecFieldStartingWeaponItemId / MobDb_GetEntry @0x5274A3) = id resolved
+// client-side by CharSelectFlow (formula `6*race + variant + 5`, bounds 5..19, cf.
+// ResolveLookPresetId — the FORMULA is unchanged, only the field name was wrong).
+// Sends the 10088 B record (see offset mapping above); fully consumes the
+// 10093 B response = [1][code:4][record-echo:10088].
+// FRAME RE-VERIFIED BYTE-BY-BYTE (direct decompilation of 0x52A4A0, this session):
+// len=10101 @0x52A582 (= 9 header + 4 slot @9 + 10088 record @13); recv of 10093
+// @0x52A661; `Crt_Memcpy(v16 /*offset 9*/, &a1, 4u)` @0x52A562; `Crt_Memcpy(v17
+// /*offset 13*/, a2, 0x2768u)` @0x52A57A. No residual byte (unlike op27).
+// MIRROR (EA 0x52a71e, guard `if (!v18)` EA 0x52a700): on code 0, the echoed
+// record (recvBuf+5, 10088 B) is copied into g_CharRecords[slot] — a faithful port
+// of the binary's `unk_1669380 + 10088*slot` mirror, the SAME array Net_LoginRequest
+// 0x51B8E0 fills at login. Without this copy, LoadCharacterSlotsFromRecords re-reads
+// a zeroed record on the next Init sub-state and the created character disappears.
 int32_t CreateCharacter(NetClient& nc, int32_t slot, const game::CharCreateForm& form,
                         int32_t startingWeaponItemId);
 
-// Net_CharSlotAction 0x52A740 (opcode 18). Deux actions PROUVÉES, deux appelants
-// distincts (tous deux atteints depuis UI_MsgBox_OnLButtonUp 0x5C0A90) :
-//   action=1, arg=0        -> CharSelect_ReqDeleteChar   0x528FD0 (EA 0x528fee) : suppression
-//   action=2, arg=listIndex -> CharSelect_ReqRestoreChar 0x5295D0 (EA 0x5295f6) : restauration
-// SÉMANTIQUE DE `arg` PROUVÉE (elle était notée « libre / hors périmètre » ici) :
-// c'est le champ +0xF560 (= this[15704]) de la scène CharSelect = un INDEX DE
-// SÉLECTION dans la liste de restauration, initialisé à -1 (EA 0x51c1e2), piloté par
-// deux boutons flèche clampés — précédent `if (idx > 0) --idx` (EA 0x524232-0x524250)
-// et suivant `if (idx < count-1) ++idx` avec count = champ +0xF3C8 (EA 0x5242ac-
-// 0x5242d8) — remis à 0 à l'EA 0x525c2d, relu par Scene_CharSelectRender (EA
-// 0x52030f/0x52044f). Ce n'est NI une constante NI un drapeau.
+// Net_CharSlotAction 0x52A740 (opcode 18). Two PROVEN actions, two distinct callers
+// (both reached from UI_MsgBox_OnLButtonUp 0x5C0A90):
+//   action=1, arg=0        -> CharSelect_ReqDeleteChar   0x528FD0 (EA 0x528fee): deletion
+//   action=2, arg=listIndex -> CharSelect_ReqRestoreChar 0x5295D0 (EA 0x5295f6): restore
+// SEMANTICS OF `arg` PROVEN (it used to be noted "free / out of scope" here):
+// it's field +0xF560 (= this[15704]) of the CharSelect scene = a SELECTION INDEX
+// in the restore list, initialized to -1 (EA 0x51c1e2), driven by two clamped arrow
+// buttons — previous `if (idx > 0) --idx` (EA 0x524232-0x524250) and next
+// `if (idx < count-1) ++idx` with count = field +0xF3C8 (EA 0x5242ac-
+// 0x5242d8) — reset to 0 at EA 0x525c2d, read back by Scene_CharSelectRender (EA
+// 0x52030f/0x52044f). This is NEITHER a constant NOR a flag.
 int32_t CharSlotAction(NetClient& nc, int32_t slot, int32_t action, int32_t arg);
 
-// Net_ReqVerifyCharName 0x52B4C0 (opcode 24) — suppression de personnage confirmée par
-// SAISIE DU NOM. Appelée par CharSelect_ReqDeleteCharByName 0x529230 (EA 0x5292cd),
-// elle-même atteinte UNIQUEMENT depuis UI_MsgBox_OnLButtonUp 0x5C0A90 case 41
-// (EA 0x5c1743).
+// Net_ReqVerifyCharName 0x52B4C0 (opcode 24) — character deletion confirmed by TYPING
+// THE NAME. Called by CharSelect_ReqDeleteCharByName 0x529230 (EA 0x5292cd), itself
+// reached ONLY from UI_MsgBox_OnLButtonUp 0x5C0A90 case 41 (EA 0x5c1743).
 //
-// 🔴 CET OPCODE N'EST JAMAIS ÉMIS PAR CE CLIENT — ce n'est PAS un « second mécanisme de
-// suppression à double confirmation » (affirmation ERRONÉE des versions antérieures de ce
-// commentaire, corrigée ici). Le panneau de suppression par nom NE S'OUVRE JAMAIS :
-//   - `var_434` de Scene_CharSelectOnMouseUp, sur la FONCTION ENTIÈRE [0x522E50,0x526B90) :
-//     3 références seulement — 0x522E50 (déclaration de frame), `mov [ebp+var_434], 0`
-//     @0x525DFA, `cmp [ebp+var_434], 0` @0x525F91. AUCUNE écriture non nulle, AUCUN `lea`
-//     (donc aucun aliasing par pointeur) => `var_434 == 0` est INVARIANT => le
-//     `jnz 0x525FC0` n'est JAMAIS pris.
-//   - conséquence : `this[0xF57C] = 1` (ouverture du panneau) n'est écrit QU'À l'EA
-//     0x52601D, dans le bloc mort ; les 3 autres écritures de 0xF57C sont `= 0`.
-// La chaîne 0x525FC0 -> 0x529230 -> 0x52B4C0 est donc INATTEIGNABLE en entier.
-// => NE CÂBLER AUCUN CLIC vers VerifyCharName. La fonction reste portée (fidélité du
-// code présent dans le binaire) mais doit rester MORTE, conformément à la règle
-// « une fonction morte dans le binaire reste morte en C++ ».
-// Trame 62 o = en-tête 9 o + [slotEnc:i32@0][name:49@4] (53 o) ; réponse 5 o
-// = [1][code:4]. Codes routés par l'appelant : 0/1/2/3/4/5/101/102/default.
+// WARNING THIS OPCODE IS NEVER EMITTED BY THIS CLIENT — it is NOT a "second,
+// double-confirmation deletion mechanism" (an INCORRECT claim in earlier versions of
+// this comment, fixed here). The delete-by-name panel NEVER OPENS:
+//   - `var_434` of Scene_CharSelectOnMouseUp, over the WHOLE FUNCTION [0x522E50, 0x526B90):
+//     only 3 references — 0x522E50 (frame declaration), `mov [ebp+var_434], 0`
+//     @0x525DFA, `cmp [ebp+var_434], 0` @0x525F91. NO non-zero write, NO `lea`
+//     (hence no pointer aliasing) => `var_434 == 0` is an INVARIANT => the
+//     `jnz 0x525FC0` is NEVER taken.
+//   - consequence: `this[0xF57C] = 1` (opening the panel) is written ONLY at EA
+//     0x52601D, in the dead block; the other 3 writes to 0xF57C are `= 0`.
+// The chain 0x525FC0 -> 0x529230 -> 0x52B4C0 is therefore fully UNREACHABLE.
+// => DO NOT WIRE ANY CLICK to VerifyCharName. The function stays ported (fidelity
+// to the code present in the binary) but must remain DEAD, per the rule "a
+// function dead in the binary stays dead in C++".
+// 62 B frame = 9 B header + [slotEnc:i32@0][name:49@4] (53 B); 5 B response
+// = [1][code:4]. Codes routed by the caller: 0/1/2/3/4/5/101/102/default.
 //
-// `slotEnc` est un slot ENCODÉ, PAS le slot brut — EA 0x5292cd :
+// `slotEnc` is an ENCODED slot, NOT the raw slot — EA 0x5292cd:
 //   Net_ReqVerifyCharName(*(_BYTE *)(this + 62860) + 100 * *(_BYTE *)(this + 62848), ...)
-// soit `slot(+0xF58C) + 100 * flag(+0xF580)`, les DEUX lus en _BYTE. Voir
-// game::ConfirmDeleteCharByName (Game/CharSelectFlow.h) pour la preuve d'atteignabilité
-// qui fixe flag==1 sur tout envoi réel.
+// i.e. `slot(+0xF58C) + 100 * flag(+0xF580)`, BOTH read as _BYTE. See
+// game::ConfirmDeleteCharByName (Game/CharSelectFlow.h) for the reachability proof
+// that fixes flag==1 on any real send.
 int32_t VerifyCharName(NetClient& nc, int32_t slotEnc, const std::string& name);
 
-// Net_ReqEnterCharInfo 0x52B070 (opcode 22). Résultat COMPLET (resultCode/domainId/
-// gamePort/zoneId), directement au format attendu par CharSelectHost::RequestEnterCharInfo.
+// Net_ReqEnterCharInfo 0x52B070 (opcode 22). FULL result (resultCode/domainId/
+// gamePort/zoneId), directly in the format expected by CharSelectHost::RequestEnterCharInfo.
 game::EnterCharInfoResult ReqEnterCharInfo(NetClient& nc, int32_t slot);
 
-// Net_ReqCancelEnter 0x52B310 (opcode 23 — cf. RECONFIRMATION ci-dessus — SANS
-// payload). Annule une entrée après échec de connexion récupérable (codes 3/4/5 de
-// ConnectToGameServer, cf. CharSelectFlow.cpp). SANS attente de réponse (fire-and-
-// forget confirmé, comme AccountKeepAlive) : renvoie 0 dès que l'envoi a réussi.
+// Net_ReqCancelEnter 0x52B310 (opcode 23 — cf. RECONFIRMATION above — NO
+// payload). Cancels an entry after a recoverable connection failure (codes 3/4/5 of
+// ConnectToGameServer, cf. CharSelectFlow.cpp). NO response wait (confirmed fire-
+// and-forget, like AccountKeepAlive): returns 0 as soon as the send succeeds.
 int32_t ReqCancelEnter(NetClient& nc);
 
-// Net_AccountReq_op27 0x52BD80 (opcode 27). Émis par Scene_CharSelectOnMouseUp
-// (`call Net_AccountReq_op27` @0x523E07 — xref UNIQUE, cf. xrefs_to(0x52BD80) = 1 réf),
-// donc bien dans la surface d'émission de la scène 4.
+// Net_AccountReq_op27 0x52BD80 (opcode 27). Emitted by Scene_CharSelectOnMouseUp
+// (`call Net_AccountReq_op27` @0x523E07 — UNIQUE xref, cf. xrefs_to(0x52BD80) = 1 ref),
+// so it is indeed within scene 4's emission surface.
 //
-// ⚠️ NE PAS CONFONDRE avec net::Net_SendPacket_Op27 (Net/SendPackets.h) : celui-là est
-// Net_SendPacket_Op27 0x4B5B90, opcode 0x1b, sur la socket de JEU (amélioration d'item).
-// Aucun rapport — homonymie d'indice de builder uniquement.
+// WARNING DO NOT CONFUSE with net::Net_SendPacket_Op27 (Net/SendPackets.h): that one
+// is Net_SendPacket_Op27 0x4B5B90, opcode 0x1b, on the GAME socket (item upgrade).
+// Unrelated — homonymous builder index only.
 //
-// `arg` : le binaire passe this[+0xF0A4] (`mov eax, [edx+0F0A4h]` @0x523DFA), un INDEX DE
-// SÉLECTION initialisé à -1 (@0x51C2C0, bloc Init de Scene_CharSelectUpdate), écrit par
-// Scene_CharSelectOnMouseDown (@0x521EB7), gardé `!= -1` juste avant l'émission
-// (`cmp dword ptr [eax+0F0A4h], 0FFFFFFFFh` @0x523DC1), et remis à -1 après (@0x523E3C,
-// @0x524073). Émis sur 4 OCTETS (`Crt_Memcpy(v15, &a1, 4u)` @0x52BE3E) — ce n'est PAS un
-// arg 1 octet, malgré le commentaire de l'IDB (« opcode-27 (1-byte arg) ») qui est FAUX.
-// TODO [0x521EB7] : sémantique exacte de this[+0xF0A4] (quelle liste ce panneau
-// sélectionne) NON PROUVÉE — seul son protocole (index, -1 = aucun) l'est.
+// `arg`: the binary passes this[+0xF0A4] (`mov eax, [edx+0F0A4h]` @0x523DFA), a
+// SELECTION INDEX initialized to -1 (@0x51C2C0, Init block of Scene_CharSelectUpdate),
+// written by Scene_CharSelectOnMouseDown (@0x521EB7), guarded `!= -1` right before
+// emission (`cmp dword ptr [eax+0F0A4h], 0FFFFFFFFh` @0x523DC1), and reset to -1
+// afterward (@0x523E3C, @0x524073). Emitted as 4 BYTES (`Crt_Memcpy(v15, &a1, 4u)`
+// @0x52BE3E) — this is NOT a 1-byte arg, despite the IDB comment ("opcode-27
+// (1-byte arg)") which is WRONG.
+// TODO [0x521EB7]: exact semantics of this[+0xF0A4] (which list this panel
+// selects) NOT PROVEN — only its protocol (index, -1 = none) is.
 //
-// 🔴 DEUX ANOMALIES FIDÈLES, à ne PAS « corriger » :
-//  1. TRAME DE 14 OCTETS DONT LE 14e EST NON INITIALISÉ. `len = 0Eh` @0x52BE46 (14), mais
-//     seuls les octets 0..12 sont écrits (en-tête 9 o + `Crt_Memcpy(payload@9, &a1, 4u)`
-//     @0x52BE3E s'arrête à l'octet 12). L'octet 13 est de la PILE RÉSIDUELLE : il est
-//     malgré tout XORé (boucle `i < len` couvrant 0..13) et ENVOYÉ. Le layout de frame
-//     IDA le confirme : `var_3EF` (_BYTE[995]) commence au frame-offset 0x2D = octet 9,
-//     et rien n'écrit son index [4]. Il FAUT émettre 14 octets, sinon la trame est courte
-//     de 1 et désaligne le serveur.
-//     TODO [0x52BE46] : la VALEUR de l'octet 13 est de la pile non initialisée — non
-//     déterministe en statique. On émet 0 (le seul choix reproductible) ; un dump runtime
-//     x32dbg serait nécessaire pour connaître la valeur réelle observée.
-//  2. `dword_1675898 ← rx+5` est écrit INCONDITIONNELLEMENT (`Crt_Memcpy(&dword_1675898,
-//     &MEMORY[0x8156C5], 4u)` @0x52BFC4), AVANT le test du code (`*a2 = v16` @0x52BFD2) —
-//     contrairement à TOUS les autres builders, qui gardent leur effet par `if (!code)`
-//     (cf. op17 : `if (!v18)` @0x52A700). Aucune garde ici : le champ est écrasé même
-//     quand le serveur renvoie une erreur.
-// Réponse : recv de 9 o (`j != 9` @0x52BF27) = [1][code:4][valeur:4]. Renvoie le code
+// WARNING TWO FAITHFUL ANOMALIES, do NOT "fix" them:
+//  1. 14-BYTE FRAME WHOSE 14th BYTE IS UNINITIALIZED. `len = 0Eh` @0x52BE46 (14), but
+//     only bytes 0..12 are written (9 B header + `Crt_Memcpy(payload@9, &a1, 4u)`
+//     @0x52BE3E stops at byte 12). Byte 13 is RESIDUAL STACK: it is still XORed
+//     (loop `i < len` covering 0..13) and SENT. The IDA frame layout confirms it:
+//     `var_3EF` (_BYTE[995]) starts at frame offset 0x2D = byte 9, and nothing
+//     writes its index [4]. 14 bytes MUST be emitted, otherwise the frame is 1
+//     short and misaligns the server.
+//     TODO [0x52BE46]: the VALUE of byte 13 is uninitialized stack — not
+//     deterministic statically. We emit 0 (the only reproducible choice); a runtime
+//     x32dbg dump would be needed to know the real observed value.
+//  2. `dword_1675898 <- rx+5` is written UNCONDITIONALLY (`Crt_Memcpy(&dword_1675898,
+//     &MEMORY[0x8156C5], 4u)` @0x52BFC4), BEFORE the code test (`*a2 = v16` @0x52BFD2) —
+//     unlike EVERY other builder, which guards its effect with `if (!code)`
+//     (cf. op17: `if (!v18)` @0x52A700). No guard here: the field is overwritten even
+//     when the server returns an error.
+// Response: 9 B recv (`j != 9` @0x52BF27) = [1][code:4][value:4]. Returns the code
 // (rx+1, @0x52BFB0).
 int32_t AccountReq_op27(NetClient& nc, int32_t arg);
 
-// --- Assistant PIN / mot de passe secondaire (opcodes 13/14/15) ---
-// Requêtes BLOQUANTES synchrones (send + recv immédiat, socket login) émises par l'assistant
-// PIN de CharSelect (branche dword_16692A4 != 0). PIN = 4 chiffres ASCII + NUL (5 o). Sur
-// succès (code 0) le serveur renvoie le nouveau PIN en écho et le client remet à 0 le flag
-// « PIN requis » (net::g_SecondaryPwRequired = dword_16692A4) et stocke le PIN
-// (net::g_StoredSecondaryPw = unk_16692A8). Layout et resets RE-VÉRIFIÉS au désassemblage.
+// --- PIN / secondary password helper (opcodes 13/14/15) ---
+// Blocking synchronous requests (send + immediate recv, login socket) emitted by
+// CharSelect's PIN assistant (dword_16692A4 != 0 branch). PIN = 4 ASCII digits +
+// NUL (5 B). On success (code 0) the server echoes back the new PIN and the client
+// resets the "PIN required" flag (net::g_SecondaryPwRequired = dword_16692A4) and
+// stores the PIN (net::g_StoredSecondaryPw = unk_16692A8). Layout and resets
+// RE-VERIFIED against the disassembly.
 //
-// op13 SET (Net_AccountReq_op13 0x529AA0) : payload PIN[5]@9 (len 14) ; recv 10 =
-//   [1..4]=code, [5..9]=PIN écho. Sur code 0 : g_SecondaryPwRequired=0 + g_StoredSecondaryPw
+// op13 SET (Net_AccountReq_op13 0x529AA0): payload PIN[5]@9 (len 14); recv 10 =
+//   [1..4]=code, [5..9]=PIN echo. On code 0: g_SecondaryPwRequired=0 + g_StoredSecondaryPw
 //   <- recv+5 (@0x529CEC).
 int32_t SecondaryPasswordSet(NetClient& nc, const uint8_t pin5[5]);        // op13 0x529AA0
-// op14 CHANGE (Net_AccountReq_op14 0x529D20) : payload old[5]@9 + new[5]@14 (len 19) ;
-//   recv 10 = [1..4]=code, [5..9]=PIN écho. Sur code 0 : g_SecondaryPwRequired=0 +
-//   g_StoredSecondaryPw <- recv+5 (nouveau PIN, @0x529F7E).
+// op14 CHANGE (Net_AccountReq_op14 0x529D20): payload old[5]@9 + new[5]@14 (len 19);
+//   recv 10 = [1..4]=code, [5..9]=PIN echo. On code 0: g_SecondaryPwRequired=0 +
+//   g_StoredSecondaryPw <- recv+5 (new PIN, @0x529F7E).
 int32_t SecondaryPasswordChange(NetClient& nc, const uint8_t oldPin5[5], const uint8_t newPin5[5]); // op14 0x529D20
-// op15 VERIFY (Net_AccountReq_op15 0x529FB0) : payload PIN[5]@9 (len 14) ; recv 5 =
-//   [1..4]=code. Sur code 0 : g_SecondaryPwRequired=0 SEUL (pas de maj du PIN, @0x52A1FC).
+// op15 VERIFY (Net_AccountReq_op15 0x529FB0): payload PIN[5]@9 (len 14); recv 5 =
+//   [1..4]=code. On code 0: g_SecondaryPwRequired=0 ONLY (no PIN update, @0x52A1FC).
 int32_t SecondaryPasswordVerify(NetClient& nc, const uint8_t pin5[5]);     // op15 0x529FB0
 
-// --- Layout CONFIRMÉ du "struct72" partagé (Op12.a4 / Op15.a2 / Op16.a2) ---
-// RE-CONFIRMÉ par décompilation fraîche (2026-07-14, accès idaTs2 direct) de
-// Scene_CharSelectUpdate 0x51BD90 (EA 0x51c765-0x51c7f9, écrivain du record juste
-// avant Net_ConnectGameServer) ET, indépendamment, de Map_BeginWarpToFactionTown
-// 0x55C510 (EA 0x55c6a9-0x55c65a, MÊME motif octet-pour-octet sur le MÊME global
-// `dword_1675AA0`) — les deux sites confirment le même layout, ce qui élimine tout
-// doute sur sa nature de "record de téléportation/spawn" générique :
-//   Crt_Memset(&dword_1675AA0, 0, 0x48);   // 72 o à zéro
-//   dword_1675AA0 = 0;                     // +0x00 i32  mode/type (0 dans les 2 sites EnterWorld/warp ville)
-//   dword_1675AA4 = 0;                     // +0x04 i32  variante (0 ou 1 selon le site appelant, 0 ici)
-//   flt_1675AA8   = 0.0f;                  // +0x08 f32  toujours 0.0 dans tous les sites observés
-//   flt_1675AAC   = posX;                  // +0x0C f32  position de spawn X (PAS +0x00 !)
-//   flt_1675AB0   = posY;                  // +0x10 f32  position de spawn Y
-//   flt_1675AB4   = posZ;                  // +0x14 f32  position de spawn Z
-//   // +0x18..+0x23 (12 o) : jamais écrits par ces 2 sites -> restent à 0 (memset)
-//   flt_1675AC4   = (Rng_Next() % 360);    // +0x24 f32  rotation de spawn (0..359, tirée fraîchement)
-//   flt_1675AC8   = flt_1675AC4;           // +0x28 f32  MÊME valeur dupliquée (pas un 2e angle)
-//   // +0x2C..+0x47 (28 o) : jamais écrits par ces 2 sites -> restent à 0 (memset)
-// Écart corrigé vs. l'ancien câblage (Scene/SceneManager.cpp, host.SendEnterWorldRequest,
-// avant cette session) : spawnX/Y/Z étaient sérialisés à tort aux offsets +0x00/+0x04/+0x08
-// (avec le champ mode/type et le padding flottant écrasés par la position) au lieu de
-// +0x0C/+0x10/+0x14, et la rotation (+0x24/+0x28) n'était pas envoyée du tout (laissée à
-// zéro). Cf. Docs/TS2_ENTERWORLD_WIRING_TODO.md pour le détail complet de la vérification.
-inline constexpr int kTail72OffMode  = 0x00; // i32, 0 pour EnterWorld
-inline constexpr int kTail72OffFlag  = 0x04; // i32, 0 pour EnterWorld
-inline constexpr int kTail72OffPad8  = 0x08; // f32, toujours 0.0
+// --- CONFIRMED layout of the shared "struct72" (Op12.a4 / Op15.a2 / Op16.a2) ---
+// RE-CONFIRMED by fresh decompilation (2026-07-14, direct idaTs2 access) of
+// Scene_CharSelectUpdate 0x51BD90 (EA 0x51c765-0x51c7f9, writer of the record just
+// before Net_ConnectGameServer) AND, independently, of Map_BeginWarpToFactionTown
+// 0x55C510 (EA 0x55c6a9-0x55c65a, the SAME byte-for-byte pattern on the SAME global
+// `dword_1675AA0`) — both sites confirm the same layout, which removes any doubt
+// about its nature as a generic "teleport/spawn record":
+//   Crt_Memset(&dword_1675AA0, 0, 0x48);   // 72 B zeroed
+//   dword_1675AA0 = 0;                     // +0x00 i32  mode/type (0 in both EnterWorld/city-warp sites)
+//   dword_1675AA4 = 0;                     // +0x04 i32  variant (0 or 1 depending on the caller site, 0 here)
+//   flt_1675AA8   = 0.0f;                  // +0x08 f32  always 0.0 in every observed site
+//   flt_1675AAC   = posX;                  // +0x0C f32  spawn position X (NOT +0x00!)
+//   flt_1675AB0   = posY;                  // +0x10 f32  spawn position Y
+//   flt_1675AB4   = posZ;                  // +0x14 f32  spawn position Z
+//   // +0x18..+0x23 (12 B): never written by these 2 sites -> stays 0 (memset)
+//   flt_1675AC4   = (Rng_Next() % 360);    // +0x24 f32  spawn rotation (0..359, freshly drawn)
+//   flt_1675AC8   = flt_1675AC4;           // +0x28 f32  SAME value duplicated (not a 2nd angle)
+//   // +0x2C..+0x47 (28 B): never written by these 2 sites -> stays 0 (memset)
+// Discrepancy fixed vs. the old wiring (Scene/SceneManager.cpp, host.SendEnterWorldRequest,
+// before this session): spawnX/Y/Z were wrongly serialized at offsets +0x00/+0x04/+0x08
+// (with the mode/type field and float padding overwritten by the position) instead of
+// +0x0C/+0x10/+0x14, and the rotation (+0x24/+0x28) wasn't sent at all (left at
+// zero). Cf. Docs/TS2_ENTERWORLD_WIRING_TODO.md for the full verification detail.
+inline constexpr int kTail72OffMode  = 0x00; // i32, 0 for EnterWorld
+inline constexpr int kTail72OffFlag  = 0x04; // i32, 0 for EnterWorld
+inline constexpr int kTail72OffPad8  = 0x08; // f32, always 0.0
 inline constexpr int kTail72OffPosX  = 0x0C; // f32
 inline constexpr int kTail72OffPosY  = 0x10; // f32
 inline constexpr int kTail72OffPosZ  = 0x14; // f32
 inline constexpr int kTail72OffRotA  = 0x24; // f32, rotation (Rng_Next() % 360)
-inline constexpr int kTail72OffRotB  = 0x28; // f32, duplicata de kTail72OffRotA
+inline constexpr int kTail72OffRotB  = 0x28; // f32, duplicate of kTail72OffRotA
 
-// Construit le bloc struct72 EXACT (72 o, zéro-rempli puis les 5 champs ci-dessus
-// posés aux offsets confirmés) pour le payload tail72 de Net_SendPacket_Op12
-// (opcode 12, EnterWorld). `out` doit pointer vers 72 octets valides.
+// Builds the EXACT struct72 block (72 B, zero-filled then the 5 fields above set
+// at the confirmed offsets) for Net_SendPacket_Op12's tail72 payload
+// (opcode 12, EnterWorld). `out` must point to 72 valid bytes.
 void BuildEnterWorldTail72(float posX, float posY, float posZ, float rotationDeg,
                             uint8_t out[72]);
 

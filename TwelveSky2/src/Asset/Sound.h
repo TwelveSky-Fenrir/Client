@@ -1,24 +1,24 @@
-// Asset/Sound.h — lecteur audio TwelveSky2.
-//   .WSOUND  = banque de sons d'ambiance par zone (conteneur de METADONNEES).
-//   .ISN     = effets (D06_GSOUND)      -> Ogg Vorbis brut.
-//   .BGM     = musique (D10_WORLDBGM)   -> Ogg Vorbis brut.
-//   *.OGG    = sons extraits du banc    -> Ogg Vorbis brut.
+// Asset/Sound.h — TwelveSky2 audio reader.
+//   .WSOUND  = per-zone ambient sound bank (METADATA container).
+//   .ISN     = effects (D06_GSOUND)      -> raw Ogg Vorbis.
+//   .BGM     = music (D10_WORLDBGM)      -> raw Ogg Vorbis.
+//   *.OGG    = sounds extracted from the bank -> raw Ogg Vorbis.
 //
-// Fidèle à RE/asset_parsers/wsound.py (validé 75/75).
+// Faithful to RE/asset_parsers/wsound.py (validated 75/75).
 //
-// === Sources IDA (vérité unique) ===
-//   WSndBank_LoadFile         0x4DA790  -> parse le conteneur .WSOUND
-//   WSndBank_UpdatePositional 0x4DAC30  -> logique 3D : layout du record 20 o
-//   Snd_LoadOggToBuffers      0x6A8120  -> décode un Ogg (ov_open, exige stéréo/44100)
-//   World_LoadZoneResource    0x4DCB60  -> chemin "G03_GDATA\D09_WSOUND\Z%03d\Z%03d.WSOUND"
-//   OGG externes (Crt_Vsnprintf)        -> "<base>_%04d.OGG", index 1-base
+// === IDA sources (sole source of truth) ===
+//   WSndBank_LoadFile         0x4DA790  -> parses the .WSOUND container
+//   WSndBank_UpdatePositional 0x4DAC30  -> 3D logic: layout of the 20-byte record
+//   Snd_LoadOggToBuffers      0x6A8120  -> decodes an Ogg (ov_open, requires stereo/44100)
+//   World_LoadZoneResource    0x4DCB60  -> path "G03_GDATA\D09_WSOUND\Z%03d\Z%03d.WSOUND"
+//   External OGG (Crt_Vsnprintf)        -> "<base>_%04d.OGG", 1-based index
 //
 // === IMPORTANT ===
-//   Le conteneur .WSOUND NE contient PAS les données Ogg. Chaque son est chargé
-//   depuis un fichier externe "<base>_%04d.OGG" (i=1..count). Le record 100 o
-//   porte le nom source .ogg + 36 o de champs runtime périmés (l'outil de build
-//   a sérialisé de la mémoire vive : adresses pile/ntdll). Le chemin de lecture
-//   ne s'appuie que sur l'index -> ces champs sont ignorés au chargement.
+//   The .WSOUND container does NOT contain the Ogg data. Each sound is loaded
+//   from an external file "<base>_%04d.OGG" (i=1..count). The 100-byte record
+//   carries the source .ogg name + 36 bytes of stale runtime fields (the build
+//   tool serialized live memory: stack/ntdll addresses). The load path only
+//   relies on the index -> these fields are ignored at load time.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -26,69 +26,69 @@
 
 namespace ts2::asset {
 
-// Signature de page Ogg ("OggS").
+// Ogg page signature ("OggS").
 inline constexpr char kOggMagic[4] = {'O', 'g', 'g', 'S'};
 
-// Vrai si le tampon commence par la signature de page Ogg "OggS".
+// True if the buffer starts with the Ogg page signature "OggS".
 bool IsOgg(const uint8_t* data, size_t size);
 inline bool IsOgg(const std::vector<uint8_t>& v) { return IsOgg(v.data(), v.size()); }
 
-// Charge un Ogg Vorbis brut (.ISN / .BGM / .OGG) tel quel en mémoire.
-// Renvoie false si ouverture impossible ou si l'entête n'est pas "OggS".
+// Loads a raw Ogg Vorbis (.ISN / .BGM / .OGG) as-is into memory.
+// Returns false if the file cannot be opened or the header isn't "OggS".
 bool ReadOggFile(const std::string& path, std::vector<uint8_t>& out);
 
-// Métadonnées d'un son (record 100 o à this+8). Seul le nom est exploité par le
-// jeu ; les 36 o restants sont des champs runtime périmés (cf. entête).
+// Metadata of a sound (100-byte record at this+8). Only the name is used by
+// the game; the remaining 36 bytes are stale runtime fields (see header banner).
 struct WSoundEntry {
-    std::string name;              // nom source ".ogg" (buffer 64 o, null-terminé)
-    std::vector<uint8_t> oggData;  // vide tant que LoadExternalOggs() n'a pas été appelé
-                                   // (le conteneur .WSOUND n'embarque PAS l'audio)
+    std::string name;              // source ".ogg" name (64-byte buffer, null-terminated)
+    std::vector<uint8_t> oggData;  // empty until LoadExternalOggs() has been called
+                                   // (the .WSOUND container does NOT embed the audio)
 };
 
-// Émetteur positionnel (record 20 o à this+20, exploité par WSndBank_UpdatePositional).
+// Positional emitter (20-byte record at this+20, used by WSndBank_UpdatePositional).
 struct WSoundEmitter {
-    uint32_t soundIndex = 0;  // 0-base, == index du record 100 o / OGG
+    uint32_t soundIndex = 0;  // 0-based, == index of the 100-byte record / OGG
     float    x = 0.0f;
     float    y = 0.0f;
     float    z = 0.0f;        // Math_Dist3D(rec+4, listener)
-    float    radius = 0.0f;   // portée ; si dist < radius -> joue, volume ~ (radius-d)/radius
+    float    radius = 0.0f;   // range; if dist < radius -> plays, volume ~ (radius-d)/radius
 };
 
-// Conteneur .WSOUND.
+// .WSOUND container.
 //
-// Layout disque :
-//   [u32 count]                nb de sons (> 0)                 (this+8)
-//   count  * { record 100 o }  métadonnées par son
-//   [u32 count2]               nb d'émetteurs positionnels      (this+16)
-//   count2 * { record 20  o }  placements 3D                    (this+20)
-//   Taille attendue == 4 + 100*count + 4 + 20*count2
+// Disk layout:
+//   [u32 count]                number of sounds (> 0)            (this+8)
+//   count  * { 100-byte record }  per-sound metadata
+//   [u32 count2]               number of positional emitters     (this+16)
+//   count2 * { 20-byte record }  3D placements                   (this+20)
+//   Expected size == 4 + 100*count + 4 + 20*count2
 class WSound {
 public:
-    // Parse le conteneur .WSOUND (métadonnées + émetteurs). Ne charge PAS l'audio.
-    // Renvoie false si la structure est incohérente (bornes/tailles).
+    // Parses the .WSOUND container (metadata + emitters). Does NOT load the audio.
+    // Returns false if the structure is inconsistent (bounds/sizes).
     bool Load(const std::string& path);
 
-    // Charge les OGG externes "<base>_%04d.OGG" (i=1..count) et remplit
-    // WSoundEntry::oggData. Renvoie le nombre d'OGG "OggS" valides chargés.
-    // Ne fait rien tant que Load() n'a pas réussi.
+    // Loads the external OGGs "<base>_%04d.OGG" (i=1..count) and fills
+    // WSoundEntry::oggData. Returns the number of valid "OggS" OGGs loaded.
+    // Does nothing until Load() has succeeded.
     size_t LoadExternalOggs();
 
-    // Chemin de l'OGG externe pour un index 1-base (ex. "Z001.WSOUND_0001.OGG").
+    // Path of the external OGG for a 1-based index (e.g. "Z001.WSOUND_0001.OGG").
     std::string OggPathFor(size_t oneBasedIndex) const;
 
     const std::string&               Path()     const { return path_; }
     const std::vector<WSoundEntry>&  Entries()  const { return entries_; }
     const std::vector<WSoundEmitter>& Emitters() const { return emitters_; }
 
-    uint32_t Count()  const { return count_; }   // nb de sons
-    uint32_t Count2() const { return count2_; }  // nb d'émetteurs
+    uint32_t Count()  const { return count_; }   // number of sounds
+    uint32_t Count2() const { return count2_; }  // number of emitters
 
-    // Validation (miroir du validateur Python).
-    bool   SizeOk()        const { return sizeOk_; }        // taille disque == attendue
+    // Validation (mirrors the Python validator).
+    bool   SizeOk()        const { return sizeOk_; }        // disk size == expected
     size_t ExpectedSize()  const { return expectedSize_; }
     size_t ActualSize()    const { return actualSize_; }
-    size_t Trailing()      const { return trailing_; }      // octets après le dernier record
-    size_t BadIndexCount() const { return badIndex_; }      // émetteurs à soundIndex hors [0,count)
+    size_t Trailing()      const { return trailing_; }      // bytes after the last record
+    size_t BadIndexCount() const { return badIndex_; }      // emitters with soundIndex out of [0,count)
 
 private:
     std::string                path_;

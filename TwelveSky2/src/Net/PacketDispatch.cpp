@@ -1,5 +1,5 @@
-// Net/PacketDispatch.cpp — implementation de la boucle de reception/dispatch.
-// Fidele a Net_RecvDispatch 0x463040 et Net_InitPacketHandlers 0x463270.
+// Net/PacketDispatch.cpp — implementation of the receive/dispatch loop.
+// Faithful to Net_RecvDispatch 0x463040 and Net_InitPacketHandlers 0x463270.
 #include "Net/PacketDispatch.h"
 
 #include <cstring>
@@ -11,7 +11,7 @@ namespace ts2::net {
 
 PacketDispatcher::PacketDispatcher()
     : sizes_(MakeSizeTable()) {
-    // handlers_ : par defaut vides (equivaut au for(i<256) dword_846408[i]=0).
+    // handlers_: empty by default (equivalent to for(i<256) dword_846408[i]=0).
 }
 
 void PacketDispatcher::SetHandler(std::uint8_t opcode, Handler h) {
@@ -23,7 +23,7 @@ void PacketDispatcher::ClearHandlers() {
 }
 
 void PacketDispatcher::Consume(std::uint32_t n) {
-    // Net_RecvDispatch : Crt_Memmove(this+32, this+32+n, filled - n) ; filled -= n.
+    // Net_RecvDispatch: Crt_Memmove(this+32, this+32+n, filled - n); filled -= n.
     std::memmove(buffer_.data(), buffer_.data() + n, filled_ - n);
     filled_ -= n;
 }
@@ -35,15 +35,15 @@ void PacketDispatcher::Drain() {
         const std::uint32_t need = sizes_[op];   // dword_846808[v7]
 
         if (need == 0) {
-            // Opcode non gere : le client d'origine sauterait sur un handler nul (crash).
-            // Le serveur officiel n'emet jamais ces opcodes. On stoppe le drain sans
-            // consommer (need==0 -> memmove de 0 octet == boucle infinie) : garde de surete.
+            // Unhandled opcode: the original client would jump to a null handler (crash).
+            // The official server never emits these opcodes. We stop draining without
+            // consuming (need==0 -> 0-byte memmove == infinite loop): safety guard.
             TS2_WARN("PacketDispatcher: opcode inconnu 0x%02X, drain arrete (%u o restants)",
                      op, filled_);
             break;
         }
 
-        // if ( *(this+200032) < dword_846808[v7] ) break;  -- pas assez d'octets.
+        // if ( *(this+200032) < dword_846808[v7] ) break;  -- not enough bytes.
         if (filled_ < need) break;
 
         const std::uint8_t* payload;
@@ -54,8 +54,8 @@ void PacketDispatcher::Drain() {
             // if ( v7 == 99 ) { Crt_Memcpy(&v6, this+33, 4); if (filled < v6+5) break; }
             std::uint32_t varLen = 0;
             std::memcpy(&varLen, &buffer_[1], 4);
-            // Comparaison en 64 bits pour eviter le debordement de (varLen + 5) present
-            // dans le binaire 32 bits ; sans effet pour les longueurs legitimes.
+            // 64-bit comparison to avoid the (varLen + 5) overflow present in the
+            // 32-bit binary; no effect on legitimate lengths.
             if (static_cast<std::uint64_t>(filled_) <
                 static_cast<std::uint64_t>(varLen) + kVariableHeaderSize) {
                 break;
@@ -73,9 +73,9 @@ void PacketDispatcher::Drain() {
         const Handler& h = handlers_[op];
         if (h) h(op, payload, payloadLen);
 
-        // Consommation du frame (Crt_Memmove + maj du compteur).
+        // Frame consumption (Crt_Memmove + counter update).
         if (op == kVariableOpcode) {
-            // Crt_Memmove(this+32, this+v5+37, filled - (v5+5)) ; filled -= v5+5.
+            // Crt_Memmove(this+32, this+v5+37, filled - (v5+5)); filled -= v5+5.
             Consume(frameLen);
         } else {
             // if ( filled >= dword_846808[v7] ) { memmove ; filled -= size; }
@@ -97,10 +97,10 @@ RecvResult PacketDispatcher::OnSocketEvent(SOCKET s, std::uint16_t netEvent) {
             return RecvResult::Ok;
         }
         if (n != SOCKET_ERROR) {
-            // v8 == 0 : fermeture gracieuse (v8 != -1 -> Net_CloseSocket).
+            // v8 == 0: graceful close (v8 != -1 -> Net_CloseSocket).
             return RecvResult::Closed;
         }
-        // v8 == -1 : erreur. WSAEWOULDBLOCK (10035) est benin, tout le reste ferme.
+        // v8 == -1: error. WSAEWOULDBLOCK (10035) is benign, everything else closes.
         if (WSAGetLastError() != WSAEWOULDBLOCK) {
             return RecvResult::Closed;
         }
@@ -122,7 +122,7 @@ bool PacketDispatcher::PushBytes(const std::uint8_t* data, std::uint32_t n) {
 }
 
 // ---------------------------------------------------------------------------
-// Nom du handler entrant (pour journalisation). Reprend les symboles de l'IDB.
+// Name of the incoming handler (for logging). Reuses the IDB symbols.
 // ---------------------------------------------------------------------------
 const char* IncomingName(std::uint8_t opcode) {
     switch (static_cast<Incoming>(opcode)) {

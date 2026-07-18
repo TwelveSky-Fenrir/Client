@@ -1,8 +1,8 @@
-// Tools/UiWindowSelfTest.cpp — voir UiWindowSelfTest.h. Outil TEMPORAIRE, a supprimer
-// apres verification (mission audit device reel Vendor/Warehouse/Inventory 2026-07-14).
+// Tools/UiWindowSelfTest.cpp — see UiWindowSelfTest.h. TEMPORARY tool, to remove
+// after verification (real-device audit mission Vendor/Warehouse/Inventory 2026-07-14).
 //
-// Ordre d'inclusion : Net/ EN PREMIER (NetSystem.h tire winsock2 avant windows.h),
-// meme convention que UI/WarehouseWindow.cpp / UI/InventoryWindow.cpp.
+// Include order: Net/ FIRST (NetSystem.h pulls winsock2 before windows.h),
+// same convention as UI/WarehouseWindow.cpp / UI/InventoryWindow.cpp.
 #include "Net/NetSystem.h"
 #include "Tools/UiWindowSelfTest.h"
 #include "Scene/SceneManager.h"
@@ -23,9 +23,9 @@ namespace ts2::tools {
 
 namespace {
 
-// Duplique EXACTEMENT la logique de sondage de App::ResolveGameDataDir (App/App.cpp,
-// NON MODIFIE) — petite copie locale a cet outil de verification, pas une edition du
-// fichier interdit.
+// Duplicates EXACTLY the probing logic of App::ResolveGameDataDir (App/App.cpp,
+// NOT MODIFIED) — a small local copy for this verification tool, not an edit of
+// the forbidden file.
 std::string ResolveGameDataDirLocal() {
     static const char* const kCandidates[] = {
         "GameData",
@@ -96,15 +96,15 @@ int RunUiWindowSelfTest(const char* which, int seconds, int width, int height) {
     gfx::Camera camera;
     SceneManager scene;
     scene.Init(renderer, net, hwnd, w, h, gd);
-    // Force Scene::InGame DIRECTEMENT, sans passer par le handshake reseau. C'est le
-    // MEME etat que le repli deja present en production dans SceneManager::Update
-    // (case Scene::EnterWorld -> "flux en echec -> bascule InGame de secours") : donc
-    // pas un artifice isole, un etat atteignable tel quel par le binaire reel.
+    // Forces Scene::InGame DIRECTLY, without going through the network handshake. This
+    // is the SAME state as the fallback already present in production in
+    // SceneManager::Update (case Scene::EnterWorld -> "flow failed -> fall back to
+    // InGame"): so not an isolated artifice, a state reachable as-is by the real binary.
     scene.Change(ts2::Scene::InGame);
 
-    // Peuple un objet de test avec une icone REELLE (premier itemId dont ITEM_INFO
-    // expose un iconId != 0), pour verifier le chemin de resolution GPU complet
-    // (ITEM_INFO -> 002_%05u.IMG -> GpuTexture -> sprite), pas juste le repli rect.
+    // Populates a test object with a REAL icon (first itemId whose ITEM_INFO exposes
+    // a non-zero iconId), to verify the full GPU resolution path (ITEM_INFO ->
+    // 002_%05u.IMG -> GpuTexture -> sprite), not just the fallback rect.
     uint32_t testItemId = 0;
     for (uint32_t id = 1; id <= 2000 && !testItemId; ++id) {
         if (const game::ItemInfo* info = game::GetItemInfo(id); info && info->iconId != 0)
@@ -113,26 +113,26 @@ int RunUiWindowSelfTest(const char* which, int seconds, int width, int height) {
     TS2_LOG("UiWindowSelfTest : itemId de test = %u", testItemId);
 
     if (testItemId) {
-        // Inventaire (sac page 0, 2 cases) + equipement (slot 0).
+        // Inventory (bag page 0, 2 slots) + equipment (slot 0).
         game::g_Client.inv.Set(/*row*/0, /*col*/0, testItemId, /*gridX*/0, /*gridY*/0,
                                /*count*/1, /*durability*/0, /*serial*/0);
         game::g_Client.inv.Set(/*row*/0, /*col*/1, testItemId, /*gridX*/2, /*gridY*/0,
                                /*count*/3, /*durability*/0, /*serial*/0);
         game::g_World.self.equip[0].itemId = testItemId;
 
-        // Entrepot : 2 cellules garnies.
+        // Warehouse: 2 filled cells.
         game::g_Warehouse.grid.cells[0][0].itemId = static_cast<int32_t>(testItemId);
         game::g_Warehouse.grid.cells[0][0].count  = 1;
         game::g_Warehouse.grid.cells[1][2].itemId = static_cast<int32_t>(testItemId);
         game::g_Warehouse.grid.cells[1][2].count  = 5;
 
-        // Marchand : catalogue 2 entrees (adresses d'origine, cf. VendorShopWindow.h).
+        // Vendor: 2-entry catalog (original addresses, cf. VendorShopWindow.h).
         game::g_Client.Var(0x1826134) = 2;                              // EntryCount
         game::g_Client.Var(0x1826128) = 1;                              // PageCount
         game::g_Client.Var(0x1826130) = -1;                             // Selection
         game::g_Client.Var(0x182613C)     = static_cast<int32_t>(testItemId); // idx0 itemId
         game::g_Client.Var(0x182613C + 4) = static_cast<int32_t>(testItemId); // idx1 itemId
-        game::g_Client.Var(0x1834F84)     = 100;                        // prix idx0 comp0
+        game::g_Client.Var(0x1834F84)     = 100;                        // price idx0 comp0
     }
 
     LARGE_INTEGER freq, t0;
@@ -156,7 +156,7 @@ int RunUiWindowSelfTest(const char* which, int seconds, int width, int height) {
         }
     };
 
-    // Quelques frames pour laisser windowsReady_ s'initialiser (GameWindows::Init).
+    // A few frames to let windowsReady_ initialize (GameWindows::Init).
     for (int i = 0; i < 10; ++i) { pumpFrame(); Sleep(16); }
 
     int vk = 0;
@@ -164,11 +164,11 @@ int RunUiWindowSelfTest(const char* which, int seconds, int width, int height) {
         if (std::strcmp(which, "vendor") == 0)    vk = 'V';
         else if (std::strcmp(which, "warehouse") == 0) vk = 'H';
         else if (std::strcmp(which, "inventory") == 0) vk = 'I';
-        // Ajout (audit chaine UIManager::Init -> GameWindows -> SceneManager,
-        // 2026-07-14) : OptionsWindow, meme hotkey reel que GameWindows::hotkeys::kOptions.
+        // Added (UIManager::Init -> GameWindows -> SceneManager chain audit,
+        // 2026-07-14): OptionsWindow, same real hotkey as GameWindows::hotkeys::kOptions.
         else if (std::strcmp(which, "options") == 0)   vk = 'O';
-        // Ajout (audit coordonnees Inventaire/Entrepot/Enchantement, 2026-07-14) :
-        // EnchantWindow, meme hotkey reel que GameWindows::hotkeys::kEnchant.
+        // Added (Inventory/Warehouse/Enchant coordinate audit, 2026-07-14):
+        // EnchantWindow, same real hotkey as GameWindows::hotkeys::kEnchant.
         else if (std::strcmp(which, "enchant") == 0)   vk = 'E';
     }
     if (vk) scene.OnKeyDown(vk);

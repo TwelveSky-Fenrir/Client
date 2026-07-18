@@ -1,27 +1,25 @@
-// Config/GameOptions.cpp — implémentation BYTE-EXACTE du sous-système options.
+// Config/GameOptions.cpp — BYTE-EXACT implementation of the options subsystem.
 //
-// Le binaire d'origine utilise l'API Win32 (CreateFileA/ReadFile/WriteFile).
-// Sous SDLCheck le CRT interdit fopen ; on passe par fopen_s + fread/fwrite,
-// ce qui produit un fichier disque STRICTEMENT identique (mêmes 92 octets,
-// même découpage 40/12/40). Les drapeaux Win32 d'origine sont documentés en
-// regard de chaque ouverture ; ils n'affectent pas les octets sur disque.
+// The original binary uses the Win32 API (CreateFileA/ReadFile/WriteFile).
+// Under SDLCheck the CRT forbids fopen; we go through fopen_s + fread/fwrite,
+// which produces a disk file STRICTLY identical (same 92 bytes,
+// same 40/12/40 split). The original Win32 flags are documented next to
+// each open call; they do not affect the on-disk bytes.
 //
-// Vérité : Options_SetDefaults 0x4C2020, Options_LoadBin 0x4C2140,
-//          Options_SaveBin 0x4C2280, Options_LoadAndNormalize 0x4C2110.
+// Truth: Options_SetDefaults 0x4C2020, Options_LoadBin 0x4C2140,
+//        Options_SaveBin 0x4C2280, Options_LoadAndNormalize 0x4C2110.
 #include "Config/GameOptions.h"
 
 #include <cstdio>
 
 namespace ts2::config {
 
-// Instance globale (g_Options @ 0x84DEC0). Zéro-initialisée ; le shell appelle
-// LoadAndNormalize() au démarrage (App_Init 0x461C20, ecx=offset g_Options).
+// Global instance (g_Options @ 0x84DEC0). Zero-initialized; the shell calls
+// LoadAndNormalize() at startup (App_Init 0x461C20, ecx=offset g_Options).
 GameOptions g_Options{};
 
-// ---------------------------------------------------------------------------
 // Options_SetDefaults 0x4C2020
-// Écrit les 23 dwords un par un dans l'ordre exact du binaire.
-// ---------------------------------------------------------------------------
+// Writes the 23 dwords one by one in the binary's exact order.
 void GameOptions::SetDefaults()
 {
     ShowSkillEffects  = 1;   // idx0  *this      = 1  @0x4C202A
@@ -49,12 +47,10 @@ void GameOptions::SetDefaults()
     FilterWorldEntity = 1;   // idx22 *(this+22) = 1  @0x4C2105
 }
 
-// ---------------------------------------------------------------------------
 // Options_LoadBin 0x4C2140
 // CreateFileA(name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
 //             FILE_ATTRIBUTE_NORMAL(0x80), NULL)  -> fopen_s(..,"rb")
-// Lecture en 3 blocs avec contrôle de taille strict ; défauts si échec.
-// ---------------------------------------------------------------------------
+// Reads in 3 blocks with strict size checking; defaults on failure.
 bool GameOptions::Load(const char* path)
 {
     std::FILE* f = nullptr;
@@ -81,7 +77,7 @@ bool GameOptions::Load(const char* path)
         return false;
     }
 
-    // Le binaire rebascule aussi sur les défauts si CloseHandle échoue.
+    // The binary also falls back to defaults if CloseHandle fails.
     if (std::fclose(f) != 0)                          // CloseHandle @0x4C2264
     {
         SetDefaults();                                // @0x4C2271
@@ -90,25 +86,23 @@ bool GameOptions::Load(const char* path)
     return true;
 }
 
-// ---------------------------------------------------------------------------
 // Options_SaveBin 0x4C2280
 // CreateFileA(name, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS,
 //             FILE_ATTRIBUTE_NORMAL(0x80), NULL)  -> fopen_s(..,"wb")
-// Écriture en 3 blocs (40/12/40). L'original ne remonte pas d'erreur au-delà
-// de l'échec d'ouverture ; on reproduit ce contrat.
-// ---------------------------------------------------------------------------
+// Writes in 3 blocks (40/12/40). The original does not report any error beyond
+// the open failure; we reproduce that contract.
 bool GameOptions::Save(const char* path) const
 {
     std::FILE* f = nullptr;
     if (fopen_s(&f, path, "wb") != 0 || f == nullptr) // hFile == INVALID_HANDLE_VALUE
     {
-        return false;                                 // @0x4C2372 (retour handle -1)
+        return false;                                 // @0x4C2372 (returns handle -1)
     }
 
     const unsigned char* raw = reinterpret_cast<const unsigned char*>(this);
 
     // WriteFile(this,    0x28) && n==40 &&
-    // WriteFile(this+40, 0x0C) && n==12  -> alors WriteFile(this+52, 0x28)
+    // WriteFile(this+40, 0x0C) && n==12  -> then WriteFile(this+52, 0x28)
     if (std::fwrite(raw + kChunk1Off, 1, kChunk1Size, f) == kChunk1Size &&
         std::fwrite(raw + kChunk2Off, 1, kChunk2Size, f) == kChunk2Size)
     {
@@ -119,11 +113,9 @@ bool GameOptions::Save(const char* path) const
     return true;
 }
 
-// ---------------------------------------------------------------------------
 // Options_LoadAndNormalize 0x4C2110
 //   Options_LoadBin(this); Options_SaveBin(this); return 1;
-// Effet net : charge (ou défauts) puis réécrit -> crée le fichier s'il manquait.
-// ---------------------------------------------------------------------------
+// Net effect: loads (or defaults) then rewrites -> creates the file if missing.
 bool GameOptions::LoadAndNormalize(const char* path)
 {
     Load(path);   // @0x4C211A
@@ -131,11 +123,9 @@ bool GameOptions::LoadAndNormalize(const char* path)
     return true;  // @0x4C212C (mov eax, 1)
 }
 
-// ---------------------------------------------------------------------------
-// Normalize() — bornage des champs (reconstitué depuis UI_OptionsWnd_OnClick
-// 0x66D140 et les consommateurs). NE fait PAS partie du module config du
-// binaire ; fourni comme utilitaire de cohérence.
-// ---------------------------------------------------------------------------
+// Normalize() — field clamping (reconstructed from UI_OptionsWnd_OnClick
+// 0x66D140 and its consumers). NOT part of the binary's config module;
+// provided as a consistency utility.
 namespace {
     inline int32_t Clamp(int32_t v, int32_t lo, int32_t hi)
     {
@@ -145,20 +135,18 @@ namespace {
     }
 } // namespace
 
-// ---------------------------------------------------------------------------
 // Cfg_SaveLastServer 0x519C40
 // CreateFileA(name, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, CREATE_ALWAYS,
 //             FILE_ATTRIBUTE_NORMAL(0x80), NULL)  -> fopen_s(..,"wb")
 // WriteFile(this+61484, 4) -> fwrite(&lastServerIndex, 4, 1, f)
-// CloseHandle -> fclose. Aucun contrôle du résultat de l'écriture/fermeture
-// dans le binaire (contrairement à Options_LoadBin) : reproduit tel quel.
-// ---------------------------------------------------------------------------
+// CloseHandle -> fclose. The binary checks neither the write nor close result
+// (unlike Options_LoadBin): reproduced as-is.
 bool Cfg_SaveLastServer(int32_t lastServerIndex, const char* path)
 {
     std::FILE* f = nullptr;
     if (fopen_s(&f, path, "wb") != 0 || f == nullptr) // hFile == INVALID_HANDLE_VALUE
     {
-        return false; // @0x519cb9 : pas d'ouverture -> pas d'écriture
+        return false; // @0x519cb9: no open -> no write
     }
 
     std::fwrite(&lastServerIndex, sizeof(lastServerIndex), 1, f); // WriteFile @0x519c87
@@ -171,17 +159,17 @@ void GameOptions::Normalize()
     ShowSkillEffects  = Clamp(ShowSkillEffects,  0, 1);
     DisplayRangeTier  = Clamp(DisplayRangeTier,  1, 3);   // Game_GetTierRange
     Toggle2Reserved   = Clamp(Toggle2Reserved,   0, 1);
-    // Reserved3 (idx3) : réservé, laissé intact.
+    // Reserved3 (idx3): reserved, left untouched.
     ShowHitMarkers    = Clamp(ShowHitMarkers,    0, 1);
     ShowNameplates    = Clamp(ShowNameplates,    0, 1);
     WeaponTrail       = Clamp(WeaponTrail,        0, 1);
     WeaponGlowLevel   = Clamp(WeaponGlowLevel,    0, 3);
-    // Reserved8 (idx8) : réservé, laissé intact.
+    // Reserved8 (idx8): reserved, left untouched.
     BrightnessLevel   = Clamp(BrightnessLevel,    1, 9);   // UI clamp 1..9
     MusicVolume       = Clamp(MusicVolume,        0, 100); // slider 0..100
     SoundVolume       = Clamp(SoundVolume,        0, 100); // slider 0..100
     BgmEnabled        = Clamp(BgmEnabled,         0, 1);
-    MorphUiMode       = Clamp(MorphUiMode,        1, 2);   // décrément borné >=1
+    MorphUiMode       = Clamp(MorphUiMode,        1, 2);   // clamped decrement >=1
     GfxDetailShadows  = Clamp(GfxDetailShadows,   0, 1);
     FilterPartyChat   = Clamp(FilterPartyChat,    0, 1);
     FilterPartyInvite = Clamp(FilterPartyInvite,  0, 1);

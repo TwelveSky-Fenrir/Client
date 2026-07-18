@@ -1,5 +1,5 @@
-// main.cpp — point d'entrée du client TwelveSky2 (réécriture fidèle).
-// Équivaut à WinMain 0x4609C0 : délègue tout à ts2::App.
+// main.cpp — entry point of the TwelveSky2 client (faithful rewrite).
+// Equivalent to WinMain 0x4609C0: delegates everything to ts2::App.
 #include <windows.h>
 #include "App/App.h"
 #include "Tools/UiWindowSelfTest.h"
@@ -15,7 +15,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR lpCmdLine, in
         while (*args == ' ') ++args;
         char which[32] = {};
         int seconds = 8;
-        int width = 0, height = 0; // 0 -> defaut kRefWidth/kRefHeight (RunUiWindowSelfTest)
+        int width = 0, height = 0; // 0 -> default kRefWidth/kRefHeight (RunUiWindowSelfTest)
 
         std::sscanf(args, "%31s %d %d %d", which, &seconds, &width, &height);
         return ts2::tools::RunUiWindowSelfTest(which, seconds, width, height);
@@ -27,19 +27,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR lpCmdLine, in
         std::sscanf(args, "%d %d %d", &seconds, &width, &height);
         return ts2::tools::RunWorldReflectionSelfTest(seconds, width, height);
     }
-    // -charselecttest [seconds] [width] [height] : PREVIEW de l'ecran CharSelect/CreateChar
-    // (scene 4, inatteignable hors serveur). Force la scene, injecte 2 persos par defaut, et
-    // ouvre une fenetre INTERACTIVE (clic = CRÉER/fleches/selection). seconds<=0 => jusqu'a
-    // fermeture. Sert a VOIR le rendu 3D perso + la creation sans serveur de login.
+    // -charselecttest [seconds] [width] [height] : PREVIEW of the CharSelect/CreateChar
+    // screen (scene 4, unreachable without a server). Forces the scene, injects 2 default
+    // characters, and opens an INTERACTIVE window (click = CREATE/arrows/selection).
+    // seconds<=0 => until closed. Used to SEE the 3D character render + creation flow
+    // without a login server.
     if (lpCmdLine && std::strncmp(lpCmdLine, "-charselecttest", 15) == 0) {
         const char* args = lpCmdLine + 15;
         while (*args == ' ') ++args;
-        int seconds = 0, width = 0, height = 0; // 0 s = jusqu'a fermeture de la fenetre
+        int seconds = 0, width = 0, height = 0; // 0 s = until the window is closed
         std::sscanf(args, "%d %d %d", &seconds, &width, &height);
         return ts2::tools::RunCharSelectSelfTest(seconds, width, height);
     }
-    // -worldtest [seconds] [zoneId] [selfX] [selfY] [selfZ] : VOIR le perso DANS le monde 3D.
-    // Charge une vraie zone (terrain+objets) + injecte un self + force InGame + capture PNG.
+    // -worldtest [seconds] [zoneId] [selfX] [selfY] [selfZ] : SEE the character IN the 3D world.
+    // Loads a real zone (terrain+objects) + injects a self entity + forces InGame + PNG capture.
     if (lpCmdLine && std::strncmp(lpCmdLine, "-worldtest", 10) == 0) {
         const char* args = lpCmdLine + 10;
         while (*args == ' ') ++args;
